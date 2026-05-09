@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- 芯片主体 -->
+  <rect x="6" y="8" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+  <!-- 左边引脚 -->
+  <line x1="2" y1="11" x2="6" y2="11" stroke="currentColor" stroke-width="2"/>
+  <line x1="2" y1="15" x2="6" y2="15" stroke="currentColor" stroke-width="2"/>
+  <line x1="2" y1="19" x2="6" y2="19" stroke="currentColor" stroke-width="2"/>
+  <!-- 右边引脚 -->
+  <line x1="26" y1="11" x2="30" y2="11" stroke="currentColor" stroke-width="2"/>
+  <line x1="26" y1="15" x2="30" y2="15" stroke="currentColor" stroke-width="2"/>
+  <line x1="26" y1="19" x2="30" y2="19" stroke="currentColor" stroke-width="2"/>
+  <!-- 芯片内部波形曲线 - 代表仿真验证 -->
+  <path d="M9 20 L11 20 L12 14 L14 18 L16 10 L18 20 L20 14 L22 18 L23 20 L25 20"
+        stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

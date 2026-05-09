@@ -1,0 +1,33 @@
+{
+  "project_name": "my_design",
+  "project_root": ".",
+  "lib_dirs": [],
+  "top_module": "top_tb",
+  "simulator": "iverilog",
+  "wave_viewer": "surfer",
+  "wave_file_template": "{top_module}.vcd",
+  "simulators": {
+    "iverilog": {
+      "compile_cmd": "iverilog -o \"{output}\" {files}",
+      "run_cmd": "vvp \"{output}\""
+    },
+    "vcs": {
+      "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+      "run_cmd": "./\"{output}\""
+    },
+    "xsim": {
+      "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+      "run_cmd": "xsim \"{output}\" --runall"
+    },
+    "custom": {
+      "compile_cmd": "",
+      "run_cmd": ""
+    }
+  },
+  "wave_viewers": {
+    "surfer": "surfer \"{wave_file}\"",
+    "gtkwave": "gtkwave \"{wave_file}\"",
+    "custom": ""
+  },
+  "file_order": []
+}

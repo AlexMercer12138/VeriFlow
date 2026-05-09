@@ -1,0 +1,176 @@
+{
+  "name": "veriflow",
+  "displayName": "VeriFlow",
+  "description": "Lightweight Verilog simulation manager for VS Code — analyze, compile, simulate, and view waveforms",
+  "icon": "media/icon.png",
+  "version": "1.0.0",
+  "publisher": "veriflow",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/VeriFlow.git",
+    "directory": "veriflow-vscode"
+  },
+  "activationEvents": [
+    "workspaceContains:**/*.v",
+    "workspaceContains:**/*.sv"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "views": {
+      "veriflow": [
+        {
+          "id": "veriflow.modules",
+          "name": "VeriFlow",
+          "icon": "$(circuit-board)",
+          "contextualTitle": "VeriFlow"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "veriflow",
+          "title": "VeriFlow",
+          "icon": "media/activitybar-icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "veriflow.selectTop",
+        "title": "Select Top Module",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "veriflow.analyze",
+        "title": "Analyze Dependencies",
+        "icon": "$(search)"
+      },
+      {
+        "command": "veriflow.simulate",
+        "title": "Compile & Simulate",
+        "icon": "$(run)"
+      },
+      {
+        "command": "veriflow.openWave",
+        "title": "Open Waveform",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "veriflow.scanModules",
+        "title": "Scan Modules",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "veriflow.showOutput",
+        "title": "Show Output Panel",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "veriflow.selectTop",
+          "when": "view == veriflow.modules",
+          "group": "navigation@1"
+        },
+        {
+          "command": "veriflow.analyze",
+          "when": "view == veriflow.modules",
+          "group": "navigation@2"
+        },
+        {
+          "command": "veriflow.simulate",
+          "when": "view == veriflow.modules",
+          "group": "navigation@3"
+        },
+        {
+          "command": "veriflow.openWave",
+          "when": "view == veriflow.modules",
+          "group": "navigation@4"
+        },
+        {
+          "command": "veriflow.scanModules",
+          "when": "view == veriflow.modules",
+          "group": "navigation@5"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VeriFlow",
+      "properties": {
+        "veriflow.libDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Library directories for VeriFlow module search and dependency resolution"
+        },
+        "veriflow.simulator": {
+          "type": "string",
+          "enum": [
+            "iverilog",
+            "vcs",
+            "xsim",
+            "custom"
+          ],
+          "default": "iverilog",
+          "description": "Verilog simulator to use"
+        },
+        "veriflow.simulatorCompileCmd": {
+          "type": "string",
+          "default": "",
+          "description": "Custom compile command template. Use {files}, {output}, {top_module} as placeholders. Overrides built-in when simulator is 'custom'."
+        },
+        "veriflow.simulatorRunCmd": {
+          "type": "string",
+          "default": "",
+          "description": "Custom run command template. Use {output} as placeholder. Overrides built-in when simulator is 'custom'."
+        },
+        "veriflow.waveViewer": {
+          "type": "string",
+          "enum": [
+            "surfer",
+            "gtkwave",
+            "custom"
+          ],
+          "default": "surfer",
+          "description": "Waveform viewer to use"
+        },
+        "veriflow.waveViewerCmd": {
+          "type": "string",
+          "default": "",
+          "description": "Custom wave viewer command template. Use {wave_file} as placeholder. Overrides built-in when waveViewer is 'custom'."
+        },
+        "veriflow.waveFileTemplate": {
+          "type": "string",
+          "default": "{top_module}.vcd",
+          "description": "Waveform file path template. Use {top_module} as placeholder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^5.0.0"
+  }
+}

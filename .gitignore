@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.spec
+.env
+
+# Python GUI
+src/presentation/gui/__pycache__/
+
+# VS Code extension
+veriflow-vscode/node_modules/
+veriflow-vscode/out/
+veriflow-vscode/*.vsix
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

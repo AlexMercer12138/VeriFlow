@@ -1,0 +1,251 @@
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { DependencyResult, ModuleScanResult } from './core';
+
+type TreeItemType = 'top' | 'depSection' | 'depBranch' | 'depModule' | 'libSection' | 'libModule' | 'empty';
+
+class ModuleTreeItem extends vscode.TreeItem {
+    constructor(
+        public readonly label: string,
+        public readonly collapsibleState: vscode.TreeItemCollapsibleState,
+        public readonly itemType: TreeItemType,
+        public readonly moduleName?: string,
+        public readonly filePath?: string,
+        public readonly children?: ModuleTreeItem[]
+    ) {
+        super(label, collapsibleState);
+
+        if (itemType === 'top') {
+            this.iconPath = new vscode.ThemeIcon('symbol-keyword');
+            this.description = moduleName || '(none)';
+            this.tooltip = 'Click to select top module';
+            this.command = {
+                command: 'veriflow.selectTop',
+                title: 'Select Top Module',
+            };
+        } else if (itemType === 'depSection') {
+            this.iconPath = new vscode.ThemeIcon('type-hierarchy');
+            this.contextValue = 'depSection';
+        } else if (itemType === 'depBranch') {
+            this.iconPath = new vscode.ThemeIcon('symbol-module');
+            this.tooltip = filePath || moduleName;
+            this.description = filePath ? path.basename(filePath) : undefined;
+            this.command = {
+                command: 'vscode.open',
+                title: 'Open File',
+                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+            };
+        } else if (itemType === 'depModule') {
+            this.iconPath = new vscode.ThemeIcon('symbol-module');
+            this.tooltip = filePath || moduleName;
+            this.description = filePath ? path.basename(filePath) : undefined;
+            this.command = {
+                command: 'vscode.open',
+                title: 'Open File',
+                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+            };
+        } else if (itemType === 'libSection') {
+            this.iconPath = new vscode.ThemeIcon('folder-library');
+            this.contextValue = 'libSection';
+        } else if (itemType === 'libModule') {
+            this.iconPath = new vscode.ThemeIcon('symbol-module');
+            this.tooltip = filePath || moduleName;
+            this.description = filePath ? path.basename(filePath) : undefined;
+            this.command = {
+                command: 'vscode.open',
+                title: 'Open File',
+                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+            };
+        } else if (itemType === 'empty') {
+            this.iconPath = new vscode.ThemeIcon('info');
+        }
+    }
+}
+
+export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<ModuleTreeItem | undefined | null>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    private _topModule: string = '';
+    private _scanResult: ModuleScanResult | null = null;
+    private _analyzeResult: DependencyResult | null = null;
+
+    set topModule(value: string) {
+        this._topModule = value;
+        this.refresh();
+    }
+
+    get topModule(): string {
+        return this._topModule;
+    }
+
+    setScanResult(result: ModuleScanResult): void {
+        this._scanResult = result;
+        this.refresh();
+    }
+
+    setAnalyzeResult(result: DependencyResult | null): void {
+        this._analyzeResult = result;
+        this.refresh();
+    }
+
+    refresh(): void {
+        this._onDidChangeTreeData.fire(undefined);
+    }
+
+    getTreeItem(element: ModuleTreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    getChildren(element?: ModuleTreeItem): vscode.ProviderResult<ModuleTreeItem[]> {
+        if (!element) {
+            return this._buildRootItems();
+        }
+        return element.children || [];
+    }
+
+    getParent(): vscode.ProviderResult<ModuleTreeItem> {
+        return null;
+    }
+
+    private _buildRootItems(): ModuleTreeItem[] {
+        const items: ModuleTreeItem[] = [];
+
+        items.push(new ModuleTreeItem(
+            'Top Module',
+            vscode.TreeItemCollapsibleState.None,
+            'top',
+            this._topModule || undefined
+        ));
+
+        if (this._analyzeResult && this._analyzeResult.missingModules.length === 0) {
+            items.push(this._buildDepTree());
+        }
+
+        if (this._scanResult && this._scanResult.totalModules > 0) {
+            items.push(this._buildLibTree());
+        } else {
+            items.push(new ModuleTreeItem(
+                'No modules scanned. Open a Verilog workspace or click \u21BB to scan.',
+                vscode.TreeItemCollapsibleState.None,
+                'empty'
+            ));
+        }
+
+        return items;
+    }
+
+    private _buildDepTree(): ModuleTreeItem {
+        const result = this._analyzeResult!;
+        const depGraph = result.depGraph || {};
+        const moduleMap = result.moduleMap || {};
+        const topMod = result.topModule;
+
+        const visited = new Set<string>();
+        let totalCount = 0;
+
+        const buildNode = (moduleName: string): ModuleTreeItem | null => {
+            if (visited.has(moduleName)) {
+                totalCount++;
+                return new ModuleTreeItem(
+                    moduleName + ' \u2191',
+                    vscode.TreeItemCollapsibleState.None,
+                    'depModule',
+                    moduleName,
+                    moduleMap[moduleName] || ''
+                );
+            }
+            visited.add(moduleName);
+            totalCount++;
+
+            const directDeps = depGraph[moduleName] || [];
+            const children: ModuleTreeItem[] = [];
+
+            for (const dep of directDeps) {
+                const child = buildNode(dep);
+                if (child) {
+                    children.push(child);
+                }
+            }
+
+            const filePath = moduleMap[moduleName] || '';
+            if (children.length > 0) {
+                return new ModuleTreeItem(
+                    moduleName,
+                    vscode.TreeItemCollapsibleState.Expanded,
+                    'depBranch',
+                    moduleName,
+                    filePath,
+                    children
+                );
+            } else {
+                return new ModuleTreeItem(
+                    moduleName,
+                    vscode.TreeItemCollapsibleState.None,
+                    'depModule',
+                    moduleName,
+                    filePath
+                );
+            }
+        };
+
+        const rootNode = topMod ? buildNode(topMod) : null;
+
+        return new ModuleTreeItem(
+            `Dependency Tree (${totalCount} modules)`,
+            vscode.TreeItemCollapsibleState.Expanded,
+            'depSection',
+            undefined,
+            undefined,
+            rootNode ? [rootNode] : []
+        );
+    }
+
+    private _buildLibTree(): ModuleTreeItem {
+        const result = this._scanResult!;
+        const modulesByDir = result.modulesByDir || {};
+        const moduleFiles = result.moduleFiles || {};
+        const depModules = new Set(Object.keys(this._analyzeResult?.moduleMap || {}));
+
+        const sectionChildren: ModuleTreeItem[] = [];
+
+        for (const [dirLabel, modNames] of Object.entries(modulesByDir)) {
+            const dirChildren: ModuleTreeItem[] = [];
+
+            for (const modName of modNames) {
+                const filePath = moduleFiles[modName] || '';
+                const inDep = depModules.has(modName);
+                const suffix = inDep ? ' [dep]' : '';
+                dirChildren.push(new ModuleTreeItem(
+                    modName + suffix,
+                    vscode.TreeItemCollapsibleState.None,
+                    'libModule',
+                    modName,
+                    filePath
+                ));
+            }
+
+            sectionChildren.push(new ModuleTreeItem(
+                path.basename(dirLabel) || dirLabel,
+                vscode.TreeItemCollapsibleState.Collapsed,
+                'libSection',
+                undefined,
+                undefined,
+                dirChildren
+            ));
+        }
+
+        return new ModuleTreeItem(
+            `All Modules (${result.totalModules})`,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            'libSection',
+            undefined,
+            undefined,
+            sectionChildren
+        );
+    }
+
+    getModuleNames(): string[] {
+        return this._scanResult?.modules || [];
+    }
+}

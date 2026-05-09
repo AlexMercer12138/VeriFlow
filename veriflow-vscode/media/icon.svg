@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#16213e"/>
+    </linearGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="0" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f3460"/>
+      <stop offset="1" stop-color="#0a2540"/>
+    </linearGradient>
+  </defs>
+  <!-- 背景 -->
+  <rect width="128" height="128" rx="16" fill="url(#bg)"/>
+  <!-- 芯片主体 -->
+  <rect x="22" y="30" width="84" height="68" rx="8" fill="url(#chip)" stroke="#e94560" stroke-width="3"/>
+  <!-- 芯片内部网格线 -->
+  <line x1="22" y1="56" x2="106" y2="56" stroke="#e94560" stroke-width="1" opacity="0.3"/>
+  <line x1="22" y1="72" x2="106" y2="72" stroke="#e94560" stroke-width="1" opacity="0.3"/>
+  <line x1="52" y1="30" x2="52" y2="98" stroke="#e94560" stroke-width="1" opacity="0.3"/>
+  <line x1="76" y1="30" x2="76" y2="98" stroke="#e94560" stroke-width="1" opacity="0.3"/>
+  <!-- 左边引脚 -->
+  <rect x="8" y="38" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="8" y="50" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="8" y="62" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="8" y="74" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="8" y="86" width="14" height="6" rx="2" fill="#533483"/>
+  <!-- 右边引脚 -->
+  <rect x="106" y="38" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="106" y="50" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="106" y="62" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="106" y="74" width="14" height="6" rx="2" fill="#533483"/>
+  <rect x="106" y="86" width="14" height="6" rx="2" fill="#533483"/>
+  <!-- 波形验证曲线（芯片内部） -->
+  <path d="M30 82 L36 82 L38 64 L44 72 L50 54 L56 82 L62 64 L68 74 L74 56 L80 82 L82 82 L84 82"
+        stroke="#00ff88" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 勾 -->
+  <circle cx="94" cy="45" r="10" fill="none" stroke="#00ff88" stroke-width="2.5"/>
+  <path d="M88 45 L92 49 L100 38" stroke="#00ff88" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- VF 文字底部 -->
+  <text x="64" y="115" text-anchor="middle" fill="#e94560" font-family="monospace" font-size="14" font-weight="bold" letter-spacing="4">VERIFLOW</text>
+</svg>
