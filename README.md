@@ -36,18 +36,18 @@
 
 ## VS Code 扩展（推荐）
 
-VeriFlow 提供了一个 **零依赖的 VS Code 扩展**（`vscode-extension/`），所有核心逻辑用 TypeScript 原生实现，不需要安装 Python。
+VeriFlow 提供了一个 **零依赖的 VS Code 扩展**（`veriflow-vscode/`），所有核心逻辑用 TypeScript 原生实现，不需要安装 Python。
 
 ### 安装方式
 
-1. 克隆仓库后在 VS Code 中打开 `vscode-extension/` 目录
+1. 克隆仓库后在 VS Code 中打开 `veriflow-vscode/` 目录
 2. 运行 `npm install && npm run compile`
 3. 按 `F5` 启动扩展调试
 
 ### 使用流程
 
 1. 在 VS Code 中打开一个包含 `.v` / `.sv` 文件的目录
-2. 点击活动栏的 VeriFlow 图标（烧杯），右侧侧边栏会自动展示扫描到的模块
+2. 点击活动栏的 VeriFlow 图标（![](veriflow-vscode/media/activitybar-icon.svg)），侧边栏会自动展示扫描到的模块
 3. 点击 `Select Top Module` 选择一个顶层模块
 4. 点击 `Analyze Dependencies` 分析依赖关系
 5. 点击 `Compile & Simulate` 编译并仿真
@@ -184,7 +184,7 @@ python -m src.presentation.gui
 典型操作流程：
 
 1. **新建工程** 或 **打开工程**，创建/加载 `.json` 工程文件
-2. 设置 **顶层模块** 名称（从扫描列表中选择或手动输入）
+2. 设置 **顶层模块** 名称（从扫描列表中选择）
 3. 在工程配置标签页中配置 **库目录**、**仿真器** 和 **波形查看器**
 4. 点击 **分析依赖** 解析模块依赖图
 5. 点击 **编译并仿真** 运行仿真
@@ -332,6 +332,8 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 - 生成格式化对齐的 Verilog 例化模板
 - 生成测试平台用的连线声明
 
+**注**：生成例化模板的功能已经在Python中实现，但是GUI和CLI中均没有调用。如果需要该功能，请查看 src\domain\services\port_parser_service.py 中的实现。
+
 ### 日志解析
 
 日志解析器能理解主流仿真器的输出格式，并分类为结构化条目：
@@ -413,18 +415,6 @@ npm install
 npm run compile
 # 按 F5 启动调试
 ```
-
----
-
-## 路线图
-
-- [ ] 从模块端口定义自动生成测试平台
-- [ ] 波形对比工具
-- [ ] 类似 LSP 的编辑器集成
-- [ ] 覆盖率报告解析与可视化
-- [ ] CI/CD 集成示例（GitHub Actions、GitLab CI）
-- [ ] 自定义仿真器插件系统
-- [ ] 多语言支持（SystemVerilog、VHDL）
 
 ---
 
