@@ -11,10 +11,10 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit,
 )
 from PySide6.QtCore import Signal, Qt
+from src.presentation.gui.i18n import tr
 
 
 class UnifiedModulePanel(QWidget):
-    """统一模块面板"""
 
     file_double_clicked = Signal(str)
 
@@ -35,19 +35,27 @@ class UnifiedModulePanel(QWidget):
         layout.addLayout(header)
 
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Filter modules...")
+        self._search_edit.setPlaceholderText("?")
         self._search_edit.textChanged.connect(self._apply_filter)
         layout.addWidget(self._search_edit)
 
         self._tree = QTreeWidget()
         self._tree.setAlternatingRowColors(True)
-        self._tree.setHeaderLabels(["Module (Source File)"])
+        self._tree.setHeaderLabels(["? "])
         self._tree.setColumnCount(1)
         self._tree.setIndentation(16)
         self._tree.setRootIsDecorated(True)
         self._tree.itemDoubleClicked.connect(self._on_double_click)
         self._tree.header().setStretchLastSection(True)
         layout.addWidget(self._tree, 1)
+
+    def retranslate(self):
+        self._search_edit.setPlaceholderText(tr("module.filter_ph"))
+        self._tree.setHeaderLabels([tr("tab.modules")])
+        self._refresh_count_label()
+
+    def _refresh_count_label(self):
+        pass
 
     def set_data(self, dep_result=None, categorized: dict = None):
         self._tree.clear()
@@ -80,7 +88,7 @@ class UnifiedModulePanel(QWidget):
         unused_count = 0
 
         if dep_mod_names and dep_graph:
-            sec = self._add_section("Dependency Modules")
+            sec = self._add_section(tr("module.dep_section"))
             top_module = dep_result.top_module if dep_result else None
             visited = set()
 
@@ -132,11 +140,11 @@ class UnifiedModulePanel(QWidget):
             sec.setExpanded(True)
 
         if dep_count == 0 and unused_count == 0:
-            sec = self._add_section("(no modules scanned)")
+            sec = self._add_section(tr("module.no_modules"))
             self._tree.addTopLevelItem(sec)
 
         self._count_label.setText(
-            f"Modules: {dep_count + unused_count} ({dep_count} deps, {unused_count} unused)"
+            tr("module.count", total=dep_count + unused_count, dep=dep_count, unused=unused_count)
         )
         self._apply_filter()
 

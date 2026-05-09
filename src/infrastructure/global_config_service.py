@@ -60,4 +60,22 @@ class GlobalConfigService:
         return {
             'version': '1.0',
             'lib_dirs': [],
+            'language': 'zh',
+            'theme': 'dark',
         }
+
+    def get_language(self) -> str:
+        return self.load().get('language', 'zh')
+
+    def set_language(self, lang: str) -> None:
+        data = self.load()
+        data['language'] = lang
+        self.save(data)
+
+    def get_theme(self) -> str:
+        return self.load().get('theme', 'dark')
+
+    def set_theme(self, theme: str) -> None:
+        data = self.load()
+        data['theme'] = theme
+        self.save(data)

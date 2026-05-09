@@ -10,10 +10,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QMouseEvent
 from .file_tree_panel import FileTreePanel
+from src.presentation.gui.i18n import tr
 
 
 class ClickableLabel(QLabel):
-    """可双击的标签"""
     double_clicked = Signal()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
@@ -22,7 +22,6 @@ class ClickableLabel(QLabel):
 
 
 class ProjectPanel(QWidget):
-    """左侧侧边栏面板"""
 
     analyze_requested = Signal()
     simulate_requested = Signal()
@@ -45,8 +44,8 @@ class ProjectPanel(QWidget):
         layout.addWidget(self._create_action_buttons())
 
     def _create_project_group(self):
-        grp = QGroupBox("Project")
-        lo = QVBoxLayout(grp)
+        self._proj_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._proj_grp)
 
         self._name_label = ClickableLabel("No project opened")
         self._name_label.setStyleSheet("color: #d4d4d4; font-weight: bold;")
@@ -60,83 +59,109 @@ class ProjectPanel(QWidget):
         lo.addWidget(self._root_label)
 
         row_file = QHBoxLayout()
-        btn_new = QPushButton("New")
-        btn_new.clicked.connect(self._on_new)
-        btn_open = QPushButton("Open")
-        btn_open.clicked.connect(self._on_open)
-        row_file.addWidget(btn_new)
-        row_file.addWidget(btn_open)
+        self._btn_new = QPushButton("?")
+        self._btn_new.clicked.connect(self._on_new)
+        self._btn_open = QPushButton("?")
+        self._btn_open.clicked.connect(self._on_open)
+        row_file.addWidget(self._btn_new)
+        row_file.addWidget(self._btn_open)
         lo.addLayout(row_file)
 
-        return grp
+        return self._proj_grp
 
     def _create_top_module_group(self):
-        grp = QGroupBox("Top Module")
-        lo = QVBoxLayout(grp)
+        self._top_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._top_grp)
 
         self._top_combo = QComboBox()
         self._top_combo.setEditable(True)
         self._top_combo.setInsertPolicy(QComboBox.NoInsert)
-        self._top_combo.setPlaceholderText("Select or type top module...")
+        self._top_combo.setPlaceholderText("?")
         self._top_combo.lineEdit().textChanged.connect(self._mark_dirty)
         lo.addWidget(self._top_combo)
 
-        return grp
+        return self._top_grp
 
     def _create_file_tree(self):
-        grp = QGroupBox("File Tree")
-        lo = QVBoxLayout(grp)
+        self._file_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._file_grp)
         lo.setContentsMargins(0, 0, 0, 0)
 
         self._file_tree = FileTreePanel()
         lo.addWidget(self._file_tree)
 
-        return grp
+        return self._file_grp
 
     def _create_action_buttons(self):
         w = QWidget()
         lo = QVBoxLayout(w)
         lo.setContentsMargins(0, 0, 0, 0)
 
-        self._btn_analyze = QPushButton("Analyze Dependencies")
+        self._btn_analyze = QPushButton("?")
         self._btn_analyze.setMinimumHeight(36)
         self._btn_analyze.clicked.connect(self.analyze_requested.emit)
         lo.addWidget(self._btn_analyze)
 
-        self._btn_simulate = QPushButton("Compile && Simulate")
+        self._btn_simulate = QPushButton("?")
         self._btn_simulate.setMinimumHeight(36)
         self._btn_simulate.clicked.connect(self.simulate_requested.emit)
         lo.addWidget(self._btn_simulate)
 
-        self._btn_wave = QPushButton("Open Waveform")
+        self._btn_wave = QPushButton("?")
         self._btn_wave.setMinimumHeight(36)
         self._btn_wave.clicked.connect(self.wave_requested.emit)
         lo.addWidget(self._btn_wave)
 
         return w
 
-    def _on_new(self):
+    def retranslate(self):
+        self._proj_grp.setTitle(tr("project.group"))
+        self._top_grp.setTitle(tr("top_module.group"))
+        self._file_grp.setTitle(tr("file_tree.group"))
+        self._top_combo.setPlaceholderText(tr("top_module.placeholder"))
+        self._btn_new.setText(tr("project.new"))
+        self._btn_open.setText(tr("project.open"))
+        self._btn_analyze.setText(tr("action.analyze"))
+        self._btn_simulate.setText(tr("action.simulate"))
+        self._btn_wave.setText(tr("action.open_wave"))
+
+        current = self._name_label.text()
+        is_no_proj = current.startswith("\U0001f4c1 ")
+        if is_no_proj:
+            name = current[2:]
+            if name != tr("project.no_project"):
+                pass
+        else:
+            self._name_label.setToolTip(tr("project.dbl_rename"))
+
+    def on_new(self):
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "Create New Project JSON", "new_project.json",
-            "JSON Files (*.json);;All Files (*)"
+            self, tr("dialog.new_project_title"), "new_project.json",
+            tr("dialog.json_filter")
         )
         if filepath:
             self.project_new_requested.emit(filepath)
 
-    def _on_open(self):
+    def on_open(self):
         filepath, _ = QFileDialog.getOpenFileName(
-            self, "Open Project JSON", "",
-            "JSON Files (*.json);;All Files (*)"
+            self, tr("dialog.open_project_title"), "",
+            tr("dialog.json_filter")
         )
         if filepath:
             self.project_open_requested.emit(filepath)
+
+    def _on_new(self):
+        self.on_new()
+
+    def _on_open(self):
+        self.on_open()
 
     def _on_rename(self):
         current = self._name_label.text()
         if current.startswith("\U0001f4c1 "):
             current = current[2:]
         name, ok = QInputDialog.getText(
-            self, "Rename Project", "Project name:", text=current
+            self, tr("dialog.rename_title"), tr("dialog.rename_prompt"), text=current
         )
         if ok and name.strip():
             self.project_rename_requested.emit(name.strip())
@@ -149,7 +174,8 @@ class ProjectPanel(QWidget):
         return self._file_tree
 
     def set_project_info(self, name: str, root: str):
-        text = f"\U0001f4c1 {name}" if name != "No project opened" else "No project opened"
+        display_name = tr("project.no_project") if name == "No project opened" else name
+        text = f"\U0001f4c1 {display_name}"
         self._name_label.setText(text)
         self._root_label.setText(root)
 

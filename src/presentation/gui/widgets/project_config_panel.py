@@ -12,9 +12,10 @@ from PySide6.QtCore import Signal
 CUSTOM_SIM = "custom"
 CUSTOM_WAVE = "custom"
 
+from src.presentation.gui.i18n import tr
+
 
 class ProjectConfigPanel(QWidget):
-    """项目配置页（右侧 Tab）"""
 
     config_changed = Signal()
 
@@ -33,49 +34,50 @@ class ProjectConfigPanel(QWidget):
         layout.addStretch()
 
     def _create_global_lib_group(self):
-        grp = QGroupBox("Global Libraries (shared across projects)")
-        lo = QVBoxLayout(grp)
+        self._global_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._global_grp)
 
         self._global_lib_list = QListWidget()
         lo.addWidget(self._global_lib_list)
 
         row_btn = QHBoxLayout()
-        btn_add = QPushButton("+ Add Global")
-        btn_add.clicked.connect(self._add_global_lib)
-        btn_remove = QPushButton("- Remove")
-        btn_remove.clicked.connect(self._remove_global_lib)
-        row_btn.addWidget(btn_add)
-        row_btn.addWidget(btn_remove)
+        self._btn_add_global = QPushButton("?")
+        self._btn_add_global.clicked.connect(self._add_global_lib)
+        self._btn_remove_global = QPushButton("?")
+        self._btn_remove_global.clicked.connect(self._remove_global_lib)
+        row_btn.addWidget(self._btn_add_global)
+        row_btn.addWidget(self._btn_remove_global)
         row_btn.addStretch()
         lo.addLayout(row_btn)
 
-        return grp
+        return self._global_grp
 
     def _create_project_lib_group(self):
-        grp = QGroupBox("Project Libraries")
-        lo = QVBoxLayout(grp)
+        self._proj_lib_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._proj_lib_grp)
 
         self._project_lib_list = QListWidget()
         lo.addWidget(self._project_lib_list)
 
         row_btn = QHBoxLayout()
-        btn_add = QPushButton("+ Add Project Lib")
-        btn_add.clicked.connect(self._add_project_lib)
-        btn_remove = QPushButton("- Remove")
-        btn_remove.clicked.connect(self._remove_project_lib)
-        row_btn.addWidget(btn_add)
-        row_btn.addWidget(btn_remove)
+        self._btn_add_proj = QPushButton("?")
+        self._btn_add_proj.clicked.connect(self._add_project_lib)
+        self._btn_remove_proj = QPushButton("?")
+        self._btn_remove_proj.clicked.connect(self._remove_project_lib)
+        row_btn.addWidget(self._btn_add_proj)
+        row_btn.addWidget(self._btn_remove_proj)
         row_btn.addStretch()
         lo.addLayout(row_btn)
 
-        return grp
+        return self._proj_lib_grp
 
     def _create_simulator_group(self):
-        grp = QGroupBox("Simulator")
-        lo = QVBoxLayout(grp)
+        self._sim_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._sim_grp)
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Tool:"))
+        self._sim_tool_label = QLabel("?")
+        row1.addWidget(self._sim_tool_label)
         self._sim_combo = QComboBox()
         self._sim_combo.addItems(["iverilog", "vcs", "xsim", CUSTOM_SIM])
         self._sim_combo.currentTextChanged.connect(self._on_sim_changed)
@@ -86,29 +88,32 @@ class ProjectConfigPanel(QWidget):
         cl = QVBoxLayout(self._sim_custom_widget)
         cl.setContentsMargins(0, 4, 0, 0)
 
-        cl.addWidget(QLabel("Compile command:"))
+        self._sim_compile_label = QLabel("?")
+        cl.addWidget(self._sim_compile_label)
         self._sim_compile_edit = QLineEdit()
-        self._sim_compile_edit.setPlaceholderText("e.g. iverilog -o \"{output}\" {files}")
+        self._sim_compile_edit.setPlaceholderText("?")
         self._sim_compile_edit.textChanged.connect(lambda _: self._on_custom_sim_changed())
         cl.addWidget(self._sim_compile_edit)
 
-        cl.addWidget(QLabel("Run command:"))
+        self._sim_run_label = QLabel("?")
+        cl.addWidget(self._sim_run_label)
         self._sim_run_edit = QLineEdit()
-        self._sim_run_edit.setPlaceholderText("e.g. vvp \"{output}\"")
+        self._sim_run_edit.setPlaceholderText("?")
         self._sim_run_edit.textChanged.connect(lambda _: self._on_custom_sim_changed())
         cl.addWidget(self._sim_run_edit)
 
         lo.addWidget(self._sim_custom_widget)
         self._sim_custom_widget.setVisible(False)
 
-        return grp
+        return self._sim_grp
 
     def _create_wave_viewer_group(self):
-        grp = QGroupBox("Wave Viewer")
-        lo = QVBoxLayout(grp)
+        self._wave_grp = QGroupBox("?")
+        lo = QVBoxLayout(self._wave_grp)
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Tool:"))
+        self._wave_tool_label = QLabel("?")
+        row1.addWidget(self._wave_tool_label)
         self._wave_combo = QComboBox()
         self._wave_combo.addItems(["surfer", "gtkwave", CUSTOM_WAVE])
         self._wave_combo.currentTextChanged.connect(self._on_wave_changed)
@@ -119,9 +124,10 @@ class ProjectConfigPanel(QWidget):
         cl = QVBoxLayout(self._wave_custom_widget)
         cl.setContentsMargins(0, 4, 0, 0)
 
-        cl.addWidget(QLabel("Launch command:"))
+        self._wave_launch_label = QLabel("?")
+        cl.addWidget(self._wave_launch_label)
         self._wave_launch_edit = QLineEdit()
-        self._wave_launch_edit.setPlaceholderText("e.g. gtkwave \"{wave_file}\"")
+        self._wave_launch_edit.setPlaceholderText("?")
         self._wave_launch_edit.textChanged.connect(lambda _: self._on_custom_wave_changed())
         cl.addWidget(self._wave_launch_edit)
 
@@ -129,14 +135,38 @@ class ProjectConfigPanel(QWidget):
         self._wave_custom_widget.setVisible(False)
 
         cl2 = QHBoxLayout()
-        cl2.addWidget(QLabel("Wave file path:"))
+        self._wave_path_label = QLabel("?")
+        cl2.addWidget(self._wave_path_label)
         self._wave_path_edit = QLineEdit()
-        self._wave_path_edit.setPlaceholderText("{top_module}.vcd")
+        self._wave_path_edit.setPlaceholderText("?")
         self._wave_path_edit.textChanged.connect(lambda _: self._on_custom_wave_changed())
         cl2.addWidget(self._wave_path_edit, 1)
         lo.addLayout(cl2)
 
-        return grp
+        return self._wave_grp
+
+    def retranslate(self):
+        self._global_grp.setTitle(tr("config.global_lib"))
+        self._proj_lib_grp.setTitle(tr("config.project_lib"))
+        self._sim_grp.setTitle(tr("config.simulator"))
+        self._wave_grp.setTitle(tr("config.wave_viewer"))
+
+        self._btn_add_global.setText(tr("config.add_global"))
+        self._btn_remove_global.setText(tr("config.remove"))
+        self._btn_add_proj.setText(tr("config.add_project"))
+        self._btn_remove_proj.setText(tr("config.remove"))
+
+        self._sim_tool_label.setText(tr("config.sim_tool"))
+        self._sim_compile_label.setText(tr("config.sim_compile"))
+        self._sim_compile_edit.setPlaceholderText(tr("config.sim_compile_ph"))
+        self._sim_run_label.setText(tr("config.sim_run"))
+        self._sim_run_edit.setPlaceholderText(tr("config.sim_run_ph"))
+
+        self._wave_tool_label.setText(tr("config.wave_tool"))
+        self._wave_launch_label.setText(tr("config.wave_launch"))
+        self._wave_launch_edit.setPlaceholderText(tr("config.wave_launch_ph"))
+        self._wave_path_label.setText(tr("config.wave_path"))
+        self._wave_path_edit.setPlaceholderText(tr("config.wave_path_ph"))
 
     def _on_sim_changed(self, text: str):
         self._sim_custom_widget.setVisible(text == CUSTOM_SIM)
@@ -155,7 +185,7 @@ class ProjectConfigPanel(QWidget):
             self.config_changed.emit()
 
     def _add_global_lib(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Global Library Directory")
+        d = QFileDialog.getExistingDirectory(self, tr("config.dialog_global_lib"))
         if d:
             self._global_lib_list.addItem(d)
             self.config_changed.emit()
@@ -167,7 +197,7 @@ class ProjectConfigPanel(QWidget):
             self.config_changed.emit()
 
     def _add_project_lib(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Project Library Directory")
+        d = QFileDialog.getExistingDirectory(self, tr("config.dialog_project_lib"))
         if d:
             self._project_lib_list.addItem(d)
             self.config_changed.emit()

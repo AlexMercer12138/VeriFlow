@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-主窗口 — 新布局：左侧侧边栏(Project+FileTree+按钮) | 右侧标签页(Config/Modules/Log)
+主窗口 — 左侧侧边栏(Project+FileTree+按钮) | 右侧标签页(Config/Modules/Log)
+支持语言切换（中/英）和主题切换（暗/亮）
 """
 
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QTabWidget,
-    QStatusBar, QFileDialog, QMessageBox,
+    QStatusBar, QFileDialog, QMessageBox, QApplication, QMenu,
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
@@ -23,8 +24,9 @@ from src.presentation.gui.widgets.project_config_panel import ProjectConfigPanel
 from src.presentation.gui.widgets.log_panel import LogPanel
 from src.presentation.gui.widgets.unified_module_panel import UnifiedModulePanel
 from src.presentation.gui.worker_threads import AnalyzeWorker, SimulateWorker, ModuleScanWorker
+from src.presentation.gui.i18n import tr, set_language, get_language
+from src.presentation.gui import theme
 
-WINDOW_TITLE = "VeriFlow - Verilog Simulation Manager"
 DEFAULT_WIDTH = 1300
 DEFAULT_HEIGHT = 750
 
@@ -39,14 +41,23 @@ class MainWindow(QMainWindow):
         self._project_filepath = None
         self._dep_result = None
         self._sim_result = None
+        self._global_config = GlobalConfigService()
+        self._init_language_theme()
         self._init_ui()
         self._connect_signals()
-        self._apply_dark_theme()
+        self._apply_theme()
         self._load_global_config()
         self._initializing = False
+        self._retranslate_ui()
+        self._welcome()
+
+    def _init_language_theme(self):
+        saved_lang = self._global_config.get_language()
+        set_language(saved_lang)
+        saved_theme = self._global_config.get_theme()
+        theme.set_theme(saved_theme)
 
     def _init_ui(self):
-        self.setWindowTitle(WINDOW_TITLE)
         self.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT)
 
         icon_path = Path(__file__).parent / 'resources' / 'icon.ico'
@@ -67,15 +78,16 @@ class MainWindow(QMainWindow):
         self._config_panel.config_changed.connect(self._on_config_changed)
 
         self._tab_widget = QTabWidget()
-        self._tab_widget.addTab(self._config_panel, "Project Config")
 
         self._module_panel = UnifiedModulePanel()
         self._module_panel.file_double_clicked.connect(self._open_file_editor)
-        self._tab_widget.addTab(self._module_panel, "Modules")
 
         self._log_panel = LogPanel()
         self._log_panel.set_anchor_click_handler(self._on_log_anchor_clicked)
-        self._tab_widget.addTab(self._log_panel, "Log")
+
+        self._tab_widget.addTab(self._config_panel, "?")
+        self._tab_widget.addTab(self._module_panel, "?")
+        self._tab_widget.addTab(self._log_panel, "?")
 
         h_splitter.addWidget(self._project_panel)
         h_splitter.addWidget(self._tab_widget)
@@ -83,11 +95,25 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(h_splitter)
 
-        self._welcome()
+    def _retranslate_ui(self):
+        self.setWindowTitle(tr("window.title"))
+        self._tab_widget.setTabText(0, tr("tab.config"))
+        self._tab_widget.setTabText(1, tr("tab.modules"))
+        self._tab_widget.setTabText(2, tr("tab.log"))
+        self._project_panel.retranslate()
+        self._config_panel.retranslate()
+        self._module_panel.retranslate()
+        self._log_panel.retranslate()
+        self._retranslate_menu()
+        if not self._initializing:
+            self._status_bar.showMessage(tr("status.ready"))
+
+    def _retranslate_menu(self):
+        pass
 
     def _welcome(self):
-        self._log_panel.append_success("Welcome to VeriFlow!")
-        self._log_panel.append_info("Click New or Open to start.")
+        self._log_panel.append_success(tr("welcome.title"))
+        self._log_panel.append_info(tr("welcome.hint"))
 
     def _connect_signals(self):
         pp = self._project_panel
@@ -102,95 +128,119 @@ class MainWindow(QMainWindow):
 
     def _create_menu_bar(self):
         mb = self.menuBar()
-        file_menu = mb.addMenu("&File")
 
-        act_new = QAction("&New Project", self)
+        self._file_menu = mb.addMenu(tr("menu.file"))
+        self._file_menu.aboutToShow.connect(lambda: self._rebuild_file_menu())
+
+        self._view_menu = mb.addMenu(tr("menu.view"))
+        self._rebuild_view_menu()
+
+    def _rebuild_file_menu(self):
+        self._file_menu.clear()
+
+        act_new = QAction(tr("menu.file.new_project"), self)
         act_new.setShortcut("Ctrl+N")
         act_new.triggered.connect(self._on_project_new_triggered)
-        file_menu.addAction(act_new)
+        self._file_menu.addAction(act_new)
 
-        act_open = QAction("&Open Project...", self)
+        act_open = QAction(tr("menu.file.open_project"), self)
         act_open.setShortcut("Ctrl+O")
         act_open.triggered.connect(self._on_project_open_triggered)
-        file_menu.addAction(act_open)
+        self._file_menu.addAction(act_open)
 
-        act_save_as = QAction("Save Project &As...", self)
+        act_save_as = QAction(tr("menu.file.save_as"), self)
         act_save_as.triggered.connect(self._on_project_save_as)
-        file_menu.addAction(act_save_as)
+        self._file_menu.addAction(act_save_as)
 
-        file_menu.addSeparator()
-        act_exit = QAction("E&xit", self)
+        self._file_menu.addSeparator()
+        act_exit = QAction(tr("menu.file.exit"), self)
         act_exit.setShortcut("Alt+F4")
         act_exit.triggered.connect(self.close)
-        file_menu.addAction(act_exit)
+        self._file_menu.addAction(act_exit)
+
+    def _rebuild_view_menu(self):
+        self._view_menu.clear()
+
+        lang_menu = QMenu(tr("menu.view.language"), self)
+        lang_zh = QAction(tr("menu.view.lang_zh"), self)
+        lang_zh.setCheckable(True)
+        lang_zh.setChecked(get_language() == "zh")
+        lang_zh.triggered.connect(lambda: self._switch_language("zh"))
+        lang_menu.addAction(lang_zh)
+
+        lang_en = QAction(tr("menu.view.lang_en"), self)
+        lang_en.setCheckable(True)
+        lang_en.setChecked(get_language() == "en")
+        lang_en.triggered.connect(lambda: self._switch_language("en"))
+        lang_menu.addAction(lang_en)
+        self._view_menu.addMenu(lang_menu)
+
+        theme_menu = QMenu(tr("menu.view.theme"), self)
+        theme_dark = QAction(tr("menu.view.theme_dark"), self)
+        theme_dark.setCheckable(True)
+        theme_dark.setChecked(theme.get_theme() == "dark")
+        theme_dark.triggered.connect(lambda: self._switch_theme("dark"))
+        theme_menu.addAction(theme_dark)
+
+        theme_light = QAction(tr("menu.view.theme_light"), self)
+        theme_light.setCheckable(True)
+        theme_light.setChecked(theme.get_theme() == "light")
+        theme_light.triggered.connect(lambda: self._switch_theme("light"))
+        theme_menu.addAction(theme_light)
+        self._view_menu.addMenu(theme_menu)
+
+    def _switch_language(self, lang: str):
+        set_language(lang)
+        self._global_config.set_language(lang)
+        self._retranslate_ui()
+        self._rebuild_view_menu()
+
+    def _switch_theme(self, t: str):
+        theme.set_theme(t)
+        self._global_config.set_theme(t)
+        self._apply_theme()
+        self._log_panel.update_theme(theme.get_theme())
+        self._rebuild_view_menu()
 
     def _on_project_new_triggered(self):
-        self._project_panel._on_new()
+        self._project_panel.on_new()
 
     def _on_project_open_triggered(self):
-        self._project_panel._on_open()
+        self._project_panel.on_open()
 
     def _create_status_bar(self):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
-        self._status_bar.showMessage("Ready")
+        self._status_bar.showMessage(tr("status.ready"))
 
-    def _apply_dark_theme(self):
-        self.setStyleSheet("""
-            QMainWindow { background-color: #2b2b2b; color: #d4d4d4; }
-            QGroupBox { font-weight: bold; border: 1px solid #4a4a4a; border-radius: 4px;
-                margin-top: 12px; padding-top: 12px; color: #e0e0e0; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #569cd6; }
-            QLineEdit { background-color: #3c3c3c; color: #d4d4d4; border: 1px solid #555;
-                border-radius: 3px; padding: 4px; }
-            QComboBox { background-color: #3c3c3c; color: #d4d4d4; border: 1px solid #555;
-                border-radius: 3px; padding: 4px; }
-            QComboBox QAbstractItemView { background-color: #333; color: #d4d4d4;
-                selection-background-color: #264f78; }
-            QPushButton { background-color: #0e639c; color: #ffffff; border: none;
-                border-radius: 3px; padding: 6px 14px; }
-            QPushButton:hover { background-color: #1177bb; }
-            QPushButton:pressed { background-color: #094771; }
-            QPushButton:disabled { background-color: #3c3c3c; color: #888; }
-            QListWidget { background-color: #252525; color: #d4d4d4; border: 1px solid #3c3c3c;
-                alternate-background-color: #2a2a2a; }
-            QListWidget::item:selected { background-color: #264f78; }
-            QTabWidget::pane { border: 1px solid #3c3c3c; background-color: #252525; }
-            QTabBar::tab { background-color: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c;
-                padding: 6px 16px; margin-right: 2px; }
-            QTabBar::tab:selected { background-color: #252525; border-bottom-color: #252525; }
-            QTreeWidget { background-color: #252525; color: #d4d4d4; border: 1px solid #3c3c3c;
-                alternate-background-color: #2a2a2a; }
-            QTreeWidget::item:selected { background-color: #264f78; }
-            QTreeView { background-color: #252525; color: #d4d4d4; border: 1px solid #3c3c3c;
-                alternate-background-color: #2a2a2a; }
-            QTreeView::item:selected { background-color: #264f78; }
-            QMenuBar { background-color: #333; color: #d4d4d4; }
-            QMenuBar::item:selected { background-color: #094771; }
-            QMenu { background-color: #333; color: #d4d4d4; border: 1px solid #555; }
-            QMenu::item:selected { background-color: #094771; }
-            QStatusBar { background-color: #007acc; color: #ffffff; }
-            QSplitter::handle { background-color: #3c3c3c; }
-        """)
+    def _apply_theme(self):
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(theme.get_stylesheet())
+        t = theme.get_theme()
+        if t == "dark":
+            self._log_panel.update_theme("dark")
+        else:
+            self._log_panel.update_theme("light")
 
     def _status(self, msg: str):
         self._status_bar.showMessage(msg)
 
     def _load_global_config(self):
-        gc = GlobalConfigService()
-        dirs = gc.get_lib_dirs()
+        dirs = self._global_config.get_lib_dirs()
         self._config_panel.global_lib_dirs = dirs
         if dirs:
-            self._log_panel.append_info(f"Loaded {len(dirs)} global library directories")
+            self._log_panel.append_info(tr("log.loaded_global_libs", n=len(dirs)))
 
     def _save_global_config(self):
-        gc = GlobalConfigService()
-        gc.set_lib_dirs(self._config_panel.global_lib_dirs)
+        self._global_config.set_lib_dirs(self._config_panel.global_lib_dirs)
 
     def _on_config_changed(self):
         if self._initializing:
             return
         self._auto_save()
+        if self._project:
+            self._refresh_modules()
 
     def _sync_project_from_ui(self):
         if not self._project:
@@ -251,16 +301,17 @@ class MainWindow(QMainWindow):
         self._module_panel.set_data(categorized={})
 
     def _on_project_new(self, filepath: str):
+        config_dir = str(Path(filepath).parent.resolve())
         project_name = Path(filepath).stem
-        self._project = self._coordinator.create_project(project_name, ".")
+        self._project = self._coordinator.create_project(project_name, config_dir)
         self._project_filepath = filepath
         self._coordinator.save_project(self._project, filepath)
         self._project = self._coordinator.open_project(filepath)
         self._reset_state()
         self._sync_ui_from_project()
         self._refresh_modules()
-        self._log_panel.append_success(f"New project created: {filepath}")
-        self._status(f"Created: {filepath}")
+        self._log_panel.append_success(tr("log.new_project", path=filepath))
+        self._status(tr("log.created", path=filepath))
 
     def _on_project_open(self, filepath: str):
         try:
@@ -269,19 +320,20 @@ class MainWindow(QMainWindow):
             self._reset_state()
             self._sync_ui_from_project()
             self._refresh_modules()
-            self._log_panel.append_success(f"Project opened: {filepath}")
-            self._status(f"Opened: {filepath}")
+            self._log_panel.append_success(tr("log.open_project", path=filepath))
+            self._status(tr("log.opened", path=filepath))
         except Exception as e:
-            self._log_panel.append_error(f"Failed to open project: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
+            self._log_panel.append_error(tr("log.open_project_failed", err=e))
+            QMessageBox.critical(self, tr("msgbox.error"),
+                                 tr("log.open_project_failed", err=e))
 
     def _on_project_save_as(self):
         if not self._project:
-            self._log_panel.append_warning("No project opened.")
+            self._log_panel.append_warning(tr("log.no_project"))
             return
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As JSON", f"{self._project.name}.json",
-            "JSON Files (*.json);;All Files (*)"
+            self, tr("msgbox.save_as_title"), f"{self._project.name}.json",
+            tr("dialog.json_filter")
         )
         if not filepath:
             return
@@ -290,8 +342,8 @@ class MainWindow(QMainWindow):
         self._project_filepath = filepath
         self._coordinator.save_project(self._project, filepath)
         self._project_panel.set_project_info(self._project.name, str(self._project.root_dir))
-        self._log_panel.append_success(f"Project saved: {filepath}")
-        self._status(f"Saved: {filepath}")
+        self._log_panel.append_success(tr("log.project_saved", path=filepath))
+        self._status(tr("log.saved", path=filepath))
 
     def _on_project_rename(self, new_name: str):
         if not self._project:
@@ -299,7 +351,7 @@ class MainWindow(QMainWindow):
         self._project.name = new_name
         self._project_panel.set_project_info(new_name, str(self._project.root_dir))
         self._auto_save()
-        self._log_panel.append_info(f"Project renamed to: {new_name}")
+        self._log_panel.append_info(tr("log.project_renamed", name=new_name))
 
     def _refresh_modules(self):
         self._module_worker = ModuleScanWorker(self._project)
@@ -316,27 +368,27 @@ class MainWindow(QMainWindow):
         dup_names = list(duplicates.keys()) if duplicates else []
         if dup_names:
             self._log_panel.append_warning(
-                f"Duplicate modules: {', '.join(dup_names)}"
+                tr("log.duplicate_modules", modules=', '.join(dup_names))
             )
         total = sum(len(v) for v in categorized.values())
-        self._status(f"Modules: {total}")
+        self._status(tr("status.modules_count", count=total))
 
     def _on_analyze(self):
         if not self._project:
-            QMessageBox.warning(self, "Missing", "No project opened. Use New or Open first.")
+            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_project"))
             return
 
         top = self._project_panel.top_module
         if not top:
-            QMessageBox.warning(self, "Missing", "Please enter a top module name.")
+            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_top_module"))
             return
 
         self._auto_save()
         root = str(self._project.root_dir)
 
         self._log_panel.clear()
-        self._log_panel.append_info(f"Analyzing: top='{top}', root={root}")
-        self._status("Analyzing dependencies...")
+        self._log_panel.append_info(tr("log.analyzing", top=top, root=root))
+        self._status(tr("status.analyzing"))
         self._project_panel.set_buttons_enabled(False, False, False)
         self._tab_widget.setCurrentWidget(self._module_panel)
 
@@ -353,18 +405,18 @@ class MainWindow(QMainWindow):
 
         if result.success:
             self._log_panel.append_success(
-                f"Analysis complete: {len(result.files)} file(s)."
+                tr("log.analysis_done", n=len(result.files))
             )
             for f in result.files:
                 self._log_panel.append_info(f"  {f}")
             self._project_panel.set_buttons_enabled(True, True, True)
-            self._status(f"Analysis done: {len(result.files)} files")
+            self._status(tr("status.done", count=len(result.files)))
         else:
             self._log_panel.append_error(
-                f"Missing modules: {', '.join(result.missing_modules)}"
+                tr("log.missing_modules", modules=', '.join(result.missing_modules))
             )
             self._project_panel.set_buttons_enabled(True, False, False)
-            self._status("Analysis failed: missing modules")
+            self._status(tr("status.failed_missing"))
 
         self._module_panel.set_data(
             dep_result=result,
@@ -375,19 +427,21 @@ class MainWindow(QMainWindow):
 
     def _on_simulate(self):
         if not self._project:
-            QMessageBox.warning(self, "Missing", "No project opened.")
+            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_project"))
             return
 
         top = self._project_panel.top_module
         if not top:
-            QMessageBox.warning(self, "Missing", "Please enter a top module name.")
+            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_top_module"))
             return
 
         self._auto_save()
 
         self._log_panel.clear()
-        self._log_panel.append_info(f"Simulating {top} (cd {self._project.root_dir})")
-        self._status("Simulation running...")
+        self._log_panel.append_info(
+            tr("log.simulating", top=top, root=str(self._project.root_dir))
+        )
+        self._status(tr("status.simulating"))
         self._project_panel.set_buttons_enabled(False, False, False)
         self._tab_widget.setCurrentWidget(self._log_panel)
 
@@ -408,22 +462,24 @@ class MainWindow(QMainWindow):
         self._project_panel.set_buttons_enabled(True, True, True)
 
         if result.success:
-            self._log_panel.append_success("Simulation completed!")
-            self._status(f"Simulation OK ({result.elapsed_time:.2f}s)")
+            self._log_panel.append_success(tr("log.sim_done"))
+            self._status(tr("status.sim_ok", time=f"{result.elapsed_time:.2f}"))
         else:
-            self._log_panel.append_error(f"Simulation FAILED (exit={result.exit_code})")
+            self._log_panel.append_error(
+                tr("log.sim_failed", code=result.exit_code)
+            )
             for entry in result.get_errors():
                 self._log_panel.append_error_entry(
                     entry.level, entry.message,
                     entry.file_ref, entry.line_no,
                 )
-            self._status("Simulation failed")
+            self._status(tr("status.sim_failed"))
 
         self._tab_widget.setCurrentWidget(self._log_panel)
 
     def _on_open_wave(self):
         if not self._project:
-            self._log_panel.append_warning("No project opened.")
+            self._log_panel.append_warning(tr("log.no_project"))
             return
 
         self._auto_save()
@@ -436,10 +492,10 @@ class MainWindow(QMainWindow):
 
         self._log_panel.clear()
         self._log_panel.append_info(
-            f"Wave file not found: {wave_file}"
+            tr("log.wave_not_found", file=str(wave_file))
         )
-        self._log_panel.append_info("Running simulation to generate waveform...")
-        self._status("Simulation running (for wave)...")
+        self._log_panel.append_info(tr("log.wave_running_sim"))
+        self._status(tr("status.wave_sim_running"))
         self._project_panel.set_buttons_enabled(False, False, False)
 
         self._sim_worker = SimulateWorker(self._project)
@@ -459,8 +515,8 @@ class MainWindow(QMainWindow):
         self._project_panel.set_buttons_enabled(True, True, True)
 
         if not result.success:
-            self._log_panel.append_error("Simulation failed, cannot open waveform.")
-            self._status("Wave open failed: simulation error")
+            self._log_panel.append_error(tr("log.wave_sim_failed"))
+            self._status(tr("status.wave_failed"))
             self._tab_widget.setCurrentWidget(self._log_panel)
             return
 
@@ -469,10 +525,9 @@ class MainWindow(QMainWindow):
             self._do_open_wave(wave_file)
         else:
             self._log_panel.append_error(
-                f"Wave file not found: {wave_file}\n"
-                "Check testbench $dumpfile setting or wave file path in Project Config."
+                tr("log.wave_check_dumpfile", file=str(wave_file))
             )
-            self._status("Wave file not found")
+            self._status(tr("status.wave_not_found"))
             self._tab_widget.setCurrentWidget(self._log_panel)
 
     def _do_open_wave(self, wave_file: Path):
@@ -486,10 +541,14 @@ class MainWindow(QMainWindow):
                 self._coordinator.sim_runner.open_wave(wave_file, viewer_config)
                 cmd = TemplateEngine.render_wave(viewer_config.launch_cmd, str(wave_file))
                 self._log_panel.append_info(f"[CMD] Wave: {cmd}")
-                self._log_panel.append_success(f"Opened {viewer_name}: {wave_file}")
-                self._status(f"Wave opened: {wave_file}")
+                self._log_panel.append_success(
+                    tr("log.wave_open_ok", viewer=viewer_name, file=str(wave_file))
+                )
+                self._status(tr("status.wave_opened", file=str(wave_file)))
             except Exception as e:
-                self._log_panel.append_error(f"Failed to open {viewer_name}: {e}")
+                self._log_panel.append_error(
+                    tr("log.wave_open_failed", viewer=viewer_name, err=e)
+                )
         else:
             self._open_file_external(str(wave_file))
 
@@ -505,7 +564,7 @@ class MainWindow(QMainWindow):
             try:
                 os.startfile(filepath)
             except Exception as e:
-                self._log_panel.append_error(f"Failed to open file: {e}")
+                self._log_panel.append_error(tr("log.file_open_failed", err=e))
 
     def _on_log_anchor_clicked(self, url: QUrl):
         href = url.toString()

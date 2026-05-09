@@ -171,6 +171,18 @@ pip install -r requirements.txt
 
 Python 依赖仅需 **PySide6**（>= 6.5.0）用于 GUI，CLI 无需额外依赖。
 
+### 打包为 EXE（免安装）
+
+```bash
+# 安装 PyInstaller
+pip install pyinstaller
+
+# 一键打包（输出 dist/VeriFlow.exe）
+pyinstaller VeriFlow.spec --noconfirm
+```
+
+打包后的 `VeriFlow.exe` 为单文件免安装应用，双击即可运行。
+
 ---
 
 ## 使用方式
@@ -178,6 +190,10 @@ Python 依赖仅需 **PySide6**（>= 6.5.0）用于 GUI，CLI 无需额外依赖
 ### GUI 模式
 
 ```bash
+# 推荐：直接启动
+python run_gui.py
+
+# 或使用模块方式
 python -m src.presentation.gui
 ```
 
@@ -414,6 +430,10 @@ cd vscode-extension
 npm install
 npm run compile
 # 按 F5 启动调试
+
+# PyInstaller 打包
+pip install pyinstaller
+pyinstaller VeriFlow.spec --noconfirm
 ```
 
 ---
