@@ -28,7 +28,7 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 
 - **VS Code 1.80+**
 - **一款 Verilog 仿真器**（至少安装一款）：
-  - [Icarus Verilog](https://github.com/steveicarus/iverilog/) — 开源，推荐
+  - [Icarus Verilog](https://bleyer.org/icarus/) — 开源，推荐
   - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html) — 商业
   - [Xilinx XSim](https://www.xilinx.com/products/design-tools/vivado.html) — 商业
   - 或自行配置自定义仿真器

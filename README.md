@@ -48,7 +48,7 @@ VeriFlow 提供了一个 **零依赖的 VS Code 扩展**（`veriflow-vscode/`）
 ### 使用流程
 
 1. 在 VS Code 中打开一个包含 `.v` / `.sv` 文件的目录
-2. 点击活动栏的 VeriFlow 图标（![](veriflow-vscode/media/activitybar-icon.svg)），侧边栏会自动展示扫描到的模块
+2. 点击活动栏的 VeriFlow 图标，侧边栏会自动展示扫描到的模块
 3. 点击 `Select Top Module` 选择一个顶层模块
 4. 点击 `Analyze Dependencies` 分析依赖关系
 5. 点击 `Compile & Simulate` 编译并仿真
@@ -166,7 +166,7 @@ vscode-extension/src/
 
 - **Python 3.8+**
 - **至少一款 Verilog 仿真器**：
-  - [Icarus Verilog](http://iverilog.icarus.com/)（`iverilog` + `vvp`，开源）
+  - [Icarus Verilog](https://bleyer.org/icarus/)（`iverilog` + `vvp`，开源）
   - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html)（商业）
   - [Xilinx Vivado XSim](https://www.xilinx.com/products/design-tools/vivado.html)（商业）
 - **波形查看器（可选）**：
@@ -378,51 +378,6 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 - **按库分类视图** — 模块按来源目录分组（工程根目录、全局库、工程库）
 - **搜索过滤** — 模块面板支持快速文本过滤
 - **自动填充顶层模块选择器** — 下拉列表列出所有已扫描模块，快速选取
-
----
-
-## 工程结构速查
-
-```
-VeriFlow/
-├── config/
-│   └── default_config.json            # 默认工程配置模板
-├── src/
-│   ├── application/
-│   │   └── coordinator.py             # 外观模式：ApplicationCoordinator
-│   ├── domain/
-│   │   ├── interfaces/                # 抽象接口
-│   │   ├── models/                    # 领域数据类
-│   │   └── services/                  # 领域服务实现
-│   ├── infrastructure/                # 基础设施层
-│   └── presentation/                  # 表现层
-│       ├── cli.py                     # CLI 入口
-│       ├── json_bridge.py             # VS Code 桥接接口
-│       └── gui/                       # GUI 入口及组件
-├── veriflow-vscode/                   # VS Code 扩展（TypeScript）
-│   ├── src/
-│   │   ├── core/                      # 核心引擎（与 Python 版功能对等）
-│   │   │   ├── types.ts
-│   │   │   ├── verilogUtils.ts
-│   │   │   ├── fileService.ts
-│   │   │   ├── dependencyAnalyzer.ts
-│   │   │   ├── templateEngine.ts
-│   │   │   ├── processManager.ts
-│   │   │   ├── logParser.ts
-│   │   │   ├── simulationRunner.ts
-│   │   │   ├── portParser.ts
-│   │   │   └── testbenchGenerator.ts
-│   │   ├── config.ts
-│   │   ├── output.ts
-│   │   ├── moduleTreeProvider.ts
-│   │   ├── testbenchPanel.ts
-│   │   └── extension.ts
-│   ├── package.json
-│   └── tsconfig.json
-├── tests/
-├── requirements.txt
-└── README.md
-```
 
 ---
 
