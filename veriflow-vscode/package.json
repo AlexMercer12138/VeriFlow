@@ -31,6 +31,13 @@
           "name": "VeriFlow",
           "icon": "$(circuit-board)",
           "contextualTitle": "VeriFlow"
+        },
+        {
+          "type": "webview",
+          "id": "veriflow.testbench",
+          "name": "Testbench Generator",
+          "icon": "$(file-code)",
+          "contextualTitle": "Testbench Generator"
         }
       ]
     },

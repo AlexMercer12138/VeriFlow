@@ -33,11 +33,17 @@ export class PortParser {
         }
 
         const moduleName = match[1];
-        const portsStr = match[2] || match[3] || '';
 
         let parameters: Parameter[] = [];
-        if (match.length >= 3 && match[2]) {
+        let portsStr = '';
+
+        if (match.length >= 4 && match[3] !== undefined) {
+            // module with parameters: module name #(params)(ports);
             parameters = this._parseParameters(match[2]);
+            portsStr = match[3];
+        } else {
+            // module without parameters: module name(ports);
+            portsStr = match[2] || '';
         }
 
         const ports = this._parsePorts(portsStr);

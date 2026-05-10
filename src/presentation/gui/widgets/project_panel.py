@@ -8,17 +8,8 @@ from PySide6.QtWidgets import (
     QPushButton, QComboBox, QFileDialog, QInputDialog,
 )
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QMouseEvent
 from .file_tree_panel import FileTreePanel
 from src.presentation.gui.i18n import tr
-
-
-class ClickableLabel(QLabel):
-    double_clicked = Signal()
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent):
-        self.double_clicked.emit()
-        super().mouseDoubleClickEvent(event)
 
 
 class ProjectPanel(QWidget):
@@ -47,11 +38,8 @@ class ProjectPanel(QWidget):
         self._proj_grp = QGroupBox("?")
         lo = QVBoxLayout(self._proj_grp)
 
-        self._name_label = ClickableLabel("No project opened")
+        self._name_label = QLabel(tr("project.no_project"))
         self._name_label.setStyleSheet("color: #d4d4d4; font-weight: bold;")
-        self._name_label.setCursor(Qt.PointingHandCursor)
-        self._name_label.setToolTip("Double-click to rename project")
-        self._name_label.double_clicked.connect(self._on_rename)
         lo.addWidget(self._name_label)
 
         self._root_label = QLabel("")
@@ -61,10 +49,17 @@ class ProjectPanel(QWidget):
         row_file = QHBoxLayout()
         self._btn_new = QPushButton("?")
         self._btn_new.clicked.connect(self._on_new)
+        row_file.addWidget(self._btn_new, 3)
+
         self._btn_open = QPushButton("?")
         self._btn_open.clicked.connect(self._on_open)
-        row_file.addWidget(self._btn_new)
-        row_file.addWidget(self._btn_open)
+        row_file.addWidget(self._btn_open, 3)
+
+        self._btn_rename = QPushButton("?")
+        self._btn_rename.setToolTip("?")
+        self._btn_rename.setEnabled(False)
+        self._btn_rename.clicked.connect(self._on_rename)
+        row_file.addWidget(self._btn_rename, 1)
         lo.addLayout(row_file)
 
         return self._proj_grp
@@ -124,15 +119,8 @@ class ProjectPanel(QWidget):
         self._btn_analyze.setText(tr("action.analyze"))
         self._btn_simulate.setText(tr("action.simulate"))
         self._btn_wave.setText(tr("action.open_wave"))
-
-        current = self._name_label.text()
-        is_no_proj = current.startswith("\U0001f4c1 ")
-        if is_no_proj:
-            name = current[2:]
-            if name != tr("project.no_project"):
-                pass
-        else:
-            self._name_label.setToolTip(tr("project.dbl_rename"))
+        self._btn_rename.setText(tr("project.rename"))
+        self._btn_rename.setToolTip(tr("project.rename_tip"))
 
     def on_new(self):
         filepath, _ = QFileDialog.getSaveFileName(
@@ -174,10 +162,10 @@ class ProjectPanel(QWidget):
         return self._file_tree
 
     def set_project_info(self, name: str, root: str):
-        display_name = tr("project.no_project") if name == "No project opened" else name
-        text = f"\U0001f4c1 {display_name}"
+        text = f"\U0001f4c1 {name}"
         self._name_label.setText(text)
         self._root_label.setText(root)
+        self._btn_rename.setEnabled(True)
 
     @property
     def top_module(self) -> str:

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as child_process from 'child_process';
 import { getWorkspaceRoot, getTopModule, setTopModule, getSettings, ExtensionSettings } from './config';
 import { ModuleTreeProvider } from './moduleTreeProvider';
+import { TestbenchPanelProvider } from './testbenchPanel';
 import * as output from './output';
 import {
     DependencyAnalyzer, SimulationRunner, LogParser,
@@ -41,6 +42,7 @@ const DEFAULT_VIEWERS: Record<string, WaveViewerConfig> = {
 };
 
 let treeProvider: ModuleTreeProvider;
+let tbPanelProvider: TestbenchPanelProvider;
 let statusBarItem: vscode.StatusBarItem;
 let simulateProcess: child_process.ChildProcess | null = null;
 let depAnalyzer = new DependencyAnalyzer();
@@ -48,12 +50,21 @@ let simRunner = new SimulationRunner();
 
 export function activate(context: vscode.ExtensionContext): void {
     treeProvider = new ModuleTreeProvider();
+    tbPanelProvider = new TestbenchPanelProvider(context);
 
     const treeView = vscode.window.createTreeView('veriflow.modules', {
         treeDataProvider: treeProvider,
         showCollapseAll: true,
     });
     context.subscriptions.push(treeView);
+
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            TestbenchPanelProvider.viewType,
+            tbPanelProvider,
+            { webviewOptions: { retainContextWhenHidden: true } }
+        )
+    );
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(circuit-board) VeriFlow';
@@ -188,6 +199,7 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<void> {
 
     const result = _scanModulesInternal(root, settings.libDirs);
     treeProvider.setScanResult(result);
+    tbPanelProvider.setModuleMap(result.moduleFiles);
     statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
 }
 

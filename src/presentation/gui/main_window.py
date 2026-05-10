@@ -23,6 +23,7 @@ from src.presentation.gui.widgets.project_panel import ProjectPanel
 from src.presentation.gui.widgets.project_config_panel import ProjectConfigPanel
 from src.presentation.gui.widgets.log_panel import LogPanel
 from src.presentation.gui.widgets.unified_module_panel import UnifiedModulePanel
+from src.presentation.gui.widgets.testbench_panel import TestbenchPanel
 from src.presentation.gui.worker_threads import AnalyzeWorker, SimulateWorker, ModuleScanWorker
 from src.presentation.gui.i18n import tr, set_language, get_language
 from src.presentation.gui import theme
@@ -41,6 +42,10 @@ class MainWindow(QMainWindow):
         self._project_filepath = None
         self._dep_result = None
         self._sim_result = None
+        self._module_worker = None
+        self._analyze_worker = None
+        self._sim_worker = None
+        self._pending_workers = []
         self._global_config = GlobalConfigService()
         self._init_language_theme()
         self._init_ui()
@@ -85,8 +90,12 @@ class MainWindow(QMainWindow):
         self._log_panel = LogPanel()
         self._log_panel.set_anchor_click_handler(self._on_log_anchor_clicked)
 
+        self._tb_panel = TestbenchPanel()
+        self._tb_panel.generate_clicked.connect(self._on_generate_tb)
+
         self._tab_widget.addTab(self._config_panel, "?")
         self._tab_widget.addTab(self._module_panel, "?")
+        self._tab_widget.addTab(self._tb_panel, "?")
         self._tab_widget.addTab(self._log_panel, "?")
 
         h_splitter.addWidget(self._project_panel)
@@ -99,10 +108,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(tr("window.title"))
         self._tab_widget.setTabText(0, tr("tab.config"))
         self._tab_widget.setTabText(1, tr("tab.modules"))
-        self._tab_widget.setTabText(2, tr("tab.log"))
+        self._tab_widget.setTabText(2, tr("tab.tb"))
+        self._tab_widget.setTabText(3, tr("tab.log"))
         self._project_panel.retranslate()
         self._config_panel.retranslate()
         self._module_panel.retranslate()
+        self._tb_panel.retranslate()
         self._log_panel.retranslate()
         self._retranslate_menu()
         if not self._initializing:
@@ -353,7 +364,33 @@ class MainWindow(QMainWindow):
         self._auto_save()
         self._log_panel.append_info(tr("log.project_renamed", name=new_name))
 
+    def _on_generate_tb(self):
+        if not self._project:
+            self._log_panel.append_warning(tr("tb.no_project"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
+            return
+        config = self._tb_panel.get_config()
+        name = config.get('name', '').strip()
+        if not name:
+            self._log_panel.append_warning(tr("tb.name_empty"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
+            return
+        from src.domain.services.testbench_generator import TestbenchGenerator
+        gen = TestbenchGenerator()
+        output_dir = self._project.root_dir
+        filepath = gen.generate(config, output_dir)
+        self._log_panel.append_success(tr("tb.generated", path=filepath))
+        self._status(tr("status.tb_generated", path=filepath))
+        self._tab_widget.setCurrentWidget(self._log_panel)
+
+    def _safe_stop_worker(self, worker):
+        if worker and worker.isRunning():
+            worker.wait(5000)
+            if worker.isRunning():
+                self._pending_workers.append(worker)
+
     def _refresh_modules(self):
+        self._safe_stop_worker(self._module_worker)
         self._module_worker = ModuleScanWorker(self._project)
         self._module_worker.finished.connect(self._on_modules_scanned)
         self._module_worker.error_occurred.connect(
@@ -365,6 +402,7 @@ class MainWindow(QMainWindow):
         self._categorized_cache = categorized
         self._project_panel.populate_modules(list(project_modules.keys()))
         self._module_panel.set_data(dep_result=self._dep_result, categorized=categorized)
+        self._tb_panel.set_module_map(project_modules)
         dup_names = list(duplicates.keys()) if duplicates else []
         if dup_names:
             self._log_panel.append_warning(
@@ -375,12 +413,14 @@ class MainWindow(QMainWindow):
 
     def _on_analyze(self):
         if not self._project:
-            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_project"))
+            self._log_panel.append_warning(tr("log.no_project"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
             return
 
         top = self._project_panel.top_module
         if not top:
-            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_top_module"))
+            self._log_panel.append_warning(tr("msgbox.no_top_module"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
             return
 
         self._auto_save()
@@ -393,6 +433,7 @@ class MainWindow(QMainWindow):
         self._tab_widget.setCurrentWidget(self._module_panel)
 
         libs = [str(d) for d in self._project.lib_dirs]
+        self._safe_stop_worker(self._analyze_worker)
         self._analyze_worker = AnalyzeWorker(top, root, libs)
         self._analyze_worker.finished.connect(self._on_analyze_finished)
         self._analyze_worker.error_occurred.connect(
@@ -427,12 +468,14 @@ class MainWindow(QMainWindow):
 
     def _on_simulate(self):
         if not self._project:
-            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_project"))
+            self._log_panel.append_warning(tr("log.no_project"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
             return
 
         top = self._project_panel.top_module
         if not top:
-            QMessageBox.warning(self, tr("msgbox.missing"), tr("msgbox.no_top_module"))
+            self._log_panel.append_warning(tr("msgbox.no_top_module"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
             return
 
         self._auto_save()
@@ -445,6 +488,7 @@ class MainWindow(QMainWindow):
         self._project_panel.set_buttons_enabled(False, False, False)
         self._tab_widget.setCurrentWidget(self._log_panel)
 
+        self._safe_stop_worker(self._sim_worker)
         self._sim_worker = SimulateWorker(self._project)
         self._sim_worker.progress.connect(lambda msg: self._log_panel.append_info(msg))
         self._sim_worker.finished.connect(self._on_simulate_finished)
@@ -498,6 +542,7 @@ class MainWindow(QMainWindow):
         self._status(tr("status.wave_sim_running"))
         self._project_panel.set_buttons_enabled(False, False, False)
 
+        self._safe_stop_worker(self._sim_worker)
         self._sim_worker = SimulateWorker(self._project)
         self._sim_worker.progress.connect(lambda msg: self._log_panel.append_info(msg))
         self._sim_worker.finished.connect(self._on_wave_simulate_finished)
@@ -574,5 +619,13 @@ class MainWindow(QMainWindow):
             self._open_file_external(filepath)
 
     def closeEvent(self, event):
+        for worker in self._pending_workers:
+            self._safe_stop_worker(worker)
         self._auto_save()
+        for w in [self._module_worker, self._analyze_worker, self._sim_worker]:
+            if w and w.isRunning():
+                w.wait(3000)
+        for w in self._pending_workers:
+            if w.isRunning():
+                w.wait(3000)
         super().closeEvent(event)

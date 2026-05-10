@@ -22,14 +22,16 @@ _TRANSLATIONS = {
     # ---------- Project Panel ----------
     "project.group":                {"zh": "工程",                   "en": "Project"},
     "project.no_project":           {"zh": "未打开工程",             "en": "No project opened"},
-    "project.dbl_rename":           {"zh": "双击重命名工程",         "en": "Double-click to rename project"},
+    "project.rename":               {"zh": "重命名",                "en": "Rename"},
+    "project.rename_tip":           {"zh": "重命名工程",             "en": "Rename project"},
     "project.new":                  {"zh": "新建",                   "en": "New"},
     "project.open":                 {"zh": "打开",                   "en": "Open"},
 
     "top_module.group":             {"zh": "顶层模块",               "en": "Top Module"},
     "top_module.placeholder":       {"zh": "选择或输入顶层模块...",  "en": "Select or type top module..."},
 
-    "file_tree.group":              {"zh": "文件树",                 "en": "File Tree"},
+    "file_tree.group":              {"zh": "文件目录",               "en": "File Directory"},
+    "file_tree.filter":             {"zh": "过滤文件...",            "en": "Filter files..."},
 
     "action.analyze":               {"zh": "分析依赖",               "en": "Analyze Dependencies"},
     "action.simulate":              {"zh": "编译并仿真",             "en": "Compile && Simulate"},
@@ -70,6 +72,7 @@ _TRANSLATIONS = {
     "tab.config":                   {"zh": "工程配置",               "en": "Project Config"},
     "tab.modules":                  {"zh": "模块",                   "en": "Modules"},
     "tab.log":                      {"zh": "日志",                   "en": "Log"},
+    "tab.tb":                       {"zh": "测试平台",              "en": "Testbench"},
 
     # ---------- Log Panel ----------
     "log.clear":                    {"zh": "清空",                   "en": "Clear"},
@@ -81,6 +84,38 @@ _TRANSLATIONS = {
     "module.filter_ph":             {"zh": "过滤模块...",            "en": "Filter modules..."},
     "module.dep_section":           {"zh": "依赖模块",               "en": "Dependency Modules"},
     "module.no_modules":            {"zh": "(未扫描到模块)",         "en": "(no modules scanned)"},
+
+    # ---------- Testbench Panel ----------
+    "tb.props":                     {"zh": "测试平台属性",         "en": "Testbench Properties"},
+    "tb.name_label":                {"zh": "名称:",                 "en": "Name:"},
+    "tb.name":                      {"zh": "测试平台名称",         "en": "Testbench Name"},
+    "tb.name_ph":                   {"zh": "例如: tb_top",         "en": "e.g. tb_top"},
+    "tb.time_unit":                 {"zh": "时间单位:",             "en": "Time unit:"},
+    "tb.time_prec":                 {"zh": "时间精度:",             "en": "Time precision:"},
+    "tb.clock":                     {"zh": "时钟（最多6个）",       "en": "Clocks (max 6)"},
+    "tb.clock_mhz":                 {"zh": "MHz",                   "en": "MHz"},
+    "tb.reset":                     {"zh": "复位",                  "en": "Reset"},
+    "tb.reset_polarity":            {"zh": "极性:",                 "en": "Polarity:"},
+    "tb.reset_active_high":         {"zh": "高有效",                "en": "Active High"},
+    "tb.reset_active_low":          {"zh": "低有效",                "en": "Active Low"},
+    "tb.reset_duration":            {"zh": "持续时间（周期）:",     "en": "Duration (cycles):"},
+    "tb.reset_duration_ph":         {"zh": "例如: 100",             "en": "e.g. 100"},
+    "tb.module":                    {"zh": "被测模块（最多20个）",  "en": "Modules Under Test (max 20)"},
+    "tb.module_add":                {"zh": "添加模块:",             "en": "Add module:"},
+    "tb.module_placeholder":        {"zh": "从左侧列表选择一个模块", "en": "Select a module from the list"},
+    "tb.module_inst":               {"zh": "实例名:",               "en": "Instance Name:"},
+    "tb.module_params":             {"zh": "── 参数 ──",          "en": "-- Parameters --"},
+    "tb.module_ports":              {"zh": "── 端口 ──",          "en": "-- Ports --"},
+    "tb.wave":                      {"zh": "波形转储",             "en": "Waveform Dump"},
+    "tb.wave_file":                 {"zh": "文件:",                 "en": "File:"},
+    "tb.wave_ph":                   {"zh": "留空则使用 {name}.vcd", "en": "leave empty for {name}.vcd"},
+    "tb.timeout":                   {"zh": "超时",                  "en": "Timeout"},
+    "tb.timeout_max":               {"zh": "最大仿真时间:",        "en": "Max simulation time:"},
+    "tb.timeout_ph":                {"zh": "例如: 1000000",        "en": "e.g. 1000000"},
+    "tb.generate":                  {"zh": "生成测试平台",         "en": "Generate Testbench"},
+    "tb.no_project":                {"zh": "未打开工程，请先新建或打开工程。", "en": "No project opened. Please open or create a project first."},
+    "tb.name_empty":                {"zh": "请输入测试平台名称。",  "en": "Please enter a testbench name."},
+    "tb.generated":                 {"zh": "测试平台已生成: {path}", "en": "Testbench generated: {path}"},
 
     # ---------- MainWindow ----------
     "window.title":                 {"zh": "VeriFlow - Verilog 仿真管理器", "en": "VeriFlow - Verilog Simulation Manager"},
@@ -97,6 +132,7 @@ _TRANSLATIONS = {
     "status.wave_not_found":        {"zh": "找不到波形文件",         "en": "Wave file not found"},
     "status.wave_failed":           {"zh": "打开波形失败: 仿真错误", "en": "Wave open failed: simulation error"},
     "status.modules_count":         {"zh": "模块数: {count}",        "en": "Modules: {count}"},
+    "status.tb_generated":          {"zh": "测试平台已生成: {path}", "en": "Testbench generated: {path}"},
 
     # ---------- Welcome / Log Messages ----------
     "welcome.title":                {"zh": "欢迎使用 VeriFlow！",    "en": "Welcome to VeriFlow!"},

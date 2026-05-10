@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**在编辑器中一键完成 Verilog 仿真全流程：分析 → 编译 → 仿真 → 查看波形**
+**在编辑器中一键完成 Verilog 仿真全流程：分析 → 编译 → 仿真 → 查看波形，以及 Testbench 生成**
 
 [![VS Code](https://img.shields.io/badge/VS_Code-^1.80.0-007ACC.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -14,7 +14,7 @@
 
 ## 简介
 
-VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。它将**模块扫描、依赖分析、编译仿真、波形查看**集成在编辑器侧边栏中，无需离开 VS Code 即可完成整个仿真流程。
+VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。它将**模块扫描、依赖分析、编译仿真、波形查看、Testbench 生成**集成在编辑器侧边栏中，无需离开 VS Code 即可完成整个仿真流程。
 
 **完全零依赖** — 核心引擎全部用 TypeScript 原生实现，不需要安装任何外部依赖。
 
@@ -53,6 +53,33 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 
 ---
 
+## Testbench 生成器
+
+侧边栏下方新增 **Testbench Generator** 面板，支持一键生成 Verilog Testbench：
+
+### 配置项
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| **Name** | Testbench 模块名 | `tb_top` |
+| **Unit / Prec** | `timescale` 时间单位 / 精度 | `1ns` / `1ps` |
+| **Clocks** | 时钟频率（MHz），支持最多 6 个时钟 | `100` |
+| **Reset** | 复位极性（高/低有效）和持续时间 | Active Low / `100` |
+| **DUT Modules** | 选择模块实例化到 Testbench 中，支持同一模块多次例化 | — |
+| **Ports** | 自动提取模块端口，可自定义信号连接名 | — |
+| **Parameters** | 自动提取模块参数，可修改参数值 | — |
+| **Waveform** | 波形文件名 | `{name}.vcd` |
+| **Timeout** | 仿真超时时间（ns） | `1000000` |
+
+### 使用步骤
+
+1. 在 **DUT Modules** 区域点击 `+` 选择要例化的模块
+2. 点击模块列表中的模块，在右侧编辑端口连接和参数值
+3. 配置时钟、复位等属性
+4. 点击 **Generate Testbench** 生成文件并自动打开
+
+---
+
 ## 扩展设置
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -69,9 +96,11 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 
 ## 侧边栏说明
 
-侧边栏分为三个区域：
+侧边栏分为两个主要视图：
 
-### 1. 操作按钮（标题栏）
+### 1. VeriFlow（上方）
+
+#### 操作按钮（标题栏）
 
 从左到右依次为：
 - **Select Top Module** — 从已扫描模块中选择顶层
@@ -80,17 +109,26 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 - **Open Waveform** — 启动波形查看器
 - **Scan Modules** — 重新扫描工作区
 
-### 2. Top Module
+#### Top Module
 
 显示当前选中的顶层模块名称，点击可重新选择。
 
-### 3. Dependency Tree
+#### Dependency Tree
 
 依赖分析后展示模块层级关系，缩进表示依赖深度。点击模块名可在编辑器中打开对应文件。
 
-### 4. All Modules
+#### All Modules
 
 按目录分组的全部模块清单。标记 `[dep]` 的模块是依赖树中的一部分。
+
+### 2. Testbench Generator（下方）
+
+生成 Verilog Testbench 的交互式面板，包含：
+- **Properties** — Testbench 名称和 timescale 配置
+- **Clocks** — 多时钟频率配置
+- **Reset** — 复位极性和持续时间
+- **DUT Modules** — 模块选择、端口编辑、参数编辑
+- **Waveform / Timeout** — 波形文件和仿真超时
 
 ---
 
@@ -145,10 +183,12 @@ vscode-extension/src/
 │   ├── processManager.ts       # 进程管理
 │   ├── logParser.ts            # 仿真日志解析
 │   ├── simulationRunner.ts     # 仿真执行器
-│   └── portParser.ts           # 端口解析器
+│   ├── portParser.ts           # 端口解析器
+│   └── testbenchGenerator.ts   # Testbench 生成器
 ├── config.ts                   # 扩展设置管理
 ├── output.ts                   # 输出面板封装
 ├── moduleTreeProvider.ts       # 侧边栏树视图
+├── testbenchPanel.ts           # Testbench 生成面板
 └── extension.ts                # 扩展主入口
 ```
 

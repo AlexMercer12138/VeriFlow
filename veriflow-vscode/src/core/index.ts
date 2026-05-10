@@ -8,3 +8,5 @@ export type { ProcessResult } from './processManager';
 export { LogParser } from './logParser';
 export { SimulationRunner } from './simulationRunner';
 export { PortParser } from './portParser';
+export { TestbenchGenerator } from './testbenchGenerator';
+export type { TbConfig, TbModuleConfig } from './testbenchGenerator';
