@@ -1,10 +1,10 @@
 {
   "name": "veriflow",
-  "displayName": "VeriFlow",
-  "description": "Lightweight Verilog simulation manager for VS Code — analyze, compile, simulate, and view waveforms",
+  "displayName": "Verilog Simulation Flow",
+  "description": "Lightweight Verilog simulation manager for VS Code — analyze, compile, simulate, view waveforms, and generate testbenches",
   "icon": "media/icon.png",
   "version": "1.0.0",
-  "publisher": "veriflow",
+  "publisher": "Vikai-mercer",
   "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
@@ -12,6 +12,18 @@
   "categories": [
     "Programming Languages",
     "Other"
+  ],
+  "keywords": [
+    "verilog",
+    "systemverilog",
+    "simulation",
+    "testbench",
+    "fpga",
+    "rtl",
+    "iverilog",
+    "vcs",
+    "waveform",
+    "vcd"
   ],
   "repository": {
     "type": "git",

@@ -54,6 +54,15 @@ VeriFlow 提供了一个 **零依赖的 VS Code 扩展**（`veriflow-vscode/`）
 5. 点击 `Compile & Simulate` 编译并仿真
 6. 点击 `Open Waveform` 查看波形
 
+### Testbench 生成
+
+VS Code 扩展侧边栏下方提供 **Testbench Generator** 面板：
+
+1. 在 **DUT Modules** 区域选择要例化的模块（支持同一模块多次例化）
+2. 点击模块，在右侧编辑端口信号连接名和参数值
+3. 配置时钟频率、复位极性、timescale 等属性
+4. 点击 **Generate Testbench** 自动生成并打开 Testbench 文件
+
 ### 扩展设置
 
 在 VS Code `settings.json` 中搜索 `veriflow` 即可配置所有选项：
@@ -130,10 +139,12 @@ vscode-extension/src/
 │   ├── processManager.ts       # 外部进程管理
 │   ├── logParser.ts            # 日志解析
 │   ├── simulationRunner.ts     # 仿真运行
-│   └── portParser.ts           # 端口解析
+│   ├── portParser.ts           # 端口解析
+│   └── testbenchGenerator.ts   # Testbench 生成器
 ├── config.ts                   # 扩展配置管理
 ├── output.ts                   # 输出通道封装
 ├── moduleTreeProvider.ts       # 模块树视图数据源
+├── testbenchPanel.ts           # Testbench 生成面板
 └── extension.ts                # 扩展主入口
 ```
 
@@ -388,7 +399,7 @@ VeriFlow/
 │       ├── cli.py                     # CLI 入口
 │       ├── json_bridge.py             # VS Code 桥接接口
 │       └── gui/                       # GUI 入口及组件
-├── vscode-extension/                  # VS Code 扩展（TypeScript）
+├── veriflow-vscode/                   # VS Code 扩展（TypeScript）
 │   ├── src/
 │   │   ├── core/                      # 核心引擎（与 Python 版功能对等）
 │   │   │   ├── types.ts
@@ -399,10 +410,12 @@ VeriFlow/
 │   │   │   ├── processManager.ts
 │   │   │   ├── logParser.ts
 │   │   │   ├── simulationRunner.ts
-│   │   │   └── portParser.ts
+│   │   │   ├── portParser.ts
+│   │   │   └── testbenchGenerator.ts
 │   │   ├── config.ts
 │   │   ├── output.ts
 │   │   ├── moduleTreeProvider.ts
+│   │   ├── testbenchPanel.ts
 │   │   └── extension.ts
 │   ├── package.json
 │   └── tsconfig.json
