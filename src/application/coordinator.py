@@ -204,6 +204,48 @@ class ApplicationCoordinator:
                 result[mod_name] = unique
         return result
 
+    def get_duplicate_modules_with_lines(
+        self,
+        project: Project = None,
+    ) -> Dict[str, List[dict]]:
+        """返回重名模块及其所有文件路径和行号
+
+        Returns:
+            {module_name: [{"file": Path, "line": int}, ...]}
+        """
+        search_dirs = self._collect_search_dirs(project)
+        if not search_dirs:
+            return {}
+
+        all_modules: Dict[str, List[dict]] = defaultdict(list)
+        for search_dir in search_dirs:
+            for vfile in self._file_service.list_files(str(search_dir)):
+                try:
+                    content = self._file_service.read_text(str(vfile))
+                except Exception:
+                    continue
+                lines = content.splitlines()
+                for line_no, line in enumerate(lines, start=1):
+                    for match in re.finditer(r'\bmodule\s+(\w+)', line):
+                        mod_name = match.group(1)
+                        all_modules[mod_name].append({
+                            "file": vfile.resolve(),
+                            "line": line_no,
+                        })
+
+        result = {}
+        for mod_name, entries in all_modules.items():
+            seen_files = set()
+            unique_entries = []
+            for entry in entries:
+                fpath = entry["file"]
+                if fpath not in seen_files:
+                    seen_files.add(fpath)
+                    unique_entries.append(entry)
+            if len(unique_entries) > 1:
+                result[mod_name] = unique_entries
+        return result
+
     def analyze_dependencies(
         self,
         top_module: str,

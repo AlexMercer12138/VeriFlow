@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as child_process from 'child_process';
-import { getWorkspaceRoot, getTopModule, setTopModule, getSettings, ExtensionSettings } from './config';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import {
+    getWorkspaceRoot, getTopModule, setTopModule, getSettings, ExtensionSettings,
+    getAnalyzeStatus, setAnalyzeStatus, getSimulateStatus, setSimulateStatus,
+    getDependencyResult, setDependencyResult,
+} from './config';
 import { ModuleTreeProvider } from './moduleTreeProvider';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import * as output from './output';
@@ -47,6 +53,14 @@ let statusBarItem: vscode.StatusBarItem;
 let simulateProcess: child_process.ChildProcess | null = null;
 let depAnalyzer = new DependencyAnalyzer();
 let simRunner = new SimulationRunner();
+
+// 状态管理
+let _analyzeStatus: string = 'idle';
+let _simulateStatus: string = 'idle';
+let _lastDepFileHashes: Record<string, string> = {};
+let _pendingSimulateAfterAnalyze = false;
+let _pendingWaveAfterSimulate = false;
+let _pendingWaveAfterAnalyze = false;
 
 export function activate(context: vscode.ExtensionContext): void {
     treeProvider = new ModuleTreeProvider();
@@ -94,8 +108,29 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeWorkspaceFolders(() => { cmdScanModules(context); })
     );
 
+    // 文件系统监视器：检测工作区文件变动
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{v,sv,vh,svh}');
+    watcher.onDidChange(() => _markOutdatedIfCompleted(context));
+    watcher.onDidCreate(() => _markOutdatedIfCompleted(context));
+    watcher.onDidDelete(() => _markOutdatedIfCompleted(context));
+    context.subscriptions.push(watcher);
+
+    // 窗口焦点变化检测
+    context.subscriptions.push(
+        vscode.window.onDidChangeWindowState((e) => {
+            if (e.focused) {
+                _checkDepFilesChanged(context);
+            } else {
+                _saveDepFileHashes(context);
+            }
+        })
+    );
+
     const savedTop = getTopModule(context);
     if (savedTop) { treeProvider.topModule = savedTop; }
+
+    // 恢复状态
+    _restoreState(context);
 
     cmdScanModules(context);
 }
@@ -106,6 +141,108 @@ export function deactivate(): void {
         simulateProcess = null;
     }
     output.dispose();
+}
+
+function _restoreState(context: vscode.ExtensionContext): void {
+    _analyzeStatus = getAnalyzeStatus(context);
+    _simulateStatus = getSimulateStatus(context);
+    const savedResult = getDependencyResult(context);
+    if (savedResult) {
+        treeProvider.setAnalyzeResult(savedResult);
+        _saveDepFileHashes(context, savedResult);
+    }
+    _updateStatusBar();
+}
+
+function _updateStatusBar(): void {
+    const parts: string[] = ['$(circuit-board) VeriFlow'];
+    if (_analyzeStatus !== 'idle') {
+        const icon = _analyzeStatus === 'completed' ? '$(check)' : _analyzeStatus === 'error' ? '$(error)' : '$(warning)';
+        parts.push(`${icon} analyze:${_analyzeStatus}`);
+    }
+    if (_simulateStatus !== 'idle') {
+        const icon = _simulateStatus === 'completed' ? '$(check)' : _simulateStatus === 'error' ? '$(error)' : '$(warning)';
+        parts.push(`${icon} sim:${_simulateStatus}`);
+    }
+    statusBarItem.text = parts.join(' | ');
+}
+
+function _setAnalyzeStatus(context: vscode.ExtensionContext, status: string): void {
+    _analyzeStatus = status;
+    setAnalyzeStatus(context, status);
+    // 分析依赖变为 outdated/error/idle 时，编译仿真也同步
+    if (status === 'outdated' || status === 'error' || status === 'idle') {
+        _setSimulateStatus(context, status);
+    }
+    _updateStatusBar();
+}
+
+function _setSimulateStatus(context: vscode.ExtensionContext, status: string): void {
+    _simulateStatus = status;
+    setSimulateStatus(context, status);
+    _updateStatusBar();
+}
+
+function _fileHash(filepath: string): string {
+    try {
+        const data = fs.readFileSync(filepath);
+        return crypto.createHash('md5').update(data).digest('hex');
+    } catch {
+        return '';
+    }
+}
+
+function _computeDepHashes(result: DependencyResult): Record<string, string> {
+    const hashes: Record<string, string> = {};
+    for (const f of result.files) {
+        hashes[f] = _fileHash(f);
+    }
+    return hashes;
+}
+
+function _saveDepFileHashes(context: vscode.ExtensionContext, result?: DependencyResult): void {
+    const depResult = result || treeProvider.analyzeResult;
+    if (depResult) {
+        _lastDepFileHashes = _computeDepHashes(depResult);
+    }
+}
+
+function _checkDepFilesChanged(context: vscode.ExtensionContext): void {
+    const depResult = treeProvider.analyzeResult;
+    if (!depResult || _simulateStatus !== 'completed') { return; }
+
+    const currentHashes = _computeDepHashes(depResult);
+    let changed = false;
+
+    // 检查文件列表变化
+    const currentFiles = new Set(depResult.files);
+    const lastFiles = new Set(Object.keys(_lastDepFileHashes));
+    if (currentFiles.size !== lastFiles.size || ![...currentFiles].every(f => lastFiles.has(f))) {
+        changed = true;
+    } else {
+        // 检查内容变化
+        for (const f of depResult.files) {
+            if (_lastDepFileHashes[f] !== currentHashes[f]) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (changed) {
+        _setSimulateStatus(context, 'outdated');
+        vscode.window.showInformationMessage('Dependency files changed. Simulation marked as outdated.');
+    }
+    _lastDepFileHashes = currentHashes;
+}
+
+function _markOutdatedIfCompleted(context: vscode.ExtensionContext): void {
+    if (_simulateStatus === 'completed') {
+        _setSimulateStatus(context, 'outdated');
+    }
+    if (_analyzeStatus === 'completed') {
+        _setAnalyzeStatus(context, 'outdated');
+    }
 }
 
 function _resolveSimulator(settings: ExtensionSettings): SimulatorConfig {
@@ -138,28 +275,31 @@ function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult
     const searchDirs = _collectSearchDirs(root, libDirs);
     const modulesByDir: Record<string, string[]> = {};
     const allModuleFiles: Record<string, string> = {};
-    const allModules = new Map<string, string[]>();
+    const allModules = new Map<string, Array<{ file: string; line: number }>>();
 
     for (const searchDir of searchDirs) {
-        if (!require('fs').existsSync(searchDir)) { continue; }
+        if (!fs.existsSync(searchDir)) { continue; }
         const dirModules: string[] = [];
         for (const vfile of listVerilogFiles(searchDir)) {
             try {
                 const content = readText(vfile);
-                const cleaned = removeComments(content);
-                MODULE_DECL_RE.lastIndex = 0;
-                let match: RegExpExecArray | null;
-                while ((match = MODULE_DECL_RE.exec(cleaned)) !== null) {
-                    const modName = match[1];
-                    if (!allModules.has(modName)) {
-                        allModules.set(modName, []);
-                    }
-                    allModules.get(modName)!.push(vfile);
-                    if (!(modName in allModuleFiles)) {
-                        allModuleFiles[modName] = vfile;
-                    }
-                    if (!dirModules.includes(modName)) {
-                        dirModules.push(modName);
+                const lines = content.split('\n');
+                for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+                    const line = lines[lineNo];
+                    MODULE_DECL_RE.lastIndex = 0;
+                    let match: RegExpExecArray | null;
+                    while ((match = MODULE_DECL_RE.exec(line)) !== null) {
+                        const modName = match[1];
+                        if (!allModules.has(modName)) {
+                            allModules.set(modName, []);
+                        }
+                        allModules.get(modName)!.push({ file: vfile, line: lineNo + 1 });
+                        if (!(modName in allModuleFiles)) {
+                            allModuleFiles[modName] = vfile;
+                        }
+                        if (!dirModules.includes(modName)) {
+                            dirModules.push(modName);
+                        }
                     }
                 }
             } catch {
@@ -172,21 +312,35 @@ function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult
     }
 
     const duplicates: Record<string, string[]> = {};
-    for (const [modName, files] of allModules.entries()) {
-        const unique = [...new Set(files)];
-        if (unique.length > 1) {
-            duplicates[modName] = unique;
+    const duplicatesWithLines: Record<string, Array<{ file: string; line: number }>> = {};
+    for (const [modName, entries] of allModules.entries()) {
+        const seenFiles = new Set<string>();
+        const uniqueEntries: Array<{ file: string; line: number }> = [];
+        for (const entry of entries) {
+            if (!seenFiles.has(entry.file)) {
+                seenFiles.add(entry.file);
+                uniqueEntries.push(entry);
+            }
+        }
+        if (uniqueEntries.length > 1) {
+            duplicates[modName] = uniqueEntries.map(e => e.file);
+            duplicatesWithLines[modName] = uniqueEntries;
         }
     }
+
+    // 只从工作区目录选取的模块列表
+    const workspaceModules = modulesByDir[root] || [];
 
     return {
         root,
         libDirs,
         totalModules: allModules.size,
         modules: Array.from(allModules.keys()).sort(),
+        workspaceModules,
         modulesByDir,
         moduleFiles: allModuleFiles,
         duplicates,
+        duplicatesWithLines,
     };
 }
 
@@ -200,17 +354,28 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<void> {
     const result = _scanModulesInternal(root, settings.libDirs);
     treeProvider.setScanResult(result);
     tbPanelProvider.setModuleMap(result.moduleFiles);
+
+    // 输出重复模块详细日志
+    if (result.duplicatesWithLines && Object.keys(result.duplicatesWithLines).length > 0) {
+        for (const [modName, entries] of Object.entries(result.duplicatesWithLines)) {
+            for (const entry of entries) {
+                output.appendWarning(`  Module ${modName} defined in: ${entry.file}:${entry.line}`);
+            }
+        }
+    }
+
     statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
-    const moduleNames = treeProvider.getModuleNames();
-    if (moduleNames.length === 0) {
-        vscode.window.showWarningMessage('No modules found. Open a Verilog workspace first.');
+    // 只从工作区目录的模块中选取
+    const workspaceModules = treeProvider.getWorkspaceModuleNames();
+    if (workspaceModules.length === 0) {
+        vscode.window.showWarningMessage('No modules found in workspace. Open a Verilog workspace first.');
         return;
     }
-    const selected = await vscode.window.showQuickPick(moduleNames, {
-        placeHolder: 'Select top module for simulation',
+    const selected = await vscode.window.showQuickPick(workspaceModules, {
+        placeHolder: 'Select top module for simulation (workspace only)',
     });
     if (selected) {
         treeProvider.topModule = selected;
@@ -230,6 +395,9 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     }
     if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
 
+    // 检查文件变动
+    _checkDepFilesChanged(context);
+
     const settings = getSettings();
     const searchDirs = _collectSearchDirs(root, settings.libDirs);
 
@@ -241,13 +409,34 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     const result = depAnalyzer.resolve(topModule, searchDirs);
     treeProvider.setAnalyzeResult(result);
 
+    // 保存结果和状态
+    await setDependencyResult(context, result);
+    _saveDepFileHashes(context, result);
+
     if (result.missingModules.length === 0) {
         output.appendSuccess(`Analysis complete: ${result.files.length} file(s).`);
         result.files.forEach(f => output.appendLine(`  ${f}`));
-        statusBarItem.text = `$(check) VeriFlow: ${result.files.length} files`;
+        _setAnalyzeStatus(context, 'completed');
     } else {
         output.appendError(`Missing modules: ${result.missingModules.join(', ')}`);
-        statusBarItem.text = '$(warning) VeriFlow: missing modules';
+        _setAnalyzeStatus(context, 'error');
+    }
+
+    // 如果有挂起的仿真/波形请求，继续执行
+    if (_pendingSimulateAfterAnalyze) {
+        _pendingSimulateAfterAnalyze = false;
+        if (result.missingModules.length === 0) {
+            await cmdSimulate(context);
+        }
+        return;
+    }
+    if (_pendingWaveAfterAnalyze) {
+        _pendingWaveAfterAnalyze = false;
+        if (result.missingModules.length === 0) {
+            _pendingWaveAfterSimulate = true;
+            await cmdSimulate(context);
+        }
+        return;
     }
 }
 
@@ -261,6 +450,17 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
         topModule = treeProvider.topModule;
     }
     if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+
+    // 检查文件变动
+    _checkDepFilesChanged(context);
+
+    // 检查分析依赖状态
+    if (_analyzeStatus !== 'completed') {
+        output.appendInfo(`Analyze status is ${_analyzeStatus}, running analyze first...`);
+        _pendingSimulateAfterAnalyze = true;
+        await cmdAnalyze(context);
+        return;
+    }
 
     const settings = getSettings();
     const searchDirs = _collectSearchDirs(root, settings.libDirs);
@@ -278,14 +478,13 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     const depResult = depAnalyzer.resolve(topModule, searchDirs);
     if (depResult.missingModules.length > 0) {
         output.appendError(`Missing modules: ${depResult.missingModules.join(', ')}`);
-        statusBarItem.text = '$(error) VeriFlow: missing modules';
+        _setAnalyzeStatus(context, 'error');
         return;
     }
 
     output.appendInfo(`Resolved ${depResult.files.length} file(s)`);
     const outFile = path.join(root, `${topModule}.out`);
 
-    // Run synchronously with progress indication
     const result = simRunner.compileAndRun(
         depResult.files, outFile, simulator, root, topModule
     );
@@ -303,7 +502,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
 
     if (result.success) {
         output.appendSuccess(`Simulation OK (${result.elapsedTime.toFixed(2)}s)`);
-        statusBarItem.text = '$(check) VeriFlow: simulation OK';
+        _setSimulateStatus(context, 'completed');
     } else {
         output.appendError(`Simulation FAILED (exit=${result.exitCode})`);
         for (const entry of result.logEntries) {
@@ -311,9 +510,17 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
                 output.appendError(entry.message);
             }
         }
-        statusBarItem.text = `$(error) VeriFlow: failed (${result.exitCode})`;
+        _setSimulateStatus(context, 'error');
     }
     output.show();
+
+    // 如果有挂起的波形请求，继续执行
+    if (_pendingWaveAfterSimulate) {
+        _pendingWaveAfterSimulate = false;
+        if (result.success) {
+            await _doOpenWave(context, root, topModule, settings);
+        }
+    }
 }
 
 async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
@@ -327,24 +534,50 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     }
     if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
 
+    // 检查文件变动
+    _checkDepFilesChanged(context);
+
     const settings = getSettings();
     const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
 
-    const fs = require('fs');
-    if (!fs.existsSync(waveFile)) {
-        output.appendWarning(`Wave file not found: ${waveFile}`);
-        output.appendInfo('Run simulation first to generate waveform.');
-        vscode.window.showInformationMessage(
-            'Waveform file not found. Run simulation first.', 'Simulate'
-        ).then(choice => {
-            if (choice === 'Simulate') {
-                vscode.commands.executeCommand('veriflow.simulate');
-            }
-        });
+    // 检查分析依赖状态
+    if (_analyzeStatus !== 'completed') {
+        output.appendInfo('Analyze not completed, running analyze -> simulate -> open wave...');
+        _pendingWaveAfterAnalyze = true;
+        await cmdAnalyze(context);
         return;
     }
 
+    // 检查编译仿真状态
+    if (_simulateStatus !== 'completed') {
+        output.appendInfo('Simulation not completed, running simulate -> open wave...');
+        _pendingWaveAfterSimulate = true;
+        await cmdSimulate(context);
+        return;
+    }
+
+    // 都已完成
+    if (fs.existsSync(waveFile)) {
+        await _doOpenWave(context, root, topModule, settings);
+        return;
+    }
+
+    // 波形文件不存在，运行仿真
+    output.appendWarning(`Wave file not found: ${waveFile}`);
+    output.appendInfo('Running simulation to generate waveform...');
+    _pendingWaveAfterSimulate = true;
+    await cmdSimulate(context);
+}
+
+async function _doOpenWave(context: vscode.ExtensionContext, root: string, topModule: string, settings: ExtensionSettings): Promise<void> {
+    const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
     const viewer = _resolveViewer(settings);
+
+    if (!fs.existsSync(waveFile)) {
+        output.appendError(`Wave file not found: ${waveFile}`);
+        return;
+    }
+
     output.appendInfo(`Opening ${viewer.name}: ${waveFile}`);
     try {
         simRunner.openWave(waveFile, viewer);
@@ -352,5 +585,4 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     } catch (err: any) {
         output.appendError(`Failed to open ${viewer.name}: ${err.message}`);
     }
-    statusBarItem.text = '$(pulse) VeriFlow';
 }

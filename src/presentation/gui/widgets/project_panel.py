@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 工程侧边栏面板 — Project + File Tree + Action Buttons
+支持按钮状态颜色: idle(白/灰) | outdated(黄) | error(红) | completed(蓝)
 """
 
 from PySide6.QtWidgets import (
@@ -10,6 +11,27 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 from .file_tree_panel import FileTreePanel
 from src.presentation.gui.i18n import tr
+
+# 状态颜色定义 (dark / light 主题)
+# 格式: {状态: {主题: (文字色, 背景色, 悬停高亮色, 按下高亮色)}}
+STATUS_COLORS = {
+    'idle': {
+        'dark':  ('#1e1e1e', '#4caf50', '#66bb6a', '#388e3c'),
+        'light': ('#ffffff', '#4caf50', '#66bb6a', '#388e3c'),
+    },
+    'outdated': {
+        'dark':  ('#1e1e1e', '#d4a017', '#f0c040', '#b08a10'),
+        'light': ('#1e1e1e', '#d4a017', '#f0c040', '#b08a10'),
+    },
+    'error': {
+        'dark':  ('#ffffff', '#c75450', '#d9706b', '#a84440'),
+        'light': ('#ffffff', '#c75450', '#d9706b', '#a84440'),
+    },
+    'completed': {
+        'dark':  ('#ffffff', '#0e639c', '#2e83bc', '#0a4f7c'),
+        'light': ('#ffffff', '#0078d4', '#1a8ae8', '#005a9e'),
+    },
+}
 
 
 class ProjectPanel(QWidget):
@@ -23,6 +45,9 @@ class ProjectPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._theme = 'dark'
+        self._analyze_status = 'idle'
+        self._simulate_status = 'idle'
         self._init_ui()
 
     def _init_ui(self):
@@ -108,6 +133,33 @@ class ProjectPanel(QWidget):
         lo.addWidget(self._btn_wave)
 
         return w
+
+    def _status_style(self, status: str, theme: str = None) -> str:
+        theme = theme or self._theme
+        colors = STATUS_COLORS.get(status, STATUS_COLORS['idle'])[theme]
+        fg, bg, hover, pressed = colors
+        return (
+            f"QPushButton {{ background-color: {bg}; color: {fg}; border: none; "
+            f"border-radius: 3px; padding: 6px 14px; }}"
+            f"QPushButton:hover {{ background-color: {hover}; }}"
+            f"QPushButton:pressed {{ background-color: {pressed}; }}"
+            f"QPushButton:disabled {{ background-color: #3c3c3c; color: #888; }}"
+        )
+
+    def set_theme(self, theme: str):
+        self._theme = theme if theme in ('dark', 'light') else 'dark'
+        self._refresh_button_styles()
+
+    def _refresh_button_styles(self):
+        self._btn_analyze.setStyleSheet(self._status_style(self._analyze_status))
+        self._btn_simulate.setStyleSheet(self._status_style(self._simulate_status))
+
+    def set_button_status(self, analyze_status: str = None, simulate_status: str = None):
+        if analyze_status is not None:
+            self._analyze_status = analyze_status
+        if simulate_status is not None:
+            self._simulate_status = simulate_status
+        self._refresh_button_styles()
 
     def retranslate(self):
         self._proj_grp.setTitle(tr("project.group"))

@@ -149,6 +149,7 @@ _TRANSLATIONS = {
     "log.project_saved":            {"zh": "工程已保存: {path}",      "en": "Project saved: {path}"},
     "log.project_renamed":          {"zh": "工程已重命名: {name}",    "en": "Project renamed to: {name}"},
     "log.duplicate_modules":        {"zh": "模块重名: {modules}",     "en": "Duplicate modules: {modules}"},
+    "log.duplicate_module_detail":   {"zh": "  模块 {module} 定义于: {file}:{line}", "en": "  Module {module} defined in: {file}:{line}"},
     "log.open_project_failed":      {"zh": "打开工程失败: {err}",     "en": "Failed to open project: {err}"},
     "log.no_project":               {"zh": "未打开工程。",           "en": "No project opened."},
     "log.wave_not_found":           {"zh": "波形文件未找到: {file}",  "en": "Wave file not found: {file}"},

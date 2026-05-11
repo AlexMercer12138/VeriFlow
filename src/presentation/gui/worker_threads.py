@@ -51,7 +51,7 @@ class SimulateWorker(QThread):
 
 class ModuleScanWorker(QThread):
     """模块扫描工作线程 — 按库分类"""
-    finished = Signal(dict, dict, dict)
+    finished = Signal(dict, dict, dict, dict)
     error_occurred = Signal(str)
 
     def __init__(self, project=None):
@@ -63,8 +63,9 @@ class ModuleScanWorker(QThread):
             app = ApplicationCoordinator()
             categorized = app.scan_modules_categorized(self._project)
             duplicates = app.get_duplicate_modules(self._project)
+            duplicates_with_lines = app.get_duplicate_modules_with_lines(self._project)
             project_modules = app.get_project_root_modules(self._project)
-            self.finished.emit(categorized, duplicates, project_modules)
+            self.finished.emit(categorized, duplicates, duplicates_with_lines, project_modules)
         except Exception as e:
             self.error_occurred.emit(f"Module scan error: {e}\n{traceback.format_exc()}")
-            self.finished.emit({}, {}, {})
+            self.finished.emit({}, {}, {}, {})

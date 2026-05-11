@@ -2,9 +2,12 @@
 """
 主窗口 — 左侧侧边栏(Project+FileTree+按钮) | 右侧标签页(Config/Modules/Log)
 支持语言切换（中/英）和主题切换（暗/亮）
+支持按钮状态颜色与自动状态流转
 """
 
 import os
+import hashlib
+import time
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -47,6 +50,13 @@ class MainWindow(QMainWindow):
         self._sim_worker = None
         self._pending_workers = []
         self._global_config = GlobalConfigService()
+        # 用于检测目录/文件变动的快照
+        self._last_project_root = None
+        self._last_lib_dirs = []
+        self._last_dep_files = []
+        self._last_dep_file_hashes = {}  # filepath -> content hash
+        self._last_focus_check_time = 0  # 上次焦点检测时间戳
+        self._focus_debounce_ms = 2000   # 去抖间隔 2秒
         self._init_language_theme()
         self._init_ui()
         self._connect_signals()
@@ -55,6 +65,7 @@ class MainWindow(QMainWindow):
         self._initializing = False
         self._retranslate_ui()
         self._welcome()
+        self._install_focus_detection()
 
     def _init_language_theme(self):
         saved_lang = self._global_config.get_language()
@@ -233,6 +244,7 @@ class MainWindow(QMainWindow):
             self._log_panel.update_theme("dark")
         else:
             self._log_panel.update_theme("light")
+        self._project_panel.set_theme(t)
 
     def _status(self, msg: str):
         self._status_bar.showMessage(msg)
@@ -252,6 +264,19 @@ class MainWindow(QMainWindow):
         self._auto_save()
         if self._project:
             self._refresh_modules()
+            self._check_config_change_for_status()
+
+    def _check_config_change_for_status(self):
+        """库目录或工程目录变动时，分析依赖标记为已过时"""
+        if not self._project:
+            return
+        current_root = str(self._project.root_dir)
+        current_libs = [str(d) for d in self._project.lib_dirs]
+        if self._last_project_root is not None:
+            if current_root != self._last_project_root or current_libs != self._last_lib_dirs:
+                self._set_analyze_status('outdated')
+        self._last_project_root = current_root
+        self._last_lib_dirs = current_libs
 
     def _sync_project_from_ui(self):
         if not self._project:
@@ -305,11 +330,101 @@ class MainWindow(QMainWindow):
         if self._project and self._project_filepath:
             self._coordinator.save_project(self._project, self._project_filepath)
 
+    def _set_analyze_status(self, status: str):
+        if self._project:
+            self._project.analyze_status = status
+        self._project_panel.set_button_status(analyze_status=status)
+        # 当分析依赖变为已过时/出错/未开始时，编译仿真也必然需要重新进行
+        if status in ('outdated', 'error', 'idle'):
+            self._set_simulate_status(status)
+        self._auto_save()
+
+    def _set_simulate_status(self, status: str):
+        if self._project:
+            self._project.simulate_status = status
+        self._project_panel.set_button_status(simulate_status=status)
+        self._auto_save()
+
     def _reset_state(self):
         self._dep_result = None
         self._sim_result = None
         self._categorized_cache = {}
         self._module_panel.set_data(categorized={})
+        self._last_project_root = None
+        self._last_lib_dirs = []
+        self._last_dep_files = []
+        self._last_dep_file_hashes = {}
+        self._last_focus_check_time = 0
+        self._project_panel.set_button_status(analyze_status='idle', simulate_status='idle')
+
+    def _load_dependency_result(self):
+        """从工程文件加载依赖分析结果"""
+        if not self._project or not self._project.dependency_result:
+            return
+        try:
+            self._dep_result = DependencyResult.from_dict(self._project.dependency_result)
+            self._last_dep_files = [str(f) for f in self._dep_result.files]
+            self._last_dep_file_hashes = self._compute_dep_hashes()
+            # 恢复按钮状态
+            a_status = self._project.analyze_status or 'idle'
+            s_status = self._project.simulate_status or 'idle'
+            self._project_panel.set_button_status(analyze_status=a_status, simulate_status=s_status)
+            # 更新模块面板
+            self._module_panel.set_data(
+                dep_result=self._dep_result,
+                categorized=self._categorized_cache if hasattr(self, '_categorized_cache') else {}
+            )
+        except Exception as e:
+            self._log_panel.append_error(f"Failed to load dependency result: {e}")
+            self._dep_result = None
+
+    def _save_dependency_result(self):
+        """保存依赖分析结果到工程"""
+        if self._project and self._dep_result:
+            self._project.dependency_result = self._dep_result.to_dict()
+            self._last_dep_files = [str(f) for f in self._dep_result.files]
+            self._last_dep_file_hashes = self._compute_dep_hashes()
+            self._auto_save()
+
+    def _file_hash(self, filepath: str) -> str:
+        """计算文件内容的MD5哈希，文件不存在返回空字符串"""
+        try:
+            with open(filepath, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except Exception:
+            return ''
+
+    def _compute_dep_hashes(self) -> dict:
+        """计算当前所有依赖文件的内容哈希"""
+        if not self._dep_result:
+            return {}
+        return {str(f): self._file_hash(str(f)) for f in self._dep_result.files}
+
+    def _check_dep_files_changed(self):
+        """检查依赖文件列表或内容是否发生变动，若变动则标记编译仿真为已过时"""
+        if not self._dep_result:
+            return
+        current_files = [str(f) for f in self._dep_result.files]
+        current_hashes = self._compute_dep_hashes()
+
+        changed = False
+        # 检查文件列表是否变化（新增/删除/补齐）
+        if set(current_files) != set(self._last_dep_files):
+            changed = True
+        else:
+            # 检查每个文件的内容哈希是否变化
+            for f in current_files:
+                old_hash = self._last_dep_file_hashes.get(f, '')
+                new_hash = current_hashes.get(f, '')
+                if old_hash != new_hash:
+                    changed = True
+                    break
+
+        if changed and self._project and self._project.simulate_status == 'completed':
+            self._set_simulate_status('outdated')
+
+        self._last_dep_files = current_files
+        self._last_dep_file_hashes = current_hashes
 
     def _on_project_new(self, filepath: str):
         config_dir = str(Path(filepath).parent.resolve())
@@ -331,6 +446,10 @@ class MainWindow(QMainWindow):
             self._reset_state()
             self._sync_ui_from_project()
             self._refresh_modules()
+            # 加载保存的依赖分析结果和状态
+            self._last_project_root = str(self._project.root_dir)
+            self._last_lib_dirs = [str(d) for d in self._project.lib_dirs]
+            self._load_dependency_result()
             self._log_panel.append_success(tr("log.open_project", path=filepath))
             self._status(tr("log.opened", path=filepath))
         except Exception as e:
@@ -398,18 +517,24 @@ class MainWindow(QMainWindow):
         )
         self._module_worker.start()
 
-    def _on_modules_scanned(self, categorized: dict, duplicates: dict, project_modules: dict):
+    def _on_modules_scanned(self, categorized: dict, duplicates: dict, duplicates_with_lines: dict, project_modules: dict):
         self._categorized_cache = categorized
         self._project_panel.populate_modules(list(project_modules.keys()))
         self._module_panel.set_data(dep_result=self._dep_result, categorized=categorized)
         self._tb_panel.set_module_map(project_modules)
-        dup_names = list(duplicates.keys()) if duplicates else []
-        if dup_names:
-            self._log_panel.append_warning(
-                tr("log.duplicate_modules", modules=', '.join(dup_names))
-            )
+        if duplicates_with_lines:
+            for mod_name, entries in duplicates_with_lines.items():
+                for entry in entries:
+                    self._log_panel.append_warning(
+                        tr("log.duplicate_module_detail",
+                           module=mod_name,
+                           file=str(entry["file"]),
+                           line=entry["line"])
+                    )
         total = sum(len(v) for v in categorized.values())
         self._status(tr("status.modules_count", count=total))
+        # 模块扫描后检查依赖文件是否有变动
+        self._check_dep_files_changed()
 
     def _on_analyze(self):
         if not self._project:
@@ -422,6 +547,9 @@ class MainWindow(QMainWindow):
             self._log_panel.append_warning(tr("msgbox.no_top_module"))
             self._tab_widget.setCurrentWidget(self._log_panel)
             return
+
+        # 分析前先检查文件是否有变动
+        self._check_dep_files_changed()
 
         self._auto_save()
         root = str(self._project.root_dir)
@@ -452,19 +580,32 @@ class MainWindow(QMainWindow):
                 self._log_panel.append_info(f"  {f}")
             self._project_panel.set_buttons_enabled(True, True, True)
             self._status(tr("status.done", count=len(result.files)))
+            self._set_analyze_status('completed')
+            self._check_dep_files_changed()
         else:
             self._log_panel.append_error(
                 tr("log.missing_modules", modules=', '.join(result.missing_modules))
             )
             self._project_panel.set_buttons_enabled(True, False, False)
             self._status(tr("status.failed_missing"))
+            self._set_analyze_status('error')
 
+        self._save_dependency_result()
         self._module_panel.set_data(
             dep_result=result,
             categorized=self._categorized_cache if hasattr(self, '_categorized_cache') else {}
         )
         self._tab_widget.setCurrentWidget(self._module_panel)
         self._refresh_modules()
+
+        # 如果有挂起的波形查看请求，分析成功后继续执行编译仿真
+        if getattr(self, '_pending_wave_after_analyze', False):
+            if result.success:
+                self._pending_wave_after_analyze = False
+                self._pending_wave_after_simulate = True
+                self._on_simulate()
+            else:
+                self._pending_wave_after_analyze = False
 
     def _on_simulate(self):
         if not self._project:
@@ -476,6 +617,20 @@ class MainWindow(QMainWindow):
         if not top:
             self._log_panel.append_warning(tr("msgbox.no_top_module"))
             self._tab_widget.setCurrentWidget(self._log_panel)
+            return
+
+        # 编译仿真前先检查文件是否有变动
+        self._check_dep_files_changed()
+
+        # 检查依赖分析状态，如果不是已完成，先执行依赖分析
+        analyze_status = self._project.analyze_status if self._project else 'idle'
+        if analyze_status != 'completed':
+            self._log_panel.append_info(
+                tr("log.analyze_first", status=analyze_status)
+                if False else "依赖分析状态不是已完成，先执行依赖分析..."
+            )
+            self._pending_simulate_after_analyze = True
+            self._on_analyze()
             return
 
         self._auto_save()
@@ -508,6 +663,7 @@ class MainWindow(QMainWindow):
         if result.success:
             self._log_panel.append_success(tr("log.sim_done"))
             self._status(tr("status.sim_ok", time=f"{result.elapsed_time:.2f}"))
+            self._set_simulate_status('completed')
         else:
             self._log_panel.append_error(
                 tr("log.sim_failed", code=result.exit_code)
@@ -518,22 +674,66 @@ class MainWindow(QMainWindow):
                     entry.file_ref, entry.line_no,
                 )
             self._status(tr("status.sim_failed"))
+            self._set_simulate_status('error')
 
         self._tab_widget.setCurrentWidget(self._log_panel)
+
+        # 如果之前有挂起的仿真请求（因为需要先分析依赖），继续处理
+        if getattr(self, '_pending_simulate_after_analyze', False):
+            self._pending_simulate_after_analyze = False
+            if result.success:
+                self._on_simulate()
+            return
+
+        # 如果之前有挂起的波形查看请求（因为需要先编译仿真），继续打开波形
+        if getattr(self, '_pending_wave_after_simulate', False):
+            if result.success:
+                self._pending_wave_after_simulate = False
+                wave_file = self._project.resolve_wave_file()
+                if wave_file.exists():
+                    self._do_open_wave(wave_file)
+                else:
+                    self._log_panel.append_error(
+                        tr("log.wave_check_dumpfile", file=str(wave_file))
+                    )
+                    self._status(tr("status.wave_not_found"))
+            else:
+                self._pending_wave_after_simulate = False
 
     def _on_open_wave(self):
         if not self._project:
             self._log_panel.append_warning(tr("log.no_project"))
             return
 
+        # 打开波形前先检查文件是否有变动
+        self._check_dep_files_changed()
+
         self._auto_save()
         wave_file = self._project.resolve_wave_file()
 
+        # 检查依赖分析状态
+        analyze_status = self._project.analyze_status if self._project else 'idle'
+        if analyze_status != 'completed':
+            self._log_panel.append_info("依赖分析未完成，先执行依赖分析 -> 编译仿真 -> 打开波形...")
+            self._pending_wave_after_analyze = True
+            self._on_analyze()
+            return
+
+        # 检查编译仿真状态
+        simulate_status = self._project.simulate_status if self._project else 'idle'
+        if simulate_status != 'completed':
+            self._log_panel.append_info("编译仿真未完成，先执行编译仿真 -> 打开波形...")
+            self._pending_wave_after_simulate = True
+            self._on_simulate()
+            return
+
+        # 分析依赖和编译仿真都已完成
         if wave_file.exists():
             self._tab_widget.setCurrentWidget(self._log_panel)
             self._do_open_wave(wave_file)
             return
 
+        # 波形文件不存在，需要重新运行仿真生成
         self._log_panel.clear()
         self._log_panel.append_info(
             tr("log.wave_not_found", file=str(wave_file))
@@ -563,8 +763,10 @@ class MainWindow(QMainWindow):
             self._log_panel.append_error(tr("log.wave_sim_failed"))
             self._status(tr("status.wave_failed"))
             self._tab_widget.setCurrentWidget(self._log_panel)
+            self._set_simulate_status('error')
             return
 
+        self._set_simulate_status('completed')
         wave_file = self._project.resolve_wave_file()
         if wave_file.exists():
             self._do_open_wave(wave_file)
@@ -617,6 +819,28 @@ class MainWindow(QMainWindow):
             path_part = href[7:]
             filepath, _, lineno = path_part.partition(":")
             self._open_file_external(filepath)
+
+    def _install_focus_detection(self):
+        """安装应用焦点检测：失焦时保存文件哈希快照，获焦时检测变动"""
+        app = QApplication.instance()
+        if app:
+            app.applicationStateChanged.connect(self._on_app_state_changed)
+
+    def _on_app_state_changed(self, state):
+        """应用状态变化回调（带2秒去抖）"""
+        if state == Qt.ApplicationActive:
+            # 应用获得焦点：检查文件是否有变动（去抖）
+            now = int(time.time() * 1000)
+            if now - self._last_focus_check_time < self._focus_debounce_ms:
+                return
+            self._last_focus_check_time = now
+            if self._project and self._dep_result:
+                self._check_dep_files_changed()
+        elif state == Qt.ApplicationInactive:
+            # 应用失去焦点：保存当前文件哈希快照
+            if self._project and self._dep_result:
+                self._last_dep_files = [str(f) for f in self._dep_result.files]
+                self._last_dep_file_hashes = self._compute_dep_hashes()
 
     def closeEvent(self, event):
         for worker in self._pending_workers:

@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 @dataclass
@@ -55,6 +55,11 @@ class Project:
     file_order: List[Path] = field(default_factory=list)
     simulators: Dict[str, SimulatorConfig] = field(default_factory=dict)
     wave_viewers: Dict[str, WaveViewerConfig] = field(default_factory=dict)
+    # 依赖分析结果（保存到工程文件）
+    dependency_result: Optional[dict] = field(default=None)
+    # 各步骤状态: 'idle' | 'completed' | 'error' | 'outdated'
+    analyze_status: str = field(default='idle')
+    simulate_status: str = field(default='idle')
 
     def resolve_wave_file(self) -> Path:
         """根据模板解析波形文件路径"""
@@ -62,7 +67,7 @@ class Project:
         return self.root_dir / path
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             'project_name': self.name,
             'project_root': str(self.root_dir),
             'lib_dirs': [str(d) for d in self.lib_dirs],
@@ -77,7 +82,12 @@ class Project:
                 k: v.launch_cmd for k, v in self.wave_viewers.items()
             },
             'file_order': [str(f) for f in self.file_order],
+            'analyze_status': self.analyze_status,
+            'simulate_status': self.simulate_status,
         }
+        if self.dependency_result is not None:
+            result['dependency_result'] = self.dependency_result
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Project':
@@ -100,4 +110,7 @@ class Project:
             simulators=simulators,
             wave_viewers=wave_viewers,
             file_order=[Path(f) for f in data.get('file_order', [])],
+            dependency_result=data.get('dependency_result', None),
+            analyze_status=data.get('analyze_status', 'idle'),
+            simulate_status=data.get('simulate_status', 'idle'),
         )

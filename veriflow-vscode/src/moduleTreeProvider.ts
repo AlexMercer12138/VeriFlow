@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { DependencyResult, ModuleScanResult } from './core';
 
-type TreeItemType = 'top' | 'depSection' | 'depBranch' | 'depModule' | 'libSection' | 'libModule' | 'empty';
+type TreeItemType = 'top' | 'depSection' | 'depBranch' | 'depModule' | 'libSection' | 'libModule' | 'empty' | 'missingModule';
 
 class ModuleTreeItem extends vscode.TreeItem {
     constructor(
@@ -44,6 +44,12 @@ class ModuleTreeItem extends vscode.TreeItem {
                 title: 'Open File',
                 arguments: filePath ? [vscode.Uri.file(filePath)] : [],
             };
+        } else if (itemType === 'missingModule') {
+            this.iconPath = new vscode.ThemeIcon('question', new vscode.ThemeColor('errorForeground'));
+            this.tooltip = `Module "${moduleName}" is not declared in any search directory`;
+            this.description = 'not declared';
+            // 红色字体
+            this.resourceUri = vscode.Uri.parse(`veriflow-missing://${moduleName}`);
         } else if (itemType === 'libSection') {
             this.iconPath = new vscode.ThemeIcon('folder-library');
             this.contextValue = 'libSection';
@@ -77,6 +83,10 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
 
     get topModule(): string {
         return this._topModule;
+    }
+
+    get analyzeResult(): DependencyResult | null {
+        return this._analyzeResult;
     }
 
     setScanResult(result: ModuleScanResult): void {
@@ -118,7 +128,7 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
             this._topModule || undefined
         ));
 
-        if (this._analyzeResult && this._analyzeResult.missingModules.length === 0) {
+        if (this._analyzeResult) {
             items.push(this._buildDepTree());
         }
 
@@ -140,6 +150,7 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
         const depGraph = result.depGraph || {};
         const moduleMap = result.moduleMap || {};
         const topMod = result.topModule;
+        const missingModules = result.missingModules || [];
 
         const visited = new Set<string>();
         let totalCount = 0;
@@ -189,7 +200,29 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
             }
         };
 
-        const rootNode = topMod ? buildNode(topMod) : null;
+        const rootChildren: ModuleTreeItem[] = [];
+
+        if (topMod) {
+            const rootNode = buildNode(topMod);
+            if (rootNode) {
+                rootChildren.push(rootNode);
+            }
+        }
+
+        // 添加 missing modules（未声明的实例）用红色标记
+        for (const mname of missingModules) {
+            if (!visited.has(mname)) {
+                visited.add(mname);
+                totalCount++;
+                rootChildren.push(new ModuleTreeItem(
+                    `❓ ${mname}`,
+                    vscode.TreeItemCollapsibleState.None,
+                    'missingModule',
+                    mname,
+                    ''
+                ));
+            }
+        }
 
         return new ModuleTreeItem(
             `Dependency Tree (${totalCount} modules)`,
@@ -197,7 +230,7 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
             'depSection',
             undefined,
             undefined,
-            rootNode ? [rootNode] : []
+            rootChildren
         );
     }
 
@@ -247,5 +280,10 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
 
     getModuleNames(): string[] {
         return this._scanResult?.modules || [];
+    }
+
+    // 只返回工作区目录中的模块名
+    getWorkspaceModuleNames(): string[] {
+        return this._scanResult?.workspaceModules || [];
     }
 }

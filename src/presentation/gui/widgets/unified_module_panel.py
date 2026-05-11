@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit,
 )
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QColor, QFont
 from src.presentation.gui.i18n import tr
 
 
@@ -87,7 +88,7 @@ class UnifiedModulePanel(QWidget):
         dep_count = 0
         unused_count = 0
 
-        if dep_mod_names and dep_graph:
+        if dep_graph:
             sec = self._add_section(tr("module.dep_section"))
             top_module = dep_result.top_module if dep_result else None
             visited = set()
@@ -112,9 +113,23 @@ class UnifiedModulePanel(QWidget):
 
             if top_module:
                 build_tree(top_module, 0, sec)
-            for m in dep_mod_names:
-                if m not in visited:
-                    build_tree(m, 0, sec)
+            # 也显示 missing_modules（未声明的实例）
+            missing = getattr(dep_result, 'missing_modules', []) or []
+            for mname in missing:
+                if mname not in visited:
+                    visited.add(mname)
+                    dep_count += 1
+                    indent = "    "
+                    item = QTreeWidgetItem([f"{indent}❓ {mname}  (未声明)"])
+                    item.setData(0, Qt.UserRole, "")
+                    item.setData(0, Qt.UserRole + 1, mname)
+                    item.setData(0, Qt.UserRole + 2, "__MISSING__")
+                    item.setForeground(0, QColor("#ff6b6b"))
+                    font = item.font(0)
+                    font.setBold(True)
+                    item.setFont(0, font)
+                    sec.addChild(item)
+                    self._all_items.append(item)
             self._tree.addTopLevelItem(sec)
             sec.setExpanded(True)
 

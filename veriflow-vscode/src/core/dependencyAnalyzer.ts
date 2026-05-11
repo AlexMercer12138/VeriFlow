@@ -170,33 +170,56 @@ export class DependencyAnalyzer {
     }
 
     private _topologicalSort(result: DependencyResult): string[] {
-        const leafFiles: string[] = [];
-        const depFiles = new Set<string>();
-        const topFile = result.moduleMap[result.topModule] || null;
+        const inDegree: Map<string, number> = new Map();
+        const adj: Map<string, Set<string>> = new Map();
 
-        for (const [, children] of Object.entries(result.depGraph)) {
+        for (const filepath of result.files) {
+            inDegree.set(filepath, 0);
+        }
+
+        for (const [moduleName, children] of Object.entries(result.depGraph)) {
+            const parentFile = result.moduleMap[moduleName];
+            if (!parentFile) { continue; }
             for (const child of children) {
                 const childFile = result.moduleMap[child];
-                if (childFile) {
-                    depFiles.add(childFile);
+                if (!childFile) { continue; }
+                if (parentFile !== childFile) {
+                    if (!adj.has(childFile)) {
+                        adj.set(childFile, new Set());
+                    }
+                    if (!adj.get(childFile)!.has(parentFile)) {
+                        adj.get(childFile)!.add(parentFile);
+                        inDegree.set(parentFile, (inDegree.get(parentFile) || 0) + 1);
+                    }
+                }
+            }
+        }
+
+        const queue: string[] = [];
+        for (const [filepath, degree] of inDegree.entries()) {
+            if (degree === 0) {
+                queue.push(filepath);
+            }
+        }
+
+        const ordered: string[] = [];
+        while (queue.length > 0) {
+            const current = queue.shift()!;
+            ordered.push(current);
+            for (const neighbor of adj.get(current) || []) {
+                inDegree.set(neighbor, (inDegree.get(neighbor) || 0) - 1);
+                if (inDegree.get(neighbor) === 0) {
+                    queue.push(neighbor);
                 }
             }
         }
 
         for (const filepath of result.files) {
-            if (!depFiles.has(filepath) && filepath !== topFile) {
-                leafFiles.push(filepath);
+            if (!ordered.includes(filepath)) {
+                ordered.push(filepath);
             }
         }
 
-        const middle = result.files.filter(
-            f => depFiles.has(f) && f !== topFile
-        );
-
-        const ordered = [...leafFiles, ...middle];
-        if (topFile && !ordered.includes(topFile)) {
-            ordered.push(topFile);
-        }
         return ordered;
     }
 }

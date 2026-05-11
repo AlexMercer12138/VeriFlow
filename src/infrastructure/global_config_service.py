@@ -58,7 +58,7 @@ class GlobalConfigService:
     @staticmethod
     def _defaults() -> dict:
         return {
-            'version': '1.0',
+            'version': '1.1.0',
             'lib_dirs': [],
             'language': 'zh',
             'theme': 'dark',

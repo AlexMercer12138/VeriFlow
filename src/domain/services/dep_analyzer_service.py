@@ -46,7 +46,11 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
     """依赖分析服务实现 - BFS 依赖解析"""
 
     _inst_pattern = re.compile(
-        r'\b(\w+)\s+(\w+)\s*\(',
+        r'\b(?!module\b)(?!endmodule\b)(\w+)\s+(?:#\s*\([^)]*\)\s*)?(\w+)\s*\(',
+    )
+
+    _inst_pattern_no_space = re.compile(
+        r'\b(?!module\b)(?!endmodule\b)(\w+)\s*\)\s*(\w+)\s*\(',
     )
 
     _include_pattern = re.compile(
@@ -98,6 +102,19 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
             mo_decl_names.add(m.group(1))
 
         for match in self._inst_pattern.finditer(content):
+            inst_module = match.group(1)
+            inst_name = match.group(2)
+            if inst_module.lower() in VERILOG_KEYWORDS:
+                continue
+            if inst_name.lower() in VERILOG_KEYWORDS:
+                continue
+            if inst_module == inst_name:
+                continue
+            if inst_module in mo_decl_names:
+                continue
+            deps.add(inst_module)
+
+        for match in self._inst_pattern_no_space.finditer(content):
             inst_module = match.group(1)
             inst_name = match.group(2)
             if inst_module.lower() in VERILOG_KEYWORDS:
@@ -169,24 +186,39 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
         return result
 
     def _topological_sort(self, result: DependencyResult) -> List[Path]:
-        leaf_files: List[Path] = []
-        dep_files: Set[Path] = set()
-        top_file = result.module_map.get(result.top_module)
+        in_degree: Dict[Path, int] = defaultdict(int)
+        adj: Dict[Path, Set[Path]] = defaultdict(set)
 
         for module_name, children in result.dep_graph.items():
+            parent_file = result.module_map.get(module_name)
+            if not parent_file:
+                continue
             for child in children:
                 child_file = result.module_map.get(child)
-                if child_file:
-                    dep_files.add(child_file)
+                if not child_file:
+                    continue
+                if parent_file != child_file and child_file not in adj[parent_file]:
+                    adj[child_file].add(parent_file)
+                    in_degree[parent_file] += 1
+
+        queue = deque()
+        for filepath in result.files:
+            if in_degree.get(filepath, 0) == 0:
+                queue.append(filepath)
+
+        ordered: List[Path] = []
+        while queue:
+            current = queue.popleft()
+            ordered.append(current)
+            for neighbor in adj.get(current, set()):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
 
         for filepath in result.files:
-            if filepath not in dep_files and filepath != top_file:
-                leaf_files.append(filepath)
+            if filepath not in ordered:
+                ordered.append(filepath)
 
-        middle = [f for f in result.files if f in dep_files and f != top_file]
-        ordered = leaf_files + middle
-        if top_file and top_file not in ordered:
-            ordered.append(top_file)
         return ordered
 
     def _expand_generate_ifdef(self, content: str) -> str:
@@ -264,6 +296,7 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
                         depth -= 1
                     j += 1
                 i = j
+                result.append(' ')
             else:
                 result.append(content[i])
                 i += 1

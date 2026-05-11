@@ -46,6 +46,7 @@ export function flattenParamBlocks(content: string): string {
                 j++;
             }
             i = j;
+            result.push(' ');
         } else {
             result.push(content[i]);
             i++;
@@ -124,5 +125,5 @@ function stripBlocks(content: string, startKw: string, endKw: string): string {
 }
 
 export const MODULE_DECL_RE = /\bmodule\s+(\w+)/g;
-export const INST_RE = /\b(\w+)\s+(\w+)\s*\(/g;
+export const INST_RE = /\b(?!module\b)(?!endmodule\b)(\w+)\s+(?:#\s*\([^)]*\)\s*)?(\w+)\s*\(/g;
 export const INCLUDE_RE = /`include\s+["<]([^">]+)[">]/g;

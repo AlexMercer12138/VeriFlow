@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ModuleTreeProvider } from './moduleTreeProvider';
+import { DependencyResult } from './core';
 
 export function getWorkspaceRoot(): string | undefined {
     const folders = vscode.workspace.workspaceFolders;
@@ -15,6 +16,32 @@ export function getTopModule(context: vscode.ExtensionContext): string {
 
 export async function setTopModule(context: vscode.ExtensionContext, moduleName: string): Promise<void> {
     await context.workspaceState.update('veriflow.topModule', moduleName);
+}
+
+// 状态管理: 'idle' | 'completed' | 'error' | 'outdated'
+export function getAnalyzeStatus(context: vscode.ExtensionContext): string {
+    return context.workspaceState.get<string>('veriflow.analyzeStatus', 'idle');
+}
+
+export async function setAnalyzeStatus(context: vscode.ExtensionContext, status: string): Promise<void> {
+    await context.workspaceState.update('veriflow.analyzeStatus', status);
+}
+
+export function getSimulateStatus(context: vscode.ExtensionContext): string {
+    return context.workspaceState.get<string>('veriflow.simulateStatus', 'idle');
+}
+
+export async function setSimulateStatus(context: vscode.ExtensionContext, status: string): Promise<void> {
+    await context.workspaceState.update('veriflow.simulateStatus', status);
+}
+
+// 依赖分析结果持久化
+export function getDependencyResult(context: vscode.ExtensionContext): DependencyResult | null {
+    return context.workspaceState.get<DependencyResult | null>('veriflow.dependencyResult', null);
+}
+
+export async function setDependencyResult(context: vscode.ExtensionContext, result: DependencyResult | null): Promise<void> {
+    await context.workspaceState.update('veriflow.dependencyResult', result);
 }
 
 export interface ExtensionSettings {

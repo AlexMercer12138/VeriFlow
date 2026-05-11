@@ -62,12 +62,19 @@ export interface SimulatorSpec {
     runCmd: string;
 }
 
+export interface DuplicateEntry {
+    file: string;
+    line: number;
+}
+
 export interface ModuleScanResult {
     root: string;
     libDirs: string[];
     totalModules: number;
     modules: string[];
+    workspaceModules: string[];
     modulesByDir: Record<string, string[]>;
     moduleFiles: Record<string, string>;
     duplicates: Record<string, string[]>;
+    duplicatesWithLines: Record<string, DuplicateEntry[]>;
 }
