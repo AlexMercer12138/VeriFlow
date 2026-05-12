@@ -35,52 +35,6 @@
 
 ---
 
-## VS Code 扩展（推荐）
-
-VeriFlow 提供了一个 **零依赖的 VS Code 扩展**（`veriflow-vscode/`），所有核心逻辑用 TypeScript 原生实现，不需要安装 Python。
-
-### 安装方式
-
-1. 克隆仓库后在 VS Code 中打开 `veriflow-vscode/` 目录
-2. 运行 `npm install && npm run compile`
-3. 按 `F5` 启动扩展调试
-
-### 使用流程
-
-1. 在 VS Code 中打开一个包含 `.v` / `.sv` 文件的目录
-2. 点击活动栏的 VeriFlow 图标，侧边栏会自动展示扫描到的模块
-3. 点击 `Select Top Module` 选择一个顶层模块
-4. 点击 `Analyze Dependencies` 分析依赖关系
-5. 点击 `Compile & Simulate` 编译并仿真
-6. 点击 `Open Waveform` 查看波形
-
-### Testbench 生成
-
-VS Code 扩展侧边栏下方提供 **Testbench Generator** 面板：
-
-1. 在 **DUT Modules** 区域选择要例化的模块（支持同一模块多次例化）
-2. 点击模块，在右侧编辑端口信号连接名和参数值
-3. 配置时钟频率、复位极性、timescale 等属性
-4. 点击 **Generate Testbench** 自动生成并打开 Testbench 文件
-
-### 扩展设置
-
-在 VS Code `settings.json` 中搜索 `veriflow` 即可配置所有选项：
-
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `veriflow.libDirs` | 库目录列表 | `[]` |
-| `veriflow.simulator` | 仿真器选择 | `iverilog` |
-| `veriflow.waveViewer` | 波形查看器 | `surfer` |
-| `veriflow.simulatorCompileCmd` | 自定义编译命令模板 | `""` |
-| `veriflow.simulatorRunCmd` | 自定义运行命令模板 | `""` |
-| `veriflow.waveViewerCmd` | 自定义波形查看器命令 | `""` |
-| `veriflow.waveFileTemplate` | 波形文件路径模板 | `{top_module}.vcd` |
-
-> **注意**：扩展版不管理工程文件，直接以 VS Code 打开的当前目录作为编译根目录；不区分全局库和项目库，所有库路径在扩展设置中统一配置。
-
----
-
 ## 架构
 
 VeriFlow 遵循 **Clean Architecture**（领域驱动设计），分为四个独立层级：
@@ -126,28 +80,6 @@ src/
     └── template_engine.py
 ```
 
-### VS Code 扩展架构（TypeScript）
-
-```
-vscode-extension/src/
-├── core/                       # 核心引擎（与 Python 版功能对等）
-│   ├── types.ts                # 类型定义
-│   ├── verilogUtils.ts         # Verilog 工具（注释移除、generate/ifdef展开）
-│   ├── fileService.ts          # 文件 I/O
-│   ├── dependencyAnalyzer.ts   # BFS 依赖解析
-│   ├── templateEngine.ts       # 命令模板渲染
-│   ├── processManager.ts       # 外部进程管理
-│   ├── logParser.ts            # 日志解析
-│   ├── simulationRunner.ts     # 仿真运行
-│   ├── portParser.ts           # 端口解析
-│   └── testbenchGenerator.ts   # Testbench 生成器
-├── config.ts                   # 扩展配置管理
-├── output.ts                   # 输出通道封装
-├── moduleTreeProvider.ts       # 模块树视图数据源
-├── testbenchPanel.ts           # Testbench 生成面板
-└── extension.ts                # 扩展主入口
-```
-
 ### 设计模式
 
 | 模式 | 用途 |
@@ -160,7 +92,7 @@ vscode-extension/src/
 
 ---
 
-## 安装（Python 版）
+## 安装
 
 ### 前置要求
 
@@ -183,17 +115,38 @@ pip install -r requirements.txt
 
 Python 依赖仅需 **PySide6**（>= 6.5.0）用于 GUI，CLI 无需额外依赖。
 
-### 打包为 EXE（免安装）
+### 打包为 EXE（Python 版本）
 
 ```bash
 # 安装 PyInstaller
 pip install pyinstaller
 
-# 一键打包（输出 dist/VeriFlow.exe）
+# 一键打包GUI（输出 dist/VeriFlow.exe）
 pyinstaller VeriFlow.spec --noconfirm
+
+# 一键打包CLI（输出 dist/VeriFlow-cli.exe）
+pyinstaller VeriFlow-cli.spec --noconfirm
 ```
 
-打包后的 `VeriFlow.exe` 为单文件免安装应用，双击即可运行。
+打包后的 `VeriFlow.exe` 和 `VeriFlow-cli.exe` 为单文件免安装应用，GUI 版本双击即可运行，CLI 版本将路径添加到PATH后从命令行运行。
+
+### 打包为 VSIX（VS Code 版本）
+
+```bash
+# 进入 VS Code 扩展目录
+cd veriflow-vscode
+
+# 安装依赖
+npm install
+
+# 编译 TypeScript 代码
+npm run compile
+
+# 打包为 VSIX 文件（输出 veriflow-vscode/veriflow-{version}.vsix）
+npm run package
+```
+
+打包后的 `veriflow-{version}.vsix` 文件可上传至 [VS Code Marketplace](https://marketplace.visualstudio.com/) 或直接分发给用户安装。
 
 ---
 
@@ -201,59 +154,68 @@ pyinstaller VeriFlow.spec --noconfirm
 
 ### GUI 模式
 
-```bash
-# 推荐：直接启动
-python run_gui.py
+**典型操作流程**：
 
-# 或使用模块方式
-python -m src.presentation.gui
-```
-
-典型操作流程：
-
-1. **新建工程** 或 **打开工程**，创建/加载 `.json` 工程文件
-2. 设置 **顶层模块** 名称（从扫描列表中选择）
-3. 在工程配置标签页中配置 **库目录**、**仿真器** 和 **波形查看器**
-4. 点击 **分析依赖** 解析模块依赖图
-5. 点击 **编译并仿真** 运行仿真
-6. 点击 **打开波形** 查看生成的波形文件
+1. 新建工程 或 打开工程，创建/加载 .json 工程文件
+2. 生成 Testbench 模板并添加测试激励
+3. 设置 顶层模块 名称（从扫描列表中选择）
+4. 在工程配置标签页中配置 库目录、仿真器 和 波形查看器
+5. 点击 分析依赖 解析模块依赖图
+6. 点击 编译并仿真 运行仿真
+7. 点击 打开波形 查看生成的波形文件
 
 ### CLI 模式
 
 ```bash
-# 仅分析依赖，不执行仿真
-python -m src.presentation.cli analyze --root ./rtl --top top_tb --lib-dir ./libs
+# 1. 创建工程
+veriflow project new -n my_proj -r ./rtl -t top_module
 
-# 一键仿真
-python -m src.presentation.cli simulate --root ./rtl --top top_tb --simulator iverilog
+# 2. 添加全局库（可选）
+veriflow lib add -L ./shared_libs
 
-# 使用已有工程文件仿真
-python -m src.presentation.cli simulate --project config/my_project.json
+# 3. 查看工程配置
+veriflow project show -p my_proj.json
 
-# 创建新工程文件
-python -m src.presentation.cli new --name my_design --root ./rtl --top top_tb -o my_design.json
+# 4. 分析依赖
+veriflow analyze -p my_proj.json
+
+# 5. 编译仿真
+veriflow sim -p my_proj.json
+
+# 6. 打开波形
+veriflow wave -p my_proj.json
+
+# 7. 查看帮助
+veriflow --help
+
+# 8. 查看版本
+veriflow --version
 ```
 
-#### CLI 参数
+### VS Code 扩展模式
 
-| 参数 | 缩写 | 说明 |
-|------|------|------|
-| `--root` | `-r` | 工程根目录 |
-| `--top` | `-t` | 顶层模块名 |
-| `--lib-dir` | `-L` | 库目录（逗号分隔） |
-| `--project` | `-p` | 工程 JSON 文件路径 |
-| `--name` | `-n` | 工程名称（默认：`my_project`） |
-| `--simulator` | `-s` | 仿真器名称（默认：`iverilog`） |
-| `--wave-viewer` | `-w` | 波形查看器（默认：`surfer`） |
-| `--output` | `-o` | 输出 JSON 路径（`new` 命令专用） |
+**扩展安装**：
+1. 在 VS Code 中按 `Ctrl+Shift+P`
+2. 输入 `Extensions: Install from VSIX`
+3. 选择打包好的 `veriflow-{version}.vsix` 文件
 
-#### CLI 命令
+**扩展使用流程**：
 
-| 命令 | 说明 |
-|------|------|
-| `analyze` | 分析模块依赖并显示编译顺序 |
-| `simulate` | 完整的编译 + 仿真流程 |
-| `new` | 创建新的工程 JSON 文件 |
+1. 在 VS Code 中打开包含 `.v` / `.sv` 文件的目录
+2. 点击活动栏的 **VeriFlow** 图标，侧边栏自动展示扫描到的模块
+3. 点击 `Select Top Module` 选择顶层模块
+4. 点击 `Analyze Dependencies` 分析依赖关系
+5. 点击 `Compile & Simulate` 编译并仿真
+6. 点击 `Open Waveform` 查看波形
+
+**扩展设置**（在 VS Code `settings.json` 中搜索 `veriflow`）：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `veriflow.libDirs` | 库目录列表 | `[]` |
+| `veriflow.simulator` | 仿真器选择 | `iverilog` |
+| `veriflow.waveViewer` | 波形查看器 | `surfer` |
+| `veriflow.waveFileTemplate` | 波形文件路径模板 | `{top_module}.vcd` |
 
 ---
 
@@ -296,26 +258,21 @@ python -m src.presentation.cli new --name my_design --root ./rtl --top top_tb -o
 }
 ```
 
-### 模板变量
-
-仿真器和查看器命令使用 `{placeholder}` 占位符语法：
-
-| 变量 | 使用场景 | 说明 |
-|------|----------|------|
-| `{files}` | 编译 | 空格分隔的源码文件列表（带引号） |
-| `{output}` | 编译 & 运行 | 编译输出产物路径 |
-| `{top_module}` | 编译 | 顶层模块名称 |
-| `{wave_file}` | 波形查看 | 波形文件路径 |
-
 ---
 
-## 全局配置（Python GUI 版）
+## 全局配置（Python 版）
 
 VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 
 - **`lib_dirs`**：全局库目录，会自动纳入所有工程的模块扫描和依赖解析。
 
+- **`language`**：界面语言，默认中文。
+
+- **`theme`**：界面主题，默认暗黑模式。
+
 通过 GUI 设置（工程配置 → 全局库目录），或手动编辑 JSON 文件。
+
+通过 CLI `veriflow lib add -L ./shared_libs` 命令添加全局库目录。
 
 ---
 
@@ -352,16 +309,6 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 6. **拓扑排序** — 叶子模块（无依赖）优先编译，顶层模块最后编译
 7. **缺失模块检测** — 报告所有被引用但在搜索路径中找不到的模块
 
-### 端口解析与例化模板
-
-端口解析器功能：
-- 提取 `input`/`output`/`inout` 端口及位宽信息
-- 提取 `parameter` 参数声明
-- 生成格式化对齐的 Verilog 例化模板
-- 生成测试平台用的连线声明
-
-**注**：生成例化模板的功能已经在Python中实现，但是GUI和CLI中均没有调用。如果需要该功能，请查看 src\domain\services\port_parser_service.py 中的实现。
-
 ### 日志解析
 
 日志解析器能理解主流仿真器的输出格式，并分类为结构化条目：
@@ -384,18 +331,14 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 ## 开发指南
 
 ```bash
-# 运行 GUI 验证
-python -m tests.verify_gui
+# 运行 GUI 应用
+python run_gui.py
 
-# 运行服务验证
-python -m tests.verify_services
-
-# 运行单元测试（需要 pytest）
-# pip install pytest
-# pytest tests/
+# 运行 CLI 应用
+python run_cli.py
 
 # VS Code 扩展开发
-cd vscode-extension
+cd veriflow-vscode
 npm install
 npm run compile
 # 按 F5 启动调试
@@ -403,6 +346,7 @@ npm run compile
 # PyInstaller 打包
 pip install pyinstaller
 pyinstaller VeriFlow.spec --noconfirm
+pyinstaller VeriFlow-cli.spec --noconfirm
 ```
 
 ---
