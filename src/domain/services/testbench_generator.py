@@ -80,6 +80,11 @@ class TestbenchGenerator:
         for mod in modules:
             filepath = mod.get('filepath', '')
             ports, params = self._parse_module(filepath)
+            # Build param value map for width resolution
+            param_values = mod.get('param_values', {})
+            param_map = {}
+            for p in params:
+                param_map[p.name] = param_values.get(p.name, p.value)
             all_parsed.append((mod, ports, params))
             port_signals = mod.get('port_signals', {})
             for port in ports:
@@ -88,20 +93,20 @@ class TestbenchGenerator:
                     continue
                 existing = merged_signals.get(sig_name)
                 if existing is None:
-                    merged_signals[sig_name] = port
+                    merged_signals[sig_name] = (port, param_map)
                 else:
-                    w_old = self._width_bits(existing)
-                    w_new = self._width_bits(port)
+                    w_old = self._width_bits(existing[0], existing[1])
+                    w_new = self._width_bits(port, param_map)
                     if w_new > w_old:
-                        merged_signals[sig_name] = port
+                        merged_signals[sig_name] = (port, param_map)
 
         # ---- Generate shared signal declarations ----
         input_signals = {}
         output_signals = {}
         inout_signals = {}
-        for sig_name, port in merged_signals.items():
+        for sig_name, (port, param_map) in merged_signals.items():
             direction = port.direction
-            width_str = port.get_width_str()
+            width_str = port.get_width_str(param_map)
             if direction == 'input':
                 input_signals[sig_name] = width_str
             elif direction == 'inout':
@@ -180,7 +185,17 @@ class TestbenchGenerator:
 
         return L
 
-    def _width_bits(self, port) -> int:
+    def _width_bits(self, port, param_map=None) -> int:
+        from src.domain.models.port import resolve_port_width
+        if param_map and port.width:
+            resolved = resolve_port_width(port.width, param_map)
+            if resolved:
+                try:
+                    m = __import__('re').match(r'\[(\d+):(\d+)\]', resolved)
+                    if m:
+                        return abs(int(m.group(1)) - int(m.group(2))) + 1
+                except Exception:
+                    pass
         if port.width_msb is not None and port.width_lsb is not None:
             return abs(port.width_msb - port.width_lsb) + 1
         if port.width:

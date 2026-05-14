@@ -11,6 +11,50 @@ export interface TbModuleConfig {
     param_values: Record<string, string>;
 }
 
+function clog2(val: number): number {
+    if (val <= 0) { return 0; }
+    return Math.ceil(Math.log2(val));
+}
+
+function replaceClog2(expr: string): string {
+    return expr.replace(/\$clog2\s*\(\s*([^)]+)\s*\)/g, (_match, inner) => {
+        const val = parseInt(inner.trim(), 10);
+        if (isNaN(val)) { return _match; }
+        return String(clog2(val));
+    });
+}
+
+function evalExpr(expr: string, paramMap: Record<string, string>): number {
+    if (!expr) { return 1; }
+    expr = expr.trim();
+    if (/^\d+$/.test(expr)) { return parseInt(expr, 10); }
+    // Replace parameter references (longest first to avoid partial matches)
+    const sorted = Object.keys(paramMap).sort((a, b) => b.length - a.length);
+    for (const pname of sorted) {
+        const pval = paramMap[pname];
+        const re = new RegExp('\\b' + pname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+        expr = expr.replace(re, pval);
+    }
+    // Handle $clog2() function
+    expr = replaceClog2(expr);
+    try {
+        // eslint-disable-next-line no-new-func
+        return Math.floor(new Function('return (' + expr + ')')());
+    } catch {
+        return 1;
+    }
+}
+
+function resolvePortWidth(widthStr: string | undefined, paramMap: Record<string, string>): string | undefined {
+    if (!widthStr) { return undefined; }
+    const m = widthStr.match(/^\[(.+?):(.+?)\]$/);
+    if (!m) { return widthStr; }
+    const msbVal = evalExpr(m[1].trim(), paramMap);
+    const lsbVal = evalExpr(m[2].trim(), paramMap);
+    if (msbVal === 0 && lsbVal === 0) { return undefined; }
+    return `[${msbVal}:${lsbVal}]`;
+}
+
 export interface TbConfig {
     name: string;
     time_unit: string;
@@ -94,12 +138,18 @@ export class TestbenchGenerator {
             excludeSignals.add(i > 0 ? `clk_${i}` : 'clk');
         }
 
-        const mergedSignals = new Map<string, Port>();
+        const mergedSignals = new Map<string, { port: Port; paramMap: Record<string, string> }>();
         const allParsed: { mod: TbModuleConfig; ports: Port[]; params: Parameter[] }[] = [];
 
         for (const mod of modules) {
             const filepath = mod.filepath || '';
             const { ports, params } = this._parseModule(filepath);
+            // Build param value map for width resolution
+            const paramValues = mod.param_values || {};
+            const paramMap: Record<string, string> = {};
+            for (const p of params) {
+                paramMap[p.name] = paramValues[p.name] || p.value;
+            }
             allParsed.push({ mod, ports, params });
             const portSignals = mod.port_signals || {};
             for (const port of ports) {
@@ -107,12 +157,12 @@ export class TestbenchGenerator {
                 if (excludeSignals.has(sigName)) { continue; }
                 const existing = mergedSignals.get(sigName);
                 if (!existing) {
-                    mergedSignals.set(sigName, port);
+                    mergedSignals.set(sigName, { port, paramMap });
                 } else {
-                    const wOld = this._widthBits(existing);
-                    const wNew = this._widthBits(port);
+                    const wOld = this._widthBits(existing.port, existing.paramMap);
+                    const wNew = this._widthBits(port, paramMap);
                     if (wNew > wOld) {
-                        mergedSignals.set(sigName, port);
+                        mergedSignals.set(sigName, { port, paramMap });
                     }
                 }
             }
@@ -123,8 +173,8 @@ export class TestbenchGenerator {
         const outputSignals: Record<string, string | undefined> = {};
         const inoutSignals: Record<string, string | undefined> = {};
 
-        for (const [sigName, port] of mergedSignals.entries()) {
-            const widthStr = this._getWidthStr(port);
+        for (const [sigName, { port, paramMap }] of mergedSignals.entries()) {
+            const widthStr = this._getWidthStr(port, paramMap);
             if (port.direction === 'input') {
                 inputSignals[sigName] = widthStr;
             } else if (port.direction === 'inout') {
@@ -218,7 +268,16 @@ export class TestbenchGenerator {
         return L;
     }
 
-    private _widthBits(port: Port): number {
+    private _widthBits(port: Port, paramMap?: Record<string, string>): number {
+        if (paramMap && port.width) {
+            const resolved = resolvePortWidth(port.width, paramMap);
+            if (resolved) {
+                const m = resolved.match(/\[(\d+):(\d+)\]/);
+                if (m) {
+                    return Math.abs(parseInt(m[1], 10) - parseInt(m[2], 10)) + 1;
+                }
+            }
+        }
         if (port.widthMsb !== undefined && port.widthLsb !== undefined) {
             return Math.abs(port.widthMsb - port.widthLsb) + 1;
         }
@@ -231,7 +290,10 @@ export class TestbenchGenerator {
         return 1;
     }
 
-    private _getWidthStr(port: Port): string | undefined {
+    private _getWidthStr(port: Port, paramMap?: Record<string, string>): string | undefined {
+        if (paramMap && port.width) {
+            return resolvePortWidth(port.width, paramMap);
+        }
         return port.width;
     }
 
