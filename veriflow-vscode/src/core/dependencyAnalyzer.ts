@@ -126,6 +126,8 @@ export class DependencyAnalyzer {
         }
 
         content = removeComments(content);
+        // 去除过程块（initial/always/task/function 等），这些块内部不可能有模块例化
+        content = this._removeProceduralBlocks(content);
         content = flattenParamBlocks(content);
         content = expandGenerateIfdef(content);
 
@@ -151,6 +153,112 @@ export class DependencyAnalyzer {
         }
 
         return Array.from(deps).sort();
+    }
+
+    private _removeProceduralBlocks(content: string): string {
+        const procPattern = /\b(initial|always(?:_comb|_ff|_latch)?|task|function|specify|fork|final)\b/g;
+        const result: string[] = [];
+        let i = 0;
+        const length = content.length;
+
+        while (i < length) {
+            procPattern.lastIndex = i;
+            const match = procPattern.exec(content);
+            if (!match) {
+                result.push(content.substring(i));
+                break;
+            }
+
+            result.push(content.substring(i, match.index));
+
+            let j = match.index + match[0].length;
+            let depth = 0;
+            let inString = false;
+            let stringChar: string | null = null;
+
+            while (j < length) {
+                const ch = content[j];
+
+                // FIXED: Only detect " as string delimiter, not '
+                // In Verilog, ' is used for binary/hex constants (1'b0, 8'hFF), not strings
+                if (ch === '"' && !inString) {
+                    inString = true;
+                    stringChar = ch;
+                    j++;
+                    continue;
+                } else if (ch === stringChar && inString) {
+                    let backslashCount = 0;
+                    let k = j - 1;
+                    while (k >= 0 && content[k] === '\\') {
+                        backslashCount++;
+                        k--;
+                    }
+                    if (backslashCount % 2 === 0) {
+                        inString = false;
+                        stringChar = null;
+                    }
+                    j++;
+                    continue;
+                }
+
+                if (inString) {
+                    j++;
+                    continue;
+                }
+
+                if (content.startsWith('begin', j)) {
+                    depth++;
+                    j += 5;
+                    continue;
+                } else if (content.startsWith('endtask', j)) {
+                    j += 7;
+                    break;
+                } else if (content.startsWith('endfunction', j)) {
+                    j += 11;
+                    break;
+                } else if (content.startsWith('endspecify', j)) {
+                    j += 10;
+                    break;
+                } else if (content.startsWith('endcase', j)) {
+                    // endcase is NOT a begin/end pair, skip it
+                    j += 7;
+                    continue;
+                } else if (content.startsWith('join_none', j)) {
+                    j += 9;
+                    break;
+                } else if (content.startsWith('join_any', j)) {
+                    j += 8;
+                    break;
+                } else if (content.startsWith('join', j)) {
+                    j += 4;
+                    break;
+                } else if (content.startsWith('end', j) && depth > 0) {
+                    depth--;
+                    j += 3;
+                    // FIXED: When depth reaches 0 after decrement, break immediately
+                    if (depth === 0) {
+                        break;
+                    }
+                    continue;
+                } else if (content.startsWith('end', j) && depth === 0) {
+                    // When depth===0, ensure 'end' is a standalone keyword (not followed by letter)
+                    // Avoid mis-matching endmodule, endgenerate, etc.
+                    const afterEnd = j + 3 < length ? content[j + 3] : '';
+                    if (!/[a-zA-Z_]/.test(afterEnd)) {
+                        j += 3;
+                        break;
+                    }
+                    j += 3;
+                    continue;
+                } else {
+                    j++;
+                }
+            }
+
+            i = j;
+        }
+
+        return result.join('');
     }
 
     private _extractIncludes(filepath: string): string[] {

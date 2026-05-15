@@ -45,6 +45,8 @@ VERILOG_KEYWORDS = {
 class DependencyAnalyzerService(IDependencyAnalyzer):
     """依赖分析服务实现 - BFS 依赖解析"""
 
+    # 模块例化正则：模块名 [参数覆盖] 实例名 (端口连接列表)
+    # 在 extract_dependencies 中会先去除注释和过程块，所以这里只需基本匹配
     _inst_pattern = re.compile(
         r'\b(?!module\b)(?!endmodule\b)(\w+)\s+(?:#\s*\([^)]*\)\s*)?(\w+)\s*\(',
     )
@@ -93,6 +95,8 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
         if skip_comments:
             content = remove_comments(content)
 
+        # 去除过程块（initial/always/task/function 等），这些块内部不可能有模块例化
+        content = self._remove_procedural_blocks(content)
         content = self._flatten_param_blocks(content)
         content = self._expand_generate_ifdef(content)
 
@@ -279,6 +283,119 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
                     j += 1
             result.append(content[local_start:j - len(end_kw)])
             i = j
+        return ''.join(result)
+
+    def _remove_procedural_blocks(self, content: str) -> str:
+        """去除过程块（initial/always/task/function/specify 等），这些块内部不可能有模块例化。
+
+        模块例化只能出现在模块级别，不能出现在过程块内部。
+        去除这些块可以避免误匹配 begin...if、$display(...) 等代码结构。
+        """
+        # 使用正则去除各种过程块：initial/always/task/function/specify/fork/join_none/join_any
+        # 匹配 pattern: keyword [optional sensitivity list] begin ... end
+        # 需要处理嵌套的 begin/end
+        result = []
+        i = 0
+        length = len(content)
+
+        # 匹配过程块起始关键字：initial, always, always_comb, always_ff, always_latch,
+        # task, function, specify, fork, final
+        proc_pattern = re.compile(
+            r'\b(initial|always(?:_comb|_ff|_latch)?|task|function|specify|fork|final)\b'
+        )
+
+        while i < length:
+            match = proc_pattern.search(content, i)
+            if not match:
+                result.append(content[i:])
+                break
+
+            # 保留过程块之前的内容
+            result.append(content[i:match.start()])
+
+            # 找到过程块的结束位置
+            # 过程块通常以 end/endtask/endfunction/endspecify/join/join_any/join_none 结束
+            j = match.end()
+            depth = 0
+            in_string = False
+            string_char = None
+
+            while j < length:
+                ch = content[j]
+
+                # 处理字符串
+                # FIXED: Only detect " as string delimiter, not '
+                # In Verilog, ' is used for binary/hex constants (1'b0, 8'hFF), not strings
+                if ch == '"' and not in_string:
+                    in_string = True
+                    string_char = ch
+                    j += 1
+                    continue
+                elif ch == string_char and in_string:
+                    # 检查是否是转义
+                    backslash_count = 0
+                    k = j - 1
+                    while k >= 0 and content[k] == '\\':
+                        backslash_count += 1
+                        k -= 1
+                    if backslash_count % 2 == 0:
+                        in_string = False
+                        string_char = None
+                    j += 1
+                    continue
+
+                if in_string:
+                    j += 1
+                    continue
+
+                # 处理 begin/end 嵌套
+                if content.startswith('begin', j):
+                    depth += 1
+                    j += 5
+                    continue
+                elif content.startswith('endtask', j):
+                    j += 7
+                    break
+                elif content.startswith('endfunction', j):
+                    j += 11
+                    break
+                elif content.startswith('endspecify', j):
+                    j += 10
+                    break
+                elif content.startswith('endcase', j):
+                    # endcase is NOT a begin/end pair, skip it
+                    j += 7
+                    continue
+                elif content.startswith('join_none', j):
+                    j += 9
+                    break
+                elif content.startswith('join_any', j):
+                    j += 8
+                    break
+                elif content.startswith('join', j):
+                    j += 4
+                    break
+                elif content.startswith('end', j) and depth > 0:
+                    depth -= 1
+                    j += 3
+                    # FIXED: When depth reaches 0 after decrement, break immediately
+                    if depth == 0:
+                        break
+                    continue
+                elif content.startswith('end', j) and depth == 0:
+                    # 当 depth==0 时，确保 'end' 是独立的结束关键字（后面不是字母或下划线）
+                    # 避免误匹配 endmodule、endcase、endgenerate 等
+                    after_end = content[j + 3] if j + 3 < length else ''
+                    if not (after_end.isalpha() or after_end == '_'):
+                        j += 3
+                        break
+                    j += 3
+                    continue
+                else:
+                    j += 1
+
+            i = j
+
         return ''.join(result)
 
     def _flatten_param_blocks(self, content: str) -> str:
