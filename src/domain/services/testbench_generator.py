@@ -3,7 +3,16 @@
 Testbench 生成器 — 根据配置生成 Verilog testbench 文件
 """
 
+import re
 from pathlib import Path
+
+
+def _is_valid_verilog_identifier(name: str) -> bool:
+    """检查是否为合法的 Verilog 标识符（首字符必须是字母或下划线）"""
+    if not name:
+        return False
+    first = name[0]
+    return first.isalpha() or first == '_'
 
 
 class TestbenchGenerator:
@@ -101,10 +110,13 @@ class TestbenchGenerator:
                         merged_signals[sig_name] = (port, param_map)
 
         # ---- Generate shared signal declarations ----
+        # 只生成合法 Verilog 标识符的信号声明（首字符为字母或下划线）
         input_signals = {}
         output_signals = {}
         inout_signals = {}
         for sig_name, (port, param_map) in merged_signals.items():
+            if not _is_valid_verilog_identifier(sig_name):
+                continue
             direction = port.direction
             width_str = port.get_width_str(param_map)
             if direction == 'input':

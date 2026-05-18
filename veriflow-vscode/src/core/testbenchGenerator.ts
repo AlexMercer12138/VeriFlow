@@ -16,6 +16,12 @@ function clog2(val: number): number {
     return Math.ceil(Math.log2(val));
 }
 
+function isValidVerilogIdentifier(name: string): boolean {
+    if (!name) { return false; }
+    const first = name[0];
+    return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first === '_';
+}
+
 function replaceClog2(expr: string): string {
     return expr.replace(/\$clog2\s*\(\s*([^)]+)\s*\)/g, (_match, inner) => {
         const val = parseInt(inner.trim(), 10);
@@ -169,11 +175,13 @@ export class TestbenchGenerator {
         }
 
         // ---- Generate shared signal declarations ----
+        // Only generate declarations for valid Verilog identifiers (first char is letter or underscore)
         const inputSignals: Record<string, string | undefined> = {};
         const outputSignals: Record<string, string | undefined> = {};
         const inoutSignals: Record<string, string | undefined> = {};
 
         for (const [sigName, { port, paramMap }] of mergedSignals.entries()) {
+            if (!isValidVerilogIdentifier(sigName)) { continue; }
             const widthStr = this._getWidthStr(port, paramMap);
             if (port.direction === 'input') {
                 inputSignals[sigName] = widthStr;

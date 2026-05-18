@@ -17,6 +17,7 @@ from src.domain.models.simulation import SimulationResult, LogEntry
 from src.domain.services.dep_analyzer_service import DependencyAnalyzerService
 from src.domain.services.sim_runner_service import SimRunnerService
 from src.domain.services.project_manager_service import ProjectManagerService
+from src.domain.services.verilog_utils import remove_comments
 
 
 class ApplicationCoordinator:
@@ -116,6 +117,7 @@ class ApplicationCoordinator:
                     content = self._file_service.read_text(str(vfile))
                 except Exception:
                     continue
+                content = remove_comments(content)
                 for match in re.finditer(r'\bmodule\s+(\w+)', content):
                     mod_name = match.group(1)
                     if mod_name not in seen_modules:
@@ -140,6 +142,7 @@ class ApplicationCoordinator:
                 content = self._file_service.read_text(str(vfile))
             except Exception:
                 continue
+            content = remove_comments(content)
             for match in re.finditer(r'\bmodule\s+(\w+)', content):
                 result[match.group(1)] = vfile
         return result
@@ -163,6 +166,7 @@ class ApplicationCoordinator:
                 except Exception:
                     continue
 
+                content = remove_comments(content)
                 for match in re.finditer(r'\bmodule\s+(\w+)', content):
                     mod_name = match.group(1)
                     if mod_name in index:
@@ -193,6 +197,7 @@ class ApplicationCoordinator:
                     content = self._file_service.read_text(str(vfile))
                 except Exception:
                     continue
+                content = remove_comments(content)
                 for match in re.finditer(r'\bmodule\s+(\w+)', content):
                     mod_name = match.group(1)
                     all_modules[mod_name].append(vfile.resolve())
@@ -225,8 +230,29 @@ class ApplicationCoordinator:
                 except Exception:
                     continue
                 lines = content.splitlines()
+                in_block_comment = False
                 for line_no, line in enumerate(lines, start=1):
-                    for match in re.finditer(r'\bmodule\s+(\w+)', line):
+                    stripped = line.strip()
+                    while True:
+                        if in_block_comment:
+                            end_idx = stripped.find('*/')
+                            if end_idx == -1:
+                                stripped = ''
+                                break
+                            in_block_comment = False
+                            stripped = stripped[end_idx + 2:]
+                        else:
+                            sl_idx = stripped.find('//')
+                            bs_idx = stripped.find('/*')
+                            if sl_idx != -1 and (bs_idx == -1 or sl_idx < bs_idx):
+                                stripped = stripped[:sl_idx]
+                                break
+                            elif bs_idx != -1:
+                                in_block_comment = True
+                                stripped = stripped[:bs_idx]
+                            else:
+                                break
+                    for match in re.finditer(r'\bmodule\s+(\w+)', stripped):
                         mod_name = match.group(1)
                         all_modules[mod_name].append({
                             "file": vfile.resolve(),

@@ -284,11 +284,35 @@ function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult
             try {
                 const content = readText(vfile);
                 const lines = content.split('\n');
+                let inBlockComment = false;
                 for (let lineNo = 0; lineNo < lines.length; lineNo++) {
-                    const line = lines[lineNo];
+                    let stripped = lines[lineNo].trim();
+                    while (true) {
+                        if (inBlockComment) {
+                            const endIdx = stripped.indexOf('*/');
+                            if (endIdx === -1) {
+                                stripped = '';
+                                break;
+                            }
+                            inBlockComment = false;
+                            stripped = stripped.substring(endIdx + 2);
+                        } else {
+                            const slIdx = stripped.indexOf('//');
+                            const bsIdx = stripped.indexOf('/*');
+                            if (slIdx !== -1 && (bsIdx === -1 || slIdx < bsIdx)) {
+                                stripped = stripped.substring(0, slIdx);
+                                break;
+                            } else if (bsIdx !== -1) {
+                                inBlockComment = true;
+                                stripped = stripped.substring(0, bsIdx);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                     MODULE_DECL_RE.lastIndex = 0;
                     let match: RegExpExecArray | null;
-                    while ((match = MODULE_DECL_RE.exec(line)) !== null) {
+                    while ((match = MODULE_DECL_RE.exec(stripped)) !== null) {
                         const modName = match[1];
                         if (!allModules.has(modName)) {
                             allModules.set(modName, []);
@@ -483,6 +507,8 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
 
     output.appendInfo(`Resolved ${depResult.files.length} file(s)`);
+    output.appendInfo('Starting compilation and simulation...');
+    output.appendLine('');
     const outFile = path.join(root, `${topModule}.out`);
 
     const result = simRunner.compileAndRun(

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QFont
 from src.presentation.gui.i18n import tr
+from src.domain.services.verilog_utils import remove_comments
 
 
 class UnifiedModulePanel(QWidget):
@@ -73,6 +74,7 @@ class UnifiedModulePanel(QWidget):
                     content = f.read_text(encoding='utf-8', errors='ignore')
                 except Exception:
                     content = ""
+                content = remove_comments(content)
                 for m in re.finditer(r'\bmodule\s+(\w+)', content):
                     mod_name = m.group(1)
                     self._dep_files[mod_name] = f

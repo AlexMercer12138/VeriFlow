@@ -26,9 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.application.coordinator import ApplicationCoordinator
-
-
-VERSION = "1.1.0"
+from src.version import VERSION
 
 
 def _print(msg: str = ""):

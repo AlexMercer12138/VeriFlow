@@ -20,7 +20,7 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 
 ## 功能演示
 
-![功能演示](https://raw.githubusercontent.com/AlexMercer12138/VeriFlow/main/veriflow-vscode/demo.gif)
+![功能演示](https://img.cdn1.vip/i/6a0a6a9964326_1779067545.webp)
 
 ## 快速开始
 

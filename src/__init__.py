@@ -1,1 +1,1 @@
-__version__ = "1.1.0"
+from src.version import __version__
