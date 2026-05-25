@@ -4,10 +4,10 @@ __pycache__/
 dist/
 build/
 .eggs/
-*.spec
 .env
+.pytest_cache/
 
-# Python GUI
+## Python GUI
 src/presentation/gui/__pycache__/
 
 # VS Code extension
