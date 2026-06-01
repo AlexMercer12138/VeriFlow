@@ -31,12 +31,12 @@ export class LogParser {
     private _parseLine(line: string): LogEntry | null {
         if (!line) { return null; }
 
-        for (const pattern of ERROR_PATTERNS) {
+        for (const pattern of WARNING_PATTERNS) {
             const m = line.match(pattern);
             if (m) {
                 const groups = m.groups || {};
                 return {
-                    level: 'ERROR',
+                    level: 'WARNING',
                     message: groups.msg || line,
                     fileRef: groups.file || undefined,
                     lineNo: groups.line ? parseInt(groups.line, 10) : undefined,
@@ -44,12 +44,12 @@ export class LogParser {
             }
         }
 
-        for (const pattern of WARNING_PATTERNS) {
+        for (const pattern of ERROR_PATTERNS) {
             const m = line.match(pattern);
             if (m) {
                 const groups = m.groups || {};
                 return {
-                    level: 'WARNING',
+                    level: 'ERROR',
                     message: groups.msg || line,
                     fileRef: groups.file || undefined,
                     lineNo: groups.line ? parseInt(groups.line, 10) : undefined,

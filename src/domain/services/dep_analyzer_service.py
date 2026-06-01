@@ -13,7 +13,7 @@ from src.infrastructure.file_service import IFileService
 from src.domain.models.dependency import DependencyResult
 from src.domain.interfaces.i_dep_analyzer import IDependencyAnalyzer
 from src.domain.services.port_parser_service import PortParserService
-from src.domain.services.verilog_utils import remove_comments
+from src.domain.services.verilog_utils import preprocess_verilog, remove_comments
 
 
 VERILOG_KEYWORDS = {
@@ -76,7 +76,7 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
             for vfile in self._file_service.list_files(str(search_dir)):
                 try:
                     content = self._file_service.read_text(str(vfile))
-                    content = remove_comments(content)
+                    content = preprocess_verilog(remove_comments(content))
                     for match in self._module_decl_pattern.finditer(content):
                         module_name = match.group(1)
                         file_modules[vfile].append(module_name)
@@ -93,7 +93,7 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
             return []
 
         if skip_comments:
-            content = remove_comments(content)
+            content = preprocess_verilog(remove_comments(content))
 
         # 去除过程块（initial/always/task/function 等），这些块内部不可能有模块例化
         content = self._remove_procedural_blocks(content)

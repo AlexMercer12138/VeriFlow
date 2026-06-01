@@ -10,7 +10,7 @@ from pathlib import Path
 from src.infrastructure.file_service import IFileService
 from src.domain.interfaces.i_port_parser import IPortParser, ITemplateGenerator
 from src.domain.models.port import Port, Parameter, ModuleInfo
-from src.domain.services.verilog_utils import remove_comments
+from src.domain.services.verilog_utils import remove_comments, preprocess_verilog
 
 
 class PortParserService(IPortParser):
@@ -19,44 +19,23 @@ class PortParserService(IPortParser):
     def __init__(self, file_service: IFileService):
         self._file_service = file_service
 
-        self._module_pattern = re.compile(
-            r'module\s+(\w+)\s*#\s*\((.*?)\)\s*\((.*?)\);',
-            re.DOTALL
-        )
-        self._module_no_param_pattern = re.compile(
-            r'module\s+(\w+)\s*\((.*?)\);',
-            re.DOTALL
-        )
-        self._param_pattern = re.compile(
-            r'parameter\s+(?:\[[^\]]+\]\s*)?(?:\w+\s+)?(\w+)\s*=\s*([^,;]+)'
-        )
-        self._port_pattern = re.compile(
-            r'(input|output|inout)\s*(?:wire|reg|logic)?\s*(\[[^\]]+\])?\s*(\w+)'
-        )
+        self._param_decl_pattern = re.compile(r'\b(parameter|localparam)\b\s*(.*)', re.DOTALL)
+        self._ansi_port_pattern = re.compile(r'\b(input|output|inout)\b\s*(.*)', re.DOTALL)
 
     def parse_file(self, filepath: str) -> ModuleInfo:
         content = self._file_service.read_text(filepath)
         return self.parse_content(content, self._file_service.get_filename(filepath))
 
     def parse_content(self, content: str, filename: str = "module") -> ModuleInfo:
-        content = remove_comments(content)
+        content = preprocess_verilog(remove_comments(content))
+        parsed = self._parse_module_header(content)
+        if not parsed:
+            raise ValueError("Could not parse module declaration")
 
-        match = self._module_pattern.search(content)
-        if match:
-            module_name = match.group(1)
-            params_str = match.group(2)
-            ports_str = match.group(3)
-            parameters = self._parse_parameters(params_str)
-            ports = self._parse_ports(ports_str)
-        else:
-            match = self._module_no_param_pattern.search(content)
-            if match:
-                module_name = match.group(1)
-                ports_str = match.group(2)
-                parameters = []
-                ports = self._parse_ports(ports_str)
-            else:
-                raise ValueError("Could not parse module declaration")
+        module_name, params_str, ports_str, body_start = parsed
+        body = content[body_start:self._find_matching_endmodule(content, body_start)]
+        parameters = self._parse_parameters(params_str)
+        ports = self._parse_ports(ports_str, body)
 
         return ModuleInfo(
             name=module_name,
@@ -65,56 +44,273 @@ class PortParserService(IPortParser):
             filename=filename
         )
 
+    def _parse_module_header(self, content: str):
+        match = re.search(r'\bmodule\s+(\w+)\b', content)
+        if not match:
+            return None
+
+        module_name = match.group(1)
+        i = match.end()
+        length = len(content)
+        while i < length and content[i].isspace():
+            i += 1
+
+        params_str = ""
+        if i < length and content[i] == '#':
+            i += 1
+            while i < length and content[i].isspace():
+                i += 1
+            if i >= length or content[i] != '(':
+                return None
+            end = self._find_matching_paren(content, i)
+            if end == -1:
+                return None
+            params_str = content[i + 1:end]
+            i = end + 1
+            while i < length and content[i].isspace():
+                i += 1
+
+        ports_str = ""
+        if i < length and content[i] == '(':
+            end = self._find_matching_paren(content, i)
+            if end == -1:
+                return None
+            ports_str = content[i + 1:end]
+            i = end + 1
+
+        semi = content.find(';', i)
+        if semi == -1:
+            return None
+        return module_name, params_str, ports_str, semi + 1
+
+    def _find_matching_paren(self, text: str, open_idx: int) -> int:
+        depth = 0
+        in_string = False
+        i = open_idx
+        while i < len(text):
+            ch = text[i]
+            if ch == '"' and (i == 0 or text[i - 1] != '\\'):
+                in_string = not in_string
+            elif not in_string:
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            i += 1
+        return -1
+
+    def _find_matching_endmodule(self, content: str, start: int) -> int:
+        match = re.search(r'\bendmodule\b', content[start:])
+        return start + match.start() if match else len(content)
+
     def _parse_parameters(self, params_str: str) -> List[Parameter]:
         parameters = []
-        for match in self._param_pattern.finditer(params_str):
-            param_name = match.group(1).strip()
-            param_value = match.group(2).strip()
-            parameters.append(Parameter(name=param_name, value=param_value))
+        for item in self._split_ports(params_str):
+            text = item.strip()
+            if not text:
+                continue
+            match = self._param_decl_pattern.match(text)
+            if match:
+                text = match.group(2).strip()
+            eq_idx = self._find_top_level_char(text, '=')
+            if eq_idx == -1:
+                continue
+            left = text[:eq_idx].strip()
+            value = text[eq_idx + 1:].strip()
+            name_match = re.search(r'([A-Za-z_]\w*)\s*$', re.sub(r'\[[^\]]+\]', ' ', left))
+            if not name_match:
+                continue
+            parameters.append(Parameter(name=name_match.group(1), value=value))
         return parameters
 
-    def _parse_ports(self, ports_str: str) -> List[Port]:
+    def _parse_ports(self, ports_str: str, body: str = "") -> List[Port]:
         ports_str = re.sub(r'\(\*[^*]*\*\)', '', ports_str)
 
         ports = []
         port_strs = self._split_ports(ports_str)
+        header_names = []
+        declarations = {}
+        last_direction = None
+        last_width = None
 
         for port_str in port_strs:
             port_str = port_str.strip()
             if not port_str:
                 continue
 
-            match = self._port_pattern.match(port_str)
+            match = self._ansi_port_pattern.match(port_str)
             if match:
                 direction = match.group(1)
-                width_str = match.group(2)
-                name = match.group(3)
+                parsed_ports = self._parse_port_decl_tail(direction, match.group(2))
+                ports.extend(parsed_ports)
+                if parsed_ports:
+                    last_direction = direction
+                    last_width = parsed_ports[-1].width
+            elif last_direction and ports:
+                name = self._clean_port_name(port_str)
+                if name:
+                    width_msb, width_lsb = self._parse_numeric_width(last_width)
+                    ports.append(Port(
+                        name=name,
+                        direction=last_direction,
+                        width=last_width,
+                        width_msb=width_msb,
+                        width_lsb=width_lsb,
+                    ))
+            else:
+                name = self._clean_port_name(port_str)
+                if name:
+                    header_names.append(name)
 
-                width_msb, width_lsb = None, None
-                if width_str:
-                    width_match = re.match(r'\[(\d+):(\d+)\]', width_str)
-                    if width_match:
-                        width_msb = int(width_match.group(1))
-                        width_lsb = int(width_match.group(2))
+        if ports:
+            return self._dedupe_ports(ports)
 
-                ports.append(Port(
-                    name=name,
-                    direction=direction,
-                    width=width_str,
-                    width_msb=width_msb,
-                    width_lsb=width_lsb
-                ))
+        for declaration in self._body_port_declarations(body):
+            match = self._ansi_port_pattern.match(declaration.strip())
+            if not match:
+                continue
+            for port in self._parse_port_decl_tail(match.group(1), match.group(2)):
+                declarations[port.name] = port
+
+        for name in header_names:
+            port = declarations.get(name)
+            if port:
+                ports.append(port)
 
         return ports
+
+    def _parse_port_decl_tail(self, direction: str, tail: str) -> List[Port]:
+        tail = re.sub(r'\s+', ' ', tail.strip().rstrip(',;'))
+        tail = re.sub(r'\b(wire|reg|logic|signed|unsigned|var|tri|bit)\b', ' ', tail)
+        width_match = re.search(r'\[[^\]]+\]', tail)
+        width_str = width_match.group(0).strip() if width_match else None
+        if width_match:
+            tail = tail[:width_match.start()] + ' ' + tail[width_match.end():]
+
+        ports = []
+        for name_part in self._split_ports(tail):
+            name = self._clean_port_name(name_part)
+            if not name:
+                continue
+            width_msb, width_lsb = self._parse_numeric_width(width_str)
+            ports.append(Port(
+                name=name,
+                direction=direction,
+                width=width_str,
+                width_msb=width_msb,
+                width_lsb=width_lsb,
+            ))
+        return ports
+
+    def _body_port_declarations(self, body: str) -> List[str]:
+        declarations = []
+        for stmt in self._split_statements(body):
+            if re.match(r'\s*(input|output|inout)\b', stmt):
+                declarations.append(stmt)
+        return declarations
+
+    def _split_statements(self, text: str) -> List[str]:
+        result = []
+        current = []
+        paren_depth = bracket_depth = brace_depth = 0
+        in_string = False
+        for i, char in enumerate(text):
+            if char == '"' and (i == 0 or text[i - 1] != '\\'):
+                in_string = not in_string
+            elif not in_string:
+                if char == '(':
+                    paren_depth += 1
+                elif char == ')':
+                    paren_depth -= 1
+                elif char == '[':
+                    bracket_depth += 1
+                elif char == ']':
+                    bracket_depth -= 1
+                elif char == '{':
+                    brace_depth += 1
+                elif char == '}':
+                    brace_depth -= 1
+                elif char == ';' and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+                    result.append(''.join(current).strip())
+                    current = []
+                    continue
+            current.append(char)
+        if current:
+            result.append(''.join(current).strip())
+        return result
+
+    def _clean_port_name(self, text: str) -> str:
+        text = text.strip().rstrip(',;')
+        text = re.sub(r'=.*$', '', text).strip()
+        text = re.sub(r'\[[^\]]+\]\s*$', '', text).strip()
+        match = re.search(r'\\\S+|[A-Za-z_]\w*$', text)
+        if not match:
+            return ""
+        name = match.group(0)
+        return name[1:] if name.startswith('\\') else name
+
+    def _parse_numeric_width(self, width_str: Optional[str]):
+        if not width_str:
+            return None, None
+        width_match = re.match(r'\[(\d+)\s*:\s*(\d+)\]', width_str)
+        if not width_match:
+            return None, None
+        return int(width_match.group(1)), int(width_match.group(2))
+
+    def _dedupe_ports(self, ports: List[Port]) -> List[Port]:
+        result = []
+        seen = set()
+        for port in ports:
+            if port.name in seen:
+                continue
+            seen.add(port.name)
+            result.append(port)
+        return result
+
+    def _find_top_level_char(self, text: str, target: str) -> int:
+        paren_depth = bracket_depth = brace_depth = 0
+        in_string = False
+        for i, char in enumerate(text):
+            if char == '"' and (i == 0 or text[i - 1] != '\\'):
+                in_string = not in_string
+            elif not in_string:
+                if char == '(':
+                    paren_depth += 1
+                elif char == ')':
+                    paren_depth -= 1
+                elif char == '[':
+                    bracket_depth += 1
+                elif char == ']':
+                    bracket_depth -= 1
+                elif char == '{':
+                    brace_depth += 1
+                elif char == '}':
+                    brace_depth -= 1
+                elif (
+                    char == target
+                    and paren_depth == 0
+                    and bracket_depth == 0
+                    and brace_depth == 0
+                ):
+                    return i
+        return -1
 
     def _split_ports(self, ports_str: str) -> List[str]:
         ports = []
         current = []
         depth = 0
         paren_depth = 0
+        bracket_depth = 0
+        in_string = False
 
-        for char in ports_str:
-            if char == '{':
+        for i, char in enumerate(ports_str):
+            if char == '"' and (i == 0 or ports_str[i - 1] != '\\'):
+                in_string = not in_string
+            elif in_string:
+                pass
+            elif char == '{':
                 depth += 1
             elif char == '}':
                 depth -= 1
@@ -122,7 +318,11 @@ class PortParserService(IPortParser):
                 paren_depth += 1
             elif char == ')':
                 paren_depth -= 1
-            elif char == ',' and depth == 0 and paren_depth == 0:
+            elif char == '[':
+                bracket_depth += 1
+            elif char == ']':
+                bracket_depth -= 1
+            elif char == ',' and depth == 0 and paren_depth == 0 and bracket_depth == 0:
                 ports.append(''.join(current).strip())
                 current = []
                 continue

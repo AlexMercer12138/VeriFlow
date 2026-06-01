@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import shutil
+import json
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,11 @@ def uart_project_dir(tmp_path: Path) -> Path:
         ignore=shutil.ignore_patterns("*.out", "*.vcd", "__pycache__"),
     )
     return project_dir
+
+
+@pytest.fixture(scope="session")
+def golden_uart() -> dict:
+    return json.loads((Path(__file__).parent / "golden_uart.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture()

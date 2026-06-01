@@ -1,0 +1,44 @@
+{
+  "top_module": "uart_tb",
+  "modules": ["uart_rx", "uart_tb", "uart_tx"],
+  "dependency_graph": {
+    "uart_tb": ["uart_rx", "uart_tx"],
+    "uart_rx": [],
+    "uart_tx": []
+  },
+  "discovery_order": ["uart_tb.v", "uart_rx.v", "uart_tx.v"],
+  "compile_order": ["uart_rx.v", "uart_tx.v", "uart_tb.v"],
+  "uart_tx": {
+    "parameters": [
+      ["SYS_CLK_FREQ", "50_000_000"],
+      ["BAUD_RATE", "115200"],
+      ["STOP_BIT_CNT", "1"],
+      ["PARITY_TYPE", "\"none\""]
+    ],
+    "ports": [
+      ["input", "clk", null],
+      ["input", "rst_n", null],
+      ["input", "tx_valid", null],
+      ["output", "tx_ready", null],
+      ["input", "tx_data", "[7:0]"],
+      ["output", "uart_tx", null]
+    ]
+  },
+  "generated_testbench": {
+    "name": "tb_uart_generated",
+    "wave_file": "waves/tb_uart_generated.vcd",
+    "required_snippets": [
+      "module tb_uart_generated;",
+      "$dumpfile(\"waves/tb_uart_generated.vcd\");",
+      "uart_tx #(",
+      ".SYS_CLK_FREQ(1_000_000)",
+      ".tx_data(tx_payload)"
+    ]
+  },
+  "log_sample": {
+    "text": "uart_tx.v:12: error: syntax error\nuart_rx.v:20: warning: unused signal\nTEST PASS\n",
+    "levels": ["ERROR", "WARNING", "INFO"],
+    "first_file": "uart_tx.v",
+    "first_line": 12
+  }
+}

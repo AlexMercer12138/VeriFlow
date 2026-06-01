@@ -1,5 +1,5 @@
 export * from './types';
-export { removeComments, flattenParamBlocks, expandGenerateIfdef, VERILOG_KEYWORDS, MODULE_DECL_RE } from './verilogUtils';
+export { removeComments, preprocessVerilog, flattenParamBlocks, expandGenerateIfdef, VERILOG_KEYWORDS, MODULE_DECL_RE } from './verilogUtils';
 export { listVerilogFiles, readText, findFile } from './fileService';
 export { DependencyAnalyzer } from './dependencyAnalyzer';
 export { TemplateEngine } from './templateEngine';

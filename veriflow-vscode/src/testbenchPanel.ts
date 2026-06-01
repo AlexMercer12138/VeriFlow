@@ -172,6 +172,12 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             await this._beforeGenerate();
         }
 
+        if (this._moduleEntries.length === 0) {
+            vscode.window.showWarningMessage('Add at least one DUT module before generating a testbench.');
+            this._postMessage({ type: 'validation', message: 'Add at least one DUT module before generating.' });
+            return;
+        }
+
         const outputDirSetting = (config.output_dir || getSettings().testbenchOutputDir || '.').trim() || '.';
         const outputDir = path.isAbsolute(outputDirSetting)
             ? outputDirSetting
@@ -235,6 +241,8 @@ body {
     background: var(--vscode-sideBar-background);
     margin: 0; padding: 8px;
     overflow-y: auto;
+    min-width: 0;
+    width: 100%;
 }
 .section {
     background: var(--vscode-editor-background);
@@ -242,6 +250,7 @@ body {
     border-radius: 4px;
     margin-bottom: 8px;
     padding: 8px;
+    min-width: 0;
 }
 .section-title {
     font-weight: 600;
@@ -253,11 +262,13 @@ body {
     align-items: center;
     gap: 6px;
     margin-bottom: 4px;
+    min-width: 0;
 }
 .row label {
     font-size: 0.9em;
     white-space: nowrap;
-    min-width: 60px;
+    flex: 0 0 64px;
+    min-width: 0;
 }
 input[type="text"], input[type="number"], select {
     background: var(--vscode-input-background);
@@ -267,7 +278,9 @@ input[type="text"], input[type="number"], select {
     padding: 3px 6px;
     font-family: inherit;
     font-size: inherit;
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 100%;
 }
 input::placeholder {
     color: var(--vscode-input-placeholderForeground);
@@ -281,14 +294,22 @@ button {
     cursor: pointer;
     font-family: inherit;
     font-size: inherit;
+    min-width: 0;
+}
+button:disabled {
+    cursor: default;
+    opacity: 0.55;
 }
 button:hover { background: var(--vscode-button-hoverBackground); }
 button.small {
     padding: 2px 8px;
     font-size: 1em;
+    width: 32px;
     min-width: 32px;
+    height: 26px;
     min-height: 26px;
     font-weight: 600;
+    flex: 0 0 32px;
 }
 button.secondary {
     background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
@@ -303,11 +324,13 @@ button.secondary:hover {
     align-items: center;
     gap: 6px;
     margin-bottom: 4px;
+    min-width: 0;
 }
 .clock-row label {
     font-size: 0.9em;
     white-space: nowrap;
-    min-width: 60px;
+    flex: 0 0 64px;
+    min-width: 0;
 }
 .clock-row input {
     background: var(--vscode-input-background);
@@ -317,7 +340,15 @@ button.secondary:hover {
     padding: 3px 6px;
     font-family: inherit;
     font-size: inherit;
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 100%;
+}
+.module-picker {
+    align-items: stretch;
+}
+.module-picker select {
+    min-width: 0;
 }
 .module-section {
     display: flex;
@@ -326,18 +357,22 @@ button.secondary:hover {
 }
 .module-splitter {
     display: flex;
+    flex-direction: column;
     gap: 6px;
     flex: 1;
     min-height: 0;
+    min-width: 0;
 }
 .splitter-left {
-    flex: 0 0 40%;
+    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
     display: flex;
     flex-direction: column;
 }
 .splitter-right {
-    flex: 1;
+    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -346,7 +381,8 @@ button.secondary:hover {
     border: 1px solid var(--vscode-panel-border);
     border-radius: 3px;
     flex: 1;
-    min-height: 120px;
+    min-height: 88px;
+    min-width: 0;
     overflow-y: auto;
     background: var(--vscode-editor-background);
 }
@@ -355,6 +391,9 @@ button.secondary:hover {
     cursor: pointer;
     font-size: 0.9em;
     border-bottom: 1px solid var(--vscode-panel-border);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .module-list-item:hover {
     background: var(--vscode-list-hoverBackground);
@@ -370,6 +409,8 @@ button.secondary:hover {
     background: var(--vscode-editor-background);
     flex: 1;
     overflow-y: auto;
+    min-width: 0;
+    min-height: 120px;
 }
 .module-detail.empty {
     color: var(--vscode-descriptionForeground);
@@ -378,25 +419,41 @@ button.secondary:hover {
     display: flex;
     align-items: center;
     justify-content: center;
+    min-height: 92px;
 }
 .port-row, .param-row {
     display: flex;
     align-items: center;
     gap: 4px;
     margin-bottom: 3px;
+    min-width: 0;
 }
 .port-row label, .param-row label {
     font-size: 0.85em;
-    min-width: 110px;
-    flex: 0 0 auto;
+    flex: 0 1 112px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .port-row input, .param-row input {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
 }
 .hint {
     font-size: 0.8em;
     color: var(--vscode-descriptionForeground);
     margin-left: 4px;
+}
+.empty-hint,
+.validation-message {
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.9em;
+    line-height: 1.35;
+    margin: 2px 0 6px;
+}
+.validation-message {
+    color: var(--vscode-inputValidation-warningForeground, var(--vscode-descriptionForeground));
+    display: none;
 }
 .generate-btn {
     width: 100%;
@@ -404,6 +461,39 @@ button.secondary:hover {
     font-weight: 600;
     font-size: 1.05em;
     margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+@media (min-width: 420px) {
+    .module-splitter {
+        flex-direction: row;
+    }
+    .splitter-left {
+        flex: 0 0 40%;
+        width: auto;
+    }
+    .splitter-right {
+        width: auto;
+    }
+}
+@media (max-width: 280px) {
+    body { padding: 6px; }
+    .section { padding: 6px; }
+    .row,
+    .clock-row,
+    .port-row,
+    .param-row {
+        flex-wrap: wrap;
+    }
+    .row label,
+    .clock-row label,
+    .port-row label,
+    .param-row label {
+        flex-basis: 100%;
+    }
+    .module-picker {
+        flex-wrap: nowrap;
+    }
 }
 </style>
 </head>
@@ -416,8 +506,8 @@ button.secondary:hover {
         <input type="text" id="tbName" placeholder="e.g. tb_top" />
     </div>
     <div class="row">
-        <label>Output</label>
-        <input type="text" id="outputDir" placeholder="workspace root or e.g. sim/tb" />
+        <label>Path</label>
+        <input type="text" id="outputDir" placeholder="{root}" />
     </div>
     <div class="row">
         <label>Unit</label>
@@ -455,11 +545,12 @@ button.secondary:hover {
 
 <div class="section" style="display:flex;flex-direction:column;flex:1;min-height:280px;">
     <div class="section-title">DUT Modules</div>
-    <div class="row">
+    <div class="row module-picker">
         <select id="moduleSelect" style="flex:1;"></select>
         <button class="small secondary" id="btnAddModule">+</button>
         <button class="small secondary" id="btnRemoveModule">-</button>
     </div>
+    <div class="empty-hint" id="moduleEmptyHint">No modules found. Add .v/.sv files to the workspace or configure veriflow.libDirs.</div>
     <div class="module-splitter">
         <div class="splitter-left">
             <div class="module-list" id="moduleList"></div>
@@ -487,6 +578,7 @@ button.secondary:hover {
 </div>
 
 <button class="generate-btn" id="btnGenerate">Generate Testbench</button>
+<div class="validation-message" id="validationMessage"></div>
 
 <script>
     const vscode = acquireVsCodeApi();
@@ -497,6 +589,12 @@ button.secondary:hover {
     let clockCount = 0;
 
     function post(msg) { vscode.postMessage(msg); }
+
+    function setValidation(message = '') {
+        const el = document.getElementById('validationMessage');
+        el.textContent = message;
+        el.style.display = message ? 'block' : 'none';
+    }
 
     function createClockRow(idx, value = '') {
         const div = document.createElement('div');
@@ -526,9 +624,28 @@ button.secondary:hover {
         document.getElementById('btnRemoveClock').disabled = clockCount <= 1;
     }
 
+    function updateModuleControls() {
+        const hasAvailableModules = modules.length > 0;
+        document.getElementById('moduleSelect').disabled = !hasAvailableModules;
+        document.getElementById('btnAddModule').disabled = !hasAvailableModules || moduleEntries.length >= 20;
+        document.getElementById('btnRemoveModule').disabled = selectedModuleIndex < 0;
+        document.getElementById('btnGenerate').disabled = moduleEntries.length === 0;
+        document.getElementById('moduleEmptyHint').style.display = hasAvailableModules ? 'none' : 'block';
+    }
+
     function renderModuleList() {
         const list = document.getElementById('moduleList');
         list.innerHTML = '';
+        if (moduleEntries.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'module-list-item';
+            empty.textContent = 'No DUT modules added';
+            empty.style.color = 'var(--vscode-descriptionForeground)';
+            empty.style.cursor = 'default';
+            list.appendChild(empty);
+            updateModuleControls();
+            return;
+        }
         moduleEntries.forEach((entry, i) => {
             const div = document.createElement('div');
             div.className = 'module-list-item' + (i === selectedModuleIndex ? ' selected' : '');
@@ -540,6 +657,7 @@ button.secondary:hover {
             };
             list.appendChild(div);
         });
+        updateModuleControls();
     }
 
     function renderModuleDetail(entry, index) {
@@ -553,11 +671,6 @@ button.secondary:hover {
         let html = '';
 
         html += '<div class="row" style="margin-bottom:6px;"><label>Instance:</label><input type="text" id="instName" value="' + escapeHtml(entry.instanceName) + '" /></div>';
-
-        // Debug info
-        html += '<div style="font-size:0.75em;color:var(--vscode-descriptionForeground);margin-bottom:4px;">';
-        html += 'params: ' + (entry.params ? entry.params.length : 'null') + ', ports: ' + (entry.ports ? entry.ports.length : 'null');
-        html += '</div>';
 
         if (entry.params && entry.params.length > 0) {
             html += '<div style="font-weight:600;margin:4px 0;">Parameters</div>';
@@ -614,16 +727,23 @@ button.secondary:hover {
 
     document.getElementById('btnAddModule').onclick = () => {
         const sel = document.getElementById('moduleSelect');
+        setValidation('');
         if (sel.value) post({ type: 'addModule', moduleName: sel.value });
     };
 
     document.getElementById('btnRemoveModule').onclick = () => {
+        setValidation('');
         if (selectedModuleIndex >= 0) {
             post({ type: 'removeModule', index: selectedModuleIndex });
         }
     };
 
     document.getElementById('btnGenerate').onclick = () => {
+        setValidation('');
+        if (moduleEntries.length === 0) {
+            setValidation('Add at least one DUT module before generating.');
+            return;
+        }
         const clocks = [];
         document.querySelectorAll('.clock-freq').forEach(input => {
             clocks.push(input.value.trim());
@@ -652,8 +772,11 @@ button.secondary:hover {
                 if (msg.outputDir && !document.getElementById('outputDir').value.trim()) {
                     document.getElementById('outputDir').value = msg.outputDir === '.' ? '' : msg.outputDir;
                 }
+                updateModuleControls();
+                renderModuleList();
                 break;
             case 'moduleAdded':
+                setValidation('');
                 moduleEntries.push(msg.entry);
                 selectedModuleIndex = moduleEntries.length - 1;
                 renderModuleList();
@@ -663,6 +786,9 @@ button.secondary:hover {
                 moduleEntries.splice(msg.index, 1);
                 if (selectedModuleIndex >= moduleEntries.length) {
                     selectedModuleIndex = moduleEntries.length - 1;
+                }
+                if (moduleEntries.length === 0) {
+                    selectedModuleIndex = -1;
                 }
                 renderModuleList();
                 renderModuleDetail(moduleEntries[selectedModuleIndex] || null, selectedModuleIndex);
@@ -682,11 +808,16 @@ button.secondary:hover {
                 break;
             case 'error':
                 break;
+            case 'validation':
+                setValidation(msg.message || '');
+                break;
         }
     });
 
     // Init
     addClock('100');
+    renderModuleList();
+    updateModuleControls();
     post({ type: 'getModules' });
 </script>
 

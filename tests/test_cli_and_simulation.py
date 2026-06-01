@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.application.coordinator import ApplicationCoordinator
+from src.domain.services.sim_runner_service import SimRunnerService
 from src.presentation.cli import main as cli_main
 
 
@@ -48,3 +49,19 @@ def test_application_simulates_uart_fixture_when_iverilog_is_available(
     assert "[CMD] Compile:" in result.stdout
     assert "[CMD] Run:" in result.stdout
 
+
+def test_simulation_runner_keeps_external_files_absolute(
+    uart_project_dir: Path,
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external_lib" / "helper.v"
+    external.parent.mkdir()
+    external.write_text("module helper; endmodule\n", encoding="utf-8")
+
+    resolved = SimRunnerService()._resolve_file_paths(
+        [uart_project_dir / "uart_tb.v", external],
+        uart_project_dir,
+    )
+
+    assert resolved[0] == "uart_tb.v"
+    assert Path(resolved[1]) == external

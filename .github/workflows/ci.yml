@@ -53,7 +53,6 @@ jobs:
         working-directory: veriflow-vscode
         run: npm ci
 
-      - name: Compile extension
+      - name: Test extension core
         working-directory: veriflow-vscode
-        run: npm run compile
-
+        run: npm test

@@ -29,6 +29,72 @@ export function removeComments(content: string): string {
     return content;
 }
 
+export function preprocessVerilog(content: string, defines: Set<string> = new Set()): string {
+    const activeDefines = new Set(defines);
+    const output: string[] = [];
+    const stack: Array<{ outer: boolean; active: boolean; taken: boolean }> = [];
+    const lines = content.match(/^.*(?:\r?\n|$)/gm) || [];
+
+    const currentActive = (): boolean => stack.every(frame => frame.active);
+    const macroName = (rest: string): string => {
+        const match = rest.trim().match(/^([A-Za-z_]\w*)/);
+        return match ? match[1] : '';
+    };
+
+    for (const line of lines) {
+        if (!line) { continue; }
+        const stripped = line.replace(/^\s+/, '');
+        const directive = stripped.match(/^`(ifdef|ifndef|elsif|else|endif|define|undef)\b(.*)/);
+        if (!directive) {
+            output.push(currentActive() ? line : line.endsWith('\n') ? '\n' : '');
+            continue;
+        }
+
+        const kind = directive[1];
+        const name = macroName(directive[2] || '');
+
+        if (kind === 'ifdef' || kind === 'ifndef') {
+            const outer = currentActive();
+            let condition = activeDefines.has(name);
+            if (kind === 'ifndef') { condition = !condition; }
+            const branchActive = outer && condition;
+            stack.push({ outer, active: branchActive, taken: branchActive });
+            output.push('\n');
+        } else if (kind === 'elsif') {
+            const frame = stack[stack.length - 1];
+            if (frame) {
+                const branchActive = frame.outer && !frame.taken && activeDefines.has(name);
+                frame.active = branchActive;
+                frame.taken = frame.taken || branchActive;
+            }
+            output.push('\n');
+        } else if (kind === 'else') {
+            const frame = stack[stack.length - 1];
+            if (frame) {
+                const branchActive = frame.outer && !frame.taken;
+                frame.active = branchActive;
+                frame.taken = true;
+            }
+            output.push('\n');
+        } else if (kind === 'endif') {
+            stack.pop();
+            output.push('\n');
+        } else if (kind === 'define') {
+            if (currentActive() && name) {
+                activeDefines.add(name);
+            }
+            output.push('\n');
+        } else if (kind === 'undef') {
+            if (currentActive() && name) {
+                activeDefines.delete(name);
+            }
+            output.push('\n');
+        }
+    }
+
+    return output.join('');
+}
+
 export function flattenParamBlocks(content: string): string {
     const result: string[] = [];
     let i = 0;

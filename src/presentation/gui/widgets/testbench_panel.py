@@ -58,6 +58,7 @@ class TestbenchPanel(QWidget):
         self._module_entries: List[ModuleEntry] = []
         self._init_ui()
         self._add_clock()
+        self.set_module_map({})
 
     def _init_ui(self):
         outer = QVBoxLayout(self)
@@ -169,6 +170,11 @@ class TestbenchPanel(QWidget):
         self._btn_remove_module.clicked.connect(self._remove_module)
         add_row.addWidget(self._btn_remove_module)
         lo.addLayout(add_row)
+
+        self._module_empty_hint = QLabel(tr("tb.no_modules"))
+        self._module_empty_hint.setWordWrap(True)
+        self._module_empty_hint.setStyleSheet("color: #888; padding: 2px 0px;")
+        lo.addWidget(self._module_empty_hint)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -293,6 +299,8 @@ class TestbenchPanel(QWidget):
 
     def _update_mod_placeholder(self):
         self._mod_placeholder.setVisible(len(self._module_entries) == 0)
+        self._btn_add_module.setEnabled(bool(self._module_all) and len(self._module_entries) < 20)
+        self._btn_remove_module.setEnabled(len(self._module_entries) > 0)
 
     def _on_module_selected(self, index: int):
         if index < 0 or index >= len(self._module_entries):
@@ -353,6 +361,10 @@ class TestbenchPanel(QWidget):
         if current and current in self._module_all:
             self._module_add_combo.setCurrentText(current)
         self._module_add_combo.blockSignals(False)
+        has_modules = bool(self._module_all)
+        self._module_add_combo.setEnabled(has_modules)
+        self._module_empty_hint.setVisible(not has_modules)
+        self._update_mod_placeholder()
 
     def retranslate(self):
         self._name_grp.setTitle(tr("tb.props"))
@@ -375,6 +387,7 @@ class TestbenchPanel(QWidget):
         self._mod_grp.setTitle(tr("tb.module"))
         self._mod_add_label.setText(tr("tb.module_add"))
         self._mod_placeholder.setText(tr("tb.module_placeholder"))
+        self._module_empty_hint.setText(tr("tb.no_modules"))
         self._wave_grp.setTitle(tr("tb.wave"))
         self._wave_file_label.setText(tr("tb.wave_file"))
         self._wave_edit.setPlaceholderText(tr("tb.wave_ph"))

@@ -509,6 +509,10 @@ class MainWindow(QMainWindow):
             self._log_panel.append_warning(tr("tb.name_empty"))
             self._tab_widget.setCurrentWidget(self._log_panel)
             return
+        if not config.get('modules'):
+            self._log_panel.append_warning(tr("tb.no_dut_for_generate"))
+            self._tab_widget.setCurrentWidget(self._tb_panel)
+            return
         from src.domain.services.testbench_generator import TestbenchGenerator
         gen = TestbenchGenerator()
         self._project.testbench_output_dir = config.get('output_dir', '.') or '.'
@@ -616,6 +620,13 @@ class MainWindow(QMainWindow):
         self._tab_widget.setCurrentWidget(self._module_panel)
         self._refresh_modules()
 
+        # 如果有挂起的仿真请求，分析成功后继续执行编译仿真
+        if getattr(self, '_pending_simulate_after_analyze', False):
+            self._pending_simulate_after_analyze = False
+            if result.success:
+                self._on_simulate()
+            return
+
         # 如果有挂起的波形查看请求，分析成功后继续执行编译仿真
         if getattr(self, '_pending_wave_after_analyze', False):
             if result.success:
@@ -643,15 +654,27 @@ class MainWindow(QMainWindow):
         # 检查依赖分析状态，如果不是已完成，先执行依赖分析
         analyze_status = self._project.analyze_status if self._project else 'idle'
         if analyze_status != 'completed':
-            self._log_panel.append_info(
-                tr("log.analyze_first", status=analyze_status)
-                if False else "依赖分析状态不是已完成，先执行依赖分析..."
-            )
+            self._log_panel.append_info(tr("log.analyze_first", status=analyze_status))
             self._pending_simulate_after_analyze = True
             self._on_analyze()
             return
 
         self._auto_save()
+
+        simulator_config = self._project.simulators.get(self._project.simulator)
+        if not simulator_config:
+            self._log_panel.append_error(
+                tr("log.simulator_missing", simulator=self._project.simulator)
+            )
+            self._tab_widget.setCurrentWidget(self._log_panel)
+            return
+        if self._project.simulator == 'custom' and (
+            not simulator_config.compile_cmd.strip()
+            or not simulator_config.run_cmd.strip()
+        ):
+            self._log_panel.append_error(tr("log.simulator_commands_missing"))
+            self._tab_widget.setCurrentWidget(self._log_panel)
+            return
 
         self._log_panel.clear()
         self._log_panel.append_info(
@@ -696,13 +719,6 @@ class MainWindow(QMainWindow):
 
         self._tab_widget.setCurrentWidget(self._log_panel)
 
-        # 如果之前有挂起的仿真请求（因为需要先分析依赖），继续处理
-        if getattr(self, '_pending_simulate_after_analyze', False):
-            self._pending_simulate_after_analyze = False
-            if result.success:
-                self._on_simulate()
-            return
-
         # 如果之前有挂起的波形查看请求（因为需要先编译仿真），继续打开波形
         if getattr(self, '_pending_wave_after_simulate', False):
             if result.success:
@@ -732,7 +748,7 @@ class MainWindow(QMainWindow):
         # 检查依赖分析状态
         analyze_status = self._project.analyze_status if self._project else 'idle'
         if analyze_status != 'completed':
-            self._log_panel.append_info("依赖分析未完成，先执行依赖分析 -> 编译仿真 -> 打开波形...")
+            self._log_panel.append_info(tr("log.wave_chain_analyze_first"))
             self._pending_wave_after_analyze = True
             self._on_analyze()
             return
@@ -740,7 +756,7 @@ class MainWindow(QMainWindow):
         # 检查编译仿真状态
         simulate_status = self._project.simulate_status if self._project else 'idle'
         if simulate_status != 'completed':
-            self._log_panel.append_info("编译仿真未完成，先执行编译仿真 -> 打开波形...")
+            self._log_panel.append_info(tr("log.wave_chain_simulate_first"))
             self._pending_wave_after_simulate = True
             self._on_simulate()
             return

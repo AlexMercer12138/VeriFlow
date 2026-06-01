@@ -23,7 +23,7 @@ from src.application.coordinator import ApplicationCoordinator
 from src.infrastructure.file_service import FileService
 from src.domain.models.project import Project, SimulatorConfig, WaveViewerConfig
 from src.domain.services.sim_runner_service import SimRunnerService
-from src.domain.services.verilog_utils import remove_comments
+from src.domain.services.verilog_utils import preprocess_verilog, remove_comments
 from src.domain.services.project_manager_service import (
     DEFAULT_SIMULATORS, DEFAULT_VIEWERS,
 )
@@ -91,7 +91,7 @@ def cmd_scan(args) -> int:
             except Exception:
                 continue
             import re
-            content = remove_comments(content)
+            content = preprocess_verilog(remove_comments(content))
             for match in re.finditer(r'\bmodule\s+(\w+)', content):
                 mod_name = match.group(1)
                 if mod_name not in all_modules:

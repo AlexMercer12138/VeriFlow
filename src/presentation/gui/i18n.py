@@ -83,7 +83,7 @@ _TRANSLATIONS = {
     "module.count_basic":           {"zh": "模块: {total}",          "en": "Modules: {total}"},
     "module.filter_ph":             {"zh": "过滤模块...",            "en": "Filter modules..."},
     "module.dep_section":           {"zh": "依赖模块",               "en": "Dependency Modules"},
-    "module.no_modules":            {"zh": "(未扫描到模块)",         "en": "(no modules scanned)"},
+    "module.no_modules":            {"zh": "未扫描到模块。请确认工程目录包含 .v/.sv 文件，或在工程配置中添加库目录。", "en": "No modules found. Add .v/.sv files to the project or configure library directories."},
 
     # ---------- Testbench Panel ----------
     "tb.props":                     {"zh": "测试平台属性",         "en": "Testbench Properties"},
@@ -104,7 +104,9 @@ _TRANSLATIONS = {
     "tb.reset_duration_ph":         {"zh": "例如: 100",             "en": "e.g. 100"},
     "tb.module":                    {"zh": "被测模块（最多20个）",  "en": "Modules Under Test (max 20)"},
     "tb.module_add":                {"zh": "添加模块:",             "en": "Add module:"},
-    "tb.module_placeholder":        {"zh": "从左侧列表选择一个模块", "en": "Select a module from the list"},
+    "tb.module_placeholder":        {"zh": "添加一个被测模块后，可在这里编辑端口和参数。", "en": "Add a DUT module to edit ports and parameters here."},
+    "tb.no_modules":                {"zh": "未扫描到可添加的模块。请先放入 .v/.sv 文件，或在工程配置中添加库目录。", "en": "No modules available. Add .v/.sv files or configure library directories first."},
+    "tb.no_dut_for_generate":       {"zh": "请先添加至少一个被测模块，再生成测试平台。", "en": "Add at least one DUT module before generating a testbench."},
     "tb.module_inst":               {"zh": "实例名:",               "en": "Instance Name:"},
     "tb.module_params":             {"zh": "── 参数 ──",          "en": "-- Parameters --"},
     "tb.module_ports":              {"zh": "── 端口 ──",          "en": "-- Ports --"},
@@ -138,11 +140,16 @@ _TRANSLATIONS = {
 
     # ---------- Welcome / Log Messages ----------
     "welcome.title":                {"zh": "欢迎使用 VeriFlow！",    "en": "Welcome to VeriFlow!"},
-    "welcome.hint":                 {"zh": "点击新建或打开以开始。",  "en": "Click New or Open to start."},
+    "welcome.hint":                 {"zh": "点击新建或打开工程，然后选择顶层模块、分析依赖、编译仿真。",  "en": "Create or open a project, then select a top module, analyze dependencies, and run simulation."},
     "log.loaded_global_libs":       {"zh": "已加载 {n} 个全局库目录", "en": "Loaded {n} global library directories"},
     "log.analyzing":                {"zh": "正在分析: top='{top}', root={root}", "en": "Analyzing: top='{top}', root={root}"},
     "log.analysis_done":            {"zh": "分析完成: {n} 个文件。",  "en": "Analysis complete: {n} file(s)."},
     "log.missing_modules":          {"zh": "缺失模块: {modules}",     "en": "Missing modules: {modules}"},
+    "log.analyze_first":            {"zh": "当前依赖分析状态为 {status}，先执行：分析依赖 -> 编译仿真。", "en": "Analyze status is {status}; running analyze -> simulate."},
+    "log.wave_chain_analyze_first": {"zh": "依赖分析未完成，先执行：分析依赖 -> 编译仿真 -> 打开波形。", "en": "Analyze is not complete; running analyze -> simulate -> open wave."},
+    "log.wave_chain_simulate_first": {"zh": "编译仿真未完成，先执行：编译仿真 -> 打开波形。", "en": "Simulation is not complete; running simulate -> open wave."},
+    "log.simulator_missing":        {"zh": "仿真器未配置: {simulator}。请在工程配置中选择有效仿真器。", "en": "Simulator is not configured: {simulator}. Select a valid simulator in Project Config."},
+    "log.simulator_commands_missing": {"zh": "自定义仿真器缺少编译或运行命令。请在工程配置中填写 compile/run 命令。", "en": "Custom simulator is missing compile or run command. Fill both commands in Project Config."},
     "log.simulating":               {"zh": "正在仿真 {top} (cd {root})", "en": "Simulating {top} (cd {root})"},
     "log.sim_done":                 {"zh": "仿真完成！",             "en": "Simulation completed!"},
     "log.sim_failed":               {"zh": "仿真失败 (exit={code})", "en": "Simulation FAILED (exit={code})"},
@@ -170,7 +177,7 @@ _TRANSLATIONS = {
     "msgbox.error":                 {"zh": "错误",                   "en": "Error"},
     "msgbox.missing":               {"zh": "缺少信息",               "en": "Missing"},
     "msgbox.no_project":            {"zh": "未打开工程，请先新建或打开。", "en": "No project opened. Use New or Open first."},
-    "msgbox.no_top_module":         {"zh": "请输入顶层模块名称。",    "en": "Please enter a top module name."},
+    "msgbox.no_top_module":         {"zh": "请先选择或输入顶层模块。可在左侧顶层模块下拉框中选择扫描到的模块。",    "en": "Select or enter a top module first. Use the Top Module list on the left."},
     "msgbox.save_as_title":         {"zh": "工程另存为 JSON",        "en": "Save Project As JSON"},
 }
 

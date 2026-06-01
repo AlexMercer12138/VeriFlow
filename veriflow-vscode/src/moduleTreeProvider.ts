@@ -17,8 +17,10 @@ class ModuleTreeItem extends vscode.TreeItem {
 
         if (itemType === 'top') {
             this.iconPath = new vscode.ThemeIcon('symbol-keyword');
-            this.description = moduleName || '(none)';
-            this.tooltip = 'Click to select top module';
+            this.description = moduleName || 'select one';
+            this.tooltip = moduleName
+                ? `Top module: ${moduleName}`
+                : 'Click to select a top module from scanned workspace modules';
             this.command = {
                 command: 'veriflow.selectTop',
                 title: 'Select Top Module',
@@ -135,8 +137,11 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
         if (this._scanResult && this._scanResult.totalModules > 0) {
             items.push(this._buildLibTree());
         } else {
+            const message = this._scanResult
+                ? 'No Verilog/SystemVerilog modules found. Add .v/.sv files or configure veriflow.libDirs.'
+                : 'Open a Verilog workspace or click refresh to scan modules.';
             items.push(new ModuleTreeItem(
-                'No modules scanned. Open a Verilog workspace or click \u21BB to scan.',
+                message,
                 vscode.TreeItemCollapsibleState.None,
                 'empty'
             ));

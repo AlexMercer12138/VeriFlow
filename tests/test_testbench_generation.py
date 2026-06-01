@@ -6,12 +6,14 @@ from src.domain.services.testbench_generator import TestbenchGenerator
 
 def test_testbench_generator_creates_configured_output_dir(
     uart_project_dir: Path,
+    golden_uart: dict,
 ) -> None:
     output_dir = uart_project_dir / "generated" / "tb"
+    tb_spec = golden_uart["generated_testbench"]
 
     filepath = TestbenchGenerator().generate(
         {
-            "name": "tb_uart_generated",
+            "name": tb_spec["name"],
             "modules": [
                 {
                     "module_name": "uart_tx",
@@ -28,7 +30,7 @@ def test_testbench_generator_creates_configured_output_dir(
                     },
                 }
             ],
-            "wave_file": "waves/tb_uart_generated.vcd",
+            "wave_file": tb_spec["wave_file"],
         },
         output_dir,
     )
@@ -36,13 +38,10 @@ def test_testbench_generator_creates_configured_output_dir(
     generated = Path(filepath)
     content = generated.read_text(encoding="utf-8")
 
-    assert generated == output_dir / "tb_uart_generated.v"
+    assert generated == output_dir / f"{tb_spec['name']}.v"
     assert generated.exists()
-    assert "module tb_uart_generated;" in content
-    assert '        $dumpfile("waves/tb_uart_generated.vcd");' in content
-    assert "uart_tx #(" in content
-    assert ".SYS_CLK_FREQ(1_000_000)" in content
-    assert ".tx_data(tx_payload)" in content
+    for snippet in tb_spec["required_snippets"]:
+        assert snippet in content
 
 
 def test_testbench_generator_skips_invalid_signal_declarations(
@@ -71,4 +70,3 @@ def test_testbench_generator_skips_invalid_signal_declarations(
     assert "wire 1'b1;" not in content
     assert ".rx_ready(1'b1)" in content
     assert "wire serial_line;" in content or "reg serial_line;" in content
-

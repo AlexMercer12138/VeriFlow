@@ -3,7 +3,7 @@ import { DependencyResult } from './types';
 import { listVerilogFiles, readText, findFile } from './fileService';
 import {
     VERILOG_KEYWORDS, removeComments,
-    flattenParamBlocks, expandGenerateIfdef,
+    preprocessVerilog, flattenParamBlocks, expandGenerateIfdef,
     MODULE_DECL_RE, INST_RE, INCLUDE_RE,
 } from './verilogUtils';
 
@@ -95,7 +95,7 @@ export class DependencyAnalyzer {
             for (const vfile of listVerilogFiles(searchDir)) {
                 try {
                     const content = readText(vfile);
-                    const cleaned = removeComments(content);
+                    const cleaned = preprocessVerilog(removeComments(content));
                     MODULE_DECL_RE.lastIndex = 0;
                     let match: RegExpExecArray | null;
                     while ((match = MODULE_DECL_RE.exec(cleaned)) !== null) {
@@ -125,7 +125,7 @@ export class DependencyAnalyzer {
             return [];
         }
 
-        content = removeComments(content);
+        content = preprocessVerilog(removeComments(content));
         // 去除过程块（initial/always/task/function 等），这些块内部不可能有模块例化
         content = this._removeProceduralBlocks(content);
         content = flattenParamBlocks(content);

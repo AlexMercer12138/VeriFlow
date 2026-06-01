@@ -26,7 +26,7 @@
 - **波形查看器集成** — 一键启动 Surfer、GTKWave 或任意自定义波形查看器
 - **模块扫描与重名检测** — 扫描工程及库目录下所有 Verilog 文件，检测模块命名冲突
 - **Testbench 生成** — 可视化配置时钟、复位、DUT 模块，一键生成 Verilog Testbench（GUI 和 VS Code 扩展均支持）
-- **端口解析与模板生成** — 解析模块端口，生成带对齐的例化模板和连线声明
+- **端口解析与模板生成** — 解析基础 Verilog / 常见 SystemVerilog 端口，生成带对齐的例化模板和连线声明
 - **结构化日志解析** — 将仿真器/编译器输出解析为带文件和行号引用的结构化日志条目
 - **全局库管理** — 配置跨工程共享的库目录（Python 版）
 - **桌面 GUI** — 深色主题 PySide6 界面，包含工程侧边栏、依赖树、模块浏览器和日志面板
@@ -216,6 +216,7 @@ veriflow --version
 | `veriflow.simulator` | 仿真器选择 | `iverilog` |
 | `veriflow.waveViewer` | 波形查看器 | `surfer` |
 | `veriflow.waveFileTemplate` | 波形文件路径模板 | `{top_module}.vcd` |
+| `veriflow.testbenchOutputDir` | Testbench 输出目录，相对路径以工作区根目录为基准 | `.` |
 
 ---
 
@@ -232,6 +233,7 @@ veriflow --version
   "simulator": "iverilog",
   "wave_viewer": "surfer",
   "wave_file_template": "{top_module}.vcd",
+  "testbench_output_dir": ".",
   "simulators": {
     "iverilog": {
       "compile_cmd": "iverilog -o \"{output}\" {files}",
@@ -303,7 +305,7 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 
 1. **模块索引** — 扫描所有搜索目录中的 Verilog 文件，构建 `模块名 → 文件路径` 索引
 2. **注释移除** — 分析前剥离 `//` 和 `/* */` 注释
-3. **generate/ifdef 展开** — 展开 `generate`/`endgenerate` 及 `ifdef`/`endif` 块，捕获内部的例化
+3. **轻量预处理** — 去除注释，并按文件内 ``define`` / ``undef`` 选择 `ifdef` / `ifndef` / `elsif` / `else` 分支
 4. **参数块展平** — 剥离 `#(...)` 参数覆写，避免误匹配
 5. **关键字过滤** — 过滤 Verilog 关键字，避免将内置原语误识别为模块依赖
 6. **拓扑排序** — 叶子模块（无依赖）优先编译，顶层模块最后编译
@@ -326,28 +328,98 @@ VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
 - **搜索过滤** — 模块面板支持快速文本过滤
 - **自动填充顶层模块选择器** — 下拉列表列出所有已扫描模块，快速选取
 
+### Verilog / SystemVerilog 解析范围
+
+VeriFlow 的解析器用于模块扫描、依赖分析、端口提取和 Testbench 生成，不替代仿真器/综合器的完整前端。
+
+当前支持：
+
+- `.v` / `.sv` / `.vh` / `.svh` 文件扫描。
+- 文件内 ``define``、``undef``、``ifdef``、``ifndef``、``elsif``、``else``、``endif`` 的简单分支选择。
+- ANSI 与非 ANSI 端口声明。
+- 常见端口修饰符：`wire`、`reg`、`logic`、`var`、`signed`、`unsigned`、`bit`、`tri`。
+- 参数声明中的简单类型标注，例如 `parameter int WIDTH = 8`。
+
+边界说明：
+
+- 不提供工程级宏定义配置；宏应由用户源码或仿真器命令负责。
+- 不展开复杂宏函数，不做完整 include 级预处理。
+- 如果源码条件编译或宏定义不完整，VeriFlow 的扫描/分析结果可能不完整；最终编译错误以用户配置的仿真器输出为准。
+
 ---
 
-## 开发指南
+## 发布流程
+
+项目发布统一使用 `scripts/run_release.py`，避免 Python 版本、VS Code 扩展版本和打包流程不一致。
+
+### 发布前检查
 
 ```bash
-# 运行 GUI 应用
-python run_gui.py
-
-# 运行 CLI 应用
-python run_cli.py
-
-# VS Code 扩展开发
-cd veriflow-vscode
-npm install
-npm run compile
-# 按 F5 启动调试
-
-# PyInstaller 打包
-pip install pyinstaller
-pyinstaller VeriFlow.spec --noconfirm
-pyinstaller VeriFlow-cli.spec --noconfirm
+python scripts/run_release.py --check
+# 或
+python scripts/run_release.py -c
 ```
+
+检查内容包括：
+
+- `src/version.py`、`pyproject.toml`、`veriflow-vscode/package.json` 版本一致性
+- `veriflow-vscode/CHANGELOG.md` 是否包含当前版本标题
+- Python 测试：`python -m pytest`
+- VS Code 扩展测试：`npm test`
+- `git diff --check`
+- `git status --short --branch`
+
+### 更新版本号
+
+```bash
+# 指定版本
+python scripts/run_release.py --update 1.2.0
+
+# 不指定版本时，自动将 PATCH 位加一
+python scripts/run_release.py --update
+
+# 短参数
+python scripts/run_release.py -u 1.2.0
+```
+
+版本号会同步更新：
+
+- `src/version.py`
+- `pyproject.toml`
+- `veriflow-vscode/package.json`
+
+### 打包发布产物
+
+```bash
+python scripts/run_release.py --package
+# 或
+python scripts/run_release.py -p
+```
+
+打包内容包括：
+
+- Python GUI：`dist/VeriFlow.exe`
+- Python CLI：`dist/VeriFlow-cli.exe`
+- VS Code 扩展：`veriflow-vscode/veriflow-{version}.vsix`
+
+### 一键发布流程
+
+```bash
+# 指定发布版本，按 版本更新 -> 发布检查 -> 应用打包 执行
+python scripts/run_release.py --all 1.2.0
+
+# 不指定版本时，自动将 PATCH 位加一
+python scripts/run_release.py --all
+
+# 短参数
+python scripts/run_release.py -a 1.2.0
+```
+
+`--all` 的执行顺序固定为：
+
+1. 更新版本号
+2. 发布前检查
+3. 打包发布产物
 
 ---
 

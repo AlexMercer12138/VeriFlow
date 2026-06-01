@@ -110,6 +110,7 @@ export class SimulationRunner {
         topModule: string = ''
     ): SimulationResult {
         const compileResult = this.compile(files, output, simulator, cwd, topModule);
+        compileResult.stdout = `[CMD] Compile: ${this._lastCompileCmd}\n${compileResult.stdout}`;
         if (!compileResult.success) {
             return compileResult;
         }
@@ -117,6 +118,11 @@ export class SimulationRunner {
         const runResult = this.run(output, simulator, cwd);
         runResult.elapsedTime += compileResult.elapsedTime;
         runResult.logEntries = [...compileResult.logEntries, ...runResult.logEntries];
+        runResult.stdout = (
+            `[CMD] Compile: ${this._lastCompileCmd}\n`
+            + runResult.stdout
+            + `\n[CMD] Run: ${this._lastRunCmd}\n`
+        );
         return runResult;
     }
 
@@ -133,7 +139,13 @@ export class SimulationRunner {
             const abs = path.resolve(f);
             try {
                 const rel = path.relative(cwdResolved, abs);
-                result.push(rel || abs);
+                if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+                    result.push(rel);
+                } else if (!rel) {
+                    result.push(path.basename(abs));
+                } else {
+                    result.push(abs);
+                }
             } catch {
                 result.push(abs);
             }

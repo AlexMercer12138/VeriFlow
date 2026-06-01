@@ -13,7 +13,7 @@ import { TestbenchPanelProvider } from './testbenchPanel';
 import * as output from './output';
 import {
     DependencyAnalyzer, SimulationRunner, LogParser,
-    listVerilogFiles, readText, removeComments,
+    listVerilogFiles, readText, preprocessVerilog, removeComments,
     ModuleScanResult, DependencyResult, SimulationResult,
     SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE,
 } from './core';
@@ -272,6 +272,10 @@ function _resolveViewer(settings: ExtensionSettings): WaveViewerConfig {
     return DEFAULT_VIEWERS[settings.waveViewer] || DEFAULT_VIEWERS.surfer;
 }
 
+function _isSimulatorReady(simulator: SimulatorConfig): boolean {
+    return Boolean(simulator.compileCmd?.trim() && simulator.runCmd?.trim());
+}
+
 function _collectSearchDirs(root: string, libDirs: string[]): string[] {
     const dirs = [root];
     for (const d of libDirs) {
@@ -291,7 +295,7 @@ function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult
         const dirModules: string[] = [];
         for (const vfile of listVerilogFiles(searchDir)) {
             try {
-                const content = readText(vfile);
+                const content = preprocessVerilog(removeComments(readText(vfile)));
                 const lines = content.split('\n');
                 let inBlockComment = false;
                 for (let lineNo = 0; lineNo < lines.length; lineNo++) {
@@ -404,7 +408,7 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     // 只从工作区目录的模块中选取
     const workspaceModules = treeProvider.getWorkspaceModuleNames();
     if (workspaceModules.length === 0) {
-        vscode.window.showWarningMessage('No modules found in workspace. Open a Verilog workspace first.');
+        vscode.window.showWarningMessage('No modules found in workspace. Add .v/.sv files or configure veriflow.libDirs, then scan again.');
         return;
     }
     const selected = await vscode.window.showQuickPick(workspaceModules, {
@@ -489,7 +493,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
 
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
-        output.appendInfo(`Analyze status is ${_analyzeStatus}, running analyze first...`);
+        output.appendInfo(`Analyze status is ${_analyzeStatus}; running analyze -> simulate.`);
         _pendingSimulateAfterAnalyze = true;
         await cmdAnalyze(context);
         return;
@@ -498,6 +502,13 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     const settings = getSettings();
     const searchDirs = _collectSearchDirs(root, settings.libDirs);
     const simulator = _resolveSimulator(settings);
+    if (!_isSimulatorReady(simulator)) {
+        output.show(true);
+        output.appendError(`Simulator "${settings.simulator}" is missing compile or run command. Check VeriFlow settings.`);
+        vscode.window.showErrorMessage(`VeriFlow simulator "${settings.simulator}" is missing compile or run command.`);
+        _setSimulateStatus(context, 'error');
+        return;
+    }
 
     output.clear();
     output.show(true);
@@ -516,7 +527,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
 
     output.appendInfo(`Resolved ${depResult.files.length} file(s)`);
-    output.appendInfo('Starting compilation and simulation...');
+    output.appendInfo('Running compile -> simulate.');
     output.appendLine('');
     const outFile = path.join(root, `${topModule}.out`);
 
@@ -577,7 +588,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
 
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
-        output.appendInfo('Analyze not completed, running analyze -> simulate -> open wave...');
+        output.appendInfo('Analyze is not complete; running analyze -> simulate -> open wave.');
         _pendingWaveAfterAnalyze = true;
         await cmdAnalyze(context);
         return;
@@ -585,7 +596,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
 
     // 检查编译仿真状态
     if (_simulateStatus !== 'completed') {
-        output.appendInfo('Simulation not completed, running simulate -> open wave...');
+        output.appendInfo('Simulation is not complete; running simulate -> open wave.');
         _pendingWaveAfterSimulate = true;
         await cmdSimulate(context);
         return;
@@ -599,7 +610,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
 
     // 波形文件不存在，运行仿真
     output.appendWarning(`Wave file not found: ${waveFile}`);
-    output.appendInfo('Running simulation to generate waveform...');
+    output.appendInfo('Running simulate -> open wave to generate waveform first.');
     _pendingWaveAfterSimulate = true;
     await cmdSimulate(context);
 }

@@ -1,8 +1,10 @@
-# VeriFlow — VS Code Extension
+# VeriFlow - VS Code Extension
+
+[简体中文](https://github.com/AlexMercer12138/VeriFlow/blob/main/veriflow-vscode/README_zh-CN.md)
 
 <div align="center">
 
-**在编辑器中一键完成 Verilog 仿真全流程：分析 → 编译 → 仿真 → 查看波形，以及 Testbench 生成**
+**Run a lightweight Verilog simulation flow inside VS Code: scan modules, analyze dependencies, compile, simulate, open waveforms, and generate testbenches.**
 
 [![VS Code](https://img.shields.io/badge/VS_Code-^1.80.0-007ACC.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -12,147 +14,143 @@
 
 ---
 
-## 简介
+## Overview
 
-VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。它将**模块扫描、依赖分析、编译仿真、波形查看、Testbench 生成**集成在编辑器侧边栏中，无需离开 VS Code 即可完成整个仿真流程。
+VeriFlow is a VS Code extension for Verilog and SystemVerilog projects. It brings module scanning, dependency analysis, simulation execution, waveform opening, and Testbench generation into the VS Code sidebar.
 
-**完全零依赖** — 核心引擎全部用 TypeScript 原生实现，不需要安装任何外部依赖。
+The extension core is implemented in TypeScript, so the VS Code extension itself does not require a Python runtime.
 
-## 功能演示
+## Preview
 
-![功能演示](https://img.cdn1.vip/i/6a0a6a9964326_1779067545.webp)
+![Preview](https://img.cdn1.vip/i/6a0a6a9964326_1779067545.webp)
 
-## 快速开始
+## Quick Start
 
-### 前提条件
+### Requirements
 
 - **VS Code 1.80+**
-- **一款 Verilog 仿真器**（至少安装一款）：
-  - [Icarus Verilog](https://bleyer.org/icarus/) — 开源，推荐
-  - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html) — 商业
-  - [Xilinx XSim](https://www.xilinx.com/products/design-tools/vivado.html) — 商业
-  - 或自行配置自定义仿真器
-- **波形查看器**（可选）：
-  - [Surfer](https://surfer-project.org/) — 开源，推荐
-  - [GTKWave](https://gtkwave.sourceforge.net/) — 开源
-  - 或自行配置自定义波形查看器
+- **A Verilog simulator**, such as:
+  - [Icarus Verilog](https://bleyer.org/icarus/) - open source, recommended
+  - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html)
+  - [Xilinx XSim](https://www.xilinx.com/products/design-tools/vivado.html)
+  - A custom simulator command
+- **A waveform viewer** (optional), such as:
+  - [Surfer](https://surfer-project.org/) - open source, recommended
+  - [GTKWave](https://gtkwave.sourceforge.net/)
+  - A custom waveform viewer command
 
-### 安装
+### Installation
 
-扩展商店搜索 `VeriFlow` 安装，或手动安装 `.vsix` 文件。
+Install `VeriFlow` from the VS Code Marketplace, or install a local `.vsix` package manually.
 
-### 使用流程
+### Basic Flow
 
-1. 在 VS Code 中打开包含 `.v` / `.sv` 文件的文件夹
-2. 点击活动栏的 **VeriFlow 图标**（芯片形状），打开侧边栏
-3. 扩展自动扫描所有模块，按目录分组展示
-4. 点击 **Select Top Module** 在列表中选择顶层模块
-5. 点击 **Analyze Dependencies** 解析依赖关系
-6. 点击 **Compile & Simulate** 运行仿真
-7. 点击 **Open Waveform** 查看波形
-
----
-
-## Testbench 生成器
-
-侧边栏下方新增 **Testbench Generator** 面板，支持一键生成 Verilog Testbench：
-
-### 配置项
-
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| **Name** | Testbench 模块名 | `tb_top` |
-| **Unit / Prec** | `timescale` 时间单位 / 精度 | `1ns` / `1ps` |
-| **Clocks** | 时钟频率（MHz），支持最多 6 个时钟 | `100` |
-| **Reset** | 复位极性（高/低有效）和持续时间 | Active Low / `100` |
-| **DUT Modules** | 选择模块实例化到 Testbench 中，支持同一模块多次例化 | — |
-| **Ports** | 自动提取模块端口，可自定义信号连接名 | — |
-| **Parameters** | 自动提取模块参数，可修改参数值 | — |
-| **Waveform** | 波形文件名 | `{name}.vcd` |
-| **Timeout** | 仿真超时时间（ns） | `1000000` |
-
-### 使用步骤
-
-1. 在 **DUT Modules** 区域点击 `+` 选择要例化的模块
-2. 点击模块列表中的模块，在右侧编辑端口连接和参数值
-3. 配置时钟、复位等属性
-4. 点击 **Generate Testbench** 生成文件并自动打开
+1. Open a folder that contains `.v` or `.sv` files.
+2. Open the **VeriFlow** view from the Activity Bar.
+3. VeriFlow scans modules automatically and groups them by directory.
+4. Click **Select Top Module** and choose the top module.
+5. Click **Analyze Dependencies** to resolve the compile order.
+6. Click **Compile & Simulate** to run simulation.
+7. Click **Open Waveform** to open the generated waveform file.
 
 ---
 
-## 扩展设置
+## Testbench Generator
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `veriflow.libDirs` | `string[]` | `[]` | 库目录路径列表 |
-| `veriflow.simulator` | `enum` | `iverilog` | 仿真器：`iverilog` / `vcs` / `xsim` / `custom` |
-| `veriflow.waveViewer` | `enum` | `surfer` | 波形查看器：`surfer` / `gtkwave` / `custom` |
-| `veriflow.simulatorCompileCmd` | `string` | `""` | 自定义编译命令模板。支持 `{files}` `{output}` `{top_module}` 占位符 |
-| `veriflow.simulatorRunCmd` | `string` | `""` | 自定义运行命令模板。支持 `{output}` 占位符 |
-| `veriflow.waveViewerCmd` | `string` | `""` | 自定义波形查看器命令。支持 `{wave_file}` 占位符 |
-| `veriflow.waveFileTemplate` | `string` | `{top_module}.vcd` | 波形文件路径模板。支持 `{top_module}` 占位符 |
+The **Testbench Generator** view can generate a Verilog testbench from scanned modules.
 
----
+### Options
 
-## 侧边栏说明
+| Option | Description | Default |
+|--------|-------------|---------|
+| **Name** | Testbench module name | `tb_top` |
+| **Unit / Prec** | `timescale` time unit and precision | `1ns` / `1ps` |
+| **Clocks** | Clock frequency in MHz, up to 6 clocks | `100` |
+| **Reset** | Reset polarity and duration | Active Low / `100` |
+| **DUT Modules** | Modules instantiated in the testbench, including repeated instances | - |
+| **Ports** | Parsed module ports with editable signal names | - |
+| **Parameters** | Parsed module parameters with editable values | - |
+| **Waveform** | Waveform file name | `{name}.vcd` |
+| **Timeout** | Simulation timeout in ns | `1000000` |
 
-侧边栏分为两个主要视图：
+### Usage
 
-### 1. VeriFlow（上方）
+1. Click `+` in **DUT Modules** and select the modules to instantiate.
+2. Select a DUT module and edit its port connections and parameter values.
+3. Configure clocks, reset, waveform, and timeout options.
+4. Click **Generate Testbench** to create and open the testbench file.
 
-#### 操作按钮（标题栏）
-
-从左到右依次为：
-- **Select Top Module** — 从已扫描模块中选择顶层
-- **Analyze Dependencies** — BFS 依赖解析，生成编译顺序
-- **Compile & Simulate** — 编译并执行仿真
-- **Open Waveform** — 启动波形查看器
-- **Scan Modules** — 重新扫描工作区
-
-#### Top Module
-
-显示当前选中的顶层模块名称，点击可重新选择。
-
-#### Dependency Tree
-
-依赖分析后展示模块层级关系，缩进表示依赖深度。点击模块名可在编辑器中打开对应文件。
-
-#### All Modules
-
-按目录分组的全部模块清单。标记 `[dep]` 的模块是依赖树中的一部分。
-
-### 2. Testbench Generator（下方）
-
-生成 Verilog Testbench 的交互式面板，包含：
-- **Properties** — Testbench 名称和 timescale 配置
-- **Clocks** — 多时钟频率配置
-- **Reset** — 复位极性和持续时间
-- **DUT Modules** — 模块选择、端口编辑、参数编辑
-- **Waveform / Timeout** — 波形文件和仿真超时
+Generated testbenches are written to the workspace root by default. Set `veriflow.testbenchOutputDir` to write them into a workspace-relative subdirectory. VeriFlow creates the directory if it does not exist.
 
 ---
 
-## 输出面板
+## Extension Settings
 
-仿真过程中的所有输出实时显示在 **Output** 面板中（选择 `VeriFlow` 通道），按日志级别区分：
-
-- `[INFO]` — 普通信息
-- `[OK]` — 成功信息
-- `[WARN]` — 警告
-- `[ERROR]` — 错误信息（含文件引用和行号）
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `veriflow.libDirs` | `string[]` | `[]` | Library directories used for module search and dependency resolution |
+| `veriflow.simulator` | `enum` | `iverilog` | Simulator: `iverilog` / `vcs` / `xsim` / `custom` |
+| `veriflow.waveViewer` | `enum` | `surfer` | Waveform viewer: `surfer` / `gtkwave` / `custom` |
+| `veriflow.simulatorCompileCmd` | `string` | `""` | Custom compile command template. Supports `{files}` `{output}` `{top_module}` |
+| `veriflow.simulatorRunCmd` | `string` | `""` | Custom run command template. Supports `{output}` |
+| `veriflow.waveViewerCmd` | `string` | `""` | Custom waveform viewer command template. Supports `{wave_file}` |
+| `veriflow.waveFileTemplate` | `string` | `{top_module}.vcd` | Waveform file path template. Supports `{top_module}` |
+| `veriflow.testbenchOutputDir` | `string` | `.` | Testbench output directory, resolved from the workspace root |
 
 ---
 
-## 支持的仿真器预置命令
+## Sidebar
 
-| 仿真器 | 编译命令模板 | 运行命令模板 |
-|--------|-------------|-------------|
+The sidebar contains two views.
+
+### VeriFlow
+
+The title bar actions are:
+
+- **Select Top Module** - choose the top module from scanned modules
+- **Analyze Dependencies** - analyze dependencies and generate compile order
+- **Compile & Simulate** - compile and run simulation
+- **Open Waveform** - open the configured waveform viewer
+- **Scan Modules** - rescan the workspace
+
+The module list refreshes when the VeriFlow view is opened, when the Testbench Generator is opened, when a testbench is generated, and when workspace files or relevant settings change.
+
+### Testbench Generator
+
+This view contains:
+
+- **Properties** - testbench name and timescale
+- **Clocks** - clock frequency configuration
+- **Reset** - reset polarity and duration
+- **DUT Modules** - module selection, port editing, and parameter editing
+- **Waveform** - waveform file configuration
+- **Timeout** - simulation timeout configuration
+
+---
+
+## Output Panel
+
+Simulation output is written to the VS Code **Output** panel under the `VeriFlow` channel.
+
+Messages are grouped by level:
+
+- `[INFO]` - normal information
+- `[OK]` - successful operation
+- `[WARN]` - warning
+- `[ERROR]` - error message, including file and line references when available
+
+---
+
+## Built-in Simulator Commands
+
+| Simulator | Compile command template | Run command template |
+|-----------|--------------------------|----------------------|
 | iverilog | `iverilog -o "{output}" {files}` | `vvp "{output}"` |
 | vcs | `vcs -full64 -o "{output}" {files}` | `./"{output}"` |
 | xsim | `xvlog {files} && xelab {top_module} -snapshot "{output}"` | `xsim "{output}" --runall` |
-| custom | （自行定义） | （自行定义） |
+| custom | User-defined | User-defined |
 
-## 自定义仿真器配置示例
+## Custom Simulator Example
 
 ```json
 {
@@ -170,52 +168,12 @@ VeriFlow 是一个为 Verilog/SystemVerilog 开发者打造的 VS Code 扩展。
 
 ---
 
-## 架构
-
-```
-vscode-extension/src/
-├── core/                       # 核心引擎（TypeScript 原生）
-│   ├── types.ts                # 类型定义
-│   ├── verilogUtils.ts         # Verilog 语法工具
-│   ├── fileService.ts          # 文件系统服务
-│   ├── dependencyAnalyzer.ts   # BFS 依赖分析器
-│   ├── templateEngine.ts       # 命令模板引擎
-│   ├── processManager.ts       # 进程管理
-│   ├── logParser.ts            # 仿真日志解析
-│   ├── simulationRunner.ts     # 仿真执行器
-│   ├── portParser.ts           # 端口解析器
-│   └── testbenchGenerator.ts   # Testbench 生成器
-├── config.ts                   # 扩展设置管理
-├── output.ts                   # 输出面板封装
-├── moduleTreeProvider.ts       # 侧边栏树视图
-├── testbenchPanel.ts           # Testbench 生成面板
-└── extension.ts                # 扩展主入口
-```
-
----
-
-## 常见问题
-
-### Q: 为什么看不到 VeriFlow 图标？
-
-确保当前打开的工作区包含 `.v` 或 `.sv` 文件，扩展会在检测到这类文件时自动激活。
-
-### Q: 编译报错 "command not found"？
-
-请确保仿真器已安装并在系统 PATH 中。可以在终端中手动运行 `iverilog`、`vcs` 等命令验证。
-
-### Q: 波形文件找不到？
-
-先运行仿真生成波形文件。波形文件路径由 `veriflow.waveFileTemplate` 决定，默认在工作区根目录生成 `{top_module}.vcd`。
-
----
-
-## 许可证
+## License
 
 MIT
 
 ---
 
-## 反馈与贡献
+## Feedback
 
-有问题或建议？欢迎 [提交 Issue](https://github.com/AlexMercer12138/VeriFlow/issues)。
+Issues and suggestions are welcome on [GitHub Issues](https://github.com/AlexMercer12138/VeriFlow/issues).
