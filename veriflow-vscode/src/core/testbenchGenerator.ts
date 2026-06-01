@@ -90,6 +90,7 @@ export class TestbenchGenerator {
         const lines = this._build(name, timeUnit, timePrecision, clocksMhz, resetActiveHigh, resetDuration, modules, waveFile, timeout);
 
         const filepath = path.join(outputDir, `${name}.v`);
+        fs.mkdirSync(outputDir, { recursive: true });
         fs.writeFileSync(filepath, lines.join('\n'), 'utf-8');
         return filepath;
     }

@@ -50,6 +50,7 @@ class ModuleEntry:
 
 
 class TestbenchPanel(QWidget):
+    config_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,6 +89,12 @@ class TestbenchPanel(QWidget):
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText(tr("tb.name_ph"))
         row.addWidget(self._name_edit, 1)
+        self._output_dir_label = QLabel(tr("tb.output_dir"))
+        row.addWidget(self._output_dir_label)
+        self._output_dir_edit = QLineEdit()
+        self._output_dir_edit.setPlaceholderText(tr("tb.output_dir_ph"))
+        self._output_dir_edit.textChanged.connect(lambda _: self.config_changed.emit())
+        row.addWidget(self._output_dir_edit, 1)
         self._time_unit_label = QLabel(tr("tb.time_unit"))
         row.addWidget(self._time_unit_label)
         self._time_unit_edit = QLineEdit("1ns")
@@ -351,6 +358,8 @@ class TestbenchPanel(QWidget):
         self._name_grp.setTitle(tr("tb.props"))
         self._name_label_w.setText(tr("tb.name_label"))
         self._name_edit.setPlaceholderText(tr("tb.name_ph"))
+        self._output_dir_label.setText(tr("tb.output_dir"))
+        self._output_dir_edit.setPlaceholderText(tr("tb.output_dir_ph"))
         self._time_unit_label.setText(tr("tb.time_unit"))
         self._time_prec_label.setText(tr("tb.time_prec"))
         self._clock_grp.setTitle(tr("tb.clock"))
@@ -376,6 +385,14 @@ class TestbenchPanel(QWidget):
 
     def get_name(self) -> str:
         return self._name_edit.text().strip()
+
+    @property
+    def output_dir(self) -> str:
+        return self._output_dir_edit.text().strip() or "."
+
+    @output_dir.setter
+    def output_dir(self, value: str):
+        self._output_dir_edit.setText(value if value and value != "." else "")
 
     def get_config(self) -> dict:
         clks = []
@@ -408,6 +425,7 @@ class TestbenchPanel(QWidget):
 
         return {
             'name': tb_name,
+            'output_dir': self.output_dir,
             'time_unit': self._time_unit_edit.text().strip() or '1ns',
             'time_precision': self._time_prec_edit.text().strip() or '1ps',
             'clocks_mhz': clks,

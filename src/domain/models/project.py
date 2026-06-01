@@ -51,6 +51,7 @@ class Project:
     simulator: str = "iverilog"
     wave_viewer: str = "surfer"
     wave_file_template: str = "{top_module}.vcd"
+    testbench_output_dir: str = "."
     source_files: List[Path] = field(default_factory=list)
     file_order: List[Path] = field(default_factory=list)
     simulators: Dict[str, SimulatorConfig] = field(default_factory=dict)
@@ -66,6 +67,14 @@ class Project:
         path = self.wave_file_template.replace('{top_module}', self.top_module)
         return self.root_dir / path
 
+    def resolve_testbench_output_dir(self) -> Path:
+        """解析 Testbench 输出目录；相对路径以工程根目录为基准"""
+        raw = (self.testbench_output_dir or ".").strip()
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        return self.root_dir / path
+
     def to_dict(self) -> dict:
         result = {
             'project_name': self.name,
@@ -75,6 +84,7 @@ class Project:
             'simulator': self.simulator,
             'wave_viewer': self.wave_viewer,
             'wave_file_template': self.wave_file_template,
+            'testbench_output_dir': self.testbench_output_dir,
             'simulators': {
                 k: v.to_dict() for k, v in self.simulators.items()
             },
@@ -107,6 +117,7 @@ class Project:
             simulator=data.get('simulator', 'iverilog'),
             wave_viewer=data.get('wave_viewer', 'surfer'),
             wave_file_template=data.get('wave_file_template', '{top_module}.vcd'),
+            testbench_output_dir=data.get('testbench_output_dir', '.'),
             simulators=simulators,
             wave_viewers=wave_viewers,
             file_order=[Path(f) for f in data.get('file_order', [])],

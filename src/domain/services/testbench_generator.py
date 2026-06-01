@@ -32,6 +32,8 @@ class TestbenchGenerator:
                             reset_active_high, reset_duration,
                             modules, wave_file, timeout)
 
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
         filepath = output_dir / f'{name}.v'
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))

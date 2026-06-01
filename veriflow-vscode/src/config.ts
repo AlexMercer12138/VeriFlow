@@ -52,6 +52,7 @@ export interface ExtensionSettings {
     simulatorRunCmd: string;
     waveViewerCmd: string;
     waveFileTemplate: string;
+    testbenchOutputDir: string;
 }
 
 export function getSettings(): ExtensionSettings {
@@ -64,5 +65,6 @@ export function getSettings(): ExtensionSettings {
         simulatorRunCmd: config.get<string>('simulatorRunCmd', ''),
         waveViewerCmd: config.get<string>('waveViewerCmd', ''),
         waveFileTemplate: config.get<string>('waveFileTemplate', '{top_module}.vcd'),
+        testbenchOutputDir: config.get<string>('testbenchOutputDir', '.'),
     };
 }

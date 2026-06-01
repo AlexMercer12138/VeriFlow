@@ -70,7 +70,16 @@ export function activate(context: vscode.ExtensionContext): void {
         treeDataProvider: treeProvider,
         showCollapseAll: true,
     });
+    treeView.onDidChangeVisibility((e) => {
+        if (e.visible) { cmdScanModules(context); }
+    });
     context.subscriptions.push(treeView);
+    tbPanelProvider.setBeforeGenerate(async () => {
+        await cmdScanModules(context);
+    });
+    tbPanelProvider.setOnVisible(async () => {
+        await cmdScanModules(context);
+    });
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(

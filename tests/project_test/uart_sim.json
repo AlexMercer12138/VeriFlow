@@ -1,8 +1,8 @@
 {
-  "project_name": "my_design",
+  "project_name": "uart_sim",
   "project_root": ".",
   "lib_dirs": [],
-  "top_module": "top_tb",
+  "top_module": "uart_tb",
   "simulator": "iverilog",
   "wave_viewer": "surfer",
   "wave_file_template": "{top_module}.vcd",
@@ -30,5 +30,7 @@
     "gtkwave": "gtkwave \"{wave_file}\"",
     "custom": ""
   },
-  "file_order": []
+  "file_order": [],
+  "analyze_status": "idle",
+  "simulate_status": "idle"
 }

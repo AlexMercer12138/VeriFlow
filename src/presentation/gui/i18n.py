@@ -90,6 +90,8 @@ _TRANSLATIONS = {
     "tb.name_label":                {"zh": "名称:",                 "en": "Name:"},
     "tb.name":                      {"zh": "测试平台名称",         "en": "Testbench Name"},
     "tb.name_ph":                   {"zh": "例如: tb_top",         "en": "e.g. tb_top"},
+    "tb.output_dir":                {"zh": "输出目录:",             "en": "Output dir:"},
+    "tb.output_dir_ph":             {"zh": "留空则使用工程根目录，例如: sim/tb", "en": "empty for project root, e.g. sim/tb"},
     "tb.time_unit":                 {"zh": "时间单位:",             "en": "Time unit:"},
     "tb.time_prec":                 {"zh": "时间精度:",             "en": "Time precision:"},
     "tb.clock":                     {"zh": "时钟（最多6个）",       "en": "Clocks (max 6)"},

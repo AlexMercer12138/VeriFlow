@@ -103,11 +103,13 @@ class MainWindow(QMainWindow):
 
         self._tb_panel = TestbenchPanel()
         self._tb_panel.generate_clicked.connect(self._on_generate_tb)
+        self._tb_panel.config_changed.connect(self._on_tb_config_changed)
 
         self._tab_widget.addTab(self._config_panel, "?")
         self._tab_widget.addTab(self._module_panel, "?")
         self._tab_widget.addTab(self._tb_panel, "?")
         self._tab_widget.addTab(self._log_panel, "?")
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         h_splitter.addWidget(self._project_panel)
         h_splitter.addWidget(self._tab_widget)
@@ -266,6 +268,17 @@ class MainWindow(QMainWindow):
             self._refresh_modules()
             self._check_config_change_for_status()
 
+    def _on_tb_config_changed(self):
+        if self._initializing:
+            return
+        self._auto_save()
+
+    def _on_tab_changed(self, index: int):
+        if self._initializing or not self._project:
+            return
+        if index in (1, 2):
+            self._refresh_modules()
+
     def _check_config_change_for_status(self):
         """库目录或工程目录变动时，分析依赖标记为已过时"""
         if not self._project:
@@ -287,6 +300,7 @@ class MainWindow(QMainWindow):
         p.simulator = self._config_panel.simulator
         p.wave_viewer = self._config_panel.wave_viewer
         p.wave_file_template = self._config_panel.wave_file_template
+        p.testbench_output_dir = self._tb_panel.output_dir
 
         from src.domain.models.project import SimulatorConfig, WaveViewerConfig
         custom_sim = self._config_panel.get_custom_sim_config()
@@ -312,6 +326,7 @@ class MainWindow(QMainWindow):
         self._config_panel.simulator = p.simulator
         self._config_panel.wave_viewer = p.wave_viewer
         self._config_panel.wave_file_template = p.wave_file_template
+        self._tb_panel.output_dir = p.testbench_output_dir
 
         custom_sim = p.simulators.get('custom')
         if custom_sim:
@@ -496,8 +511,11 @@ class MainWindow(QMainWindow):
             return
         from src.domain.services.testbench_generator import TestbenchGenerator
         gen = TestbenchGenerator()
-        output_dir = self._project.root_dir
+        self._project.testbench_output_dir = config.get('output_dir', '.') or '.'
+        output_dir = self._project.resolve_testbench_output_dir()
         filepath = gen.generate(config, output_dir)
+        self._auto_save()
+        self._refresh_modules()
         self._log_panel.append_success(tr("tb.generated", path=filepath))
         self._status(tr("status.tb_generated", path=filepath))
         self._tab_widget.setCurrentWidget(self._log_panel)

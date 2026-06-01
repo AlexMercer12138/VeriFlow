@@ -6,6 +6,9 @@ build/
 .eggs/
 .env
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 ## Python GUI
 src/presentation/gui/__pycache__/
@@ -14,6 +17,13 @@ src/presentation/gui/__pycache__/
 veriflow-vscode/node_modules/
 veriflow-vscode/out/
 veriflow-vscode/*.vsix
+
+# Simulation outputs
+*.out
+*.vcd
+*.fst
+*.lxt
+*.lxt2
 
 # IDE
 .vscode/

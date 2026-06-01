@@ -35,21 +35,21 @@ class LogParserService:
         if not line:
             return None
 
-        for pattern in self._ERROR_PATTERNS:
-            m = pattern.match(line)
-            if m:
-                return LogEntry(
-                    level='ERROR',
-                    message=m.groupdict().get('msg', line),
-                    file_ref=m.groupdict().get('file'),
-                    line_no=int(m.group('line')) if 'line' in m.groupdict() and m.group('line') else None,
-                )
-
         for pattern in self._WARNING_PATTERNS:
             m = pattern.match(line)
             if m:
                 return LogEntry(
                     level='WARNING',
+                    message=m.groupdict().get('msg', line),
+                    file_ref=m.groupdict().get('file'),
+                    line_no=int(m.group('line')) if 'line' in m.groupdict() and m.group('line') else None,
+                )
+
+        for pattern in self._ERROR_PATTERNS:
+            m = pattern.match(line)
+            if m:
+                return LogEntry(
+                    level='ERROR',
                     message=m.groupdict().get('msg', line),
                     file_ref=m.groupdict().get('file'),
                     line_no=int(m.group('line')) if 'line' in m.groupdict() and m.group('line') else None,

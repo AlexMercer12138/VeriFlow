@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TestbenchGenerator, TbConfig, TbModuleConfig } from './core/testbenchGenerator';
 import { PortParser } from './core/portParser';
 import { Port, Parameter } from './core/types';
+import { getSettings } from './config';
 
 export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'veriflow.testbench';
@@ -12,8 +13,18 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     private _moduleEntries: TbModuleEntry[] = [];
     private _generator = new TestbenchGenerator();
     private _parser = new PortParser();
+    private _beforeGenerate?: () => Promise<void>;
+    private _onVisible?: () => Promise<void>;
 
     constructor(private readonly _context: vscode.ExtensionContext) {}
+
+    setBeforeGenerate(callback: () => Promise<void>): void {
+        this._beforeGenerate = callback;
+    }
+
+    setOnVisible(callback: () => Promise<void>): void {
+        this._onVisible = callback;
+    }
 
     resolveWebviewView(
         webviewView: vscode.WebviewView,
@@ -28,6 +39,11 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         };
 
         webviewView.webview.html = this._getHtml();
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible && this._onVisible) {
+                this._onVisible();
+            }
+        });
 
         webviewView.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
@@ -72,7 +88,11 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
 
     private _postModules(): void {
         const modules = Object.keys(this._moduleMap).sort();
-        this._postMessage({ type: 'modules', modules });
+        this._postMessage({
+            type: 'modules',
+            modules,
+            outputDir: getSettings().testbenchOutputDir || '.',
+        });
     }
 
     private async _addModule(baseName: string): Promise<void> {
@@ -148,6 +168,15 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        if (this._beforeGenerate) {
+            await this._beforeGenerate();
+        }
+
+        const outputDirSetting = (config.output_dir || getSettings().testbenchOutputDir || '.').trim() || '.';
+        const outputDir = path.isAbsolute(outputDirSetting)
+            ? outputDirSetting
+            : path.join(root, outputDirSetting);
+
         const tbConfig: TbConfig = {
             name,
             time_unit: config.time_unit || '1ns',
@@ -167,11 +196,14 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         };
 
         try {
-            const filepath = this._generator.generate(tbConfig, root);
+            const filepath = this._generator.generate(tbConfig, outputDir);
             const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filepath));
             await vscode.window.showTextDocument(doc);
             vscode.window.showInformationMessage(`Testbench generated: ${path.basename(filepath)}`);
             this._postMessage({ type: 'generated', filepath });
+            if (this._beforeGenerate) {
+                await this._beforeGenerate();
+            }
         } catch (err: any) {
             vscode.window.showErrorMessage(`Failed to generate testbench: ${err.message}`);
             this._postMessage({ type: 'error', message: err.message });
@@ -384,6 +416,10 @@ button.secondary:hover {
         <input type="text" id="tbName" placeholder="e.g. tb_top" />
     </div>
     <div class="row">
+        <label>Output</label>
+        <input type="text" id="outputDir" placeholder="workspace root or e.g. sim/tb" />
+    </div>
+    <div class="row">
         <label>Unit</label>
         <input type="text" id="timeUnit" value="1ns" />
     </div>
@@ -594,6 +630,7 @@ button.secondary:hover {
         });
         const config = {
             name: document.getElementById('tbName').value.trim(),
+            output_dir: document.getElementById('outputDir').value.trim(),
             time_unit: document.getElementById('timeUnit').value.trim(),
             time_precision: document.getElementById('timePrec').value.trim(),
             clocks_mhz: clocks,
@@ -612,6 +649,9 @@ button.secondary:hover {
                 modules = msg.modules;
                 const sel = document.getElementById('moduleSelect');
                 sel.innerHTML = modules.map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>').join('');
+                if (msg.outputDir && !document.getElementById('outputDir').value.trim()) {
+                    document.getElementById('outputDir').value = msg.outputDir === '.' ? '' : msg.outputDir;
+                }
                 break;
             case 'moduleAdded':
                 moduleEntries.push(msg.entry);
