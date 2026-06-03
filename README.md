@@ -214,7 +214,7 @@ veriflow --version
 |--------|------|--------|
 | `veriflow.libDirs` | 库目录列表 | `[]` |
 | `veriflow.simulator` | 仿真器选择 | `iverilog` |
-| `veriflow.waveViewer` | 波形查看器 | `surfer` |
+| `veriflow.waveViewer` | 波形查看器 | `builtin` |
 | `veriflow.waveFileTemplate` | 波形文件路径模板 | `{top_module}.vcd` |
 | `veriflow.testbenchOutputDir` | Testbench 输出目录，相对路径以工作区根目录为基准 | `.` |
 
@@ -231,7 +231,7 @@ veriflow --version
   "lib_dirs": ["./libs", "../shared"],
   "top_module": "top_tb",
   "simulator": "iverilog",
-  "wave_viewer": "surfer",
+  "wave_viewer": "builtin",
   "wave_file_template": "{top_module}.vcd",
   "testbench_output_dir": ".",
   "simulators": {
@@ -253,6 +253,7 @@ veriflow --version
     }
   },
   "wave_viewers": {
+    "builtin": "",
     "surfer": "surfer \"{wave_file}\"",
     "gtkwave": "gtkwave \"{wave_file}\"",
     "custom": ""

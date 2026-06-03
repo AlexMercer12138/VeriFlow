@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veriflow"
-version = "1.2.0"
+version = "1.2.1"
 description = "Lightweight Verilog simulation flow manager with GUI, CLI, and VS Code extension support."
 readme = "README.md"
 requires-python = ">=3.8"

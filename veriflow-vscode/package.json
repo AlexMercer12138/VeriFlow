@@ -3,7 +3,7 @@
   "displayName": "Verilog Simulation Flow",
   "description": "Lightweight Verilog simulation manager for VS Code — analyze, compile, simulate, view waveforms, and generate testbenches",
   "icon": "media/icon.png",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "Vikai-mercer",
   "license": "MIT",
   "engines": {
@@ -32,10 +32,23 @@
   },
   "activationEvents": [
     "workspaceContains:**/*.v",
-    "workspaceContains:**/*.sv"
+    "workspaceContains:**/*.sv",
+    "onCustomEditor:veriflow.waveformEditor"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "veriflow.waveformEditor",
+        "displayName": "VeriFlow Waveform Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.vcd"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "views": {
       "veriflow": [
         {
@@ -84,6 +97,11 @@
         "icon": "$(pulse)"
       },
       {
+        "command": "veriflow.openVcdViewer",
+        "title": "Open VCD in VeriFlow Viewer",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "veriflow.scanModules",
         "title": "Scan Modules",
         "icon": "$(refresh)"
@@ -95,6 +113,13 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "veriflow.openVcdViewer",
+          "when": "resourceExtname == .vcd",
+          "group": "navigation@10"
+        }
+      ],
       "view/title": [
         {
           "command": "veriflow.selectTop",
@@ -158,12 +183,13 @@
         "veriflow.waveViewer": {
           "type": "string",
           "enum": [
+            "builtin",
             "surfer",
             "gtkwave",
             "custom"
           ],
-          "default": "surfer",
-          "description": "Waveform viewer to use"
+          "default": "builtin",
+          "description": "Waveform viewer to use. Use 'builtin' to open VCD files in the VeriFlow waveform editor."
         },
         "veriflow.waveViewerCmd": {
           "type": "string",

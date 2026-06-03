@@ -60,7 +60,7 @@ export function getSettings(): ExtensionSettings {
     return {
         libDirs: config.get<string[]>('libDirs', []),
         simulator: config.get<string>('simulator', 'iverilog'),
-        waveViewer: config.get<string>('waveViewer', 'surfer'),
+        waveViewer: config.get<string>('waveViewer', 'builtin'),
         simulatorCompileCmd: config.get<string>('simulatorCompileCmd', ''),
         simulatorRunCmd: config.get<string>('simulatorRunCmd', ''),
         waveViewerCmd: config.get<string>('waveViewerCmd', ''),

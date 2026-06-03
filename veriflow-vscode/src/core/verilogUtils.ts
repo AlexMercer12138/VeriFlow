@@ -122,72 +122,88 @@ export function flattenParamBlocks(content: string): string {
 }
 
 export function expandGenerateIfdef(content: string): string {
-    content = stripBlocks(content, 'generate', 'endgenerate');
-    content = stripBlocks(content, '`ifdef', '`endif');
-    content = stripBlocks(content, '`ifndef', '`endif');
-    return stripBlocks(content, 'generate if', 'end');
+    content = stripStandaloneKeywords(content, ['generate', 'endgenerate']);
+    return stripConditionalDirectiveLines(content);
 }
 
-function stripBlocks(content: string, startKw: string, endKw: string): string {
+function stripStandaloneKeywords(content: string, keywords: string[]): string {
     const result: string[] = [];
     let i = 0;
     const len = content.length;
     while (i < len) {
-        const posStart = content.indexOf(startKw, i);
-        if (posStart === -1) {
-            result.push(content.substring(i));
-            break;
-        }
-        result.push(content.substring(i, posStart));
-        let localStart = posStart + startKw.length;
-        let depth = 1;
-        let j = localStart;
-        while (j < len && depth > 0) {
-            if (content.startsWith(startKw, j)) {
-                depth++;
-                j += startKw.length;
-            } else if (content.startsWith(endKw, j)) {
-                depth--;
-                if (depth === 0) {
-                    j += endKw.length;
+        if (content[i] === '"') {
+            let j = i + 1;
+            while (j < len) {
+                if (content[j] === '"' && !isEscaped(content, j)) {
+                    j++;
                     break;
                 }
-                j += endKw.length;
-            } else if (content.startsWith('end', j) && endKw === 'end') {
-                depth--;
-                if (depth === 0) {
-                    j += 3;
-                    break;
-                }
-                j += 3;
-            } else if (content.startsWith('generate', j) && endKw === 'end') {
-                depth++;
-                j += 8;
-            } else if (content.startsWith('`ifdef', j) && endKw === 'end') {
-                depth++;
-                j += 6;
-            } else if (content.startsWith('`ifndef', j) && endKw === 'end') {
-                depth++;
-                j += 7;
-            } else if (content.startsWith('`else', j) && endKw === 'end') {
-                j += 5;
-            } else if (content.startsWith('`elsif', j) && endKw === 'end') {
-                j += 6;
-            } else if (content.startsWith('`endif', j) && endKw === 'end') {
-                depth--;
-                if (depth === 0) {
-                    j += 6;
-                    break;
-                }
-                j += 6;
-            } else {
                 j++;
             }
+            result.push(content.substring(i, j));
+            i = j;
+            continue;
         }
-        result.push(content.substring(localStart, j - endKw.length));
-        i = j;
+
+        if (content[i] === '\\') {
+            let j = i + 1;
+            while (j < len && !/\s/.test(content[j])) {
+                j++;
+            }
+            result.push(content.substring(i, j));
+            i = j;
+            continue;
+        }
+
+        const matched = keywords.find(keyword => matchesStandaloneKeyword(content, i, keyword));
+        if (matched) {
+            const last = result[result.length - 1];
+            if (last && !/\s/.test(last.slice(-1))) {
+                result.push(' ');
+            }
+            i += matched.length;
+            if (i < len && !/\s/.test(content[i])) {
+                result.push(' ');
+            }
+            continue;
+        }
+
+        result.push(content[i]);
+        i++;
     }
     return result.join('');
+}
+
+function stripConditionalDirectiveLines(content: string): string {
+    return content.replace(/^[^\S\r\n]*`(?:ifdef|ifndef|elsif|else|endif)\b.*(?:\r?\n|$)/gm, (line) => {
+        if (line.endsWith('\r\n')) { return '\r\n'; }
+        if (line.endsWith('\n')) { return '\n'; }
+        return '';
+    });
+}
+
+function matchesStandaloneKeyword(content: string, index: number, keyword: string): boolean {
+    if (!content.startsWith(keyword, index)) {
+        return false;
+    }
+    const before = index > 0 ? content[index - 1] : '';
+    const afterIndex = index + keyword.length;
+    const after = afterIndex < content.length ? content[afterIndex] : '';
+    return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+function isIdentifierChar(ch: string | undefined): boolean {
+    return !!ch && /[A-Za-z0-9_$]/.test(ch);
+}
+
+function isEscaped(content: string, index: number): boolean {
+    let backslashCount = 0;
+    let i = index - 1;
+    while (i >= 0 && content[i] === '\\') {
+        backslashCount++;
+        i--;
+    }
+    return backslashCount % 2 === 1;
 }
 
 export const MODULE_DECL_RE = /\bmodule\s+(\w+)/g;

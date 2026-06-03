@@ -19,6 +19,7 @@ veriflow-vscode/out/
 veriflow-vscode/*.vsix
 
 # Simulation outputs
+*.vks
 *.out
 *.vcd
 *.fst

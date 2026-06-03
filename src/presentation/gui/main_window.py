@@ -27,6 +27,7 @@ from src.presentation.gui.widgets.project_config_panel import ProjectConfigPanel
 from src.presentation.gui.widgets.log_panel import LogPanel
 from src.presentation.gui.widgets.unified_module_panel import UnifiedModulePanel
 from src.presentation.gui.widgets.testbench_panel import TestbenchPanel
+from src.presentation.gui.widgets.waveform_viewer_panel import WaveformViewerPanel
 from src.presentation.gui.worker_threads import AnalyzeWorker, SimulateWorker, ModuleScanWorker
 from src.presentation.gui.i18n import tr, set_language, get_language
 from src.presentation.gui import theme
@@ -105,9 +106,12 @@ class MainWindow(QMainWindow):
         self._tb_panel.generate_clicked.connect(self._on_generate_tb)
         self._tb_panel.config_changed.connect(self._on_tb_config_changed)
 
+        self._waveform_panel = WaveformViewerPanel()
+
         self._tab_widget.addTab(self._config_panel, "?")
         self._tab_widget.addTab(self._module_panel, "?")
         self._tab_widget.addTab(self._tb_panel, "?")
+        self._tab_widget.addTab(self._waveform_panel, "?")
         self._tab_widget.addTab(self._log_panel, "?")
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
@@ -122,7 +126,8 @@ class MainWindow(QMainWindow):
         self._tab_widget.setTabText(0, tr("tab.config"))
         self._tab_widget.setTabText(1, tr("tab.modules"))
         self._tab_widget.setTabText(2, tr("tab.tb"))
-        self._tab_widget.setTabText(3, tr("tab.log"))
+        self._tab_widget.setTabText(3, tr("tab.waveform"))
+        self._tab_widget.setTabText(4, tr("tab.log"))
         self._project_panel.retranslate()
         self._config_panel.retranslate()
         self._module_panel.retranslate()
@@ -813,6 +818,28 @@ class MainWindow(QMainWindow):
 
     def _do_open_wave(self, wave_file: Path):
         viewer_name = self._config_panel.wave_viewer
+        if viewer_name == 'builtin':
+            if self._waveform_panel.available:
+                try:
+                    self._waveform_panel.open_vcd(wave_file)
+                    self._tab_widget.setCurrentWidget(self._waveform_panel)
+                    self._log_panel.append_success(
+                        tr("log.wave_open_ok", viewer=viewer_name, file=str(wave_file))
+                    )
+                    self._status(tr("status.wave_opened", file=str(wave_file)))
+                except Exception as e:
+                    self._log_panel.append_error(
+                        tr("log.wave_open_failed", viewer=viewer_name, err=e)
+                    )
+                    self._tab_widget.setCurrentWidget(self._log_panel)
+            else:
+                self._log_panel.append_error(
+                    "Built-in waveform viewer requires PySide6 QtWebEngine. "
+                    "Install PySide6-WebEngine or choose Surfer/GTKWave."
+                )
+                self._tab_widget.setCurrentWidget(self._log_panel)
+            return
+
         viewer_config = (
             self._project.wave_viewers.get(viewer_name)
             if self._project else None

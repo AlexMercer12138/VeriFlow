@@ -49,7 +49,7 @@ class Project:
     lib_dirs: List[Path] = field(default_factory=list)
     top_module: str = ""
     simulator: str = "iverilog"
-    wave_viewer: str = "surfer"
+    wave_viewer: str = "builtin"
     wave_file_template: str = "{top_module}.vcd"
     testbench_output_dir: str = "."
     source_files: List[Path] = field(default_factory=list)
@@ -115,7 +115,7 @@ class Project:
             lib_dirs=[Path(d) for d in data.get('lib_dirs', [])],
             top_module=data.get('top_module', ''),
             simulator=data.get('simulator', 'iverilog'),
-            wave_viewer=data.get('wave_viewer', 'surfer'),
+            wave_viewer=data.get('wave_viewer', 'builtin'),
             wave_file_template=data.get('wave_file_template', '{top_module}.vcd'),
             testbench_output_dir=data.get('testbench_output_dir', '.'),
             simulators=simulators,

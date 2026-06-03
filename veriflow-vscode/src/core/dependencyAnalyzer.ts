@@ -156,109 +156,365 @@ export class DependencyAnalyzer {
     }
 
     private _removeProceduralBlocks(content: string): string {
-        const procPattern = /\b(initial|always(?:_comb|_ff|_latch)?|task|function|specify|fork|final)\b/g;
         const result: string[] = [];
         let i = 0;
-        const length = content.length;
+        const procKeywords = [
+            'always_comb', 'always_ff', 'always_latch',
+            'initial', 'always', 'task', 'function', 'specify', 'fork', 'final',
+        ];
 
-        while (i < length) {
-            procPattern.lastIndex = i;
-            const match = procPattern.exec(content);
-            if (!match) {
-                result.push(content.substring(i));
-                break;
+        while (i < content.length) {
+            if (content[i] === '"') {
+                const j = this._skipString(content, i);
+                result.push(content.substring(i, j));
+                i = j;
+                continue;
             }
 
-            result.push(content.substring(i, match.index));
-
-            let j = match.index + match[0].length;
-            let depth = 0;
-            let inString = false;
-            let stringChar: string | null = null;
-
-            while (j < length) {
-                const ch = content[j];
-
-                // FIXED: Only detect " as string delimiter, not '
-                // In Verilog, ' is used for binary/hex constants (1'b0, 8'hFF), not strings
-                if (ch === '"' && !inString) {
-                    inString = true;
-                    stringChar = ch;
-                    j++;
-                    continue;
-                } else if (ch === stringChar && inString) {
-                    let backslashCount = 0;
-                    let k = j - 1;
-                    while (k >= 0 && content[k] === '\\') {
-                        backslashCount++;
-                        k--;
-                    }
-                    if (backslashCount % 2 === 0) {
-                        inString = false;
-                        stringChar = null;
-                    }
-                    j++;
-                    continue;
-                }
-
-                if (inString) {
-                    j++;
-                    continue;
-                }
-
-                if (content.startsWith('begin', j)) {
-                    depth++;
-                    j += 5;
-                    continue;
-                } else if (content.startsWith('endtask', j)) {
-                    j += 7;
-                    break;
-                } else if (content.startsWith('endfunction', j)) {
-                    j += 11;
-                    break;
-                } else if (content.startsWith('endspecify', j)) {
-                    j += 10;
-                    break;
-                } else if (content.startsWith('endcase', j)) {
-                    // endcase is NOT a begin/end pair, skip it
-                    j += 7;
-                    continue;
-                } else if (content.startsWith('join_none', j)) {
-                    j += 9;
-                    break;
-                } else if (content.startsWith('join_any', j)) {
-                    j += 8;
-                    break;
-                } else if (content.startsWith('join', j)) {
-                    j += 4;
-                    break;
-                } else if (content.startsWith('end', j) && depth > 0) {
-                    depth--;
-                    j += 3;
-                    // FIXED: When depth reaches 0 after decrement, break immediately
-                    if (depth === 0) {
-                        break;
-                    }
-                    continue;
-                } else if (content.startsWith('end', j) && depth === 0) {
-                    // When depth===0, ensure 'end' is a standalone keyword (not followed by letter)
-                    // Avoid mis-matching endmodule, endgenerate, etc.
-                    const afterEnd = j + 3 < length ? content[j + 3] : '';
-                    if (!/[a-zA-Z_]/.test(afterEnd)) {
-                        j += 3;
-                        break;
-                    }
-                    j += 3;
-                    continue;
-                } else {
-                    j++;
-                }
+            if (content[i] === '\\') {
+                const j = this._skipEscapedIdentifier(content, i);
+                result.push(content.substring(i, j));
+                i = j;
+                continue;
             }
 
-            i = j;
+            const keyword = this._matchStandaloneKeyword(content, i, procKeywords);
+            if (keyword) {
+                i = this._skipProceduralRegion(content, i, keyword);
+                result.push(' ');
+                continue;
+            }
+
+            result.push(content[i]);
+            i++;
         }
 
         return result.join('');
+    }
+
+    private _skipProceduralRegion(content: string, index: number, keyword: string): number {
+        const start = index + keyword.length;
+        if (keyword === 'task') {
+            return this._skipUntilKeyword(content, start, ['endtask']);
+        }
+        if (keyword === 'function') {
+            return this._skipUntilKeyword(content, start, ['endfunction']);
+        }
+        if (keyword === 'specify') {
+            return this._skipUntilKeyword(content, start, ['endspecify']);
+        }
+        if (keyword === 'fork') {
+            return this._skipForkBlock(content, index);
+        }
+        const bodyStart = this._skipProceduralPrefix(content, start);
+        return this._skipStatement(content, bodyStart);
+    }
+
+    private _skipProceduralPrefix(content: string, index: number): number {
+        let i = index;
+        while (i < content.length) {
+            i = this._skipWhitespace(content, i);
+            if (i >= content.length) { return i; }
+            if (content[i] === '@') {
+                i++;
+                i = this._skipWhitespace(content, i);
+                if (content[i] === '(') {
+                    i = this._skipBalanced(content, i, '(', ')');
+                } else if (content[i] === '*') {
+                    i++;
+                } else {
+                    while (i < content.length && !/\s/.test(content[i])) { i++; }
+                }
+                continue;
+            }
+            if (content[i] === '#') {
+                i++;
+                i = this._skipWhitespace(content, i);
+                if (content[i] === '(') {
+                    i = this._skipBalanced(content, i, '(', ')');
+                } else {
+                    while (i < content.length && !/\s/.test(content[i]) && content[i] !== ';') { i++; }
+                }
+                continue;
+            }
+            return i;
+        }
+        return i;
+    }
+
+    private _skipStatement(content: string, index: number): number {
+        let i = this._skipWhitespace(content, index);
+        if (i >= content.length) { return i; }
+
+        const keyword = this._matchStandaloneKeyword(
+            content,
+            i,
+            ['begin', 'fork', 'casez', 'casex', 'case', 'if', 'for', 'while', 'repeat', 'forever']
+        );
+        if (keyword === 'begin') { return this._skipBeginBlock(content, i); }
+        if (keyword === 'fork') { return this._skipForkBlock(content, i); }
+        if (keyword === 'case' || keyword === 'casex' || keyword === 'casez') {
+            return this._skipCaseBlock(content, i);
+        }
+        if (keyword === 'if') { return this._skipIfStatement(content, i); }
+        if (keyword === 'for' || keyword === 'while' || keyword === 'repeat') {
+            let j = i + keyword.length;
+            j = this._skipWhitespace(content, j);
+            if (content[j] === '(') {
+                j = this._skipBalanced(content, j, '(', ')');
+            }
+            return this._skipStatement(content, j);
+        }
+        if (keyword === 'forever') {
+            return this._skipStatement(content, i + keyword.length);
+        }
+        return this._skipUntilSemicolon(content, i);
+    }
+
+    private _skipIfStatement(content: string, index: number): number {
+        let i = index + 2;
+        i = this._skipWhitespace(content, i);
+        if (content[i] === '(') {
+            i = this._skipBalanced(content, i, '(', ')');
+        }
+        i = this._skipStatement(content, i);
+        const j = this._skipWhitespace(content, i);
+        if (this._matchesStandaloneKeyword(content, j, 'else')) {
+            return this._skipStatement(content, j + 4);
+        }
+        return i;
+    }
+
+    private _skipBeginBlock(content: string, index: number): number {
+        let depth = 1;
+        let i = index + 5;
+        while (i < content.length) {
+            if (content[i] === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (content[i] === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            const keyword = this._matchStandaloneKeyword(
+                content,
+                i,
+                ['begin', 'end', 'casez', 'casex', 'case', 'fork']
+            );
+            if (keyword === 'begin') {
+                depth++;
+                i += 5;
+                continue;
+            }
+            if (keyword === 'end') {
+                depth--;
+                i += 3;
+                if (depth === 0) { return i; }
+                continue;
+            }
+            if (keyword === 'case' || keyword === 'casex' || keyword === 'casez') {
+                i = this._skipCaseBlock(content, i);
+                continue;
+            }
+            if (keyword === 'fork') {
+                i = this._skipForkBlock(content, i);
+                continue;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipCaseBlock(content: string, index: number): number {
+        const startKeyword = this._matchStandaloneKeyword(content, index, ['casez', 'casex', 'case']) || 'case';
+        let depth = 1;
+        let i = index + startKeyword.length;
+        while (i < content.length) {
+            if (content[i] === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (content[i] === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            const keyword = this._matchStandaloneKeyword(content, i, ['casez', 'casex', 'case', 'endcase']);
+            if (keyword === 'case' || keyword === 'casex' || keyword === 'casez') {
+                depth++;
+                i += keyword.length;
+                continue;
+            }
+            if (keyword === 'endcase') {
+                depth--;
+                i += 7;
+                if (depth === 0) { return i; }
+                continue;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipForkBlock(content: string, index: number): number {
+        let depth = 1;
+        let i = index + 4;
+        while (i < content.length) {
+            if (content[i] === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (content[i] === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            const keyword = this._matchStandaloneKeyword(content, i, ['join_none', 'join_any', 'join', 'fork']);
+            if (keyword === 'fork') {
+                depth++;
+                i += 4;
+                continue;
+            }
+            if (keyword === 'join' || keyword === 'join_any' || keyword === 'join_none') {
+                depth--;
+                i += keyword.length;
+                if (depth === 0) { return i; }
+                continue;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipUntilKeyword(content: string, index: number, keywords: string[]): number {
+        let i = index;
+        while (i < content.length) {
+            if (content[i] === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (content[i] === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            const keyword = this._matchStandaloneKeyword(content, i, keywords);
+            if (keyword) {
+                return i + keyword.length;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipUntilSemicolon(content: string, index: number): number {
+        let parenDepth = 0;
+        let bracketDepth = 0;
+        let braceDepth = 0;
+        let i = index;
+        while (i < content.length) {
+            const ch = content[i];
+            if (ch === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (ch === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            if (ch === '(') { parenDepth++; }
+            else if (ch === ')' && parenDepth > 0) { parenDepth--; }
+            else if (ch === '[') { bracketDepth++; }
+            else if (ch === ']' && bracketDepth > 0) { bracketDepth--; }
+            else if (ch === '{') { braceDepth++; }
+            else if (ch === '}' && braceDepth > 0) { braceDepth--; }
+            else if (ch === ';' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+                return i + 1;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipBalanced(content: string, index: number, openCh: string, closeCh: string): number {
+        let depth = 0;
+        let i = index;
+        while (i < content.length) {
+            const ch = content[i];
+            if (ch === '"') {
+                i = this._skipString(content, i);
+                continue;
+            }
+            if (ch === '\\') {
+                i = this._skipEscapedIdentifier(content, i);
+                continue;
+            }
+            if (ch === openCh) {
+                depth++;
+            } else if (ch === closeCh) {
+                depth--;
+                if (depth === 0) { return i + 1; }
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipWhitespace(content: string, index: number): number {
+        while (index < content.length && /\s/.test(content[index])) {
+            index++;
+        }
+        return index;
+    }
+
+    private _skipString(content: string, index: number): number {
+        let i = index + 1;
+        while (i < content.length) {
+            if (content[i] === '"' && !this._isEscaped(content, i)) {
+                return i + 1;
+            }
+            i++;
+        }
+        return content.length;
+    }
+
+    private _skipEscapedIdentifier(content: string, index: number): number {
+        let i = index + 1;
+        while (i < content.length && !/\s/.test(content[i])) {
+            i++;
+        }
+        return i;
+    }
+
+    private _matchStandaloneKeyword(content: string, index: number, keywords: string[]): string {
+        for (const keyword of keywords) {
+            if (this._matchesStandaloneKeyword(content, index, keyword)) {
+                return keyword;
+            }
+        }
+        return '';
+    }
+
+    private _matchesStandaloneKeyword(content: string, index: number, keyword: string): boolean {
+        if (!content.startsWith(keyword, index)) {
+            return false;
+        }
+        const before = index > 0 ? content[index - 1] : '';
+        const afterIndex = index + keyword.length;
+        const after = afterIndex < content.length ? content[afterIndex] : '';
+        return !this._isIdentifierChar(before) && !this._isIdentifierChar(after);
+    }
+
+    private _isIdentifierChar(ch: string | undefined): boolean {
+        return !!ch && /[A-Za-z0-9_$]/.test(ch);
+    }
+
+    private _isEscaped(content: string, index: number): boolean {
+        let backslashCount = 0;
+        let i = index - 1;
+        while (i >= 0 && content[i] === '\\') {
+            backslashCount++;
+            i--;
+        }
+        return backslashCount % 2 === 1;
     }
 
     private _extractIncludes(filepath: string): string[] {

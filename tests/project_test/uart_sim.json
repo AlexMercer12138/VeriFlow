@@ -3,8 +3,8 @@
   "project_root": ".",
   "lib_dirs": [],
   "top_module": "uart_tb",
-  "simulator": "iverilog",
-  "wave_viewer": "surfer",
+  "simulator": "custom",
+  "wave_viewer": "builtin",
   "wave_file_template": "{top_module}.vcd",
   "testbench_output_dir": ".",
   "simulators": {
@@ -21,16 +21,112 @@
       "run_cmd": "xsim \"{output}\" --runall"
     },
     "custom": {
-      "compile_cmd": "",
-      "run_cmd": ""
+      "compile_cmd": "\"..\\..\\tools\\vks.exe\" -c {files} -o \"{output}.vks\"",
+      "run_cmd": "\"..\\..\\tools\\vks.exe\" -s \"{output}.vks\" -t 200000000"
     }
   },
   "wave_viewers": {
     "surfer": "surfer \"{wave_file}\"",
     "gtkwave": "gtkwave \"{wave_file}\"",
-    "custom": ""
+    "custom": "",
+    "builtin": ""
   },
   "file_order": [],
-  "analyze_status": "idle",
-  "simulate_status": "idle"
+  "analyze_status": "completed",
+  "simulate_status": "outdated",
+  "dependency_result": {
+    "top_module": "uart_tb",
+    "files": [
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tb.v",
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_rx.v",
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tx.v"
+    ],
+    "missing_modules": [],
+    "module_map": {
+      "uart_rx": "D:\\Software\\VeriFlow\\tests\\project_test\\uart_rx.v",
+      "uart_tb": "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tb.v",
+      "uart_tx": "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tx.v",
+      "Gowin_hdmi_tx": "D:\\Code\\rtl\\hdmi\\Gowin_hdmi_tx.v",
+      "alpha_blend": "D:\\Code\\rtl\\osd\\alpha_blend.v",
+      "ascii_to_int": "D:\\Code\\rtl\\uart\\ascii_to_int.v",
+      "axis_osd_gen": "D:\\Code\\rtl\\osd\\axi_osd_gen.v",
+      "axi_rw_test": "D:\\Code\\rtl\\axi_rw_test.v",
+      "axis_test": "D:\\Code\\rtl\\test\\axis_test.v",
+      "video_timing_controller": "D:\\Code\\rtl\\video\\axis_vtc.v",
+      "bin2gray": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\bin2gray.v",
+      "osd_test": "D:\\Code\\rtl\\bitmap\\bitmap_gen.sv",
+      "bmp2video": "D:\\Code\\rtl\\video\\bmp2video.v",
+      "bt1120_driver": "D:\\Code\\rtl\\video\\bt1120_driver.v",
+      "bt1120_to_axis": "D:\\Code\\rtl\\video\\bt1120_to_axis.v",
+      "channel_bond": "D:\\Code\\rtl\\video\\dvi2rgb\\channel_bond.v",
+      "clock_gen": "D:\\Code\\rtl\\video\\rgb2dvi\\clock_gen.v",
+      "color_correction": "D:\\Code\\rtl\\image_process\\color_correction.v",
+      "console": "D:\\Code\\rtl\\uart\\console.v",
+      "const_1": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\const_1.v",
+      "debug_core": "D:\\Code\\rtl\\uart\\debug_core.v",
+      "dff": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dff.v",
+      "dff_clkout": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dff_clkout.v",
+      "dpram": "D:\\Code\\rtl\\osd\\dpram.v",
+      "dut_bin2gray": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dut_bin2gray.v",
+      "dut_const_1": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dut_const_1.v",
+      "dut_dff": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dut_dff.v",
+      "dut_dff_clkout": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dut_dff_clkout.v",
+      "dut_inc": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\dut_inc.v",
+      "dvi2rgb": "D:\\Code\\rtl\\video\\dvi2rgb\\dvi2rgb.v",
+      "dvi_align": "D:\\Code\\rtl\\hdmi\\dvi_align.v",
+      "dvi_encoder": "D:\\Code\\rtl\\hdmi\\dvi_encoder.v",
+      "glitch_filter": "D:\\Code\\rtl\\video\\dvi2rgb\\glitch_filter.v",
+      "hist_equalized": "D:\\Code\\rtl\\image_process\\hist_equalized.v",
+      "i2c_master": "D:\\Code\\rtl\\i2c\\i2c_master.v",
+      "inc": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\test\\verilog\\inc.v",
+      "input_serdes": "D:\\Code\\rtl\\video\\dvi2rgb\\input_serdes.v",
+      "native_wrcfg": "D:\\Code\\rtl\\InnerIf\\native_wrcfg.v",
+      "osd_content": "D:\\Code\\rtl\\bitmap\\osd_content.sv",
+      "osd_driver": "D:\\Code\\rtl\\bitmap\\osd_driver.sv",
+      "osd_gen": "D:\\Code\\rtl\\osd\\osd_gen.v",
+      "char_lib": "D:\\Code\\rtl\\osd\\osd_gen.v",
+      "output_serdes": "D:\\Code\\rtl\\video\\rgb2dvi\\output_serdes.v",
+      "phase_align": "D:\\Code\\rtl\\video\\dvi2rgb\\phase_align.v",
+      "resync_to_bufg": "D:\\Code\\rtl\\video\\dvi2rgb\\resync_to_bufg.v",
+      "rgb2dvi": "D:\\Code\\rtl\\video\\rgb2dvi\\rgb2dvi.v",
+      "rgb_to_axis": "D:\\Code\\rtl\\video\\rgb_to_axis.v",
+      "scaler": "D:\\Code\\rtl\\image_process\\scaler.v",
+      "serdes_4b_10to1": "D:\\Code\\rtl\\hdmi\\serdes_4b_10to1.v",
+      "si5324_calc_simple": "D:\\Code\\rtl\\i2c\\si5324_calc.v",
+      "bt_colorbar": "D:\\Code\\rtl\\video\\smpte_tpg.v",
+      "smpteHD_tpg": "D:\\Code\\rtl\\video\\smpte_tpg.v",
+      "smpteHD_vert": "D:\\Code\\rtl\\video\\smpte_tpg.v",
+      "smpteHD_horz": "D:\\Code\\rtl\\video\\smpte_tpg.v",
+      "smpteHD_output": "D:\\Code\\rtl\\video\\smpte_tpg.v",
+      "spi_master": "D:\\Code\\rtl\\spi\\spi_master.v",
+      "spi_master_lite": "D:\\Code\\rtl\\spi\\spi_master_lite.v",
+      "spi_slave": "D:\\Code\\rtl\\spi\\spi_slave.v",
+      "st7796s_top": "D:\\Code\\rtl\\spi\\st7796s_top.v",
+      "sync_fifo": "D:\\Code\\rtl\\sync_fifo.v",
+      "tb": "D:\\Code\\rtl\\.env\\share\\myhdl\\cosimulation\\icarus\\test\\tb_test.v",
+      "tmds_clocking": "D:\\Code\\rtl\\video\\dvi2rgb\\tmds_clocking.v",
+      "tmds_decoder": "D:\\Code\\rtl\\video\\dvi2rgb\\tmds_decoder.v",
+      "tmds_encoder": "D:\\Code\\rtl\\video\\rgb2dvi\\tmds_encoder.v",
+      "uart_debug_top": "D:\\Code\\rtl\\uart\\uart_debug_top.v",
+      "uart_top": "D:\\Code\\rtl\\uart\\uart_top.v",
+      "vdma_cfg_lut": "D:\\Code\\rtl\\vdma_cfg_lut.v",
+      "vga_driver": "D:\\Code\\rtl\\video\\vga_driver.v",
+      "video2bmp": "D:\\Code\\rtl\\video\\video2bmp.v",
+      "vtc_generator": "D:\\Code\\rtl\\video\\vtc_generator.v",
+      "xpm_asfifo": "D:\\Code\\rtl\\xpm_asfifo.v"
+    },
+    "dep_graph": {
+      "uart_tb": [
+        "uart_rx",
+        "uart_tx"
+      ],
+      "uart_rx": [],
+      "uart_tx": []
+    },
+    "topo_file_order": [
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_rx.v",
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tx.v",
+      "D:\\Software\\VeriFlow\\tests\\project_test\\uart_tb.v"
+    ]
+  }
 }

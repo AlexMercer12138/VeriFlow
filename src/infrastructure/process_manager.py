@@ -5,12 +5,25 @@
 
 import subprocess
 import time
+import locale
 from pathlib import Path
 from typing import Optional, Tuple
 
 
 class ProcessManager:
     """外部进程管理器"""
+
+    @staticmethod
+    def _decode_output(data: bytes) -> str:
+        if not data:
+            return ''
+        encodings = ['utf-8', locale.getpreferredencoding(False), 'gbk']
+        for encoding in dict.fromkeys(encodings):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return data.decode('utf-8', errors='replace')
 
     @staticmethod
     def run(
@@ -24,15 +37,14 @@ class ProcessManager:
                 cmd,
                 cwd=str(cwd) if cwd else None,
                 capture_output=True,
-                text=True,
                 timeout=timeout,
                 shell=True,
             )
             elapsed = time.time() - start
             return (
                 result.returncode,
-                result.stdout or '',
-                result.stderr or '',
+                ProcessManager._decode_output(result.stdout),
+                ProcessManager._decode_output(result.stderr),
                 elapsed,
             )
         except subprocess.TimeoutExpired:

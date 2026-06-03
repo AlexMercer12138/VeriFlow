@@ -37,6 +37,10 @@ DEFAULT_SIMULATORS = {
 }
 
 DEFAULT_VIEWERS = {
+    'builtin': WaveViewerConfig(
+        name='builtin',
+        launch_cmd='',
+    ),
     'surfer': WaveViewerConfig(
         name='surfer',
         launch_cmd='surfer "{wave_file}"',

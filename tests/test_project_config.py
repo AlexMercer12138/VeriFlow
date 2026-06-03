@@ -5,6 +5,7 @@ from pathlib import Path
 from src.application.coordinator import ApplicationCoordinator
 from src.domain.models.dependency import DependencyResult
 from src.domain.models.project import Project
+from src.domain.services.project_manager_service import ProjectManagerService
 from src.infrastructure.global_config_service import GlobalConfigService
 
 
@@ -39,6 +40,46 @@ def test_project_json_open_save_and_relative_paths(
     assert reopened.resolve_testbench_output_dir() == (
         uart_project_dir / "generated" / "tb"
     ).resolve()
+
+
+def test_old_project_auto_adds_builtin_wave_viewer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_file = tmp_path / "legacy.json"
+    project_file.write_text(
+        json.dumps({
+            "project_name": "legacy",
+            "project_root": str(project_root),
+            "wave_viewer": "surfer",
+            "wave_viewers": {
+                "surfer": "surfer \"{wave_file}\"",
+                "gtkwave": "gtkwave \"{wave_file}\"",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    project = ApplicationCoordinator().open_project(str(project_file))
+
+    assert "builtin" in project.wave_viewers
+    assert project.wave_viewers["builtin"].launch_cmd == ""
+
+
+def test_new_project_uses_builtin_wave_viewer_by_default(tmp_path: Path) -> None:
+    project = ProjectManagerService().create("demo", tmp_path)
+
+    assert project.wave_viewer == "builtin"
+    assert "builtin" in project.wave_viewers
+    assert project.wave_viewers["builtin"].launch_cmd == ""
+
+
+def test_default_config_uses_builtin_wave_viewer() -> None:
+    config = json.loads(
+        Path("config/default_config.json").read_text(encoding="utf-8")
+    )
+
+    assert config["wave_viewer"] == "builtin"
+    assert config["wave_viewers"]["builtin"] == ""
 
 
 def test_dependency_result_roundtrip(uart_project_dir: Path) -> None:
@@ -84,4 +125,3 @@ def test_project_model_resolves_absolute_and_relative_testbench_dirs(
     absolute = tmp_path / "absolute_tb"
     project.testbench_output_dir = str(absolute)
     assert project.resolve_testbench_output_dir() == absolute
-

@@ -321,7 +321,7 @@ def main():
     p_proj_new.add_argument('-t', '--top', help='top module name')
     p_proj_new.add_argument('-L', '--lib', help='lib dirs (comma separated)')
     p_proj_new.add_argument('-s', '--sim', help='simulator (iverilog/vcs/xsim/custom)')
-    p_proj_new.add_argument('-w', '--wave', help='wave viewer (surfer/gtkwave/custom)')
+    p_proj_new.add_argument('-w', '--wave', help='wave viewer (builtin/surfer/gtkwave/custom)')
     p_proj_new.add_argument('--output', '-o', help='output JSON file path')
     p_proj_new.set_defaults(func=cmd_project_new)
 

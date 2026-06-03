@@ -35,6 +35,7 @@ VeriFlow 是一个面向 Verilog/SystemVerilog 项目的 VS Code 扩展。它将
   - [Xilinx XSim](https://www.xilinx.com/products/design-tools/vivado.html)
   - 或自行配置自定义仿真器命令
 - **波形查看器**（可选），例如：
+  - VeriFlow 内置 `.vcd` 波形查看器
   - [Surfer](https://surfer-project.org/) - 开源，推荐
   - [GTKWave](https://gtkwave.sourceforge.net/)
   - 或自行配置自定义波形查看器命令
@@ -52,6 +53,8 @@ VeriFlow 是一个面向 Verilog/SystemVerilog 项目的 VS Code 扩展。它将
 5. 点击 **Analyze Dependencies** 解析依赖并生成编译顺序
 6. 点击 **Compile & Simulate** 运行仿真
 7. 点击 **Open Waveform** 打开生成的波形文件
+
+也可以在 VS Code 中直接打开 `.vcd` 文件，并选择 **VeriFlow Waveform Viewer** 进行预览。
 
 ---
 
@@ -90,7 +93,7 @@ VeriFlow 是一个面向 Verilog/SystemVerilog 项目的 VS Code 扩展。它将
 |--------|------|--------|------|
 | `veriflow.libDirs` | `string[]` | `[]` | 用于模块搜索和依赖解析的库目录 |
 | `veriflow.simulator` | `enum` | `iverilog` | 仿真器：`iverilog` / `vcs` / `xsim` / `custom` |
-| `veriflow.waveViewer` | `enum` | `surfer` | 波形查看器：`surfer` / `gtkwave` / `custom` |
+| `veriflow.waveViewer` | `enum` | `builtin` | 波形查看器：`builtin` / `surfer` / `gtkwave` / `custom` |
 | `veriflow.simulatorCompileCmd` | `string` | `""` | 自定义编译命令模板，支持 `{files}` `{output}` `{top_module}` |
 | `veriflow.simulatorRunCmd` | `string` | `""` | 自定义运行命令模板，支持 `{output}` |
 | `veriflow.waveViewerCmd` | `string` | `""` | 自定义波形查看器命令模板，支持 `{wave_file}` |
@@ -125,6 +128,20 @@ VeriFlow 是一个面向 Verilog/SystemVerilog 项目的 VS Code 扩展。它将
 - **DUT Modules** - 模块选择、端口编辑和参数编辑
 - **Waveform** - 波形文件配置
 - **Timeout** - 仿真超时配置
+
+---
+
+## 内置波形查看器
+
+VeriFlow 可以在 VS Code 内直接预览 `.vcd` 文件。
+
+打开方式：
+
+- 打开 `.vcd` 文件，并选择 **VeriFlow Waveform Viewer**。
+- 右键点击 `.vcd` 文件，执行 **Open VCD in VeriFlow Viewer**。
+- 将 `veriflow.waveViewer` 设置为 `builtin`，仿真后点击 **Open Waveform**。
+
+当前查看器仍是早期原型，已支持信号搜索、时间轴、光标、缩放、平移、单 bit 信号、总线信号和密集波形聚合显示。
 
 ---
 

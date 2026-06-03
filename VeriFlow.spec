@@ -6,6 +6,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('src/presentation/gui/resources/icon.ico', 'src/presentation/gui/resources'),
+        ('veriflow-vscode/media/waveform', 'veriflow-vscode/media/waveform'),
     ],
     hiddenimports=[
         'PySide6.QtWidgets',
@@ -23,6 +24,7 @@ a = Analysis(
         'src.domain.services.sim_runner_service',
         'src.domain.services.verilog_utils',
         'src.domain.services.log_parser_service',
+        'src.domain.services.vcd_parser_service',
         'src.domain.models.dependency',
         'src.domain.models.port',
         'src.domain.models.project',
@@ -36,6 +38,7 @@ a = Analysis(
         'src.presentation.gui.widgets.log_panel',
         'src.presentation.gui.widgets.unified_module_panel',
         'src.presentation.gui.widgets.file_tree_panel',
+        'src.presentation.gui.widgets.waveform_viewer_panel',
     ],
     hookspath=[],
     hooksconfig={},

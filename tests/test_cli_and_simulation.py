@@ -38,6 +38,7 @@ def test_application_simulates_uart_fixture_when_iverilog_is_available(
 
     app = ApplicationCoordinator()
     project = app.open_project(str(uart_project_dir / "uart_sim.json"))
+    project.simulator = "iverilog"
 
     result = app.simulate(project)
 

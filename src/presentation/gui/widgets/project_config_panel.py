@@ -11,6 +11,7 @@ from PySide6.QtCore import Signal
 
 CUSTOM_SIM = "custom"
 CUSTOM_WAVE = "custom"
+BUILTIN_WAVE = "builtin"
 
 from src.presentation.gui.i18n import tr
 
@@ -115,7 +116,7 @@ class ProjectConfigPanel(QWidget):
         self._wave_tool_label = QLabel("?")
         row1.addWidget(self._wave_tool_label)
         self._wave_combo = QComboBox()
-        self._wave_combo.addItems(["surfer", "gtkwave", CUSTOM_WAVE])
+        self._wave_combo.addItems([BUILTIN_WAVE, "surfer", "gtkwave", CUSTOM_WAVE])
         self._wave_combo.currentTextChanged.connect(self._on_wave_changed)
         row1.addWidget(self._wave_combo, 1)
         lo.addLayout(row1)

@@ -7,7 +7,7 @@ Usage:
     python -m src.presentation.json_bridge scan --root /path/to/workspace [--libs lib1,lib2]
     python -m src.presentation.json_bridge analyze --root /path/to/workspace --top top_tb [--libs lib1,lib2]
     python -m src.presentation.json_bridge simulate --root /path/to/workspace --top top_tb
-        --simulator iverilog [--libs lib1,lib2] [--wave-viewer surfer]
+        --simulator iverilog [--libs lib1,lib2] [--wave-viewer builtin]
 """
 
 import argparse
@@ -56,7 +56,7 @@ def _create_project(args) -> Project:
         lib_dirs=lib_dirs,
         top_module=args.top or '',
         simulator=args.simulator or 'iverilog',
-        wave_viewer=args.wave_viewer or 'surfer',
+        wave_viewer=args.wave_viewer or 'builtin',
         simulators=simulators,
         wave_viewers=wave_viewers,
     )
@@ -246,7 +246,7 @@ def main():
     parser.add_argument('--top', '-t', default='', help='Top module name')
     parser.add_argument('--libs', '-L', default='', help='Library directories (comma-separated)')
     parser.add_argument('--simulator', '-s', default='iverilog', help='Simulator name')
-    parser.add_argument('--wave-viewer', '-w', default='surfer', help='Waveform viewer name')
+    parser.add_argument('--wave-viewer', '-w', default='builtin', help='Waveform viewer name')
     parser.add_argument('--compile-cmd', default='', help='Custom simulator compile command template')
     parser.add_argument('--run-cmd', default='', help='Custom simulator run command template')
     parser.add_argument('--wave-cmd', default='', help='Custom wave viewer launch command template')

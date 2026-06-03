@@ -226,177 +226,393 @@ class DependencyAnalyzerService(IDependencyAnalyzer):
         return ordered
 
     def _expand_generate_ifdef(self, content: str) -> str:
-        content = self._strip_blocks(content, 'generate', 'endgenerate')
-        content = self._strip_blocks(content, '`ifdef', '`endif')
-        content = self._strip_blocks(content, '`ifndef', '`endif')
-        return self._strip_blocks(content, 'generate if', 'end')
+        content = self._strip_standalone_keywords(
+            content,
+            ('generate', 'endgenerate'),
+        )
+        return self._strip_conditional_directive_lines(content)
 
-    def _strip_blocks(self, content: str, start_kw: str, end_kw: str) -> str:
+    def _strip_standalone_keywords(self, content: str, keywords: Tuple[str, ...]) -> str:
         result = []
         i = 0
         length = len(content)
         while i < length:
-            pos_start = content.find(start_kw, i)
-            if pos_start == -1:
-                result.append(content[i:])
-                break
-            result.append(content[i:pos_start])
-            local_start = pos_start + len(start_kw)
-            depth = 1
-            j = local_start
-            while j < length and depth > 0:
-                if content.startswith(start_kw, j):
-                    depth += 1
-                    j += len(start_kw)
-                elif content.startswith(end_kw, j):
-                    depth -= 1
-                    if depth == 0:
-                        j += len(end_kw)
+            if content[i] == '"':
+                j = i + 1
+                while j < length:
+                    if content[j] == '"' and not self._is_escaped(content, j):
+                        j += 1
                         break
-                    j += len(end_kw)
-                elif content.startswith('end', j) and end_kw == 'end':
-                    depth -= 1
-                    if depth == 0:
-                        j += 3
-                        break
-                    j += 3
-                elif content.startswith('generate', j) and end_kw == 'end':
-                    depth += 1
-                    j += 8
-                elif content.startswith('`ifdef', j) and end_kw == 'end':
-                    depth += 1
-                    j += 6
-                elif content.startswith('`ifndef', j) and end_kw == 'end':
-                    depth += 1
-                    j += 7
-                elif content.startswith('`else', j) and end_kw == 'end':
-                    j += 5
-                elif content.startswith('`elsif', j) and end_kw == 'end':
-                    j += 6
-                elif content.startswith('`endif', j) and end_kw == 'end':
-                    depth -= 1
-                    if depth == 0:
-                        j += 6
-                        break
-                    j += 6
-                else:
                     j += 1
-            result.append(content[local_start:j - len(end_kw)])
-            i = j
+                result.append(content[i:j])
+                i = j
+                continue
+
+            if content[i] == '\\':
+                j = i + 1
+                while j < length and not content[j].isspace():
+                    j += 1
+                result.append(content[i:j])
+                i = j
+                continue
+
+            matched = next(
+                (
+                    keyword
+                    for keyword in keywords
+                    if self._matches_standalone_keyword(content, i, keyword)
+                ),
+                None,
+            )
+            if matched:
+                if result and not result[-1][-1].isspace():
+                    result.append(' ')
+                i += len(matched)
+                if i < length and not content[i].isspace():
+                    result.append(' ')
+                continue
+
+            result.append(content[i])
+            i += 1
         return ''.join(result)
 
-    def _remove_procedural_blocks(self, content: str) -> str:
-        """去除过程块（initial/always/task/function/specify 等），这些块内部不可能有模块例化。
-
-        模块例化只能出现在模块级别，不能出现在过程块内部。
-        去除这些块可以避免误匹配 begin...if、$display(...) 等代码结构。
-        """
-        # 使用正则去除各种过程块：initial/always/task/function/specify/fork/join_none/join_any
-        # 匹配 pattern: keyword [optional sensitivity list] begin ... end
-        # 需要处理嵌套的 begin/end
+    def _strip_conditional_directive_lines(self, content: str) -> str:
         result = []
-        i = 0
-        length = len(content)
+        directive_pattern = re.compile(r'^\s*`(?:ifdef|ifndef|elsif|else|endif)\b')
+        for line in content.splitlines(keepends=True):
+            if directive_pattern.match(line):
+                if line.endswith('\r\n'):
+                    result.append('\r\n')
+                elif line.endswith('\n'):
+                    result.append('\n')
+                continue
+            result.append(line)
+        return ''.join(result)
 
-        # 匹配过程块起始关键字：initial, always, always_comb, always_ff, always_latch,
-        # task, function, specify, fork, final
-        proc_pattern = re.compile(
-            r'\b(initial|always(?:_comb|_ff|_latch)?|task|function|specify|fork|final)\b'
+    @staticmethod
+    def _matches_standalone_keyword(content: str, index: int, keyword: str) -> bool:
+        if not content.startswith(keyword, index):
+            return False
+        before = content[index - 1] if index > 0 else ''
+        after_index = index + len(keyword)
+        after = content[after_index] if after_index < len(content) else ''
+        return (
+            not DependencyAnalyzerService._is_identifier_char(before)
+            and not DependencyAnalyzerService._is_identifier_char(after)
         )
 
-        while i < length:
-            match = proc_pattern.search(content, i)
-            if not match:
-                result.append(content[i:])
-                break
+    @staticmethod
+    def _is_identifier_char(ch: str) -> bool:
+        return bool(ch) and (ch.isalnum() or ch in '_$')
 
-            # 保留过程块之前的内容
-            result.append(content[i:match.start()])
+    @staticmethod
+    def _is_escaped(content: str, index: int) -> bool:
+        backslash_count = 0
+        i = index - 1
+        while i >= 0 and content[i] == '\\':
+            backslash_count += 1
+            i -= 1
+        return backslash_count % 2 == 1
 
-            # 找到过程块的结束位置
-            # 过程块通常以 end/endtask/endfunction/endspecify/join/join_any/join_none 结束
-            j = match.end()
-            depth = 0
-            in_string = False
-            string_char = None
+    def _remove_procedural_blocks(self, content: str) -> str:
+        """Remove procedural regions before scanning module-level instances."""
+        result = []
+        i = 0
+        proc_keywords = (
+            'always_comb', 'always_ff', 'always_latch',
+            'initial', 'always', 'task', 'function', 'specify', 'fork', 'final',
+        )
 
-            while j < length:
-                ch = content[j]
+        while i < len(content):
+            if content[i] == '"':
+                j = self._skip_string(content, i)
+                result.append(content[i:j])
+                i = j
+                continue
+            if content[i] == '\\':
+                j = self._skip_escaped_identifier(content, i)
+                result.append(content[i:j])
+                i = j
+                continue
 
-                # 处理字符串
-                # FIXED: Only detect " as string delimiter, not '
-                # In Verilog, ' is used for binary/hex constants (1'b0, 8'hFF), not strings
-                if ch == '"' and not in_string:
-                    in_string = True
-                    string_char = ch
-                    j += 1
-                    continue
-                elif ch == string_char and in_string:
-                    # 检查是否是转义
-                    backslash_count = 0
-                    k = j - 1
-                    while k >= 0 and content[k] == '\\':
-                        backslash_count += 1
-                        k -= 1
-                    if backslash_count % 2 == 0:
-                        in_string = False
-                        string_char = None
-                    j += 1
-                    continue
+            keyword = self._match_standalone_keyword(content, i, proc_keywords)
+            if keyword:
+                i = self._skip_procedural_region(content, i, keyword)
+                result.append(' ')
+                continue
 
-                if in_string:
-                    j += 1
-                    continue
-
-                # 处理 begin/end 嵌套
-                if content.startswith('begin', j):
-                    depth += 1
-                    j += 5
-                    continue
-                elif content.startswith('endtask', j):
-                    j += 7
-                    break
-                elif content.startswith('endfunction', j):
-                    j += 11
-                    break
-                elif content.startswith('endspecify', j):
-                    j += 10
-                    break
-                elif content.startswith('endcase', j):
-                    # endcase is NOT a begin/end pair, skip it
-                    j += 7
-                    continue
-                elif content.startswith('join_none', j):
-                    j += 9
-                    break
-                elif content.startswith('join_any', j):
-                    j += 8
-                    break
-                elif content.startswith('join', j):
-                    j += 4
-                    break
-                elif content.startswith('end', j) and depth > 0:
-                    depth -= 1
-                    j += 3
-                    # FIXED: When depth reaches 0 after decrement, break immediately
-                    if depth == 0:
-                        break
-                    continue
-                elif content.startswith('end', j) and depth == 0:
-                    # 当 depth==0 时，确保 'end' 是独立的结束关键字（后面不是字母或下划线）
-                    # 避免误匹配 endmodule、endcase、endgenerate 等
-                    after_end = content[j + 3] if j + 3 < length else ''
-                    if not (after_end.isalpha() or after_end == '_'):
-                        j += 3
-                        break
-                    j += 3
-                    continue
-                else:
-                    j += 1
-
-            i = j
+            result.append(content[i])
+            i += 1
 
         return ''.join(result)
+
+    def _skip_procedural_region(self, content: str, index: int, keyword: str) -> int:
+        start = index + len(keyword)
+        if keyword == 'task':
+            return self._skip_until_keyword(content, start, ('endtask',))
+        if keyword == 'function':
+            return self._skip_until_keyword(content, start, ('endfunction',))
+        if keyword == 'specify':
+            return self._skip_until_keyword(content, start, ('endspecify',))
+        if keyword == 'fork':
+            return self._skip_fork_block(content, index)
+        body_start = self._skip_procedural_prefix(content, start)
+        return self._skip_statement(content, body_start)
+
+    def _skip_procedural_prefix(self, content: str, index: int) -> int:
+        i = index
+        while i < len(content):
+            i = self._skip_whitespace(content, i)
+            if i >= len(content):
+                return i
+            if content[i] == '@':
+                i += 1
+                i = self._skip_whitespace(content, i)
+                if i < len(content) and content[i] == '(':
+                    i = self._skip_balanced(content, i, '(', ')')
+                elif i < len(content) and content[i] == '*':
+                    i += 1
+                else:
+                    while i < len(content) and not content[i].isspace():
+                        i += 1
+                continue
+            if content[i] == '#':
+                i += 1
+                i = self._skip_whitespace(content, i)
+                if i < len(content) and content[i] == '(':
+                    i = self._skip_balanced(content, i, '(', ')')
+                else:
+                    while i < len(content) and not content[i].isspace() and content[i] != ';':
+                        i += 1
+                continue
+            return i
+        return i
+
+    def _skip_statement(self, content: str, index: int) -> int:
+        i = self._skip_whitespace(content, index)
+        if i >= len(content):
+            return i
+
+        keyword = self._match_standalone_keyword(
+            content,
+            i,
+            ('begin', 'fork', 'casez', 'casex', 'case', 'if', 'for', 'while', 'repeat', 'forever'),
+        )
+        if keyword == 'begin':
+            return self._skip_begin_block(content, i)
+        if keyword == 'fork':
+            return self._skip_fork_block(content, i)
+        if keyword in ('case', 'casex', 'casez'):
+            return self._skip_case_block(content, i)
+        if keyword == 'if':
+            return self._skip_if_statement(content, i)
+        if keyword in ('for', 'while', 'repeat'):
+            j = i + len(keyword)
+            j = self._skip_whitespace(content, j)
+            if j < len(content) and content[j] == '(':
+                j = self._skip_balanced(content, j, '(', ')')
+            return self._skip_statement(content, j)
+        if keyword == 'forever':
+            return self._skip_statement(content, i + len(keyword))
+
+        return self._skip_until_semicolon(content, i)
+
+    def _skip_if_statement(self, content: str, index: int) -> int:
+        i = index + 2
+        i = self._skip_whitespace(content, i)
+        if i < len(content) and content[i] == '(':
+            i = self._skip_balanced(content, i, '(', ')')
+        i = self._skip_statement(content, i)
+        j = self._skip_whitespace(content, i)
+        if self._matches_standalone_keyword(content, j, 'else'):
+            return self._skip_statement(content, j + 4)
+        return i
+
+    def _skip_begin_block(self, content: str, index: int) -> int:
+        depth = 1
+        i = index + 5
+        while i < len(content):
+            if content[i] == '"':
+                i = self._skip_string(content, i)
+                continue
+            if content[i] == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            keyword = self._match_standalone_keyword(
+                content,
+                i,
+                ('begin', 'end', 'casez', 'casex', 'case', 'fork'),
+            )
+            if keyword == 'begin':
+                depth += 1
+                i += 5
+                continue
+            if keyword == 'end':
+                depth -= 1
+                i += 3
+                if depth == 0:
+                    return i
+                continue
+            if keyword in ('case', 'casex', 'casez'):
+                i = self._skip_case_block(content, i)
+                continue
+            if keyword == 'fork':
+                i = self._skip_fork_block(content, i)
+                continue
+            i += 1
+        return len(content)
+
+    def _skip_case_block(self, content: str, index: int) -> int:
+        keyword = self._match_standalone_keyword(content, index, ('casez', 'casex', 'case')) or 'case'
+        depth = 1
+        i = index + len(keyword)
+        while i < len(content):
+            if content[i] == '"':
+                i = self._skip_string(content, i)
+                continue
+            if content[i] == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            keyword = self._match_standalone_keyword(
+                content,
+                i,
+                ('casez', 'casex', 'case', 'endcase'),
+            )
+            if keyword in ('case', 'casex', 'casez'):
+                depth += 1
+                i += len(keyword)
+                continue
+            if keyword == 'endcase':
+                depth -= 1
+                i += 7
+                if depth == 0:
+                    return i
+                continue
+            i += 1
+        return len(content)
+
+    def _skip_fork_block(self, content: str, index: int) -> int:
+        depth = 1
+        i = index + 4
+        while i < len(content):
+            if content[i] == '"':
+                i = self._skip_string(content, i)
+                continue
+            if content[i] == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            keyword = self._match_standalone_keyword(
+                content,
+                i,
+                ('join_none', 'join_any', 'join', 'fork'),
+            )
+            if keyword == 'fork':
+                depth += 1
+                i += 4
+                continue
+            if keyword in ('join', 'join_any', 'join_none'):
+                depth -= 1
+                i += len(keyword)
+                if depth == 0:
+                    return i
+                continue
+            i += 1
+        return len(content)
+
+    def _skip_until_keyword(self, content: str, index: int, keywords: Tuple[str, ...]) -> int:
+        i = index
+        while i < len(content):
+            if content[i] == '"':
+                i = self._skip_string(content, i)
+                continue
+            if content[i] == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            keyword = self._match_standalone_keyword(content, i, keywords)
+            if keyword:
+                return i + len(keyword)
+            i += 1
+        return len(content)
+
+    def _skip_until_semicolon(self, content: str, index: int) -> int:
+        paren_depth = bracket_depth = brace_depth = 0
+        i = index
+        while i < len(content):
+            ch = content[i]
+            if ch == '"':
+                i = self._skip_string(content, i)
+                continue
+            if ch == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            if ch == '(':
+                paren_depth += 1
+            elif ch == ')' and paren_depth > 0:
+                paren_depth -= 1
+            elif ch == '[':
+                bracket_depth += 1
+            elif ch == ']' and bracket_depth > 0:
+                bracket_depth -= 1
+            elif ch == '{':
+                brace_depth += 1
+            elif ch == '}' and brace_depth > 0:
+                brace_depth -= 1
+            elif (
+                ch == ';'
+                and paren_depth == 0
+                and bracket_depth == 0
+                and brace_depth == 0
+            ):
+                return i + 1
+            i += 1
+        return len(content)
+
+    def _skip_balanced(self, content: str, index: int, open_ch: str, close_ch: str) -> int:
+        depth = 0
+        i = index
+        while i < len(content):
+            ch = content[i]
+            if ch == '"':
+                i = self._skip_string(content, i)
+                continue
+            if ch == '\\':
+                i = self._skip_escaped_identifier(content, i)
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return len(content)
+
+    @staticmethod
+    def _skip_whitespace(content: str, index: int) -> int:
+        while index < len(content) and content[index].isspace():
+            index += 1
+        return index
+
+    def _skip_string(self, content: str, index: int) -> int:
+        i = index + 1
+        while i < len(content):
+            if content[i] == '"' and not self._is_escaped(content, i):
+                return i + 1
+            i += 1
+        return len(content)
+
+    @staticmethod
+    def _skip_escaped_identifier(content: str, index: int) -> int:
+        i = index + 1
+        while i < len(content) and not content[i].isspace():
+            i += 1
+        return i
+
+    def _match_standalone_keyword(self, content: str, index: int, keywords: Tuple[str, ...]) -> str:
+        for keyword in keywords:
+            if self._matches_standalone_keyword(content, index, keyword):
+                return keyword
+        return ''
 
     def _flatten_param_blocks(self, content: str) -> str:
         result = []

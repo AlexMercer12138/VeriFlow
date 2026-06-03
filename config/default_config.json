@@ -4,7 +4,7 @@
   "lib_dirs": [],
   "top_module": "top_tb",
   "simulator": "iverilog",
-  "wave_viewer": "surfer",
+  "wave_viewer": "builtin",
   "wave_file_template": "{top_module}.vcd",
   "testbench_output_dir": ".",
   "simulators": {
@@ -26,6 +26,7 @@
     }
   },
   "wave_viewers": {
+    "builtin": "",
     "surfer": "surfer \"{wave_file}\"",
     "gtkwave": "gtkwave \"{wave_file}\"",
     "custom": ""

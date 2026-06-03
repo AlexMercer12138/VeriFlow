@@ -35,6 +35,7 @@ The extension core is implemented in TypeScript, so the VS Code extension itself
   - [Xilinx XSim](https://www.xilinx.com/products/design-tools/vivado.html)
   - A custom simulator command
 - **A waveform viewer** (optional), such as:
+  - Built-in VeriFlow waveform viewer for `.vcd` files
   - [Surfer](https://surfer-project.org/) - open source, recommended
   - [GTKWave](https://gtkwave.sourceforge.net/)
   - A custom waveform viewer command
@@ -52,6 +53,8 @@ Install `VeriFlow` from the VS Code Marketplace, or install a local `.vsix` pack
 5. Click **Analyze Dependencies** to resolve the compile order.
 6. Click **Compile & Simulate** to run simulation.
 7. Click **Open Waveform** to open the generated waveform file.
+
+You can also open `.vcd` files directly in VS Code with **VeriFlow Waveform Viewer**.
 
 ---
 
@@ -90,7 +93,7 @@ Generated testbenches are written to the workspace root by default. Set `veriflo
 |---------|------|---------|-------------|
 | `veriflow.libDirs` | `string[]` | `[]` | Library directories used for module search and dependency resolution |
 | `veriflow.simulator` | `enum` | `iverilog` | Simulator: `iverilog` / `vcs` / `xsim` / `custom` |
-| `veriflow.waveViewer` | `enum` | `surfer` | Waveform viewer: `surfer` / `gtkwave` / `custom` |
+| `veriflow.waveViewer` | `enum` | `builtin` | Waveform viewer: `builtin` / `surfer` / `gtkwave` / `custom` |
 | `veriflow.simulatorCompileCmd` | `string` | `""` | Custom compile command template. Supports `{files}` `{output}` `{top_module}` |
 | `veriflow.simulatorRunCmd` | `string` | `""` | Custom run command template. Supports `{output}` |
 | `veriflow.waveViewerCmd` | `string` | `""` | Custom waveform viewer command template. Supports `{wave_file}` |
@@ -125,6 +128,20 @@ This view contains:
 - **DUT Modules** - module selection, port editing, and parameter editing
 - **Waveform** - waveform file configuration
 - **Timeout** - simulation timeout configuration
+
+---
+
+## Built-in Waveform Viewer
+
+VeriFlow can preview `.vcd` files inside VS Code.
+
+Ways to open it:
+
+- Open a `.vcd` file and choose **VeriFlow Waveform Viewer**.
+- Right-click a `.vcd` file and run **Open VCD in VeriFlow Viewer**.
+- Set `veriflow.waveViewer` to `builtin`, then use **Open Waveform** after simulation.
+
+The current viewer is an early prototype. It supports signal search, time grid, cursor, zoom, pan, single-bit signals, bus signals, and dense waveform aggregation.
 
 ---
 

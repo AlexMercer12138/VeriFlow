@@ -73,6 +73,7 @@ _TRANSLATIONS = {
     "tab.modules":                  {"zh": "模块",                   "en": "Modules"},
     "tab.log":                      {"zh": "日志",                   "en": "Log"},
     "tab.tb":                       {"zh": "测试平台",              "en": "Testbench"},
+    "tab.waveform":                 {"zh": "波形",                   "en": "Waveform"},
 
     # ---------- Log Panel ----------
     "log.clear":                    {"zh": "清空",                   "en": "Clear"},

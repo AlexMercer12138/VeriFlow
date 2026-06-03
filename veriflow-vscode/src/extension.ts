@@ -10,6 +10,7 @@ import {
 } from './config';
 import { ModuleTreeProvider } from './moduleTreeProvider';
 import { TestbenchPanelProvider } from './testbenchPanel';
+import { WaveformEditorProvider } from './waveformEditorProvider';
 import * as output from './output';
 import {
     DependencyAnalyzer, SimulationRunner, LogParser,
@@ -42,6 +43,7 @@ const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
 };
 
 const DEFAULT_VIEWERS: Record<string, WaveViewerConfig> = {
+    builtin: { name: 'builtin', launchCmd: '' },
     surfer: { name: 'surfer', launchCmd: 'surfer "{wave_file}"' },
     gtkwave: { name: 'gtkwave', launchCmd: 'gtkwave "{wave_file}"' },
     custom: { name: 'custom', launchCmd: '' },
@@ -88,6 +90,16 @@ export function activate(context: vscode.ExtensionContext): void {
             { webviewOptions: { retainContextWhenHidden: true } }
         )
     );
+    context.subscriptions.push(
+        vscode.window.registerCustomEditorProvider(
+            WaveformEditorProvider.viewType,
+            new WaveformEditorProvider(context),
+            {
+                webviewOptions: { retainContextWhenHidden: true },
+                supportsMultipleEditorsPerDocument: false,
+            }
+        )
+    );
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(circuit-board) VeriFlow';
@@ -101,6 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.analyze', () => cmdAnalyze(context)],
         ['veriflow.simulate', () => cmdSimulate(context)],
         ['veriflow.openWave', () => cmdOpenWave(context)],
+        ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.showOutput', () => output.show()],
     ];
@@ -269,7 +282,7 @@ function _resolveViewer(settings: ExtensionSettings): WaveViewerConfig {
     if (settings.waveViewer === 'custom') {
         return { name: 'custom', launchCmd: settings.waveViewerCmd || '' };
     }
-    return DEFAULT_VIEWERS[settings.waveViewer] || DEFAULT_VIEWERS.surfer;
+    return DEFAULT_VIEWERS[settings.waveViewer] || DEFAULT_VIEWERS.builtin;
 }
 
 function _isSimulatorReady(simulator: SimulatorConfig): boolean {
@@ -615,12 +628,51 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     await cmdSimulate(context);
 }
 
+async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
+    let target = uri;
+    if (!target) {
+        const selected = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'VCD waveform': ['vcd'] },
+            title: 'Open VCD in VeriFlow Viewer',
+        });
+        target = selected?.[0];
+    }
+
+    if (!target) {
+        return;
+    }
+    if (path.extname(target.fsPath).toLowerCase() !== '.vcd') {
+        vscode.window.showWarningMessage('VeriFlow built-in waveform viewer currently supports .vcd files.');
+        return;
+    }
+
+    await vscode.commands.executeCommand(
+        'vscode.openWith',
+        target,
+        WaveformEditorProvider.viewType
+    );
+}
+
 async function _doOpenWave(context: vscode.ExtensionContext, root: string, topModule: string, settings: ExtensionSettings): Promise<void> {
     const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
     const viewer = _resolveViewer(settings);
 
     if (!fs.existsSync(waveFile)) {
         output.appendError(`Wave file not found: ${waveFile}`);
+        return;
+    }
+
+    if (viewer.name === 'builtin') {
+        output.appendInfo(`Opening built-in waveform viewer: ${waveFile}`);
+        await vscode.commands.executeCommand(
+            'vscode.openWith',
+            vscode.Uri.file(waveFile),
+            WaveformEditorProvider.viewType
+        );
+        output.appendSuccess(`Opened built-in waveform viewer: ${waveFile}`);
         return;
     }
 
