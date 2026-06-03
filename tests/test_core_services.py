@@ -8,6 +8,7 @@ from src.domain.services.dep_analyzer_service import DependencyAnalyzerService
 from src.domain.services.log_parser_service import LogParserService
 from src.domain.services.port_parser_service import PortParserService
 from src.domain.services.vcd_parser_service import VcdParserService
+from src.infrastructure.config_service import ConfigService
 from src.infrastructure.file_service import FileService
 from src.infrastructure.template_engine import TemplateEngine
 
@@ -37,6 +38,54 @@ def test_missing_top_module_is_reported(uart_project_dir: Path) -> None:
     assert not result.success
     assert result.missing_modules == ["missing_top"]
     assert result.files == []
+
+
+def test_file_and_config_services_handle_project_files(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+
+    fs = FileService()
+    a_file = root / "a.v"
+    b_file = nested / "b.sv"
+    fs.write_text(str(a_file), "module a; endmodule\n")
+    fs.write_text(str(b_file), "module b; endmodule\n")
+    (root / "notes.txt").write_text("ignore me\n", encoding="utf-8")
+
+    assert fs.read_text(str(a_file)) == "module a; endmodule\n"
+    assert fs.file_exists(str(a_file))
+    assert fs.get_filename(str(a_file)) == "a.v"
+    assert fs.read_binary(str(a_file)).startswith(b"module a")
+    assert [path.name for path in fs.list_files(str(root))] == ["a.v", "b.sv"]
+    assert fs.find_file("b.sv", [str(root)]) == b_file
+
+    config_file = tmp_path / "configs" / "project.json"
+    ConfigService.save(config_file, {"project_name": "demo", "answer": 42})
+    assert ConfigService.load(config_file)["answer"] == 42
+    assert ConfigService.load_optional(tmp_path / "missing.json") is None
+
+
+def test_application_coordinator_analyzes_project_dependencies(
+    tmp_path: Path,
+    isolated_global_config: Path,
+) -> None:
+    (tmp_path / "child.v").write_text("module child; endmodule\n", encoding="utf-8")
+    (tmp_path / "top.v").write_text(
+        "module top; child u_child(); endmodule\n",
+        encoding="utf-8",
+    )
+
+    app = ApplicationCoordinator()
+    project = app.create_project("demo", str(tmp_path))
+    assert project.name == "demo"
+
+    result = app.analyze_dependencies("top", str(tmp_path))
+    missing = app.analyze_dependencies("missing", str(tmp_path))
+
+    assert result.success
+    assert [path.name for path in result.get_compile_order()] == ["child.v", "top.v"]
+    assert not missing.success
+    assert missing.missing_modules == ["missing"]
 
 
 def test_dependency_analyzer_respects_conditional_compilation(tmp_path: Path) -> None:
@@ -320,12 +369,7 @@ $end
 
 
 def test_python_waveform_viewer_builds_shared_html() -> None:
-    try:
-        from src.presentation.gui.widgets.waveform_viewer_panel import _build_waveform_html
-    except ModuleNotFoundError as exc:
-        if exc.name == "PySide6":
-            pytest.skip("PySide6 is not installed")
-        raise
+    from src.presentation.gui.widgets.waveform_html import _build_waveform_html
 
     data = VcdParserService().parse(
         """
@@ -350,12 +394,7 @@ $enddefinitions $end
 
 
 def test_python_waveform_viewer_builds_empty_html() -> None:
-    try:
-        from src.presentation.gui.widgets.waveform_viewer_panel import _build_empty_waveform_html
-    except ModuleNotFoundError as exc:
-        if exc.name == "PySide6":
-            pytest.skip("PySide6 is not installed")
-        raise
+    from src.presentation.gui.widgets.waveform_html import _build_empty_waveform_html
 
     html = _build_empty_waveform_html()
 
@@ -369,18 +408,13 @@ def test_python_waveform_viewer_prefers_bundled_assets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    try:
-        from src.presentation.gui.widgets import waveform_viewer_panel
-    except ModuleNotFoundError as exc:
-        if exc.name == "PySide6":
-            pytest.skip("PySide6 is not installed")
-        raise
+    from src.presentation.gui.widgets import waveform_html
 
     bundled = tmp_path / "veriflow-vscode" / "media" / "waveform"
     bundled.mkdir(parents=True)
-    monkeypatch.setattr(waveform_viewer_panel.sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(waveform_html.sys, "_MEIPASS", str(tmp_path), raising=False)
 
-    assert waveform_viewer_panel._waveform_assets_dir() == bundled
+    assert waveform_html._waveform_assets_dir() == bundled
 
 
 def test_module_scan_and_duplicate_details(
@@ -433,4 +467,11 @@ def test_log_parser_and_template_rendering(golden_uart: dict) -> None:
     assert cmd == (
         'iverilog -o "uart_tb.out" '
         '"uart_rx.v" "uart_tx.v" "uart_tb.v"'
+    )
+    assert TemplateEngine.render("hello {name}", {"name": "world"}) == "hello world"
+    assert TemplateEngine.render_run('vvp "{output}"', "build/sim.out") == (
+        'vvp "build/sim.out"'
+    )
+    assert TemplateEngine.render_wave('gtkwave "{wave_file}"', "dump.vcd") == (
+        'gtkwave "dump.vcd"'
     )

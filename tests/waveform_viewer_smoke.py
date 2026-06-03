@@ -3,7 +3,7 @@
 Desktop smoke test for the built-in waveform viewer.
 
 Usage:
-    python tests/test_waveform_viewer_smoke.py [path/to/file.vcd]
+    python tests/waveform_viewer_smoke.py [path/to/file.vcd]
 """
 
 import os
@@ -16,7 +16,7 @@ if __name__ != "__main__":
     import pytest
 
     pytest.skip(
-        "desktop QtWebEngine smoke test; run directly with python tests/test_waveform_viewer_smoke.py",
+        "desktop QtWebEngine smoke test; run directly with python tests/waveform_viewer_smoke.py",
         allow_module_level=True,
     )
 
@@ -141,7 +141,7 @@ def main() -> int:
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
     from src.domain.services.vcd_parser_service import VcdParserService
-    from src.presentation.gui.widgets.waveform_viewer_panel import _build_waveform_html
+    from src.presentation.gui.widgets.waveform_html import _build_waveform_html
 
     wave_file = Path(sys.argv[1]) if len(sys.argv) > 1 else _default_vcd()
     if not wave_file.exists():

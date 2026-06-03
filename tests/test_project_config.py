@@ -51,6 +51,7 @@ def test_old_project_auto_adds_builtin_wave_viewer(tmp_path: Path) -> None:
             "project_name": "legacy",
             "project_root": str(project_root),
             "wave_viewer": "surfer",
+            "simulators": {},
             "wave_viewers": {
                 "surfer": "surfer \"{wave_file}\"",
                 "gtkwave": "gtkwave \"{wave_file}\"",
@@ -61,6 +62,8 @@ def test_old_project_auto_adds_builtin_wave_viewer(tmp_path: Path) -> None:
 
     project = ApplicationCoordinator().open_project(str(project_file))
 
+    assert "iverilog" in project.simulators
+    assert project.simulators["iverilog"].run_cmd == 'vvp "{output}"'
     assert "builtin" in project.wave_viewers
     assert project.wave_viewers["builtin"].launch_cmd == ""
 
