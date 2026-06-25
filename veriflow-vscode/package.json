@@ -107,6 +107,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "veriflow.cleanArtifacts",
+        "title": "Delete Simulation Artifacts",
+        "icon": "$(trash)"
+      },
+      {
         "command": "veriflow.showOutput",
         "title": "Show Output Panel",
         "icon": "$(output)"
@@ -145,6 +150,11 @@
           "command": "veriflow.scanModules",
           "when": "view == veriflow.modules",
           "group": "navigation@5"
+        },
+        {
+          "command": "veriflow.cleanArtifacts",
+          "when": "view == veriflow.modules",
+          "group": "navigation@6"
         }
       ]
     },

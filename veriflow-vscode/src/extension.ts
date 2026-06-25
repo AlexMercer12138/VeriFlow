@@ -115,6 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.openWave', () => cmdOpenWave(context)],
         ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
         ['veriflow.scanModules', () => cmdScanModules(context)],
+        ['veriflow.cleanArtifacts', () => cmdCleanArtifacts(context)],
         ['veriflow.showOutput', () => output.show()],
     ];
     for (const [name, fn] of cmds) {
@@ -657,6 +658,58 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
         target,
         WaveformEditorProvider.viewType
     );
+}
+
+async function cmdCleanArtifacts(context: vscode.ExtensionContext): Promise<void> {
+    const root = getWorkspaceRoot();
+    if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+
+    let topModule = treeProvider.topModule;
+    if (!topModule) {
+        await cmdSelectTop(context);
+        topModule = treeProvider.topModule;
+    }
+    if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+
+    const settings = getSettings();
+    const searchDirs = _collectSearchDirs(root, settings.libDirs);
+    let depResult = treeProvider.analyzeResult || getDependencyResult(context);
+    if (!depResult || depResult.topModule !== topModule || !depResult.moduleMap?.[topModule]) {
+        depResult = depAnalyzer.resolve(topModule, searchDirs);
+    }
+
+    const simPaths = resolveSimulationPaths(root, topModule, depResult, settings.waveFileTemplate);
+    const artifacts = Array.from(new Set([simPaths.outputFile, simPaths.waveFile]));
+    const existing = artifacts.filter(file => {
+        try {
+            return fs.existsSync(file) && fs.statSync(file).isFile();
+        } catch {
+            return false;
+        }
+    });
+
+    if (existing.length === 0) {
+        vscode.window.showInformationMessage(`No simulation artifacts found for ${topModule}.`);
+        return;
+    }
+
+    output.show(true);
+    output.appendInfo(`Deleting simulation artifacts for ${topModule}:`);
+    let deleted = 0;
+    for (const file of existing) {
+        try {
+            await vscode.workspace.fs.delete(vscode.Uri.file(file), { useTrash: true });
+            deleted++;
+            output.appendInfo(`  deleted ${file}`);
+        } catch (err: any) {
+            output.appendError(`  failed ${file}: ${err.message}`);
+        }
+    }
+
+    if (deleted > 0) {
+        _setSimulateStatus(context, 'idle');
+    }
+    vscode.window.showInformationMessage(`Deleted ${deleted} simulation artifact(s).`);
 }
 
 async function _doOpenWave(
