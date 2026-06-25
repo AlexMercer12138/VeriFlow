@@ -199,7 +199,7 @@
         "veriflow.waveFileTemplate": {
           "type": "string",
           "default": "{top_module}.vcd",
-          "description": "Waveform file path template. Use {top_module} as placeholder."
+          "description": "Waveform file path template. Use {top_module} as placeholder. Relative paths are resolved from the selected top module file directory."
         },
         "veriflow.testbenchOutputDir": {
           "type": "string",

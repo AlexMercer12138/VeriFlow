@@ -10,5 +10,7 @@ export { SimulationRunner } from './simulationRunner';
 export { PortParser } from './portParser';
 export { TestbenchGenerator } from './testbenchGenerator';
 export type { TbConfig, TbModuleConfig } from './testbenchGenerator';
+export { resolveSimulationPaths } from './simulationPaths';
+export type { SimulationPaths } from './simulationPaths';
 export { VcdParser } from './vcdParser';
 export type { VcdData, VcdSignal, VcdScope, VcdChangePoint, VcdParseIssue } from './vcdParser';

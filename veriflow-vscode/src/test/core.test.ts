@@ -9,6 +9,7 @@ import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
 import { SimulationRunner } from '../core/simulationRunner';
 import { VcdParser } from '../core/vcdParser';
+import { resolveSimulationPaths } from '../core/simulationPaths';
 
 type Golden = {
     top_module: string;
@@ -352,6 +353,26 @@ function testSimulationRunnerCommandLogging(): void {
     assert.ok(result.stdout.includes('run ok'));
 }
 
+function testSimulationPathsUseTopModuleDirectory(): void {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-sim-paths-'));
+    const moduleDir = path.join(projectDir, 'generated', 'tb');
+    fs.mkdirSync(moduleDir, { recursive: true });
+    const topFile = path.join(moduleDir, 'tb_top.v');
+    const depResult = {
+        topModule: 'tb_top',
+        files: [topFile],
+        missingModules: [],
+        moduleMap: { tb_top: topFile },
+        depGraph: { tb_top: [] },
+    };
+
+    const paths = resolveSimulationPaths(projectDir, 'tb_top', depResult, '{top_module}.vcd');
+
+    assert.strictEqual(paths.cwd, moduleDir);
+    assert.strictEqual(paths.outputFile, path.join(moduleDir, 'tb_top.out'));
+    assert.strictEqual(paths.waveFile, path.join(moduleDir, 'tb_top.vcd'));
+}
+
 function testVcdParser(): void {
     const parser = new VcdParser();
     const data = parser.parse(`
@@ -465,6 +486,7 @@ const tests: Array<[string, () => void]> = [
     ['log parser', testLogParser],
     ['simulation runner paths', testSimulationRunnerPathResolution],
     ['simulation runner command logging', testSimulationRunnerCommandLogging],
+    ['simulation paths use top module directory', testSimulationPathsUseTopModuleDirectory],
     ['vcd parser', testVcdParser],
     ['vcd parser multiline metadata and aliases', testVcdParserMultilineMetadataAndAliases],
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],

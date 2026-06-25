@@ -16,7 +16,7 @@ import {
     DependencyAnalyzer, SimulationRunner, LogParser,
     listVerilogFiles, readText, preprocessVerilog, removeComments,
     ModuleScanResult, DependencyResult, SimulationResult,
-    SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE,
+    SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE, resolveSimulationPaths,
 } from './core';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -540,12 +540,14 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
 
     output.appendInfo(`Resolved ${depResult.files.length} file(s)`);
+    const simPaths = resolveSimulationPaths(root, topModule, depResult, settings.waveFileTemplate);
+    output.appendInfo(`Run directory: ${simPaths.cwd}`);
+    output.appendInfo(`Output file: ${simPaths.outputFile}`);
     output.appendInfo('Running compile -> simulate.');
     output.appendLine('');
-    const outFile = path.join(root, `${topModule}.out`);
 
     const result = simRunner.compileAndRun(
-        depResult.files, outFile, simulator, root, topModule
+        depResult.files, simPaths.outputFile, simulator, simPaths.cwd, topModule
     );
 
     if (result.stdout) {
@@ -577,7 +579,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     if (_pendingWaveAfterSimulate) {
         _pendingWaveAfterSimulate = false;
         if (result.success) {
-            await _doOpenWave(context, root, topModule, settings);
+            await _doOpenWave(context, root, topModule, settings, depResult);
         }
     }
 }
@@ -597,7 +599,6 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     _checkDepFilesChanged(context);
 
     const settings = getSettings();
-    const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
 
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
@@ -616,8 +617,10 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     }
 
     // 都已完成
+    const depResult = treeProvider.analyzeResult || getDependencyResult(context);
+    const waveFile = resolveSimulationPaths(root, topModule, depResult, settings.waveFileTemplate).waveFile;
     if (fs.existsSync(waveFile)) {
-        await _doOpenWave(context, root, topModule, settings);
+        await _doOpenWave(context, root, topModule, settings, depResult);
         return;
     }
 
@@ -656,8 +659,16 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
     );
 }
 
-async function _doOpenWave(context: vscode.ExtensionContext, root: string, topModule: string, settings: ExtensionSettings): Promise<void> {
-    const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
+async function _doOpenWave(
+    context: vscode.ExtensionContext,
+    root: string,
+    topModule: string,
+    settings: ExtensionSettings,
+    depResult?: DependencyResult | null
+): Promise<void> {
+    const waveFile = resolveSimulationPaths(
+        root, topModule, depResult || treeProvider.analyzeResult || getDependencyResult(context), settings.waveFileTemplate
+    ).waveFile;
     const viewer = _resolveViewer(settings);
 
     if (!fs.existsSync(waveFile)) {
