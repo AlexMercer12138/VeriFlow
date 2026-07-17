@@ -33,6 +33,22 @@ def write_source(repository, relative_path, text):
     path.write_text(text, encoding="utf-8")
 
 
+def test_find_modules_parses_multiline_qualified_declarations(vlib):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source = """
+module automatic
+  alpha;
+endmodule
+
+module
+  static
+  beta;
+endmodule
+"""
+
+    assert vlib.find_modules(source) == ["alpha", "beta"]
+
+
 def test_index_scans_verilog_sources_and_writes_json(vlib, tmp_path):
     assert vlib is not None, "scripts/vlib.py is not implemented"
     write_source(

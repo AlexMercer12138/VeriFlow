@@ -18,7 +18,7 @@ INDEX_FILE = REPOSITORY_ROOT / ".verilog_module_index.json"
 SCHEMA_VERSION = 1
 
 MODULE_DECLARATION = re.compile(
-    r"^[ \t]*module[ \t]+(?:(?:automatic|static)[ \t]+)?"
+    r"^[ \t]*module\s+(?:(?:automatic|static)\s+)?"
     r"([A-Za-z_][A-Za-z0-9_$]*)\b",
     re.MULTILINE,
 )
