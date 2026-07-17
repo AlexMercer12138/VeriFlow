@@ -10,7 +10,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 
 REPOSITORY_ROOT = Path(r"D:\Software\VeriFlow")
@@ -37,8 +37,14 @@ def validate_repository(repository_root: Path) -> Path:
     return root
 
 
-def read_source(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+def read_source_snapshot(path: Path) -> Tuple[bytes, str]:
+    digest = hashlib.sha256()
+    chunks = []  # type: List[bytes]
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            chunks.append(chunk)
+            digest.update(chunk)
+    return b"".join(chunks), digest.hexdigest()
 
 
 def strip_comments(text: str) -> str:
@@ -110,36 +116,43 @@ def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
     )
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def build_index(repository_root: Path) -> Dict[str, object]:
     files = {}  # type: Dict[str, object]
-    modules = {}  # type: Dict[str, str]
+    module_paths = {}  # type: Dict[str, List[str]]
 
     for path in iter_verilog_files(repository_root):
         relative_path = path.relative_to(repository_root).as_posix()
-        declared_modules = find_modules(read_source(path))
+        source_bytes, source_hash = read_source_snapshot(path)
+        declared_modules = find_modules(
+            source_bytes.decode("utf-8", errors="replace")
+        )
 
         for module_name in declared_modules:
-            previous_path = modules.get(module_name)
-            if previous_path is not None:
-                raise VlibError(
-                    "Duplicate module '{}': {} and {}".format(
-                        module_name, previous_path, relative_path
-                    )
-                )
-            modules[module_name] = relative_path
+            module_paths.setdefault(module_name, []).append(relative_path)
 
         files[relative_path] = {
             "modules": declared_modules,
-            "sha256": sha256_file(path),
+            "sha256": source_hash,
         }
+
+    duplicate_lines = []
+    for module_name in sorted(module_paths):
+        paths = module_paths[module_name]
+        if len(paths) > 1:
+            duplicate_lines.append(
+                "Duplicate module '{}': {}".format(
+                    module_name, ", ".join(sorted(set(paths)))
+                )
+            )
+    if duplicate_lines:
+        raise VlibError(
+            "Duplicate modules found:\n{}".format("\n".join(duplicate_lines))
+        )
+
+    modules = {
+        module_name: paths[0]
+        for module_name, paths in module_paths.items()
+    }
 
     return {
         "schema_version": SCHEMA_VERSION,
