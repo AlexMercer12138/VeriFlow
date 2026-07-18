@@ -14,6 +14,21 @@ type WaveCore = {
     validateLayout(value: unknown): any | null;
     describeSignal(signal: any, signals: any[]): any;
     matchSignalDescriptors(descriptors: any[], signals: any[]): Array<number | null>;
+    parseTimescale(value: string): {
+        multiplier: number;
+        unit: string;
+        secondsPerTick: number;
+    } | null;
+    formatTicks(ticks: number, timescale: string): string;
+    measureCursors(
+        cursorA: number,
+        cursorB: number | null,
+        timescale: string
+    ): {
+        deltaTicks: number | null;
+        deltaText: string;
+        frequencyText: string;
+    };
 };
 
 const waveCore = require('../../media/waveform/viewer-core.js') as WaveCore;
@@ -512,6 +527,32 @@ function testWaveLayoutValidationAndMatching(): void {
     );
 }
 
+function testWaveCursorMeasurement(): void {
+    assert.deepStrictEqual(waveCore.parseTimescale('10 ns'), {
+        multiplier: 10,
+        unit: 'ns',
+        secondsPerTick: 1e-8,
+    });
+    assert.strictEqual(waveCore.formatTicks(12, '10ns'), '120 ns');
+    assert.deepStrictEqual(waveCore.measureCursors(12, 17, '10ns'), {
+        deltaTicks: 5,
+        deltaText: '50 ns',
+        frequencyText: '20 MHz',
+    });
+    assert.deepStrictEqual(waveCore.measureCursors(12, 12, '1ns'), {
+        deltaTicks: 0,
+        deltaText: '0 ns',
+        frequencyText: '-',
+    });
+    assert.deepStrictEqual(waveCore.measureCursors(12, null, '1ns'), {
+        deltaTicks: null,
+        deltaText: '-',
+        frequencyText: '-',
+    });
+    assert.strictEqual(waveCore.formatTicks(2500, '100ps'), '250 ns');
+    assert.strictEqual(waveCore.measureCursors(0, 1, '1ps').frequencyText, '1 THz');
+}
+
 const tests: Array<[string, () => void]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -528,6 +569,7 @@ const tests: Array<[string, () => void]> = [
     ['vcd parser multiline metadata and aliases', testVcdParserMultilineMetadataAndAliases],
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],
     ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
+    ['wave cursor measurement', testWaveCursorMeasurement],
 ];
 
 for (const [name, fn] of tests) {
