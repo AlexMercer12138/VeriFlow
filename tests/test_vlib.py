@@ -380,6 +380,61 @@ def test_status_reports_malformed_index_as_incompatible(
     assert "Index: INCOMPATIBLE" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("record_kind", "modules_value"),
+    [
+        ("missing", None),
+        ("wrong-type", "top"),
+        ("non-string-member", ["top", 7]),
+    ],
+)
+def test_status_rejects_invalid_file_modules_records(
+    vlib, tmp_path, capsys, record_kind, modules_value
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\nendmodule\n"
+    (tmp_path / "top.v").write_bytes(source_bytes)
+    file_record = {
+        "sha256": hashlib.sha256(source_bytes).hexdigest(),
+    }
+    if record_kind != "missing":
+        file_record["modules"] = modules_value
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {"top.v": file_record},
+                "modules": {"top": "top.v"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_bytes = vlib.INDEX_FILE.read_bytes()
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
+    assert vlib.INDEX_FILE.read_bytes() == index_bytes
+    assert (tmp_path / "top.v").read_bytes() == source_bytes
+
+
+def test_status_accepts_file_with_no_declared_modules(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    (tmp_path / "definitions.sv").write_bytes(b"`define WIDTH 8\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["status"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Repository: {}\n"
+        "Modules: 0\n"
+        "Source files: 1\n"
+        "Index: CURRENT\n".format(tmp_path.resolve())
+    )
+
+
 @pytest.mark.parametrize("repository_kind", ["missing", "file"])
 def test_status_reports_unavailable_repository(
     vlib, tmp_path, capsys, monkeypatch, repository_kind

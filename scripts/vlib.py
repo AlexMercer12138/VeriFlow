@@ -1368,6 +1368,13 @@ def _status_index_snapshot(
             raise VlibError(
                 "Invalid module index entry for '{}'.".format(relative_path)
             )
+        declared_modules = file_record.get("modules")
+        if not isinstance(declared_modules, list) or not all(
+            isinstance(module_name, str) for module_name in declared_modules
+        ):
+            raise VlibError(
+                "Invalid module index modules for '{}'.".format(relative_path)
+            )
         source_hash = file_record.get("sha256")
         if not isinstance(source_hash, str) or re.fullmatch(
             r"[0-9a-f]{64}", source_hash
