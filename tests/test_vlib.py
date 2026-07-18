@@ -1,6 +1,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +34,40 @@ def write_source(repository, relative_path, text):
     path = repository / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def create_directory_alias(alias, target):
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+
+    command_processor = os.environ.get("COMSPEC", "cmd.exe")
+    completed = subprocess.run(
+        [
+            command_processor,
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(alias),
+            str(target),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        pytest.skip("directory aliases are unavailable")
+
+
+def remove_directory_alias(alias):
+    if alias.is_symlink():
+        alias.unlink()
+    elif alias.exists():
+        os.rmdir(str(alias))
 
 
 def test_find_modules_parses_multiline_qualified_declarations(vlib):
@@ -806,3 +842,59 @@ endmodule
     assert captured.err == (
         "Missing include: ../../outside-vlib-copy.vh from rtl/top.v\n"
     )
+
+
+def test_copy_preserves_logical_alias_paths_for_modules_and_includes(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "storage/top.v",
+        '`include "headers/defs.vh"\nmodule top;\nendmodule\n',
+    )
+    write_source(
+        tmp_path,
+        "storage/headers/defs.vh",
+        '`include "nested/more.vh"\n`define WIDTH 8\n',
+    )
+    write_source(
+        tmp_path,
+        "storage/headers/nested/more.vh",
+        "`define RESET_VALUE 0\n",
+    )
+    alias = tmp_path / "rtl"
+    create_directory_alias(alias, tmp_path / "storage")
+    try:
+        vlib.INDEX_FILE.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "repository_root": tmp_path.resolve().as_posix(),
+                    "files": {"rtl/top.v": {"modules": ["top"]}},
+                    "modules": {"top": "rtl/top.v"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        destination = tmp_path / "copied"
+        assert (
+            vlib.main(["copy", "top", str(destination), "--with-deps"])
+            == 0
+        )
+
+        assert (destination / "rtl" / "top.v").is_file()
+        assert (destination / "rtl" / "headers" / "defs.vh").is_file()
+        assert (
+            destination / "rtl" / "headers" / "nested" / "more.vh"
+        ).is_file()
+        assert not (destination / "storage").exists()
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == [
+            "Copied: rtl/headers/defs.vh",
+            "Copied: rtl/headers/nested/more.vh",
+            "Copied: rtl/top.v",
+        ]
+        assert captured.err == ""
+    finally:
+        remove_directory_alias(alias)

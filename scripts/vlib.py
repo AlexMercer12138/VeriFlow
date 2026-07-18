@@ -1075,12 +1075,21 @@ def _repository_file(
         raise VlibError(
             "Invalid repository-relative path: {}".format(relative_path)
         )
-    source_path = (repository_root / indexed_path).resolve()
+    logical_path = Path(
+        os.path.abspath(str(repository_root / indexed_path))
+    )
     try:
-        normalized_relative = source_path.relative_to(repository_root)
+        normalized_relative = logical_path.relative_to(repository_root)
     except ValueError:
         raise VlibError(
             "Path escapes the repository: {}".format(relative_path)
+        )
+    source_path = logical_path.resolve()
+    try:
+        source_path.relative_to(repository_root)
+    except ValueError:
+        raise VlibError(
+            "Path resolves outside the repository: {}".format(relative_path)
         )
     if not source_path.is_file():
         raise VlibError("Source file is missing: {}".format(relative_path))
@@ -1088,20 +1097,28 @@ def _repository_file(
 
 
 def _resolve_include(
-    include_name: str, including_file: Path, repository_root: Path
-) -> Optional[Path]:
-    seen = set()  # type: Set[Path]
-    for base in (including_file.parent, repository_root):
-        candidate = (base / Path(include_name)).resolve()
-        if candidate in seen:
-            continue
-        seen.add(candidate)
+    include_name: str,
+    including_relative: str,
+    repository_root: Path,
+) -> Optional[Tuple[Path, str]]:
+    including_logical = repository_root / Path(including_relative)
+    for base in (including_logical.parent, repository_root):
+        logical_candidate = Path(
+            os.path.abspath(str(base / Path(include_name)))
+        )
         try:
-            candidate.relative_to(repository_root)
+            candidate_relative = logical_candidate.relative_to(
+                repository_root
+            )
         except ValueError:
             continue
-        if candidate.is_file():
-            return candidate
+        physical_candidate = logical_candidate.resolve()
+        try:
+            physical_candidate.relative_to(repository_root)
+        except ValueError:
+            continue
+        if physical_candidate.is_file():
+            return physical_candidate, candidate_relative.as_posix()
     return None
 
 
@@ -1142,35 +1159,31 @@ def build_copy_plan(
 
     missing_includes = set()  # type: Set[Tuple[str, str]]
     if with_deps:
-        queue = [planned[path] for path in sorted(planned)]
-        queued = set(queue)  # type: Set[Path]
-        scanned = set()  # type: Set[Path]
+        queue = []  # type: List[Tuple[str, Path]]
+        queued = set()  # type: Set[Path]
+        for logical_path in sorted(planned):
+            physical_path = planned[logical_path]
+            if physical_path not in queued:
+                queue.append((logical_path, physical_path))
+                queued.add(physical_path)
         position = 0
         while position < len(queue):
-            including_file = queue[position]
+            including_relative, including_file = queue[position]
             position += 1
-            if including_file in scanned:
-                continue
-            scanned.add(including_file)
-            including_relative = including_file.relative_to(
-                repository_root
-            ).as_posix()
             source = including_file.read_text(
                 encoding="utf-8", errors="replace"
             )
             for include_name in extract_includes(source):
-                included_file = _resolve_include(
-                    include_name, including_file, repository_root
+                resolved_include = _resolve_include(
+                    include_name, including_relative, repository_root
                 )
-                if included_file is None:
+                if resolved_include is None:
                     missing_includes.add((include_name, including_relative))
                     continue
-                included_relative = included_file.relative_to(
-                    repository_root
-                ).as_posix()
+                included_file, included_relative = resolved_include
                 planned[included_relative] = included_file
                 if included_file not in queued:
-                    queue.append(included_file)
+                    queue.append((included_relative, included_file))
                     queued.add(included_file)
 
     copy_files = [(path, planned[path]) for path in sorted(planned)]
