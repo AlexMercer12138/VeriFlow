@@ -1910,3 +1910,42 @@ def test_copy_metadata_failure_rolls_back_all_targets(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "Error: injected metadata failure\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only cleanup")
+def test_copy_success_cleans_read_only_existing_target_backup(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\r\nendmodule\r\n"
+    source_path = tmp_path / "rtl" / "top.v"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(source_bytes)
+    source_writable = bool(
+        stat.S_IMODE(source_path.stat().st_mode) & stat.S_IWRITE
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    target_path = destination / "rtl" / "top.v"
+    target_path.parent.mkdir(parents=True)
+    target_path.write_bytes(b"ORIGINAL")
+    target_path.chmod(stat.S_IREAD)
+
+    try:
+        assert vlib.main(["copy", "top", str(destination)]) == 0
+
+        assert target_path.read_bytes() == source_bytes
+        assert bool(
+            stat.S_IMODE(target_path.stat().st_mode) & stat.S_IWRITE
+        ) == source_writable
+        assert not [
+            path
+            for path in destination.rglob("*")
+            if ".vlib-" in path.name
+        ]
+        captured = capsys.readouterr()
+        assert captured.out == "Copied: rtl/top.v\n"
+        assert captured.err == ""
+    finally:
+        make_tree_writable(tmp_path)

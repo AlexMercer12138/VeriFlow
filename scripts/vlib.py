@@ -1844,6 +1844,10 @@ def _cleanup_temporary_paths(paths: Sequence[Path]) -> None:
     first_error = None  # type: Optional[OSError]
     for path in reversed(paths):
         try:
+            try:
+                _make_path_writable(path)
+            except OSError:
+                pass
             _unlink_if_present(path)
         except OSError as error:
             if first_error is None:
