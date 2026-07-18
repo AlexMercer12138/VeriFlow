@@ -203,6 +203,245 @@ def test_build_index_uses_one_snapshot_for_modules_and_hash(
     assert source_open_count == 1
 
 
+def test_repository_snapshot_hashes_sources_once_in_sorted_path_order(
+    vlib, tmp_path, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    first_bytes = b"module first;\r\nendmodule\r\n"
+    second_bytes = b"module second;\nendmodule\n"
+    first_path = tmp_path / "a" / "first.v"
+    second_path = tmp_path / "z" / "second.sv"
+    first_path.parent.mkdir(parents=True)
+    second_path.parent.mkdir(parents=True)
+    first_path.write_bytes(first_bytes)
+    second_path.write_bytes(second_bytes)
+    open_counts = {first_path: 0, second_path: 0}
+    original_open = Path.open
+
+    def count_source_opens(path, *args, **kwargs):
+        if path in open_counts:
+            open_counts[path] += 1
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", count_source_opens)
+
+    snapshot = vlib.repository_snapshot(tmp_path)
+
+    assert list(snapshot) == ["a/first.v", "z/second.sv"]
+    assert snapshot == {
+        "a/first.v": hashlib.sha256(first_bytes).hexdigest(),
+        "z/second.sv": hashlib.sha256(second_bytes).hexdigest(),
+    }
+    assert open_counts == {first_path: 1, second_path: 1}
+
+
+def test_status_reports_current_index_without_mutating_it(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(tmp_path, "top.v", "module top;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    index_bytes = vlib.INDEX_FILE.read_bytes()
+    source_bytes = (tmp_path / "top.v").read_bytes()
+
+    assert vlib.main(["status"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Repository: {}\n"
+        "Modules: 1\n"
+        "Source files: 1\n"
+        "Index: CURRENT\n".format(tmp_path.resolve())
+    )
+    assert vlib.INDEX_FILE.read_bytes() == index_bytes
+    assert (tmp_path / "top.v").read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_line"),
+    [
+        ("added", "Added: new.sv"),
+        ("modified", "Modified: top.v"),
+        ("deleted", "Deleted: top.v"),
+    ],
+)
+def test_status_reports_stale_source_changes(
+    vlib, tmp_path, capsys, change, expected_line
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    top_path = tmp_path / "top.v"
+    top_path.write_bytes(b"module top;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    if change == "added":
+        (tmp_path / "new.sv").write_bytes(b"module new_module;\nendmodule\n")
+    elif change == "modified":
+        top_path.write_bytes(b"module top;\n  wire changed;\nendmodule\n")
+    else:
+        top_path.unlink()
+
+    assert vlib.main(["status"]) == 1
+
+    assert capsys.readouterr().out == (
+        "Repository: {}\n"
+        "Modules: 1\n"
+        "Source files: 1\n"
+        "Index: STALE\n"
+        "{}\n".format(tmp_path.resolve(), expected_line)
+    )
+
+
+def test_status_sorts_stale_paths_by_category(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(tmp_path, "z_delete.v", "module z_delete; endmodule\n")
+    write_source(tmp_path, "a_delete.v", "module a_delete; endmodule\n")
+    write_source(tmp_path, "z_modify.v", "module z_modify; endmodule\n")
+    write_source(tmp_path, "a_modify.v", "module a_modify; endmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    (tmp_path / "z_delete.v").unlink()
+    (tmp_path / "a_delete.v").unlink()
+    write_source(
+        tmp_path, "z_modify.v", "module z_modify; wire changed; endmodule\n"
+    )
+    write_source(
+        tmp_path, "a_modify.v", "module a_modify; wire changed; endmodule\n"
+    )
+    write_source(tmp_path, "z_add.sv", "module z_add; endmodule\n")
+    write_source(tmp_path, "a_add.sv", "module a_add; endmodule\n")
+
+    assert vlib.main(["status"]) == 1
+
+    assert capsys.readouterr().out.splitlines()[-7:] == [
+        "Index: STALE",
+        "Added: a_add.sv",
+        "Added: z_add.sv",
+        "Modified: a_modify.v",
+        "Modified: z_modify.v",
+        "Deleted: a_delete.v",
+        "Deleted: z_delete.v",
+    ]
+
+
+def test_status_reports_missing_index(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+
+    assert vlib.main(["status"]) == 1
+
+    assert capsys.readouterr().out == (
+        "Repository: {}\nIndex: MISSING\n".format(tmp_path.resolve())
+    )
+
+
+def test_status_reports_incompatible_schema(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 99,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {},
+                "modules": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    stdout = capsys.readouterr().out
+    assert "Index: INCOMPATIBLE" in stdout
+    assert "Unsupported module index schema 99; expected 1." in stdout
+
+
+@pytest.mark.parametrize(
+    "index_bytes",
+    [
+        b"{not-json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": ".",
+                "files": {"top.v": {"modules": ["top"]}},
+                "modules": {"top": "top.v"},
+            }
+        ).encode("utf-8"),
+    ],
+)
+def test_status_reports_malformed_index_as_incompatible(
+    vlib, capsys, index_bytes
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    vlib.INDEX_FILE.write_bytes(index_bytes)
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("repository_kind", ["missing", "file"])
+def test_status_reports_unavailable_repository(
+    vlib, tmp_path, capsys, monkeypatch, repository_kind
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    repository = tmp_path / repository_kind
+    if repository_kind == "file":
+        repository.write_text("not a repository", encoding="utf-8")
+    monkeypatch.setattr(vlib, "REPOSITORY_ROOT", repository)
+
+    assert vlib.main(["status"]) == 1
+
+    stdout = capsys.readouterr().out
+    assert stdout.startswith("Repository: INVALID (")
+    assert "Index: UNAVAILABLE\n" in stdout
+    assert "Traceback" not in stdout
+
+
+def test_status_reports_index_for_a_different_repository(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    stored_root = (tmp_path / "other-repository").resolve().as_posix()
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": stored_root,
+                "files": {},
+                "modules": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    assert capsys.readouterr().out == (
+        "Repository: {}\n"
+        "Index: WRONG_REPOSITORY ({})\n".format(
+            tmp_path.resolve(), stored_root
+        )
+    )
+
+
+def test_parser_documents_status_and_preserves_invalid_argument_exit_two(
+    vlib, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    help_text = vlib.build_parser().format_help()
+    for command in ("index", "show", "deps", "copy", "list", "status"):
+        assert command in help_text
+
+    with pytest.raises(SystemExit) as error:
+        vlib.main(["copy", "top"])
+
+    assert error.value.code == 2
+    assert "the following arguments are required: destination" in (
+        capsys.readouterr().err
+    )
+
+
 def test_show_selected_module_parameters_and_ansi_ports(
     vlib, tmp_path, capsys
 ):

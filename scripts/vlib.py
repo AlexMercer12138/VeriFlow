@@ -1216,6 +1216,15 @@ def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
     )
 
 
+def repository_snapshot(repository_root: Path) -> Dict[str, str]:
+    snapshot = {}  # type: Dict[str, str]
+    for path in iter_verilog_files(repository_root):
+        relative_path = path.relative_to(repository_root).as_posix()
+        _source_bytes, source_hash = read_source_snapshot(path)
+        snapshot[relative_path] = source_hash
+    return snapshot
+
+
 def build_index(repository_root: Path) -> Dict[str, object]:
     files = {}  # type: Dict[str, object]
     module_paths = {}  # type: Dict[str, List[str]]
@@ -1336,6 +1345,52 @@ def load_index(check_root: bool = True) -> Dict[str, object]:
     return index
 
 
+def _status_index_snapshot(
+    index: Dict[str, object]
+) -> Tuple[str, Dict[str, str]]:
+    indexed_root = index.get("repository_root")
+    if not isinstance(indexed_root, str) or not indexed_root:
+        raise VlibError(
+            "Invalid module index: 'repository_root' must be a string."
+        )
+
+    files = index["files"]
+    if not isinstance(files, dict):
+        raise VlibError("Invalid module index: 'files' must be an object.")
+    snapshot = {}  # type: Dict[str, str]
+    for relative_path in sorted(files):
+        if not isinstance(relative_path, str) or not relative_path:
+            raise VlibError(
+                "Invalid module index: source paths must be non-empty strings."
+            )
+        file_record = files[relative_path]
+        if not isinstance(file_record, dict):
+            raise VlibError(
+                "Invalid module index entry for '{}'.".format(relative_path)
+            )
+        source_hash = file_record.get("sha256")
+        if not isinstance(source_hash, str) or re.fullmatch(
+            r"[0-9a-f]{64}", source_hash
+        ) is None:
+            raise VlibError(
+                "Invalid module index hash for '{}'.".format(relative_path)
+            )
+        snapshot[relative_path] = source_hash
+
+    modules = index["modules"]
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+    for module_name, relative_path in modules.items():
+        if (
+            not isinstance(module_name, str)
+            or not module_name
+            or not isinstance(relative_path, str)
+            or not relative_path
+        ):
+            raise VlibError("Invalid module index module mapping.")
+    return indexed_root, snapshot
+
+
 def module_block_from_index(
     module: str, index: Dict[str, object]
 ) -> ModuleBlock:
@@ -1395,6 +1450,65 @@ def index_command(_arguments: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def status_command(_arguments: argparse.Namespace) -> int:
+    try:
+        repository_root = validate_repository(REPOSITORY_ROOT)
+    except (OSError, RuntimeError, ValueError, VlibError) as error:
+        print("Repository: INVALID ({})".format(error))
+        print("Index: UNAVAILABLE")
+        return 1
+
+    print("Repository: {}".format(repository_root))
+    if not INDEX_FILE.exists():
+        print("Index: MISSING")
+        return 1
+
+    try:
+        index = load_index(check_root=False)
+        indexed_root, indexed_snapshot = _status_index_snapshot(index)
+        normalized_indexed_root = Path(indexed_root).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError, VlibError) as error:
+        print("Index: INCOMPATIBLE ({})".format(error))
+        return 1
+
+    if os.path.normcase(str(normalized_indexed_root)) != os.path.normcase(
+        str(repository_root)
+    ):
+        print("Index: WRONG_REPOSITORY ({})".format(indexed_root))
+        return 1
+
+    print("Modules: {}".format(len(index["modules"])))
+    print("Source files: {}".format(len(index["files"])))
+    try:
+        current_snapshot = repository_snapshot(repository_root)
+    except (OSError, RuntimeError, ValueError, VlibError) as error:
+        print("Index: UNAVAILABLE ({})".format(error))
+        return 1
+
+    indexed_paths = set(indexed_snapshot)
+    current_paths = set(current_snapshot)
+    added = sorted(current_paths - indexed_paths)
+    modified = sorted(
+        path
+        for path in current_paths & indexed_paths
+        if current_snapshot[path] != indexed_snapshot[path]
+    )
+    deleted = sorted(indexed_paths - current_paths)
+
+    if not added and not modified and not deleted:
+        print("Index: CURRENT")
+        return 0
+
+    print("Index: STALE")
+    for path in added:
+        print("Added: {}".format(path))
+    for path in modified:
+        print("Modified: {}".format(path))
+    for path in deleted:
+        print("Deleted: {}".format(path))
+    return 1
 
 
 def show_command(arguments: argparse.Namespace) -> int:
@@ -1594,6 +1708,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also copy transitive dependencies and included files",
     )
     copy_parser.set_defaults(handler=copy_command)
+    status_parser = subparsers.add_parser(
+        "status",
+        help="report whether the module index matches the repository",
+    )
+    status_parser.set_defaults(handler=status_command)
     return parser
 
 
