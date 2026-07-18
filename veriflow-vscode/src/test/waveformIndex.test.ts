@@ -20,6 +20,7 @@ import {
 } from '../core/vcdIndex';
 import {
     WaveformCache,
+    WaveformCacheLock,
     sourceFingerprint,
 } from '../core/waveformCache';
 import { WaveformWorkerClient } from '../core/waveformWorkerClient';
@@ -198,6 +199,13 @@ async function testWaveformCache(): Promise<void> {
         assert.strictEqual(await cache.getOrBuild(sourceOne), first);
         assert.strictEqual(fs.statSync(path.join(first, 'waveform.vfi')).mtimeMs, dataMtimeMs);
         cache.release(first);
+        fs.writeFileSync(path.join(first, 'waveform.vfi'), 'BAD!');
+        assert.strictEqual(await cache.getOrBuild(sourceOne), first);
+        assert.strictEqual(
+            fs.readFileSync(path.join(first, 'waveform.vfi')).subarray(0, 4).toString('ascii'),
+            'VFI1'
+        );
+        cache.release(first);
 
         const secondFingerprint = await sourceFingerprint(sourceTwo);
         fs.mkdirSync(cacheRoot, { recursive: true });
@@ -234,6 +242,21 @@ async function testWaveformCache(): Promise<void> {
         await cache.cleanup();
         assert.ok(!fs.existsSync(first));
         assert.ok(fs.existsSync(second));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function testMalformedStaleCacheLock(): Promise<void> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-lock-'));
+    const lockPath = path.join(root, 'broken.lock');
+    try {
+        fs.writeFileSync(lockPath, '{');
+        fs.utimesSync(lockPath, new Date(0), new Date(0));
+        const lock = new WaveformCacheLock(lockPath, 1);
+        assert.strictEqual(await lock.acquire(), true);
+        await lock.release();
+        assert.strictEqual(fs.existsSync(lockPath), false);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
@@ -372,6 +395,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform manifest validation', testTimestampAndManifestValidation],
     ['waveform index build and query', testBuildAndQueryIndex],
     ['waveform cache', testWaveformCache],
+    ['malformed stale waveform cache lock', testMalformedStaleCacheLock],
     ['waveform worker client', testWaveformWorkerClient],
     ['stable waveform reload detection', testStableFileReloader],
 ];

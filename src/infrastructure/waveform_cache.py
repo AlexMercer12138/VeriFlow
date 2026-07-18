@@ -144,14 +144,18 @@ class _CacheLock:
     def _reclaim_if_stale(self) -> bool:
         try:
             original = self.path.read_bytes()
+            modified_ms = self.path.stat().st_mtime_ns // 1_000_000
+        except OSError:
+            return False
+        try:
             payload = json.loads(original.decode("utf-8"))
             heartbeat_ms = int(payload.get("heartbeatMs", 0))
             pid = int(payload.get("pid", 0))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return False
-        stale = not _pid_alive(pid) or (
-            time.time_ns() // 1_000_000 - heartbeat_ms > self.stale_seconds * 1000
-        )
+            stale = not _pid_alive(pid) or (
+                time.time_ns() // 1_000_000 - heartbeat_ms > self.stale_seconds * 1000
+            )
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            stale = time.time_ns() // 1_000_000 - modified_ms > self.stale_seconds * 1000
         if not stale:
             return False
         try:
@@ -253,6 +257,8 @@ class WaveformCache:
     def _open_fingerprint(self, fingerprint: SourceFingerprint) -> Optional[Path]:
         entry = self.root / fingerprint.key
         if not self._valid_entry(entry, fingerprint):
+            if entry.exists() and fingerprint.key not in self._active:
+                shutil.rmtree(entry, ignore_errors=True)
             return None
         self._touch_entry(entry, fingerprint)
         self._active.add(fingerprint.key)

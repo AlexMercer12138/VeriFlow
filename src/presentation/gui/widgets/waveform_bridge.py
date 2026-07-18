@@ -92,7 +92,7 @@ class WaveformIndexWorker(QObject):
         now = time.monotonic()
         phase = str(event.get("phase", ""))
         always_emit = phase != self._last_progress_phase or event.get("percent") == 100
-        if not always_emit and now - self._last_progress_at < 0.05:
+        if not always_emit and now - self._last_progress_at < 0.1:
             return
         self._last_progress_at = now
         self._last_progress_phase = phase

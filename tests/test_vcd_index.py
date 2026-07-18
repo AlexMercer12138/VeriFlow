@@ -26,7 +26,11 @@ from src.domain.services.vcd_index_service import (
     VcdIndexReader,
     build_vcd_index,
 )
-from src.infrastructure.waveform_cache import WaveformCache, source_fingerprint
+from src.infrastructure.waveform_cache import (
+    WaveformCache,
+    _CacheLock,
+    source_fingerprint,
+)
 from scripts.benchmark_waveform_index import benchmark_waveform_index
 from scripts.generate_waveform_benchmark import generate_waveform_benchmark
 
@@ -270,6 +274,10 @@ def test_waveform_cache_reuses_recovers_cleans_and_evicts(tmp_path: Path) -> Non
     assert cache.get_or_build(source_one) == first
     assert (first / "waveform.vfi").stat().st_mtime_ns == data_mtime_ns
     cache.release(first)
+    (first / "waveform.vfi").write_bytes(b"BAD!")
+    assert cache.get_or_build(source_one) == first
+    assert (first / "waveform.vfi").read_bytes().startswith(b"VFI1")
+    cache.release(first)
 
     second_fingerprint = source_fingerprint(source_two)
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -302,6 +310,17 @@ def test_waveform_cache_reuses_recovers_cleans_and_evicts(tmp_path: Path) -> Non
 
     assert not first.exists()
     assert second.exists()
+
+
+def test_waveform_cache_reclaims_malformed_stale_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "broken.lock"
+    lock_path.write_text("{", encoding="utf-8")
+    os.utime(lock_path, (1, 1))
+    lock = _CacheLock(lock_path, stale_seconds=0.001)
+
+    assert lock.acquire()
+    lock.release()
+    assert not lock_path.exists()
 
 
 def test_benchmark_generator_and_report_are_deterministic(tmp_path: Path) -> None:

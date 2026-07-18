@@ -103,7 +103,7 @@ function pidAlive(pid: number): boolean {
     }
 }
 
-class CacheLock {
+export class WaveformCacheLock {
     private readonly token = crypto.randomBytes(16).toString('hex');
     private heartbeat: NodeJS.Timeout | undefined;
     private heartbeatWrite: Promise<void> = Promise.resolve();
@@ -142,16 +142,23 @@ class CacheLock {
 
     private async reclaimIfStale(): Promise<boolean> {
         let original: Buffer;
-        let payload: Record<string, unknown>;
+        let modifiedMs: number;
         try {
             original = await fs.promises.readFile(this.lockPath);
-            payload = JSON.parse(original.toString('utf8')) as Record<string, unknown>;
+            modifiedMs = (await fs.promises.stat(this.lockPath)).mtimeMs;
         } catch {
             return false;
         }
-        const heartbeatMs = Number(payload.heartbeatMs ?? 0);
-        const pid = Number(payload.pid ?? 0);
-        if (pidAlive(pid) && Date.now() - heartbeatMs <= this.staleMs) return false;
+        let stale: boolean;
+        try {
+            const payload = JSON.parse(original.toString('utf8')) as Record<string, unknown>;
+            const heartbeatMs = Number(payload.heartbeatMs ?? 0);
+            const pid = Number(payload.pid ?? 0);
+            stale = !pidAlive(pid) || Date.now() - heartbeatMs > this.staleMs;
+        } catch {
+            stale = Date.now() - modifiedMs > this.staleMs;
+        }
+        if (!stale) return false;
         try {
             const current = await fs.promises.readFile(this.lockPath);
             if (!current.equals(original)) return false;
@@ -274,7 +281,12 @@ export class WaveformCache {
 
     private async openFingerprint(fingerprint: SourceFingerprint): Promise<string | null> {
         const entry = path.join(this.root, fingerprint.key);
-        if (!await this.validEntry(entry, fingerprint)) return null;
+        if (!await this.validEntry(entry, fingerprint)) {
+            if (fs.existsSync(entry) && !this.active.has(fingerprint.key)) {
+                await fs.promises.rm(entry, { recursive: true, force: true });
+            }
+            return null;
+        }
         await this.touchEntry(entry, fingerprint);
         this.active.add(fingerprint.key);
         return entry;
@@ -292,12 +304,15 @@ export class WaveformCache {
         await this.startupCleanup;
         source = path.resolve(source);
         const fingerprint = await sourceFingerprint(source);
-        let lock: CacheLock;
+        let lock: WaveformCacheLock;
         while (true) {
             const existing = await this.openFingerprint(fingerprint);
             if (existing) return existing;
             if (options.cancelled?.()) throw new VcdIndexCancelled();
-            lock = new CacheLock(path.join(this.root, `${fingerprint.key}.lock`), this.staleLockMs);
+            lock = new WaveformCacheLock(
+                path.join(this.root, `${fingerprint.key}.lock`),
+                this.staleLockMs
+            );
             if (await lock.acquire()) break;
             options.onProgress?.({ phase: 'waiting', completed: 0, total: 0, percent: 0 });
             await new Promise(resolve => setTimeout(resolve, this.waitMs));
