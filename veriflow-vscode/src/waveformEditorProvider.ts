@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { WaveformLayoutStore } from './core/waveformLayoutStore';
 import { WaveformWorkerClient } from './core/waveformWorkerClient';
+import { StableFileReloader } from './core/stableFileReload';
 
 export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'veriflow.waveformEditor';
@@ -32,6 +33,31 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
         };
         webviewPanel.webview.html = this._getHtml(webviewPanel.webview);
         const worker = new WaveformWorkerClient();
+        const stableReloader = new StableFileReloader(document.uri.fsPath, {
+            delayMs: 750,
+            confirmationMs: 100,
+            onChanging: () => worker.cancelLoad(),
+            onStable: () => worker.open(document.uri.fsPath),
+            onUnavailable: error => {
+                void webviewPanel.webview.postMessage({
+                    type: 'reloadFailed',
+                    generation: worker.currentLoadingGeneration || worker.currentGeneration,
+                    message: error.message,
+                });
+            },
+        });
+        const watcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(
+                path.dirname(document.uri.fsPath),
+                path.basename(document.uri.fsPath)
+            )
+        );
+        const notifyChanged = (): void => stableReloader.notify();
+        const watcherSubscriptions = [
+            watcher.onDidChange(notifyChanged),
+            watcher.onDidCreate(notifyChanged),
+            watcher.onDidDelete(notifyChanged),
+        ];
         const stopForwarding = worker.onMessage(message => {
             const payload = message.type === 'waveformMetadata'
                 ? { ...message, layout: this._layoutStore.load(document.uri.toString()) }
@@ -62,6 +88,9 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
         const panelSubscription = webviewPanel.onDidDispose(() => {
             stopForwarding();
             messageSubscription.dispose();
+            stableReloader.dispose();
+            watcherSubscriptions.forEach(subscription => subscription.dispose());
+            watcher.dispose();
             void worker.dispose();
             panelSubscription.dispose();
         });

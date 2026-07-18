@@ -32,7 +32,9 @@ export class WaveformWorkerClient {
     private readonly worker: Worker;
     private readonly listeners = new Set<(message: WaveformWorkerMessage) => void>();
     private readonly cancelledRequests = new Set<string>();
-    private generation = 0;
+    private generationCounter = 0;
+    private loadingGeneration = 0;
+    private readyGeneration = 0;
     private nextRequestId = 1;
     private disposed = false;
 
@@ -43,14 +45,18 @@ export class WaveformWorkerClient {
         this.worker.on('error', error => {
             this.handleMessage({
                 type: 'reloadFailed',
-                generation: this.generation,
+                generation: this.loadingGeneration || this.readyGeneration,
                 message: error.message,
             });
         });
     }
 
     get currentGeneration(): number {
-        return this.generation;
+        return this.readyGeneration || this.loadingGeneration;
+    }
+
+    get currentLoadingGeneration(): number {
+        return this.loadingGeneration;
     }
 
     onMessage(listener: (message: WaveformWorkerMessage) => void): () => void {
@@ -59,8 +65,20 @@ export class WaveformWorkerClient {
     }
 
     private handleMessage(message: WaveformWorkerMessage): void {
-        if (this.disposed || message.generation !== this.generation) return;
+        if (this.disposed) return;
+        const loadMessage = message.generation === this.loadingGeneration;
+        const queryMessage = message.generation === this.readyGeneration;
+        if (!loadMessage && !queryMessage) return;
         if (message.requestId && this.cancelledRequests.has(message.requestId)) return;
+        if (message.type === 'indexReady' && loadMessage) {
+            this.readyGeneration = this.loadingGeneration;
+        } else if (
+            (message.type === 'reloadFailed' || message.type === 'indexCancelled')
+            && loadMessage
+            && this.readyGeneration
+        ) {
+            this.loadingGeneration = this.readyGeneration;
+        }
         this.listeners.forEach(listener => listener(message));
     }
 
@@ -69,20 +87,25 @@ export class WaveformWorkerClient {
     }
 
     private request(type: string, payload: Record<string, unknown>): string {
-        const requestId = `${this.generation}:${this.nextRequestId++}`;
-        this.post({ type, generation: this.generation, requestId, ...payload });
+        const generation = this.readyGeneration || this.loadingGeneration;
+        const requestId = `${generation}:${this.nextRequestId++}`;
+        this.post({ type, generation, requestId, ...payload });
         return requestId;
     }
 
     open(source: string): number {
-        if (this.generation) {
-            this.post({ type: 'cancelLoad', generation: this.generation });
+        if (this.loadingGeneration && this.loadingGeneration !== this.readyGeneration) {
+            this.post({ type: 'cancelLoad', generation: this.loadingGeneration });
         }
-        this.generation += 1;
+        this.generationCounter += 1;
+        this.loadingGeneration = this.generationCounter;
         this.nextRequestId = 1;
-        this.cancelledRequests.clear();
-        this.post({ type: 'openFile', generation: this.generation, source: path.resolve(source) });
-        return this.generation;
+        this.post({
+            type: 'openFile',
+            generation: this.loadingGeneration,
+            source: path.resolve(source),
+        });
+        return this.loadingGeneration;
     }
 
     requestWindow(request: WindowRequest): string {
@@ -99,21 +122,31 @@ export class WaveformWorkerClient {
 
     cancelRequest(requestId: string): void {
         this.cancelledRequests.add(requestId);
-        this.post({ type: 'cancelRequest', generation: this.generation, requestId });
+        this.post({
+            type: 'cancelRequest',
+            generation: this.readyGeneration || this.loadingGeneration,
+            requestId,
+        });
     }
 
     cancelLoad(): void {
-        this.post({ type: 'cancelLoad', generation: this.generation });
+        this.post({ type: 'cancelLoad', generation: this.loadingGeneration });
     }
 
     forward(message: Record<string, unknown>): void {
-        this.post({ ...message, generation: this.generation });
+        this.post({
+            ...message,
+            generation: this.readyGeneration || this.loadingGeneration,
+        });
     }
 
     async dispose(): Promise<void> {
         if (this.disposed) return;
         const exited = new Promise<void>(resolve => this.worker.once('exit', () => resolve()));
-        this.post({ type: 'dispose', generation: this.generation });
+        this.post({
+            type: 'dispose',
+            generation: this.loadingGeneration || this.readyGeneration,
+        });
         await Promise.race([
             exited,
             new Promise<void>(resolve => setTimeout(resolve, 1000)),

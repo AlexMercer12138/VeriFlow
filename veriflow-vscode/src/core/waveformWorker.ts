@@ -33,7 +33,7 @@ function loadCancelled(generation: number): boolean {
 }
 
 function requestCancelled(message: WorkerRequest): boolean {
-    return message.generation !== activeGeneration ||
+    return message.generation !== readerGeneration ||
         cancelledRequests.has(requestKey(message.generation, message.requestId));
 }
 

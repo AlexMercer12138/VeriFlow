@@ -9,6 +9,7 @@ Usage:
 import os
 import sys
 import json
+import time
 from pathlib import Path
 
 
@@ -628,6 +629,11 @@ def _indexed_main() -> int:
         "primed": False,
         "search_requested": False,
         "javascript_pending": False,
+        "reload_requested": False,
+        "reload_verified": False,
+        "reload_ready_at": None,
+        "initial_records": 0,
+        "initial_pixels": None,
         "done": False,
     }
     result = {"ok": False, "message": "timeout"}
@@ -662,18 +668,74 @@ def _indexed_main() -> int:
             finish(False, "host failure: " + repr(failures[-1]))
             return
 
-        metadata = next(
-            (message for message in messages if message.get("type") == "waveformMetadata"),
-            None,
-        )
-        if metadata is not None:
+        for metadata in (
+            message for message in messages if message.get("type") == "waveformMetadata"
+        ):
             signals = metadata.get("data", {}).get("signals", [])
             if any("changes" in signal for signal in signals):
                 finish(False, "indexed metadata contains complete changes")
                 return
 
-        if "indexReady" not in types:
+        ready_messages = [
+            message for message in messages if message.get("type") == "indexReady"
+        ]
+        if not ready_messages:
             QTimer.singleShot(100, inspect)
+            return
+        if state["reload_requested"]:
+            if len(ready_messages) < 2:
+                QTimer.singleShot(50, inspect)
+                return
+            if len(ready_messages) > 2:
+                finish(False, "stable rewrite triggered multiple reloads")
+                return
+            if not state["reload_verified"] and not state["javascript_pending"]:
+                state["javascript_pending"] = True
+
+                def checked_reload(payload) -> None:
+                    state["javascript_pending"] = False
+                    try:
+                        page_state = json.loads(payload or "{}")
+                    except json.JSONDecodeError:
+                        finish(False, "invalid reloaded viewer state: " + repr(payload))
+                        return
+                    if page_state.get("waveforms") != 6 or page_state.get("cursorA") != 5:
+                        finish(False, "reload did not preserve layout/cursor: " + repr(page_state))
+                        return
+                    if not page_state.get("indexReady") or not page_state.get("progressHidden"):
+                        finish(False, "reload controls are inconsistent: " + repr(page_state))
+                        return
+                    state["reload_verified"] = True
+                    state["reload_ready_at"] = time.monotonic()
+                    QTimer.singleShot(100, inspect)
+
+                view.page().runJavaScript(
+                    "JSON.stringify(Object.assign({}, "
+                    "window.__veriflowWaveViewer ? window.__veriflowWaveViewer.state() : {}, {"
+                    "indexReady: !document.getElementById('goStart').disabled,"
+                    "progressHidden: document.getElementById('indexProgress').hidden"
+                    "}));",
+                    checked_reload,
+                )
+                return
+            if not state["reload_verified"]:
+                return
+            if time.monotonic() - state["reload_ready_at"] < 1.0:
+                QTimer.singleShot(100, inspect)
+                return
+            QApplication.processEvents()
+            pixels = _grab_waveform_stats(view)
+            if not pixels["ok"]:
+                finish(False, "reloaded waveform pixels are blank: " + repr(pixels))
+                return
+            screenshot = os.environ.get("VERIFLOW_SMOKE_SCREENSHOT")
+            if screenshot:
+                view.grab().save(screenshot)
+            finish(
+                True,
+                f"records={state['initial_records']}; generations="
+                f"{[message.get('generation') for message in ready_messages]}; pixels={pixels}",
+            )
             return
         if not state["primed"]:
             state["primed"] = True
@@ -736,10 +798,19 @@ def _indexed_main() -> int:
             screenshot = os.environ.get("VERIFLOW_SMOKE_SCREENSHOT")
             if screenshot:
                 view.grab().save(screenshot)
-            finish(
-                True,
-                f"records={total_records}; messages={types}; pixels={pixels}",
-            )
+            state["initial_records"] = total_records
+            state["initial_pixels"] = pixels
+            state["reload_requested"] = True
+
+            def append_changes(first: int, last: int) -> None:
+                with source.open("a", encoding="utf-8") as handle:
+                    for timestamp in range(first, last):
+                        handle.write(f"#{timestamp}\n{timestamp % 2}!\n")
+
+            append_changes(5001, 8501)
+            QTimer.singleShot(200, lambda: append_changes(8501, 12001))
+            QTimer.singleShot(400, lambda: append_changes(12001, 15501))
+            QTimer.singleShot(100, inspect)
 
         view.page().runJavaScript(
             "JSON.stringify(Object.assign({}, "
@@ -752,7 +823,7 @@ def _indexed_main() -> int:
 
     QTimer.singleShot(0, lambda: panel.open_vcd(source))
     QTimer.singleShot(100, inspect)
-    QTimer.singleShot(15000, lambda: finish(False, "timeout; messages=" + repr(messages[-8:])))
+    QTimer.singleShot(20000, lambda: finish(False, "timeout; messages=" + repr(messages[-8:])))
     app.exec()
     temporary.cleanup()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -28,15 +29,20 @@ class WaveformIndexWorker(QObject):
         *,
         cache: Optional[WaveformCache] = None,
         reader_factory: Callable[[Path], VcdIndexReader] = VcdIndexReader,
+        background_build: bool = True,
     ) -> None:
         super().__init__()
         self._cache = cache
         self._reader_factory = reader_factory
+        self._build_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="waveform-index")
+            if background_build
+            else None
+        )
         self._reader: Optional[VcdIndexReader] = None
         self._reader_generation = 0
         self._index_dir: Optional[Path] = None
         self._generation = 0
-        self._last_source: Optional[Path] = None
         self._cancelled_loads: set[int] = set()
         self._cancelled_requests: set[tuple[int, str]] = set()
         self._state_lock = threading.RLock()
@@ -50,6 +56,9 @@ class WaveformIndexWorker(QObject):
         return self._cache
 
     def _send(self, message_type: str, generation: int, **payload) -> None:
+        with self._state_lock:
+            if self._disposed:
+                return
         event = {"type": message_type, "generation": generation, **payload}
         self.message.emit(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
@@ -73,7 +82,7 @@ class WaveformIndexWorker(QObject):
         with self._state_lock:
             return (
                 self._disposed
-                or generation != self._generation
+                or generation != self._reader_generation
                 or (generation, str(request_id)) in self._cancelled_requests
             )
 
@@ -91,13 +100,20 @@ class WaveformIndexWorker(QObject):
 
     def _open_file(self, message: dict) -> None:
         generation = int(message["generation"])
-        source = Path(message["source"]).resolve()
         with self._state_lock:
             self._generation = generation
             self._cancelled_loads.discard(generation)
             self._cancelled_requests = {
                 item for item in self._cancelled_requests if item[0] == generation
             }
+        if self._build_executor is not None:
+            self._build_executor.submit(self._build_file, dict(message))
+        else:
+            self._build_file(message)
+
+    def _build_file(self, message: dict) -> None:
+        generation = int(message["generation"])
+        source = Path(message["source"]).resolve()
         self._last_progress_at = 0.0
         self._last_progress_phase = ""
         metadata_sent = False
@@ -132,10 +148,11 @@ class WaveformIndexWorker(QObject):
                 metadata = getattr(reader, "metadata", None)
                 if metadata is not None:
                     on_metadata(metadata)
-            previous_dir = self._index_dir
-            self._reader = reader
-            self._reader_generation = generation
-            self._index_dir = index_dir
+            with self._state_lock:
+                previous_dir = self._index_dir
+                self._reader = reader
+                self._reader_generation = generation
+                self._index_dir = index_dir
             if previous_dir is not None and previous_dir != index_dir:
                 cache.release(previous_dir)
             self._send(
@@ -154,7 +171,9 @@ class WaveformIndexWorker(QObject):
         request_id = message["requestId"]
         if self._request_cancelled(generation, request_id):
             return
-        if self._reader is None or self._reader_generation != generation:
+        with self._state_lock:
+            reader = self._reader if self._reader_generation == generation else None
+        if reader is None:
             raise RuntimeError("waveform index is not ready")
         references = list(message.get("references") or ())
         if len(references) > 256:
@@ -166,7 +185,7 @@ class WaveformIndexWorker(QObject):
         for reference in references:
             if self._request_cancelled(generation, request_id):
                 return
-            payload = self._reader.query_window_for_reference(
+            payload = reader.query_window_for_reference(
                 str(reference),
                 int(message.get("start", 0)),
                 int(message.get("end", 0)),
@@ -182,10 +201,12 @@ class WaveformIndexWorker(QObject):
         request_id = message["requestId"]
         if self._request_cancelled(generation, request_id):
             return
-        if self._reader is None or self._reader_generation != generation:
+        with self._state_lock:
+            reader = self._reader if self._reader_generation == generation else None
+        if reader is None:
             raise RuntimeError("waveform index is not ready")
         references = [str(item) for item in message.get("references") or ()]
-        values = self._reader.values_at(references, int(message.get("time", 0)))
+        values = reader.values_at(references, int(message.get("time", 0)))
         if not self._request_cancelled(generation, request_id):
             self._send("cursorValues", generation, requestId=request_id, values=values)
 
@@ -194,7 +215,9 @@ class WaveformIndexWorker(QObject):
         request_id = message["requestId"]
         if self._request_cancelled(generation, request_id):
             return
-        if self._reader is None or self._reader_generation != generation:
+        with self._state_lock:
+            reader = self._reader if self._reader_generation == generation else None
+        if reader is None:
             raise RuntimeError("waveform index is not ready")
         targets = message.get("targets") or [
             {
@@ -207,7 +230,7 @@ class WaveformIndexWorker(QObject):
         for target in targets:
             if self._request_cancelled(generation, request_id):
                 return
-            match = self._reader.search(
+            match = reader.search(
                 str(target["reference"]),
                 int(message.get("cursorTime", 0)),
                 int(message.get("direction", 1)),
@@ -233,6 +256,8 @@ class WaveformIndexWorker(QObject):
         with self._state_lock:
             self._disposed = True
             self._cancelled_loads.add(self._generation)
+        if self._build_executor is not None:
+            self._build_executor.shutdown(wait=False, cancel_futures=True)
         if self._index_dir is not None and self._cache is not None:
             self._cache.release(self._index_dir)
             self._index_dir = None
@@ -299,6 +324,7 @@ class WaveformBridge(QObject):
         super().__init__(parent)
         self._worker = worker or WaveformIndexWorker()
         self._generation = 0
+        self._last_source: Optional[Path] = None
         self._closed = False
         self._thread: Optional[QThread] = None
         self._worker.message.connect(self.message.emit)
@@ -380,6 +406,9 @@ class WaveformBridge(QObject):
 
     def post_message(self, message: dict) -> None:
         self.message.emit(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
+
+    def cancel_loading(self) -> None:
+        self._worker.request_cancel_load(self._generation)
 
     @Slot()
     def close(self) -> None:

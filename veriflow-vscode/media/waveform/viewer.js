@@ -110,6 +110,7 @@ let valueRequestTimer = null;
 let pendingWindowRequest = null;
 let pendingValueRequest = null;
 let pendingSearchRequest = null;
+let pendingReloadMetadata = null;
 let lastValueRequestKey = '';
 const ROW_HEIGHT = 32;
 const HEADER_HEIGHT = 38;
@@ -374,6 +375,7 @@ function setEmptyState() {
     pendingWindowRequest = null;
     pendingValueRequest = null;
     pendingSearchRequest = null;
+    pendingReloadMetadata = null;
     lastValueRequestKey = '';
     if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
     if (valueRequestTimer !== null) clearTimeout(valueRequestTimer);
@@ -477,9 +479,9 @@ function setIndexLoading(loading, text = 'Preparing waveform') {
     }
 }
 
-function setIndexedMetadata(message) {
+function activateIndexedMetadata(message, layout = message.layout) {
     loadingGeneration = Number(message.generation) || 0;
-    setData(message.fileName, message.data || {}, message.layout);
+    setData(message.fileName, message.data || {}, layout);
     indexedMode = true;
     indexReady = false;
     currentGeneration = loadingGeneration;
@@ -497,6 +499,46 @@ function setIndexedMetadata(message) {
     setIndexLoading(true, 'Indexing waveform');
     updateToolbarState();
     render();
+}
+
+function setIndexedMetadata(message) {
+    const generation = Number(message.generation) || 0;
+    if (indexedMode && indexReady && generation > currentGeneration) {
+        loadingGeneration = generation;
+        pendingReloadMetadata = message;
+        indexOverlay.hidden = true;
+        indexProgress.hidden = false;
+        cancelIndex.hidden = false;
+        retryIndex.hidden = true;
+        return;
+    }
+    activateIndexedMetadata(message);
+}
+
+function convertedReloadLayout(layout, oldTimescale, newTimescale) {
+    if (!layout) return null;
+    const oldScale = waveCore.parseTimescale(oldTimescale);
+    const newScale = waveCore.parseTimescale(newTimescale);
+    if (!oldScale || !newScale) return layout;
+    const converted = JSON.parse(JSON.stringify(layout));
+    const factor = oldScale.secondsPerTick / newScale.secondsPerTick;
+    if (converted.view) {
+        if (Number.isFinite(Number(converted.view.startTime))) {
+            converted.view.startTime = Number(converted.view.startTime) * factor;
+        }
+        if (Number.isFinite(Number(converted.view.endTime))) {
+            converted.view.endTime = Number(converted.view.endTime) * factor;
+        }
+    }
+    if (converted.cursors) {
+        if (Number.isFinite(Number(converted.cursors.a))) {
+            converted.cursors.a = Number(converted.cursors.a) * factor;
+        }
+        if (converted.cursors.b !== null && Number.isFinite(Number(converted.cursors.b))) {
+            converted.cursors.b = Number(converted.cursors.b) * factor;
+        }
+    }
+    return converted;
 }
 
 function progressText(progress) {
@@ -527,11 +569,32 @@ function handleIndexProgress(message) {
     indexProgressText.textContent = progressText(progress);
     indexProgressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
     indexProgressFill.style.width = percent + '%';
-    if (!indexReady) setIndexLoading(true, 'Indexing waveform');
+    if (!indexReady) {
+        setIndexLoading(true, 'Indexing waveform');
+    } else if (generation > currentGeneration) {
+        indexOverlay.hidden = true;
+    }
 }
 
 function handleIndexReady(message) {
-    if (Number(message.generation) !== currentGeneration) return;
+    const generation = Number(message.generation) || 0;
+    if (generation !== currentGeneration) {
+        if (generation !== loadingGeneration || !pendingReloadMetadata || !indexReady) return;
+        const previousLayout = captureLayout();
+        const previousTimescale = vcd?.timescale || '';
+        const finalData = message.data || pendingReloadMetadata.data || {};
+        const layout = convertedReloadLayout(
+            previousLayout,
+            previousTimescale,
+            finalData.timescale || previousTimescale
+        );
+        activateIndexedMetadata(
+            { ...pendingReloadMetadata, generation, data: finalData },
+            layout
+        );
+        pendingReloadMetadata = null;
+    }
+    if (generation !== currentGeneration) return;
     if (message.data && vcd) {
         vcd = {
             ...vcd,
@@ -561,6 +624,16 @@ function handleIndexReady(message) {
 
 function handleIndexFailure(message, cancelled = false) {
     if (Number(message.generation) !== loadingGeneration) return;
+    if (indexReady) {
+        pendingReloadMetadata = null;
+        loadingGeneration = currentGeneration;
+        indexOverlay.hidden = true;
+        indexProgress.hidden = true;
+        cancelIndex.hidden = true;
+        retryIndex.hidden = true;
+        setStatus(cancelled ? 'Waveform reload cancelled.' : 'Waveform reload failed: ' + String(message.message || 'unknown error'));
+        return;
+    }
     indexReady = false;
     setIndexLoading(true, cancelled ? 'Indexing cancelled' : 'Indexing failed');
     indexProgressText.textContent = cancelled ? 'cancelled' : String(message.message || 'failed');

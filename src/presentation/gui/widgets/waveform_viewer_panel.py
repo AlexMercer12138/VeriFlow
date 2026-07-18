@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QFileSystemWatcher, QTimer, Qt, QUrl
 from PySide6.QtWebChannel import QWebChannel
 
 from src.presentation.gui.widgets.waveform_bridge import WaveformBridge
@@ -23,6 +23,20 @@ class WaveformViewerPanel(QWidget):
         self._channel = None
         self._page_loaded = False
         self._pending_file = None
+        self._watch_path = None
+        self._stable_snapshot = None
+        self._last_known_snapshot = None
+        self._file_watcher = QFileSystemWatcher(self)
+        self._file_watcher.fileChanged.connect(self._on_source_changed)
+        self._file_watcher.directoryChanged.connect(self._on_source_directory_changed)
+        self._stability_timer = QTimer(self)
+        self._stability_timer.setSingleShot(True)
+        self._stability_timer.setInterval(750)
+        self._stability_timer.timeout.connect(self._observe_stable_file)
+        self._confirmation_timer = QTimer(self)
+        self._confirmation_timer.setSingleShot(True)
+        self._confirmation_timer.setInterval(100)
+        self._confirmation_timer.timeout.connect(self._confirm_stable_file)
         self._fallback = QLabel()
         self._fallback.setWordWrap(True)
         self._loading = QLabel("No waveform file opened.")
@@ -87,6 +101,7 @@ class WaveformViewerPanel(QWidget):
             return
 
         wave_file = Path(wave_file).resolve()
+        self._watch_file(wave_file)
         self._pending_file = wave_file
         self._loading.setText(f"Loading waveform:\n{wave_file}")
         if not self._page_loaded:
@@ -114,7 +129,99 @@ class WaveformViewerPanel(QWidget):
             self._loading.setText("Failed to load waveform preview.")
             self._stack.setCurrentWidget(self._loading)
 
+    @staticmethod
+    def _file_snapshot(path: Path):
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns
+
+    def _ensure_file_watch(self) -> None:
+        if self._watch_path is None or not self._watch_path.exists():
+            return
+        watched = {Path(item) for item in self._file_watcher.files()}
+        if self._watch_path not in watched:
+            self._file_watcher.addPath(str(self._watch_path))
+
+    def _watch_file(self, path: Path) -> None:
+        if self._watch_path == path:
+            self._ensure_file_watch()
+            return
+        watched_files = self._file_watcher.files()
+        watched_directories = self._file_watcher.directories()
+        if watched_files:
+            self._file_watcher.removePaths(watched_files)
+        if watched_directories:
+            self._file_watcher.removePaths(watched_directories)
+        self._watch_path = path
+        self._stable_snapshot = None
+        try:
+            self._last_known_snapshot = self._file_snapshot(path)
+        except OSError:
+            self._last_known_snapshot = None
+        self._file_watcher.addPath(str(path.parent))
+        self._ensure_file_watch()
+
+    def _on_source_changed(self, _changed_path: str = "") -> None:
+        if self._watch_path is None:
+            return
+        if self._bridge is not None:
+            self._bridge.cancel_loading()
+        self._stable_snapshot = None
+        self._confirmation_timer.stop()
+        self._stability_timer.start()
+        self._ensure_file_watch()
+
+    def _on_source_directory_changed(self, _directory: str) -> None:
+        if self._watch_path is None:
+            return
+        self._ensure_file_watch()
+        try:
+            snapshot = self._file_snapshot(self._watch_path)
+        except OSError:
+            snapshot = None
+        if snapshot != self._last_known_snapshot:
+            self._on_source_changed(str(self._watch_path))
+
+    def _observe_stable_file(self) -> None:
+        if self._watch_path is None:
+            return
+        try:
+            self._stable_snapshot = self._file_snapshot(self._watch_path)
+        except OSError as error:
+            self._stable_snapshot = None
+            if self._bridge is not None:
+                self._bridge.post_message(
+                    {
+                        "type": "reloadFailed",
+                        "generation": self._bridge.generation,
+                        "message": str(error),
+                    }
+                )
+            return
+        self._confirmation_timer.start()
+
+    def _confirm_stable_file(self) -> None:
+        if self._watch_path is None or self._stable_snapshot is None:
+            return
+        try:
+            confirmed = self._file_snapshot(self._watch_path)
+        except OSError:
+            self._stability_timer.start()
+            return
+        if confirmed != self._stable_snapshot:
+            self._stable_snapshot = None
+            self._stability_timer.start()
+            return
+        self._ensure_file_watch()
+        if confirmed == self._last_known_snapshot:
+            return
+        self._last_known_snapshot = confirmed
+        self._stable_snapshot = None
+        if self._bridge is not None:
+            self._bridge.open_file(self._watch_path)
+
     def closeEvent(self, event) -> None:
+        self._stability_timer.stop()
+        self._confirmation_timer.stop()
         if self._bridge is not None:
             self._bridge.close()
         super().closeEvent(event)

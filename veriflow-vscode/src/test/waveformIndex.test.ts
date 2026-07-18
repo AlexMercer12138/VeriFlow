@@ -23,6 +23,7 @@ import {
     sourceFingerprint,
 } from '../core/waveformCache';
 import { WaveformWorkerClient } from '../core/waveformWorkerClient';
+import { StableFileReloader } from '../core/stableFileReload';
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const waveformFixture = path.join(repoRoot, 'tests', 'fixtures', 'waveform_debug.vcd');
@@ -306,7 +307,20 @@ async function testWaveformWorkerClient(): Promise<void> {
             message => message.type === 'windowData' && message.requestId === cancelledRequest
         ));
 
-        const secondGeneration = client.open(waveformFixture);
+        const reloadSource = path.join(root, 'reload.vcd');
+        fs.copyFileSync(waveformFixture, reloadSource);
+        const additions: string[] = [];
+        for (let timestamp = 21; timestamp < 20000; timestamp++) {
+            additions.push(`#${timestamp}\n${timestamp % 2}!\n`);
+        }
+        fs.appendFileSync(reloadSource, additions.join(''));
+        const secondGeneration = client.open(reloadSource);
+        const oldGenerationRequest = client.requestValues(['clk'], 11);
+        const oldGenerationValues = await waitFor(
+            message => message.type === 'cursorValues' && message.requestId === oldGenerationRequest
+        );
+        assert.strictEqual(oldGenerationValues.generation, generation);
+        assert.deepStrictEqual(oldGenerationValues.values, { clk: '0' });
         await waitFor(
             message => message.type === 'indexReady' && message.generation === secondGeneration
         );
@@ -321,6 +335,37 @@ async function testWaveformWorkerClient(): Promise<void> {
     }
 }
 
+async function testStableFileReloader(): Promise<void> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-stable-'));
+    const source = path.join(root, 'wave.vcd');
+    fs.writeFileSync(source, 'first');
+    const stable: any[] = [];
+    const unavailable: any[] = [];
+    const reloader = new StableFileReloader(source, {
+        delayMs: 50,
+        confirmationMs: 20,
+        onStable: (snapshot: any) => stable.push(snapshot),
+        onUnavailable: (error: any) => unavailable.push(error),
+    });
+    try {
+        reloader.notify();
+        await new Promise(resolve => setTimeout(resolve, 25));
+        fs.writeFileSync(source, 'second');
+        reloader.notify();
+        await new Promise(resolve => setTimeout(resolve, 45));
+        assert.strictEqual(stable.length, 0);
+        fs.appendFileSync(source, '-complete');
+        reloader.notify();
+        await new Promise(resolve => setTimeout(resolve, 180));
+        assert.strictEqual(stable.length, 1);
+        assert.strictEqual(stable[0].size, fs.statSync(source).size);
+        assert.strictEqual(unavailable.length, 0);
+    } finally {
+        reloader.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform logic value codec', testLogicValueRoundTrip],
     ['waveform record codecs', testRecordRoundTrips],
@@ -328,6 +373,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform index build and query', testBuildAndQueryIndex],
     ['waveform cache', testWaveformCache],
     ['waveform worker client', testWaveformWorkerClient],
+    ['stable waveform reload detection', testStableFileReloader],
 ];
 
 async function runTests(): Promise<void> {

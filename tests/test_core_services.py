@@ -478,6 +478,22 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "new waveCore.RequestTracker" in viewer
 
 
+def test_python_waveform_panel_watches_for_stable_reload() -> None:
+    panel = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "presentation"
+        / "gui"
+        / "widgets"
+        / "waveform_viewer_panel.py"
+    ).read_text(encoding="utf-8")
+
+    assert "QFileSystemWatcher" in panel
+    assert "750" in panel
+    assert "st_mtime_ns" in panel
+    assert "_confirm_stable_file" in panel
+
+
 def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:
     from src.presentation.gui.widgets.waveform_bridge import (
         WaveformBridge,
@@ -540,7 +556,11 @@ def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:
             }
 
     cache = FakeCache()
-    worker = WaveformIndexWorker(cache=cache, reader_factory=FakeReader)
+    worker = WaveformIndexWorker(
+        cache=cache,
+        reader_factory=FakeReader,
+        background_build=False,
+    )
     bridge = WaveformBridge(worker=worker, start_thread=False)
     messages: list[dict] = []
     bridge.message.connect(lambda payload: messages.append(json.loads(payload)))
