@@ -623,15 +623,18 @@ def _spaces_preserving_lines(text: str) -> str:
     return "".join(character if character in "\r\n" else " " for character in text)
 
 
-def _has_dpi_prefix(
+def _is_declaration_only_subprogram(
     tokens: Sequence[Tuple[str, int, int]], position: int
 ) -> bool:
+    prefixes = set()  # type: Set[str]
     position -= 1
     while position >= 0 and tokens[position][0] != ";":
-        if tokens[position][0] in {"import", "export"}:
-            return True
+        prefixes.add(tokens[position][0])
         position -= 1
-    return False
+    return bool(prefixes & {"import", "export", "extern"}) or {
+        "pure",
+        "virtual",
+    }.issubset(prefixes)
 
 
 def mask_procedural_regions(body: str) -> str:
@@ -646,7 +649,7 @@ def mask_procedural_regions(body: str) -> str:
 
     while position < len(tokens):
         value = tokens[position][0]
-        if value in {"task", "function"} and _has_dpi_prefix(
+        if value in {"task", "function"} and _is_declaration_only_subprogram(
             tokens, position
         ):
             end = _consume_simple_statement(tokens, position)
@@ -688,8 +691,72 @@ def _is_identifier(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", value) is not None
 
 
-def extract_dependencies(block: ModuleBlock) -> List[str]:
-    text = mask_procedural_regions(block.body)
+def _directive_name(line: str) -> Optional[str]:
+    match = re.match(r"^[ \t]*`([A-Za-z_][A-Za-z0-9_$]*)", line)
+    return match.group(1) if match is not None else None
+
+
+def _conditional_variants_from_lines(
+    lines: Sequence[str],
+    position: int,
+    stop_directives: Set[str],
+) -> Tuple[List[str], int, Optional[str]]:
+    variants = [""]
+
+    while position < len(lines):
+        directive = _directive_name(lines[position])
+        if directive in stop_directives:
+            return variants, position, directive
+
+        if directive in {"ifdef", "ifndef"}:
+            position += 1
+            alternatives = []  # type: List[str]
+            branch, position, terminator = _conditional_variants_from_lines(
+                lines, position, {"elsif", "else", "endif"}
+            )
+            alternatives.extend(branch)
+
+            while terminator == "elsif":
+                position += 1
+                branch, position, terminator = _conditional_variants_from_lines(
+                    lines, position, {"elsif", "else", "endif"}
+                )
+                alternatives.extend(branch)
+
+            has_else = terminator == "else"
+            if has_else:
+                position += 1
+                branch, position, terminator = _conditional_variants_from_lines(
+                    lines, position, {"endif"}
+                )
+                alternatives.extend(branch)
+            else:
+                alternatives.append("")
+
+            if terminator == "endif":
+                position += 1
+            variants = [
+                prefix + alternative
+                for prefix in variants
+                for alternative in alternatives
+            ]
+            continue
+
+        variants = [variant + lines[position] for variant in variants]
+        position += 1
+
+    return variants, position, None
+
+
+def expand_conditional_variants(body: str) -> List[str]:
+    variants, _position, _terminator = _conditional_variants_from_lines(
+        body.splitlines(keepends=True), 0, set()
+    )
+    return list(dict.fromkeys(variants))
+
+
+def _extract_dependencies_from_body(module: str, body: str) -> Set[str]:
+    text = mask_procedural_regions(body)
     characters = list(text)
     for value, start, end in _verilog_tokens(text):
         if value in {"generate", "endgenerate"}:
@@ -711,7 +778,7 @@ def extract_dependencies(block: ModuleBlock) -> List[str]:
             continue
         if expected or not _is_identifier(value):
             continue
-        if value in VERILOG_KEYWORDS or value == block.name:
+        if value in VERILOG_KEYWORDS or value == module:
             continue
 
         next_position = position + 1
@@ -745,6 +812,15 @@ def extract_dependencies(block: ModuleBlock) -> List[str]:
         ):
             dependencies.add(value)
 
+    return dependencies
+
+
+def extract_dependencies(block: ModuleBlock) -> List[str]:
+    dependencies = set()  # type: Set[str]
+    for body in expand_conditional_variants(block.body):
+        dependencies.update(
+            _extract_dependencies_from_body(block.name, body)
+        )
     return sorted(dependencies)
 
 

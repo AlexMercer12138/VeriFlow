@@ -393,3 +393,80 @@ endmodule
     )[0]
 
     assert vlib.extract_dependencies(block) == ["child"]
+
+
+def test_deps_preserves_instances_after_declaration_only_class_prototypes(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.sv",
+        """module top;
+virtual class abstract_worker;
+  extern function int calculate(input int value);
+  pure virtual task run(input int value);
+endclass
+child u_child();
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/child.v",
+        """module child;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  child -> rtl/child.v\n"
+    )
+
+
+def test_deps_unions_partial_instances_from_conditional_branches(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.sv",
+        """module top;
+`ifdef USE_A
+  child_a
+`else
+  child_b
+`endif
+  u_child();
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/child_a.v",
+        """module child_a;
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/child_b.v",
+        """module child_b;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  child_a -> rtl/child_a.v\n"
+        "  child_b -> rtl/child_b.v\n"
+    )
