@@ -167,6 +167,7 @@ def main() -> int:
     name_mode = {"done": False}
     layout_roundtrip = {"done": False}
     cursor_measure = {"done": False}
+    conditional_search = {"done": False}
     multi_select = {"done": False}
     initial_state = {"checked": False}
 
@@ -406,6 +407,42 @@ def main() -> int:
             return
 
         if not primed["done"]:
+            if not conditional_search["done"]:
+                conditional_search["done"] = True
+
+                def on_conditional_search(state) -> None:
+                    try:
+                        state = json.loads(state or "{}")
+                    except json.JSONDecodeError:
+                        finish(False, "conditional search returned invalid state: " + repr(state))
+                        return
+                    expected = {
+                        "rising": 5,
+                        "falling": 10,
+                        "exact": 6,
+                        "xz": 12,
+                        "bitRising": 6,
+                        "invalidStayed": True,
+                        "boundaryStayed": True,
+                    }
+                    mismatches = {
+                        key: (state.get(key), value)
+                        for key, value in expected.items()
+                        if state.get(key) != value
+                    }
+                    if mismatches:
+                        finish(False, "conditional search failed: " + repr(mismatches))
+                        return
+                    QTimer.singleShot(0, inspect)
+
+                view.page().runJavaScript(
+                    "JSON.stringify(window.__veriflowWaveViewer && "
+                    "window.__veriflowWaveViewer.conditionalSearchSamples ? "
+                    "window.__veriflowWaveViewer.conditionalSearchSamples() : {missing: true});",
+                    on_conditional_search,
+                )
+                return
+
             primed["done"] = True
             view.page().runJavaScript(
                 "window.__veriflowWaveViewer && window.__veriflowWaveViewer.addFirstSignals(8);"

@@ -17,6 +17,8 @@ const searchInput = document.getElementById('searchInput');
 const scopeSelect = document.getElementById('scopeSelect');
 const timeInput = document.getElementById('timeInput');
 const goToTimeButton = document.getElementById('goToTime');
+const changeSearchMode = document.getElementById('changeSearchMode');
+const changeSearchValue = document.getElementById('changeSearchValue');
 const contextMenu = document.getElementById('contextMenu');
 const selectionBox = document.getElementById('selectionBox');
 const mainResize = document.getElementById('mainResize');
@@ -63,6 +65,7 @@ let waveSignals = [];
 let selectedLibraryIndex = 0;
 let selectedWaveIndex = -1;
 let selectedWaveIndices = new Set();
+let selectedBusBit = null;
 let listFirstRow = 0;
 let listRenderedCount = 0;
 let waveFirstRow = 0;
@@ -276,6 +279,7 @@ function restoreLayout(layout, renderAfter = true) {
     nextGroupId = Math.max(1, restoredGroupIndex);
     selectedWaveIndex = waveSignals.findIndex(isBaseWaveSignal);
     selectedWaveIndices = selectedWaveIndex >= 0 ? new Set([selectedWaveIndex]) : new Set();
+    selectedBusBit = null;
 
     const minTime = Number(vcd.startTime) || 0;
     const maxTime = Math.max(minTime + 1, Number(vcd.endTime) || 1);
@@ -338,6 +342,7 @@ function setEmptyState() {
     selectedLibraryIndex = 0;
     selectedWaveIndex = -1;
     selectedWaveIndices = new Set();
+    selectedBusBit = null;
     listFirstRow = 0;
     listRenderedCount = 0;
     waveFirstRow = 0;
@@ -350,6 +355,8 @@ function setEmptyState() {
     activeCursor = 'a';
     fileTitle.textContent = 'No waveform file opened';
     searchInput.value = '';
+    changeSearchMode.value = 'change';
+    changeSearchValue.value = '';
     scopeSelect.innerHTML = '<option value="">No waveform file</option>';
     signalList.scrollTop = 0;
     renderSignalList();
@@ -368,6 +375,8 @@ function setData(fileName, data, messageLayout = null) {
     vcd = data;
     currentFileName = String(fileName || '');
     fileTitle.textContent = fileName;
+    changeSearchMode.value = 'change';
+    changeSearchValue.value = '';
     allSignals = (data.signals || []).map((signal, index) => ({
         ...signal,
         key: stableSignalKey(signal) + '|' + index,
@@ -380,6 +389,7 @@ function setData(fileName, data, messageLayout = null) {
     selectedLibraryIndex = 0;
     selectedWaveIndex = -1;
     selectedWaveIndices = new Set();
+    selectedBusBit = null;
     waveScrollTop = 0;
     nextGroupId = 1;
     startTime = data.startTime || 0;
@@ -503,6 +513,24 @@ function isBaseWaveSignal(item) {
 
 function isExpandableBus(item) {
     return isBaseWaveSignal(item) && item.width > 1;
+}
+
+function isSelectedBusBit(item) {
+    return isBusBitRow(item)
+        && selectedBusBit !== null
+        && selectedBusBit.parentWaveIndex === item.parentWaveIndex
+        && selectedBusBit.bitIndex === item.bitIndex;
+}
+
+function selectBusBit(item) {
+    if (!isBusBitRow(item)) return;
+    selectedBusBit = {
+        parentWaveIndex: item.parentWaveIndex,
+        bitIndex: item.bitIndex,
+    };
+    selectedWaveIndex = item.parentWaveIndex;
+    selectedWaveIndices = new Set([item.parentWaveIndex]);
+    render();
 }
 
 function selectedScopeName() {
@@ -634,17 +662,21 @@ function renderWaveNameList() {
         const displayIndex = waveFirstRow + offset;
         const index = signal.waveIndex;
         const isSelectedRow = !isBusBitRow(signal) && (index === selectedWaveIndex || selectedWaveIndices.has(index));
+        const isSelectedBit = isSelectedBusBit(signal);
         const row = document.createElement('div');
         row.className = 'wave-name-row'
             + (isGroupRow(signal) ? ' group-row' : '')
             + (isBusBitRow(signal) ? ' bus-bit-row' : '')
+            + (isSelectedBit ? ' selected' : '')
             + (index === selectedWaveIndex && !isBusBitRow(signal) ? ' selected' : '')
             + (isSelectedRow && selectedWaveIndices.has(index) ? ' multi-selected' : '');
         row.dataset.index = String(index);
         row.draggable = !isBusBitRow(signal) && isBaseWaveSignal(waveSignals[index]);
         row.title = signal.fullName;
         row.onclick = (event) => {
-            if (isGroupRow(signal)) {
+            if (isBusBitRow(signal)) {
+                selectBusBit(signal);
+            } else if (isGroupRow(signal)) {
                 selectWaveSignal(index, false);
                 toggleGroup(index);
             } else {
@@ -831,6 +863,7 @@ function addSignalToWaveform(signal, targetIndex = waveSignals.length) {
     waveSignals.splice(index, 0, item);
     selectedWaveIndex = index;
     selectedWaveIndices = new Set([index]);
+    selectedBusBit = null;
     syncLibrarySignal(item);
     renderSignalList();
     render();
@@ -848,6 +881,7 @@ function addFilteredSignalsToWaveform() {
     if (count > 0) {
         selectedWaveIndex = waveSignals.length - 1;
         selectedWaveIndices = new Set([selectedWaveIndex]);
+        selectedBusBit = null;
         renderSignalList();
         render();
     }
@@ -883,6 +917,7 @@ function addScopeSignalsToWaveform(scope, includeSubScopes, grouped) {
     if (count > 0) {
         selectedWaveIndex = grouped ? waveSignals.findIndex(item => item === group) : waveSignals.length - 1;
         selectedWaveIndices = new Set([selectedWaveIndex]);
+        selectedBusBit = null;
         renderSignalList();
         render();
     }
@@ -914,6 +949,7 @@ function removeWaveSignals(indices) {
     sorted.forEach(index => waveSignals.splice(index, 1));
     selectedWaveIndex = clamp(Math.min(...sorted), -1, waveSignals.length - 1);
     selectedWaveIndices = selectedWaveIndex >= 0 ? new Set([selectedWaveIndex]) : new Set();
+    selectedBusBit = null;
     renderSignalList();
     render();
     const groupText = removedGroups ? ', ' + removedGroups + ' group' + (removedGroups === 1 ? '' : 's') : '';
@@ -959,6 +995,7 @@ function setSelection(indices) {
         .sort((a, b) => a - b);
     selectedWaveIndices = new Set(normalized);
     selectedWaveIndex = normalized.length ? normalized[0] : -1;
+    selectedBusBit = null;
 }
 
 function removeSignalFromWaveform(signal) {
@@ -973,6 +1010,7 @@ function clearWaveforms() {
     waveSignals = [];
     selectedWaveIndex = -1;
     selectedWaveIndices = new Set();
+    selectedBusBit = null;
     waveScrollTop = 0;
     renderSignalList();
     render();
@@ -1017,6 +1055,9 @@ function toggleBusExpanded(index) {
     const signal = waveSignals[index];
     if (!isExpandableBus(signal)) return;
     signal.busExpanded = !signal.busExpanded;
+    if (!signal.busExpanded && selectedBusBit?.parentWaveIndex === index) {
+        selectedBusBit = null;
+    }
     render();
 }
 
@@ -1027,6 +1068,7 @@ function moveWaveSignal(from, to) {
     waveSignals.splice(to, 0, item);
     selectedWaveIndex = to;
     selectedWaveIndices = new Set([to]);
+    selectedBusBit = null;
     render();
 }
 
@@ -1659,7 +1701,8 @@ function drawRows(width, height) {
             ctx.stroke();
             return;
         }
-        if (!isBusBitRow(signal) && (globalIndex === selectedWaveIndex || selectedWaveIndices.has(globalIndex))) {
+        if (isSelectedBusBit(signal)
+            || (!isBusBitRow(signal) && (globalIndex === selectedWaveIndex || selectedWaveIndices.has(globalIndex)))) {
             ctx.fillStyle = STYLE.selection;
             ctx.fillRect(0, y, width, ROW_HEIGHT);
         }
@@ -1748,6 +1791,15 @@ function updateToolbarState() {
     ['goStart', 'goEnd', 'prevPage', 'nextPage', 'prevChange', 'nextChange', 'zoomOut', 'zoomIn', 'fit', 'cursorA', 'cursorB', 'changeSearchMode'].forEach(id => {
         document.getElementById(id).disabled = disabled;
     });
+    updateSearchControls();
+}
+
+function updateSearchControls() {
+    const exactValue = changeSearchMode.value === 'value';
+    changeSearchValue.disabled = !vcd || !exactValue;
+    const condition = changeSearchMode.options[changeSearchMode.selectedIndex]?.text || 'change';
+    document.getElementById('prevChange').title = 'Previous ' + condition.toLowerCase() + ' (Left)';
+    document.getElementById('nextChange').title = 'Next ' + condition.toLowerCase() + ' (Right)';
 }
 
 function zoom(factor, anchorX) {
@@ -1825,6 +1877,7 @@ function editableSignalIndex(index, displayItem = null) {
 }
 
 function selectWaveSignal(index, toggle = false) {
+    selectedBusBit = null;
     if (index < 0 || index >= waveSignals.length) {
         selectedWaveIndex = -1;
         selectedWaveIndices = new Set();
@@ -1873,25 +1926,82 @@ function ensureWaveRowVisible(index) {
     }
 }
 
-function jumpToChange(direction) {
-    const signal = selectedSignal();
-    if (!signal || !signal.changes || !signal.changes.length) {
-        setStatus('Select a waveform signal first.');
-        return;
-    }
-    let target = null;
-    if (direction > 0) {
-        target = signal.changes.find(change => change.time > activeCursorTime());
-    } else {
-        for (let i = signal.changes.length - 1; i >= 0; i--) {
-            if (signal.changes[i].time < activeCursorTime()) {
-                target = signal.changes[i];
-                break;
-            }
+function makeSearchTarget(signal, waveIndex, order, bitIndex = null) {
+    const isBit = Number.isInteger(bitIndex);
+    return {
+        order,
+        name: isBit ? signal.fullName + '[' + bitIndex + ']' : signal.fullName,
+        width: isBit ? 1 : signal.width,
+        changes: signal.changes || [],
+        waveIndex,
+        bitIndex,
+        parentWidth: signal.width,
+    };
+}
+
+function selectedSearchTargets() {
+    if (selectedBusBit !== null) {
+        const parent = waveSignals[selectedBusBit.parentWaveIndex];
+        if (isBaseWaveSignal(parent) && parent.busExpanded) {
+            return [makeSearchTarget(
+                parent,
+                selectedBusBit.parentWaveIndex,
+                selectedBusBit.parentWaveIndex,
+                selectedBusBit.bitIndex
+            )];
         }
+        selectedBusBit = null;
     }
-    if (!target) return;
-    setActiveCursorTime(target.time);
+
+    let indices = selectedBaseWaveIndices();
+    if (!indices.length) {
+        indices = waveSignals
+            .map((signal, index) => isBaseWaveSignal(signal) ? index : -1)
+            .filter(index => index >= 0);
+    }
+    return indices.map(index => makeSearchTarget(waveSignals[index], index, index));
+}
+
+function searchErrorMessage(error, direction) {
+    if (error === 'no-targets') return 'Add a waveform signal before searching.';
+    if (error === 'edge-needs-scalar') return 'Edge search requires a scalar signal or expanded bus bit.';
+    if (error === 'invalid-value') return 'Enter a fitting decimal, 0b binary, or 0x hexadecimal value.';
+    if (error === 'invalid-mode') return 'Choose a waveform search condition.';
+    return direction > 0
+        ? 'No later waveform match.'
+        : 'No earlier waveform match.';
+}
+
+function jumpToCondition(direction) {
+    if (!vcd || !waveCore) return { match: null, error: 'no-targets' };
+    const mode = changeSearchMode.value || 'change';
+    const targets = selectedSearchTargets();
+    const result = waveCore.findSearchMatch(
+        targets,
+        activeCursorTime(),
+        direction,
+        mode,
+        changeSearchValue.value
+    );
+    if (!result.match) {
+        setStatus(searchErrorMessage(result.error, direction));
+        return result;
+    }
+
+    const target = result.target;
+    if (Number.isInteger(target.bitIndex)) {
+        selectedBusBit = {
+            parentWaveIndex: target.waveIndex,
+            bitIndex: target.bitIndex,
+        };
+        selectedWaveIndex = target.waveIndex;
+        selectedWaveIndices = new Set([target.waveIndex]);
+    } else {
+        selectedBusBit = null;
+        selectedWaveIndex = target.waveIndex;
+        selectedWaveIndices = new Set([target.waveIndex]);
+    }
+    setActiveCursorTime(result.time);
     const cursorTime = activeCursorTime();
     const range = Math.max(1, endTime - startTime);
     if (cursorTime < startTime || cursorTime > endTime) {
@@ -1900,6 +2010,9 @@ function jumpToChange(direction) {
     }
     renderSignalList();
     render();
+    const condition = changeSearchMode.options[changeSearchMode.selectedIndex]?.text || mode;
+    setStatus('Found ' + condition + ' on ' + target.name + ' at ' + formatTime(result.time) + '.');
+    return result;
 }
 
 function goToTime() {
@@ -2109,8 +2222,9 @@ function setWaveSignalColorForIndices(indices, color) {
     }
 }
 
-function waveIndexFromOffsetY(offsetY) {
-    return waveIndexForDisplayIndex(Math.floor((offsetY - HEADER_HEIGHT + waveScrollTop) / ROW_HEIGHT));
+function displayItemFromOffsetY(offsetY) {
+    const displayIndex = Math.floor((offsetY - HEADER_HEIGHT + waveScrollTop) / ROW_HEIGHT);
+    return displayedWaveItems()[displayIndex] || null;
 }
 
 function updateSelectionBox(event) {
@@ -2151,6 +2265,7 @@ function finishBoxSelection(event) {
     if (next.size) {
         selectedWaveIndices = next;
         selectedWaveIndex = Math.min(...next);
+        selectedBusBit = null;
     }
     boxStart = null;
     boxCurrent = null;
@@ -2185,14 +2300,21 @@ document.getElementById('prevPage').onclick = () => panPage(-1);
 document.getElementById('nextPage').onclick = () => panPage(1);
 document.getElementById('zoomIn').onclick = () => zoom(0.5);
 document.getElementById('zoomOut').onclick = () => zoom(2);
-document.getElementById('prevChange').onclick = () => jumpToChange(-1);
-document.getElementById('nextChange').onclick = () => jumpToChange(1);
+document.getElementById('prevChange').onclick = () => jumpToCondition(-1);
+document.getElementById('nextChange').onclick = () => jumpToCondition(1);
 document.getElementById('fit').onclick = fit;
 document.getElementById('cursorA').onclick = () => activateCursor('a');
 document.getElementById('cursorB').onclick = () => activateCursor('b');
 goToTimeButton.onclick = goToTime;
 searchInput.oninput = applyFilter;
 scopeSelect.onchange = applyFilter;
+changeSearchMode.onchange = () => {
+    updateSearchControls();
+    if (changeSearchMode.value === 'value') changeSearchValue.focus();
+};
+changeSearchValue.onkeydown = (event) => {
+    if (event.key === 'Enter') jumpToCondition(event.shiftKey ? -1 : 1);
+};
 scopeSelect.oncontextmenu = (event) => {
     event.preventDefault();
     showScopeMenu(event.clientX, event.clientY);
@@ -2207,7 +2329,8 @@ waveCanvasPane.addEventListener('mousedown', (event) => {
     if (!vcd) return;
     dragging = true;
     lastMouseX = event.clientX;
-    const rowIndex = waveIndexFromOffsetY(event.offsetY);
+    const displayItem = displayItemFromOffsetY(event.offsetY);
+    const rowIndex = displayItem?.waveIndex ?? -1;
     if (event.offsetY < HEADER_HEIGHT) {
         dragMode = 'timeRange';
         boxStart = { x: clamp(event.offsetX, 0, canvas.clientWidth), y: 0 };
@@ -2217,11 +2340,14 @@ waveCanvasPane.addEventListener('mousedown', (event) => {
     dragMode = 'box';
     boxStart = { x: clamp(event.offsetX, 0, canvas.clientWidth), y: clamp(event.offsetY, HEADER_HEIGHT, canvas.clientHeight) };
     setActiveCursorTime(xToTime(event.offsetX, canvas.clientWidth));
-    if (rowIndex >= 0 && rowIndex < waveSignals.length) {
+    if (isBusBitRow(displayItem)) {
+        selectBusBit(displayItem);
+    } else if (rowIndex >= 0 && rowIndex < waveSignals.length) {
         selectWaveSignal(rowIndex, event.ctrlKey || event.metaKey);
     } else if (!event.ctrlKey && !event.metaKey) {
         selectedWaveIndex = -1;
         selectedWaveIndices = new Set();
+        selectedBusBit = null;
     }
     render();
 });
@@ -2334,10 +2460,10 @@ document.addEventListener('keydown', (event) => {
             panPage(1);
             break;
         case 'ArrowLeft':
-            jumpToChange(-1);
+            jumpToCondition(-1);
             break;
         case 'ArrowRight':
-            jumpToChange(1);
+            jumpToCondition(1);
             break;
         case 'a':
         case 'A':
@@ -2530,6 +2656,80 @@ window.__veriflowWaveViewer = {
             activeCursor,
             deltaText: measurement.deltaText,
             frequencyText: measurement.frequencyText,
+        };
+    },
+    conditionalSearchSamples() {
+        const clk = allSignals.find(signal => signal.reference === 'clk');
+        const data = allSignals.find(signal => String(signal.reference).startsWith('data'));
+        if (!clk || !data) return { error: 'fixture-signals-missing' };
+
+        waveSignals = [makeWaveSignal(clk), makeWaveSignal(data)];
+        waveSignals[1].busExpanded = true;
+        selectedWaveIndex = 0;
+        selectedWaveIndices = new Set([0]);
+        selectedBusBit = null;
+        cursorA = 0;
+        cursorB = null;
+        activeCursor = 'a';
+
+        changeSearchMode.value = 'rising';
+        changeSearchValue.value = '';
+        let result = jumpToCondition(1);
+        const rising = result.time;
+
+        changeSearchMode.value = 'falling';
+        result = jumpToCondition(1);
+        const falling = result.time;
+
+        cursorA = 0;
+        selectedWaveIndex = 1;
+        selectedWaveIndices = new Set([1]);
+        selectedBusBit = null;
+        changeSearchMode.value = 'value';
+        changeSearchValue.value = '0xA';
+        result = jumpToCondition(1);
+        const exact = result.time;
+
+        changeSearchMode.value = 'xz';
+        changeSearchValue.value = '';
+        result = jumpToCondition(1);
+        const xz = result.time;
+
+        cursorA = 0;
+        selectedBusBit = { parentWaveIndex: 1, bitIndex: 1 };
+        changeSearchMode.value = 'rising';
+        result = jumpToCondition(1);
+        const bitRising = result.time;
+
+        cursorA = 0;
+        selectedBusBit = null;
+        selectedWaveIndex = 1;
+        selectedWaveIndices = new Set([1]);
+        changeSearchMode.value = 'value';
+        changeSearchValue.value = '0x10';
+        const beforeInvalid = activeCursorTime();
+        result = jumpToCondition(1);
+        const invalidStayed = result.error === 'invalid-value' && activeCursorTime() === beforeInvalid;
+
+        cursorA = Math.max(1, Number(vcd.endTime) || 1);
+        selectedWaveIndex = 0;
+        selectedWaveIndices = new Set([0]);
+        changeSearchMode.value = 'change';
+        changeSearchValue.value = '';
+        const beforeBoundary = activeCursorTime();
+        result = jumpToCondition(1);
+        const boundaryStayed = result.error === 'no-match' && activeCursorTime() === beforeBoundary;
+        updateSearchControls();
+        render();
+
+        return {
+            rising,
+            falling,
+            exact,
+            xz,
+            bitRising,
+            invalidStayed,
+            boundaryStayed,
         };
     },
     state() {
