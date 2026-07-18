@@ -235,6 +235,25 @@ def test_repository_snapshot_hashes_sources_once_in_sorted_path_order(
     assert open_counts == {first_path: 1, second_path: 1}
 
 
+def test_repository_snapshot_does_not_retain_full_source_bytes(
+    vlib, tmp_path, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\nendmodule\n"
+    (tmp_path / "top.v").write_bytes(source_bytes)
+
+    def reject_full_source_snapshot(_path):
+        raise AssertionError("status hashing must not retain source bytes")
+
+    monkeypatch.setattr(
+        vlib, "read_source_snapshot", reject_full_source_snapshot
+    )
+
+    assert vlib.repository_snapshot(tmp_path) == {
+        "top.v": hashlib.sha256(source_bytes).hexdigest()
+    }
+
+
 def test_status_reports_current_index_without_mutating_it(
     vlib, tmp_path, capsys
 ):
@@ -417,6 +436,143 @@ def test_status_rejects_invalid_file_modules_records(
     assert "Index: INCOMPATIBLE" in capsys.readouterr().out
     assert vlib.INDEX_FILE.read_bytes() == index_bytes
     assert (tmp_path / "top.v").read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize(
+    "module_mapping",
+    [
+        {"top": "top.v", "ghost": "missing.v"},
+        {"top": "missing.v"},
+        {},
+    ],
+)
+def test_status_rejects_module_map_inconsistent_with_file_declarations(
+    vlib, tmp_path, capsys, module_mapping
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\nendmodule\n"
+    (tmp_path / "top.v").write_bytes(source_bytes)
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {
+                    "top.v": {
+                        "modules": ["top"],
+                        "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    }
+                },
+                "modules": module_mapping,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "indexed_path",
+    [
+        "../top.v",
+        "/absolute/top.v",
+        "rtl\\top.v",
+        "rtl/./top.v",
+        "rtl//top.v",
+    ],
+)
+def test_status_rejects_noncanonical_index_file_paths(
+    vlib, tmp_path, capsys, indexed_path
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\nendmodule\n"
+    (tmp_path / "top.v").write_bytes(source_bytes)
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {
+                    indexed_path: {
+                        "modules": ["top"],
+                        "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    }
+                },
+                "modules": {"top": indexed_path},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("module_name", ["9invalid", "invalid-name"])
+def test_status_rejects_invalid_index_module_names(
+    vlib, tmp_path, capsys, module_name
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\nendmodule\n"
+    (tmp_path / "top.v").write_bytes(source_bytes)
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {
+                    "top.v": {
+                        "modules": [module_name],
+                        "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    }
+                },
+                "modules": {module_name: "top.v"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
+
+
+def test_status_rejects_module_declared_by_multiple_indexed_files(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module shared;\nendmodule\n"
+    (tmp_path / "first.v").write_bytes(source_bytes)
+    (tmp_path / "second.sv").write_bytes(source_bytes)
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {
+                    "first.v": {
+                        "modules": ["shared"],
+                        "sha256": source_hash,
+                    },
+                    "second.sv": {
+                        "modules": ["shared"],
+                        "sha256": source_hash,
+                    },
+                },
+                "modules": {"shared": "first.v"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["status"]) == 1
+
+    assert "Index: INCOMPATIBLE" in capsys.readouterr().out
 
 
 def test_status_accepts_file_with_no_declared_modules(vlib, tmp_path, capsys):

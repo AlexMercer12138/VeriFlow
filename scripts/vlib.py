@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 
@@ -24,6 +24,7 @@ MODULE_DECLARATION = re.compile(
     r"([A-Za-z_][A-Za-z0-9_$]*)\b",
     re.MULTILINE,
 )
+MODULE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 DIRECTION = re.compile(r"^(input|output|inout)\b")
 IDENTIFIER_AT_END = re.compile(
     r"([A-Za-z_][A-Za-z0-9_$]*)\s*(?:\[[^\]]*\]\s*)*$"
@@ -126,6 +127,14 @@ def read_source_snapshot(path: Path) -> Tuple[bytes, str]:
             chunks.append(chunk)
             digest.update(chunk)
     return b"".join(chunks), digest.hexdigest()
+
+
+def source_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def strip_comments(text: str) -> str:
@@ -1220,8 +1229,7 @@ def repository_snapshot(repository_root: Path) -> Dict[str, str]:
     snapshot = {}  # type: Dict[str, str]
     for path in iter_verilog_files(repository_root):
         relative_path = path.relative_to(repository_root).as_posix()
-        _source_bytes, source_hash = read_source_snapshot(path)
-        snapshot[relative_path] = source_hash
+        snapshot[relative_path] = source_sha256(path)
     return snapshot
 
 
@@ -1345,6 +1353,24 @@ def load_index(check_root: bool = True) -> Dict[str, object]:
     return index
 
 
+def _is_module_identifier(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and MODULE_IDENTIFIER.fullmatch(value) is not None
+    )
+
+
+def _is_canonical_repository_path(value: object) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    posix_path = PurePosixPath(value)
+    if posix_path.is_absolute() or Path(value).is_absolute():
+        return False
+    if any(part in {".", ".."} for part in value.split("/")):
+        return False
+    return bool(posix_path.parts) and posix_path.as_posix() == value
+
+
 def _status_index_snapshot(
     index: Dict[str, object]
 ) -> Tuple[str, Dict[str, str]]:
@@ -1358,10 +1384,11 @@ def _status_index_snapshot(
     if not isinstance(files, dict):
         raise VlibError("Invalid module index: 'files' must be an object.")
     snapshot = {}  # type: Dict[str, str]
+    reconstructed_modules = {}  # type: Dict[str, str]
     for relative_path in sorted(files):
-        if not isinstance(relative_path, str) or not relative_path:
+        if not _is_canonical_repository_path(relative_path):
             raise VlibError(
-                "Invalid module index: source paths must be non-empty strings."
+                "Invalid module index source path: {}.".format(relative_path)
             )
         file_record = files[relative_path]
         if not isinstance(file_record, dict):
@@ -1370,11 +1397,20 @@ def _status_index_snapshot(
             )
         declared_modules = file_record.get("modules")
         if not isinstance(declared_modules, list) or not all(
-            isinstance(module_name, str) for module_name in declared_modules
+            _is_module_identifier(module_name)
+            for module_name in declared_modules
         ):
             raise VlibError(
                 "Invalid module index modules for '{}'.".format(relative_path)
             )
+        for module_name in declared_modules:
+            if module_name in reconstructed_modules:
+                raise VlibError(
+                    "Duplicate module '{}' in module index.".format(
+                        module_name
+                    )
+                )
+            reconstructed_modules[module_name] = relative_path
         source_hash = file_record.get("sha256")
         if not isinstance(source_hash, str) or re.fullmatch(
             r"[0-9a-f]{64}", source_hash
@@ -1389,12 +1425,15 @@ def _status_index_snapshot(
         raise VlibError("Invalid module index: 'modules' must be an object.")
     for module_name, relative_path in modules.items():
         if (
-            not isinstance(module_name, str)
-            or not module_name
-            or not isinstance(relative_path, str)
-            or not relative_path
+            not _is_module_identifier(module_name)
+            or not _is_canonical_repository_path(relative_path)
         ):
             raise VlibError("Invalid module index module mapping.")
+    if modules != reconstructed_modules:
+        raise VlibError(
+            "Invalid module index: module mapping does not match "
+            "file declarations."
+        )
     return indexed_root, snapshot
 
 
