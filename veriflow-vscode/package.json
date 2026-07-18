@@ -212,7 +212,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "test": "npm run compile && node ./out/test/core.test.js",
+    "test": "npm run compile && node ./out/test/core.test.js && node ./out/test/waveformIndex.test.js",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "package": "vsce package",
