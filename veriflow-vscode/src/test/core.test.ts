@@ -10,6 +10,14 @@ import { LogParser } from '../core/logParser';
 import { SimulationRunner } from '../core/simulationRunner';
 import { VcdParser } from '../core/vcdParser';
 
+type WaveCore = {
+    validateLayout(value: unknown): any | null;
+    describeSignal(signal: any, signals: any[]): any;
+    matchSignalDescriptors(descriptors: any[], signals: any[]): Array<number | null>;
+};
+
+const waveCore = require('../../media/waveform/viewer-core.js') as WaveCore;
+
 type Golden = {
     top_module: string;
     modules: string[];
@@ -453,6 +461,57 @@ $enddefinitions $end
     assert.equal(idle.changes[0].value, 'x');
 }
 
+function testWaveLayoutValidationAndMatching(): void {
+    const layout = waveCore.validateLayout({
+        version: 1,
+        rows: [
+            {
+                kind: 'signal',
+                signal: {
+                    fullName: 'top.a',
+                    reference: 'a',
+                    width: 1,
+                    occurrence: 0,
+                },
+            },
+        ],
+        view: {
+            startTime: 2,
+            endTime: 8,
+            waveScrollTop: 0,
+            libraryWidth: 280,
+            waveNameWidth: 160,
+        },
+        cursors: { a: 3, b: 7, active: 'b' },
+    });
+    assert.ok(layout);
+    assert.strictEqual(waveCore.validateLayout({ version: 2, rows: [] }), null);
+    assert.strictEqual(waveCore.validateLayout({ version: 1, rows: 'bad' }), null);
+
+    const signals = [
+        { fullName: 'top.a', reference: 'a', width: 1 },
+        { fullName: 'top.a', reference: 'a', width: 1 },
+        { fullName: 'top.data', reference: 'data', width: 8 },
+    ];
+    assert.deepStrictEqual(waveCore.describeSignal(signals[1], signals), {
+        fullName: 'top.a',
+        reference: 'a',
+        width: 1,
+        occurrence: 1,
+    });
+    assert.deepStrictEqual(
+        waveCore.matchSignalDescriptors(
+            [
+                { fullName: 'top.a', reference: 'a', width: 1, occurrence: 1 },
+                { fullName: 'top.missing', reference: 'missing', width: 1, occurrence: 0 },
+                { fullName: 'top.a', reference: 'a', width: 1, occurrence: 0 },
+            ],
+            signals
+        ),
+        [1, null, 0]
+    );
+}
+
 const tests: Array<[string, () => void]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -468,6 +527,7 @@ const tests: Array<[string, () => void]> = [
     ['vcd parser', testVcdParser],
     ['vcd parser multiline metadata and aliases', testVcdParserMultilineMetadataAndAliases],
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],
+    ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
 ];
 
 for (const [name, fn] of tests) {
