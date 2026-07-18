@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import base64
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ from src.domain.services.vcd_index_service import (
     VcdIndexReader,
     build_vcd_index,
 )
+from src.infrastructure.waveform_cache import WaveformCache, source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -226,3 +229,74 @@ def test_query_cancellation(index_reader: VcdIndexReader) -> None:
         index_reader.query_window_for_reference(
             "clk", 0, 20, pixel_width=32, cancelled=lambda: True
         )
+
+
+def test_source_fingerprint_detects_sampled_rewrite(tmp_path: Path) -> None:
+    source = tmp_path / "large.vcd"
+    fixed_mtime_ns = 1_700_000_000_123_456_700
+    source.write_bytes(b"a" * (64 * 1024) + b"middle" + b"z" * (64 * 1024))
+    os.utime(source, ns=(fixed_mtime_ns, fixed_mtime_ns))
+    before = source_fingerprint(source)
+
+    source.write_bytes(b"b" + source.read_bytes()[1:-1] + b"y")
+    os.utime(source, ns=(fixed_mtime_ns, fixed_mtime_ns))
+    after = source_fingerprint(source)
+
+    assert before.size == after.size
+    assert before.mtime_ns == after.mtime_ns
+    assert before.head_sha256 != after.head_sha256
+    assert before.tail_sha256 != after.tail_sha256
+    assert before.key != after.key
+    if os.name == "nt":
+        assert before.normalized_path == before.normalized_path.lower().replace("\\", "/")
+
+
+def test_waveform_cache_reuses_recovers_cleans_and_evicts(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    cache = WaveformCache(root=cache_root)
+    source_one = tmp_path / "one.vcd"
+    source_two = tmp_path / "two.vcd"
+    shutil.copyfile(WAVEFORM_FIXTURE, source_one)
+    shutil.copyfile(WAVEFORM_FIXTURE, source_two)
+    source_two.write_text(
+        source_two.read_text(encoding="utf-8") + "#21\n1#\n",
+        encoding="utf-8",
+    )
+
+    first = cache.get_or_build(source_one)
+    data_mtime_ns = (first / "waveform.vfi").stat().st_mtime_ns
+    assert cache.get_or_build(source_one) == first
+    assert (first / "waveform.vfi").stat().st_mtime_ns == data_mtime_ns
+    cache.release(first)
+
+    second_fingerprint = source_fingerprint(source_two)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / f"{second_fingerprint.key}.lock").write_text(
+        json.dumps({"pid": 999_999_999, "heartbeatMs": 0, "token": "stale"}),
+        encoding="utf-8",
+    )
+    second = cache.get_or_build(source_two)
+    assert second.name == second_fingerprint.key
+    assert not (cache_root / f"{second_fingerprint.key}.lock").exists()
+    cache.release(second)
+
+    cancelled_source = tmp_path / "cancelled.vcd"
+    shutil.copyfile(WAVEFORM_FIXTURE, cancelled_source)
+    with pytest.raises(VcdIndexCancelled):
+        cache.get_or_build(cancelled_source, cancelled=lambda: True)
+    assert not any(".tmp." in entry.name or entry.suffix == ".lock" for entry in cache_root.iterdir())
+
+    first_manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    second_manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
+    first_manifest["lastAccessNs"] = "1"
+    second_manifest["lastAccessNs"] = "2"
+    (first / "manifest.json").write_text(json.dumps(first_manifest), encoding="utf-8")
+    (second / "manifest.json").write_text(json.dumps(second_manifest), encoding="utf-8")
+    first_size = sum(item.stat().st_size for item in first.rglob("*") if item.is_file())
+    second_size = sum(item.stat().st_size for item in second.rglob("*") if item.is_file())
+    cache.max_bytes = max(first_size, second_size)
+
+    cache.cleanup()
+
+    assert not first.exists()
+    assert second.exists()

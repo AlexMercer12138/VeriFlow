@@ -22,7 +22,7 @@ import {
 export type CancelCallback = () => boolean;
 
 export type VcdIndexProgress = {
-    phase: 'scan' | 'write' | 'summarize' | 'complete';
+    phase: 'waiting' | 'scan' | 'write' | 'summarize' | 'complete';
     completed: number;
     total: number;
     percent: number;

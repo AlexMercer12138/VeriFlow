@@ -18,6 +18,10 @@ import {
     VcdIndexReader,
     buildVcdIndex,
 } from '../core/vcdIndex';
+import {
+    WaveformCache,
+    sourceFingerprint,
+} from '../core/waveformCache';
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const waveformFixture = path.join(repoRoot, 'tests', 'fixtures', 'waveform_debug.vcd');
@@ -150,11 +154,95 @@ async function testBuildAndQueryIndex(): Promise<void> {
     }
 }
 
+async function testWaveformCache(): Promise<void> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-cache-'));
+    const cacheRoot = path.join(root, 'cache');
+    const sourceOne = path.join(root, 'one.vcd');
+    const sourceTwo = path.join(root, 'two.vcd');
+    const sampled = path.join(root, 'sampled.vcd');
+    try {
+        const fixedTime = new Date('2023-11-14T22:13:20.123Z');
+        fs.writeFileSync(
+            sampled,
+            Buffer.concat([
+                Buffer.alloc(64 * 1024, 'a'),
+                Buffer.from('middle'),
+                Buffer.alloc(64 * 1024, 'z'),
+            ])
+        );
+        fs.utimesSync(sampled, fixedTime, fixedTime);
+        const before = await sourceFingerprint(sampled);
+        const changed = fs.readFileSync(sampled);
+        changed[0] = 'b'.charCodeAt(0);
+        changed[changed.length - 1] = 'y'.charCodeAt(0);
+        fs.writeFileSync(sampled, changed);
+        fs.utimesSync(sampled, fixedTime, fixedTime);
+        const after = await sourceFingerprint(sampled);
+        assert.strictEqual(before.size, after.size);
+        assert.strictEqual(before.mtimeNs, after.mtimeNs);
+        assert.notStrictEqual(before.headSha256, after.headSha256);
+        assert.notStrictEqual(before.tailSha256, after.tailSha256);
+        assert.notStrictEqual(before.key, after.key);
+        if (process.platform === 'win32') {
+            assert.strictEqual(before.normalizedPath, before.normalizedPath.toLowerCase().replace(/\\/g, '/'));
+        }
+
+        fs.copyFileSync(waveformFixture, sourceOne);
+        fs.copyFileSync(waveformFixture, sourceTwo);
+        fs.appendFileSync(sourceTwo, '#21\n1#\n');
+        const cache = new WaveformCache({ root: cacheRoot });
+        const first = await cache.getOrBuild(sourceOne);
+        const dataMtimeMs = fs.statSync(path.join(first, 'waveform.vfi')).mtimeMs;
+        assert.strictEqual(await cache.getOrBuild(sourceOne), first);
+        assert.strictEqual(fs.statSync(path.join(first, 'waveform.vfi')).mtimeMs, dataMtimeMs);
+        cache.release(first);
+
+        const secondFingerprint = await sourceFingerprint(sourceTwo);
+        fs.mkdirSync(cacheRoot, { recursive: true });
+        fs.writeFileSync(
+            path.join(cacheRoot, `${secondFingerprint.key}.lock`),
+            JSON.stringify({ pid: 999999999, heartbeatMs: 0, token: 'stale' })
+        );
+        const second = await cache.getOrBuild(sourceTwo);
+        assert.strictEqual(path.basename(second), secondFingerprint.key);
+        assert.ok(!fs.existsSync(path.join(cacheRoot, `${secondFingerprint.key}.lock`)));
+        cache.release(second);
+
+        const cancelledSource = path.join(root, 'cancelled.vcd');
+        fs.copyFileSync(waveformFixture, cancelledSource);
+        await assert.rejects(
+            cache.getOrBuild(cancelledSource, { cancelled: () => true }),
+            VcdIndexCancelled
+        );
+        assert.ok(
+            fs.readdirSync(cacheRoot).every(name => !name.includes('.tmp.') && !name.endsWith('.lock'))
+        );
+
+        const firstManifestPath = path.join(first, 'manifest.json');
+        const secondManifestPath = path.join(second, 'manifest.json');
+        const firstManifest = JSON.parse(fs.readFileSync(firstManifestPath, 'utf8'));
+        const secondManifest = JSON.parse(fs.readFileSync(secondManifestPath, 'utf8'));
+        firstManifest.lastAccessNs = '1';
+        secondManifest.lastAccessNs = '2';
+        fs.writeFileSync(firstManifestPath, JSON.stringify(firstManifest));
+        fs.writeFileSync(secondManifestPath, JSON.stringify(secondManifest));
+        const directorySize = (directory: string): number => fs.readdirSync(directory)
+            .reduce((total, name) => total + fs.statSync(path.join(directory, name)).size, 0);
+        cache.maxBytes = Math.max(directorySize(first), directorySize(second));
+        await cache.cleanup();
+        assert.ok(!fs.existsSync(first));
+        assert.ok(fs.existsSync(second));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform logic value codec', testLogicValueRoundTrip],
     ['waveform record codecs', testRecordRoundTrips],
     ['waveform manifest validation', testTimestampAndManifestValidation],
     ['waveform index build and query', testBuildAndQueryIndex],
+    ['waveform cache', testWaveformCache],
 ];
 
 async function runTests(): Promise<void> {
