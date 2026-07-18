@@ -304,3 +304,92 @@ def test_explicit_untyped_parameter_resets_inherited_type(vlib):
         vlib.Parameter("C", "integer", "3"),
         vlib.Parameter("D", "integer", "4"),
     )
+
+
+def test_deps_reports_transitive_dependencies_missing_modules_and_cycles(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.sv",
+        """module top(input logic value);
+generate
+  if (1) begin : generated_child
+    child u_child();
+  end
+endgenerate
+
+always @(*) begin
+  helper(value);
+end
+
+missing_ip u_missing();
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/child.v",
+        """module child;
+leaf #(
+  .WIDTH(8)
+) u_leaf();
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/leaf.v",
+        """module leaf;
+child u_cycle();
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 1
+
+    stdout = capsys.readouterr().out
+    assert stdout.count("  child -> rtl/child.v\n") == 1
+    assert stdout.count("  leaf -> rtl/leaf.v\n") == 1
+    assert "  missing_ip -> MISSING\n" in stdout
+    assert "top ->" not in stdout
+    assert "helper ->" not in stdout
+
+
+def test_list_prints_modules_in_case_sensitive_lexical_order(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/modules.v",
+        """module alpha;
+endmodule
+module Zoo;
+endmodule
+module Beta;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == ["Beta", "Zoo", "alpha"]
+
+
+def test_dependencies_stop_masking_after_dpi_function_declaration(vlib):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    block = vlib.parse_module_blocks(
+        """module top;
+import "DPI-C" function int helper(input int value);
+child u_child();
+endmodule
+"""
+    )[0]
+
+    assert vlib.extract_dependencies(block) == ["child"]

@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 
 REPOSITORY_ROOT = Path(r"D:\Software\VeriFlow")
@@ -27,6 +27,55 @@ DIRECTION = re.compile(r"^(input|output|inout)\b")
 IDENTIFIER_AT_END = re.compile(
     r"([A-Za-z_][A-Za-z0-9_$]*)\s*(?:\[[^\]]*\]\s*)*$"
 )
+VERILOG_TOKEN = re.compile(
+    r'"(?:\\.|[^"\\])*"|\\[^\s]+|[A-Za-z_][A-Za-z0-9_$]*|'
+    r"[0-9][A-Za-z0-9_.'?]*|\S",
+    re.DOTALL,
+)
+
+VERILOG_KEYWORDS = {
+    "accept_on", "alias", "always", "always_comb", "always_ff",
+    "always_latch", "and", "assert", "assign", "assume", "automatic",
+    "before", "begin", "bind", "bins", "binsof", "bit", "break",
+    "buf", "bufif0", "bufif1", "byte", "case", "casex", "casez",
+    "cell", "chandle", "checker", "class", "clocking", "cmos",
+    "config", "const", "constraint", "context", "continue", "cover",
+    "covergroup", "coverpoint", "cross", "deassign", "default",
+    "defparam", "design", "disable", "dist", "do", "edge", "else",
+    "end", "endcase", "endchecker", "endclass", "endclocking",
+    "endconfig", "endfunction", "endgenerate", "endgroup", "endinterface",
+    "endmodule", "endpackage", "endprimitive", "endprogram", "endproperty",
+    "endspecify", "endsequence", "endtable", "endtask", "enum", "event",
+    "eventually", "expect", "export", "extends", "extern", "final",
+    "first_match", "for", "force", "foreach", "forever", "fork",
+    "forkjoin", "function", "generate", "genvar", "global", "highz0",
+    "highz1", "if", "iff", "ifnone", "ignore_bins", "illegal_bins",
+    "implements", "implies", "import", "incdir", "include", "initial",
+    "inout", "input", "inside", "instance", "int", "integer",
+    "interconnect", "interface", "intersect", "join", "join_any",
+    "join_none", "large", "let", "liblist", "library", "local",
+    "localparam", "logic", "longint", "macromodule", "matches", "medium",
+    "modport", "module", "nand", "negedge", "nettype", "new", "nexttime",
+    "nmos", "nor", "noshowcancelled", "not", "notif0", "notif1", "null",
+    "or", "output", "package", "packed", "parameter", "pmos", "posedge",
+    "primitive", "priority", "program", "property", "protected", "pull0",
+    "pull1", "pulldown", "pullup", "pulsestyle_ondetect",
+    "pulsestyle_onevent", "pure", "rand", "randc", "randcase", "randsequence",
+    "rcmos", "real", "realtime", "ref", "reg", "reject_on", "release",
+    "repeat", "restrict", "return", "rnmos", "rpmos", "rtran", "rtranif0",
+    "rtranif1", "s_always", "s_eventually", "s_nexttime", "s_until",
+    "s_until_with", "scalared", "sequence", "shortint", "shortreal",
+    "showcancelled", "signed", "small", "soft", "solve", "specify", "specparam",
+    "static", "string", "strong", "strong0", "strong1", "struct", "super",
+    "supply0", "supply1", "sync_accept_on", "sync_reject_on", "table",
+    "tagged", "task", "this", "throughout", "time", "timeprecision",
+    "timeunit", "tran", "tranif0", "tranif1", "tri", "tri0", "tri1",
+    "triand", "trior", "trireg", "type", "typedef", "union", "unique",
+    "unique0", "unsigned", "until", "until_with", "untyped", "use", "uwire",
+    "var", "vectored", "virtual", "void", "wait", "wait_order", "wand",
+    "weak", "weak0", "weak1", "while", "wildcard", "wire", "with",
+    "within", "wor", "xnor", "xor",
+}
 
 
 class VlibError(Exception):
@@ -52,6 +101,7 @@ class ModuleBlock:
     name: str
     parameters: Tuple[Parameter, ...]
     ports: Tuple[Port, ...]
+    body: str = ""
 
 
 def validate_repository(repository_root: Path) -> Path:
@@ -401,10 +451,336 @@ def parse_module_blocks(source: str) -> Tuple[ModuleBlock, ...]:
             ports = parse_ansi_ports(port_text)
         else:
             ports = parse_non_ansi_ports(port_text, body)
-        blocks.append(ModuleBlock(name, parameters, ports))
+        blocks.append(ModuleBlock(name, parameters, ports, body))
         cursor = endmodule_start + len("endmodule")
 
     return tuple(blocks)
+
+
+def _verilog_tokens(text: str) -> List[Tuple[str, int, int]]:
+    return [
+        (match.group(0), match.start(), match.end())
+        for match in VERILOG_TOKEN.finditer(text)
+    ]
+
+
+def _skip_token_group(
+    tokens: Sequence[Tuple[str, int, int]],
+    position: int,
+    opener: str,
+    closer: str,
+) -> int:
+    if position >= len(tokens) or tokens[position][0] != opener:
+        return position
+    depth = 0
+    for index in range(position, len(tokens)):
+        value = tokens[index][0]
+        if value == opener:
+            depth += 1
+        elif value == closer:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(tokens)
+
+
+def _consume_simple_statement(
+    tokens: Sequence[Tuple[str, int, int]], position: int
+) -> int:
+    expected = []  # type: List[str]
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    while position < len(tokens):
+        value = tokens[position][0]
+        if value in pairs:
+            expected.append(pairs[value])
+        elif value in ")]}":
+            if expected and value == expected[-1]:
+                expected.pop()
+        elif value == ";" and not expected:
+            return position + 1
+        position += 1
+    return len(tokens)
+
+
+def _consume_procedural_statement(
+    tokens: Sequence[Tuple[str, int, int]], position: int
+) -> int:
+    while position < len(tokens) and tokens[position][0] in {
+        "priority",
+        "unique",
+        "unique0",
+    }:
+        position += 1
+
+    while position < len(tokens) and tokens[position][0] in {"@", "#"}:
+        position += 1
+        if position < len(tokens) and tokens[position][0] == "(":
+            position = _skip_token_group(tokens, position, "(", ")")
+        elif position < len(tokens):
+            position += 1
+
+    if position >= len(tokens):
+        return position
+
+    value = tokens[position][0]
+    if value == "begin":
+        depth = 0
+        for index in range(position, len(tokens)):
+            current = tokens[index][0]
+            if current == "begin":
+                depth += 1
+            elif current == "end":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    if end < len(tokens) and tokens[end][0] == ":":
+                        end += 1
+                        if end < len(tokens):
+                            end += 1
+                    return end
+        return len(tokens)
+
+    if value == "if":
+        condition = position + 1
+        if condition < len(tokens) and tokens[condition][0] == "(":
+            condition = _skip_token_group(tokens, condition, "(", ")")
+        end = _consume_procedural_statement(tokens, condition)
+        if end < len(tokens) and tokens[end][0] == "else":
+            return _consume_procedural_statement(tokens, end + 1)
+        return end
+
+    if value in {"case", "casex", "casez", "randcase"}:
+        depth = 0
+        for index in range(position, len(tokens)):
+            current = tokens[index][0]
+            if current in {"case", "casex", "casez", "randcase"}:
+                depth += 1
+            elif current == "endcase":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return len(tokens)
+
+    if value == "fork":
+        depth = 0
+        for index in range(position, len(tokens)):
+            current = tokens[index][0]
+            if current == "fork":
+                depth += 1
+            elif current in {"join", "join_any", "join_none"}:
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return len(tokens)
+
+    if value in {"for", "foreach", "repeat", "while"}:
+        body_start = position + 1
+        if body_start < len(tokens) and tokens[body_start][0] == "(":
+            body_start = _skip_token_group(tokens, body_start, "(", ")")
+        return _consume_procedural_statement(tokens, body_start)
+
+    if value == "forever":
+        return _consume_procedural_statement(tokens, position + 1)
+
+    if value == "do":
+        end = _consume_procedural_statement(tokens, position + 1)
+        if end < len(tokens) and tokens[end][0] == "while":
+            end += 1
+            if end < len(tokens) and tokens[end][0] == "(":
+                end = _skip_token_group(tokens, end, "(", ")")
+            if end < len(tokens) and tokens[end][0] == ";":
+                end += 1
+        return end
+
+    if value in {"wait", "wait_order"}:
+        body_start = position + 1
+        if body_start < len(tokens) and tokens[body_start][0] == "(":
+            body_start = _skip_token_group(tokens, body_start, "(", ")")
+            return _consume_procedural_statement(tokens, body_start)
+
+    return _consume_simple_statement(tokens, position)
+
+
+def _consume_through_keyword(
+    tokens: Sequence[Tuple[str, int, int]],
+    position: int,
+    start_keyword: str,
+    end_keyword: str,
+) -> int:
+    depth = 0
+    for index in range(position, len(tokens)):
+        value = tokens[index][0]
+        if value == start_keyword:
+            depth += 1
+        elif value == end_keyword:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(tokens)
+
+
+def _spaces_preserving_lines(text: str) -> str:
+    return "".join(character if character in "\r\n" else " " for character in text)
+
+
+def _has_dpi_prefix(
+    tokens: Sequence[Tuple[str, int, int]], position: int
+) -> bool:
+    position -= 1
+    while position >= 0 and tokens[position][0] != ";":
+        if tokens[position][0] in {"import", "export"}:
+            return True
+        position -= 1
+    return False
+
+
+def mask_procedural_regions(body: str) -> str:
+    text = re.sub(
+        r"(?m)^[ \t]*`[^\r\n]*",
+        lambda match: _spaces_preserving_lines(match.group(0)),
+        body,
+    )
+    tokens = _verilog_tokens(text)
+    ranges = []  # type: List[Tuple[int, int]]
+    position = 0
+
+    while position < len(tokens):
+        value = tokens[position][0]
+        if value in {"task", "function"} and _has_dpi_prefix(
+            tokens, position
+        ):
+            end = _consume_simple_statement(tokens, position)
+        elif value in {"task", "function", "specify"}:
+            terminator = {
+                "task": "endtask",
+                "function": "endfunction",
+                "specify": "endspecify",
+            }[value]
+            end = _consume_through_keyword(
+                tokens, position, value, terminator
+            )
+        elif value in {
+            "initial",
+            "always",
+            "always_comb",
+            "always_ff",
+            "always_latch",
+            "final",
+        }:
+            end = _consume_procedural_statement(tokens, position + 1)
+        else:
+            position += 1
+            continue
+
+        range_end = tokens[end - 1][2] if end > position else tokens[position][2]
+        ranges.append((tokens[position][1], range_end))
+        position = max(end, position + 1)
+
+    characters = list(text)
+    for start, end in ranges:
+        for index in range(start, end):
+            if characters[index] not in "\r\n":
+                characters[index] = " "
+    return "".join(characters)
+
+
+def _is_identifier(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", value) is not None
+
+
+def extract_dependencies(block: ModuleBlock) -> List[str]:
+    text = mask_procedural_regions(block.body)
+    characters = list(text)
+    for value, start, end in _verilog_tokens(text):
+        if value in {"generate", "endgenerate"}:
+            characters[start:end] = " " * (end - start)
+    text = "".join(characters)
+    tokens = _verilog_tokens(text)
+    dependencies = set()  # type: Set[str]
+    expected = []  # type: List[str]
+    pairs = {"(": ")", "[": "]", "{": "}"}
+
+    for position, token in enumerate(tokens):
+        value = token[0]
+        if value in pairs:
+            expected.append(pairs[value])
+            continue
+        if value in ")]}":
+            if expected and value == expected[-1]:
+                expected.pop()
+            continue
+        if expected or not _is_identifier(value):
+            continue
+        if value in VERILOG_KEYWORDS or value == block.name:
+            continue
+
+        next_position = position + 1
+        if next_position < len(tokens) and tokens[next_position][0] == "#":
+            next_position += 1
+            if (
+                next_position >= len(tokens)
+                or tokens[next_position][0] != "("
+            ):
+                continue
+            next_position = _skip_token_group(
+                tokens, next_position, "(", ")"
+            )
+        if (
+            next_position >= len(tokens)
+            or not _is_identifier(tokens[next_position][0])
+        ):
+            continue
+
+        next_position += 1
+        while (
+            next_position < len(tokens)
+            and tokens[next_position][0] == "["
+        ):
+            next_position = _skip_token_group(
+                tokens, next_position, "[", "]"
+            )
+        if (
+            next_position < len(tokens)
+            and tokens[next_position][0] == "("
+        ):
+            dependencies.add(value)
+
+    return sorted(dependencies)
+
+
+def resolve_dependencies(
+    module: str, index: Dict[str, object]
+) -> Tuple[List[Tuple[str, str]], List[str]]:
+    modules = index.get("modules")
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+
+    module_block_from_index(module, index)
+    queue = [module]
+    visited = {module}
+    known = []  # type: List[Tuple[str, str]]
+    missing = set()  # type: Set[str]
+    position = 0
+
+    while position < len(queue):
+        current = queue[position]
+        position += 1
+        block = module_block_from_index(current, index)
+        for dependency in extract_dependencies(block):
+            if dependency == module or dependency in visited:
+                continue
+            visited.add(dependency)
+            relative_path = modules.get(dependency)
+            if relative_path is None:
+                missing.add(dependency)
+                continue
+            if not isinstance(relative_path, str) or not relative_path:
+                module_block_from_index(dependency, index)
+                raise AssertionError("unreachable")
+            known.append((dependency, relative_path))
+            queue.append(dependency)
+
+    return known, sorted(missing)
 
 
 def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
@@ -628,6 +1004,31 @@ def show_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def deps_command(arguments: argparse.Namespace) -> int:
+    index = load_index()
+    known, missing = resolve_dependencies(arguments.module, index)
+
+    print("Dependencies for {}:".format(arguments.module))
+    if not known and not missing:
+        print("  (none)")
+    else:
+        for dependency, relative_path in known:
+            print("  {} -> {}".format(dependency, relative_path))
+        for dependency in missing:
+            print("  {} -> MISSING".format(dependency))
+    return 1 if missing else 0
+
+
+def list_command(_arguments: argparse.Namespace) -> int:
+    index = load_index()
+    modules = index["modules"]
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+    for module in sorted(modules):
+        print(module)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage a standalone Verilog module library."
@@ -642,6 +1043,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show_parser.add_argument("module", help="module name to inspect")
     show_parser.set_defaults(handler=show_command)
+    deps_parser = subparsers.add_parser(
+        "deps", help="show transitive dependencies for an indexed module"
+    )
+    deps_parser.add_argument("module", help="module name to resolve")
+    deps_parser.set_defaults(handler=deps_command)
+    list_parser = subparsers.add_parser(
+        "list", help="list indexed modules"
+    )
+    list_parser.set_defaults(handler=list_command)
     return parser
 
 
