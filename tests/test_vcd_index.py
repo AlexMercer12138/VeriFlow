@@ -27,6 +27,8 @@ from src.domain.services.vcd_index_service import (
     build_vcd_index,
 )
 from src.infrastructure.waveform_cache import WaveformCache, source_fingerprint
+from scripts.benchmark_waveform_index import benchmark_waveform_index
+from scripts.generate_waveform_benchmark import generate_waveform_benchmark
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -300,3 +302,54 @@ def test_waveform_cache_reuses_recovers_cleans_and_evicts(tmp_path: Path) -> Non
 
     assert not first.exists()
     assert second.exists()
+
+
+def test_benchmark_generator_and_report_are_deterministic(tmp_path: Path) -> None:
+    first = tmp_path / "first.vcd"
+    second = tmp_path / "second.vcd"
+    first_result = generate_waveform_benchmark(
+        first,
+        changes=2_000,
+        signals=8,
+        seed=1234,
+    )
+    second_result = generate_waveform_benchmark(
+        second,
+        changes=2_000,
+        signals=8,
+        seed=1234,
+    )
+
+    assert first.read_bytes() == second.read_bytes()
+    assert first_result == second_result
+    assert first_result["changes"] == 2_000
+    assert first_result["signals"] == 8
+    text = first.read_text(encoding="ascii")
+    declarations = [line for line in text.splitlines() if line.startswith("$var")]
+    assert len(declarations) == 8
+    identifiers = [line.split()[3] for line in declarations]
+    assert len(set(identifiers)) == 7
+    assert "declared_idle" in text
+    assert "bx" in text
+    assert "bz" in text
+
+    report_path = tmp_path / "report.json"
+    report = benchmark_waveform_index(first, report_path, query_count=8)
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report
+    for key in (
+        "sourceBytes",
+        "changes",
+        "metadataLatencySeconds",
+        "buildSeconds",
+        "indexBytes",
+        "coldQueryMilliseconds",
+        "warmQueryMilliseconds",
+        "cancelLatencyMilliseconds",
+        "peakMemoryBytes",
+        "maxResponseRecords",
+    ):
+        assert key in report
+    assert report["sourceBytes"] == first.stat().st_size
+    assert report["changes"] == 2_000
+    assert report["maxResponseRecords"] <= 2 * 512 * 8
+    assert not any(path.name.endswith(".tmp") for path in tmp_path.iterdir())
