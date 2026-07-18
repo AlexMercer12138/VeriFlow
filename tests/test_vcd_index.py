@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from src.domain.services.vcd_index_format import (
@@ -12,6 +15,12 @@ from src.domain.services.vcd_index_format import (
     unpack_logic_value,
     validate_manifest,
 )
+from src.domain.services.vcd_index_service import VcdIndexReader, build_vcd_index
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WAVEFORM_FIXTURE = ROOT / "tests" / "fixtures" / "waveform_debug.vcd"
+INDEX_EXPECTED = ROOT / "tests" / "fixtures" / "waveform_index_expected.json"
 
 
 @pytest.mark.parametrize(
@@ -86,3 +95,63 @@ def test_manifest_validation() -> None:
                 "signals": [],
             }
         )
+
+
+def test_builds_two_pass_index_and_reads_raw_streams(tmp_path: Path) -> None:
+    metadata_events: list[dict] = []
+    progress_events: list[dict] = []
+    index_dir = tmp_path / "index"
+
+    manifest = build_vcd_index(
+        WAVEFORM_FIXTURE,
+        index_dir,
+        on_metadata=metadata_events.append,
+        on_progress=progress_events.append,
+    )
+
+    assert len(metadata_events) == 1
+    assert metadata_events[0]["timescale"] == "10ns"
+    assert len(metadata_events[0]["signals"]) == 6
+    assert manifest["endTime"] == 20
+    assert (index_dir / "manifest.json").is_file()
+    assert (index_dir / "waveform.vfi").read_bytes().startswith(b"VFI1")
+    assert progress_events[0]["phase"] == "scan"
+    assert progress_events[-1]["phase"] == "complete"
+
+    streams = sorted(manifest["streams"], key=lambda stream: stream["rawOffset"])
+    for left, right in zip(streams, streams[1:]):
+        left_end = left["rawOffset"] + left["count"] * left["rawRecordSize"]
+        assert left_end <= right["rawOffset"]
+
+    reader = VcdIndexReader(index_dir)
+    expected = json.loads(INDEX_EXPECTED.read_text(encoding="utf-8"))
+    assert reader.metadata["timescale"] == expected["timescale"]
+    assert reader.metadata["endTime"] == expected["endTime"]
+    assert reader.raw_changes_for_reference("clk") == [tuple(item) for item in expected["clk"]]
+    assert reader.raw_changes_for_reference("data [3:0]") == [
+        tuple(item) for item in expected["data"]
+    ]
+
+
+def test_aliases_share_one_index_stream(tmp_path: Path) -> None:
+    source = tmp_path / "alias.vcd"
+    source.write_text(
+        """$timescale 1ns $end
+$scope module top $end
+$var wire 1 ! a $end
+$var wire 1 ! alias_a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#5
+1!
+""",
+        encoding="utf-8",
+    )
+
+    manifest = build_vcd_index(source, tmp_path / "alias-index")
+
+    assert len(manifest["streams"]) == 1
+    assert len(manifest["signals"]) == 2
+    assert {signal["stream"] for signal in manifest["signals"]} == {0}
