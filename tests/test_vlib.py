@@ -470,3 +470,138 @@ endmodule
         "  child_a -> rtl/child_a.v\n"
         "  child_b -> rtl/child_b.v\n"
     )
+
+
+def test_deps_prunes_incompatible_repeated_macro_branches(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.sv",
+        """module top;
+  typedef logic some_type;
+`ifdef USE_CHILD
+  child
+`else
+  some_type
+`endif
+`ifdef USE_CHILD
+  u();
+`else
+  value;
+`endif
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "rtl/child.v",
+        """module child;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  child -> rtl/child.v\n"
+    )
+
+
+def test_deps_streams_many_independent_conditional_statements(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    assert not hasattr(vlib, "expand_conditional_variants"), (
+        "dependency analysis must not materialize whole-body variants"
+    )
+    original_deduplicate = vlib._deduplicate_dependency_states
+    maximum_state_count = 0
+
+    def track_state_count(states):
+        nonlocal maximum_state_count
+        maximum_state_count = max(maximum_state_count, len(states))
+        return original_deduplicate(states)
+
+    monkeypatch.setattr(
+        vlib, "_deduplicate_dependency_states", track_state_count
+    )
+
+    source_lines = ["module top;"]
+    for index in range(18):
+        source_lines.extend(
+            [
+                "`ifdef OPTION_{}".format(index),
+                "logic value_{};".format(index),
+                "`else",
+                "wire value_{};".format(index),
+                "`endif",
+            ]
+        )
+    source_lines.extend(["child u_child();", "endmodule", ""])
+    write_source(tmp_path, "rtl/top.sv", "\n".join(source_lines))
+    write_source(
+        tmp_path,
+        "rtl/child.v",
+        """module child;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  child -> rtl/child.v\n"
+    )
+    assert maximum_state_count <= 2
+
+
+def test_deps_correlates_repeated_ifndef_elsif_chains(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.sv",
+        """module top;
+typedef logic some_type;
+`ifndef USE_TYPE
+  child
+`elsif USE_OTHER
+  other_child
+`else
+  some_type
+`endif
+`ifndef USE_TYPE
+  u_child();
+`elsif USE_OTHER
+  u_other();
+`else
+  value;
+`endif
+endmodule
+""",
+    )
+    write_source(tmp_path, "rtl/child.v", "module child; endmodule\n")
+    write_source(
+        tmp_path,
+        "rtl/other_child.v",
+        "module other_child; endmodule\n",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  child -> rtl/child.v\n"
+        "  other_child -> rtl/other_child.v\n"
+    )

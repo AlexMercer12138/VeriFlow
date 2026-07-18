@@ -691,68 +691,146 @@ def _is_identifier(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", value) is not None
 
 
-def _directive_name(line: str) -> Optional[str]:
-    match = re.match(r"^[ \t]*`([A-Za-z_][A-Za-z0-9_$]*)", line)
-    return match.group(1) if match is not None else None
+@dataclass(frozen=True)
+class _DependencyState:
+    constraints: Tuple[Tuple[str, bool], ...]
+    buffer: str
 
 
-def _conditional_variants_from_lines(
+@dataclass
+class _ConditionalNode:
+    branches: List[
+        Tuple[Tuple[Tuple[str, bool], ...], List[object]]
+    ]
+
+
+def _directive_parts(line: str) -> Tuple[Optional[str], Optional[str]]:
+    match = re.match(
+        r"^[ \t]*`([A-Za-z_][A-Za-z0-9_$]*)"
+        r"(?:[ \t]+([A-Za-z_][A-Za-z0-9_$]*))?",
+        line,
+    )
+    if match is None:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _parse_conditional_nodes(
     lines: Sequence[str],
     position: int,
     stop_directives: Set[str],
-) -> Tuple[List[str], int, Optional[str]]:
-    variants = [""]
+) -> Tuple[List[object], int, Optional[str]]:
+    nodes = []  # type: List[object]
+    text_lines = []  # type: List[str]
 
     while position < len(lines):
-        directive = _directive_name(lines[position])
+        directive, macro = _directive_parts(lines[position])
         if directive in stop_directives:
-            return variants, position, directive
+            if text_lines:
+                nodes.append("".join(text_lines))
+            return nodes, position, directive
 
-        if directive in {"ifdef", "ifndef"}:
+        if directive not in {"ifdef", "ifndef"} or macro is None:
+            text_lines.append(lines[position])
             position += 1
-            alternatives = []  # type: List[str]
-            branch, position, terminator = _conditional_variants_from_lines(
-                lines, position, {"elsif", "else", "endif"}
-            )
-            alternatives.extend(branch)
-
-            while terminator == "elsif":
-                position += 1
-                branch, position, terminator = _conditional_variants_from_lines(
-                    lines, position, {"elsif", "else", "endif"}
-                )
-                alternatives.extend(branch)
-
-            has_else = terminator == "else"
-            if has_else:
-                position += 1
-                branch, position, terminator = _conditional_variants_from_lines(
-                    lines, position, {"endif"}
-                )
-                alternatives.extend(branch)
-            else:
-                alternatives.append("")
-
-            if terminator == "endif":
-                position += 1
-            variants = [
-                prefix + alternative
-                for prefix in variants
-                for alternative in alternatives
-            ]
             continue
 
-        variants = [variant + lines[position] for variant in variants]
+        if text_lines:
+            nodes.append("".join(text_lines))
+            text_lines = []
+
+        test = (macro, directive == "ifdef")
+        false_terms = [(macro, not test[1])]
         position += 1
+        branch_nodes, position, terminator = _parse_conditional_nodes(
+            lines, position, {"elsif", "else", "endif"}
+        )
+        branches = [
+            ((test,), branch_nodes)
+        ]  # type: List[Tuple[Tuple[Tuple[str, bool], ...], List[object]]]
 
-    return variants, position, None
+        while terminator == "elsif":
+            _elsif, elsif_macro = _directive_parts(lines[position])
+            position += 1
+            branch_nodes, position, terminator = _parse_conditional_nodes(
+                lines, position, {"elsif", "else", "endif"}
+            )
+            if elsif_macro is not None:
+                branch_terms = tuple(
+                    false_terms + [(elsif_macro, True)]
+                )
+                branches.append((branch_terms, branch_nodes))
+                false_terms.append((elsif_macro, False))
+
+        if terminator == "else":
+            position += 1
+            branch_nodes, position, terminator = _parse_conditional_nodes(
+                lines, position, {"endif"}
+            )
+            branches.append((tuple(false_terms), branch_nodes))
+        else:
+            branches.append((tuple(false_terms), []))
+
+        if terminator == "endif":
+            position += 1
+        nodes.append(_ConditionalNode(branches))
+
+    if text_lines:
+        nodes.append("".join(text_lines))
+    return nodes, position, None
 
 
-def expand_conditional_variants(body: str) -> List[str]:
-    variants, _position, _terminator = _conditional_variants_from_lines(
-        body.splitlines(keepends=True), 0, set()
-    )
-    return list(dict.fromkeys(variants))
+def _merge_constraints(
+    constraints: Tuple[Tuple[str, bool], ...],
+    terms: Sequence[Tuple[str, bool]],
+) -> Optional[Tuple[Tuple[str, bool], ...]]:
+    merged = dict(constraints)
+    for macro, expected in terms:
+        if macro in merged and merged[macro] != expected:
+            return None
+        merged[macro] = expected
+    return tuple(sorted(merged.items()))
+
+
+def _split_safe_dependency_statements(text: str) -> Tuple[List[str], str]:
+    masked = mask_procedural_regions(text)
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    expected = []  # type: List[str]
+    statement_ends = []  # type: List[int]
+    in_string = False
+    escaped = False
+
+    for position, character in enumerate(masked):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in pairs:
+            expected.append(pairs[character])
+        elif character in ")]}":
+            if expected and character == expected[-1]:
+                expected.pop()
+        elif character == ";" and not expected:
+            statement_ends.append(position + 1)
+
+    statements = []  # type: List[str]
+    start = 0
+    for end in statement_ends:
+        statements.append(text[start:end])
+        start = end
+    return statements, text[start:]
+
+
+def _deduplicate_dependency_states(
+    states: Sequence[_DependencyState],
+) -> List[_DependencyState]:
+    return list(dict.fromkeys(states))
 
 
 def _extract_dependencies_from_body(module: str, body: str) -> Set[str]:
@@ -815,11 +893,93 @@ def _extract_dependencies_from_body(module: str, body: str) -> Set[str]:
     return dependencies
 
 
+def _append_dependency_text(
+    state: _DependencyState,
+    text: str,
+    active_constraints: Tuple[Tuple[str, bool], ...],
+    module: str,
+    dependencies: Set[str],
+) -> _DependencyState:
+    statements, remainder = _split_safe_dependency_statements(
+        state.buffer + text
+    )
+    for statement in statements:
+        dependencies.update(
+            _extract_dependencies_from_body(module, statement)
+        )
+    if not remainder.strip():
+        remainder = ""
+    constraints = active_constraints if statements else state.constraints
+    return _DependencyState(constraints, remainder)
+
+
+def _process_conditional_nodes(
+    nodes: Sequence[object],
+    states: Sequence[_DependencyState],
+    active_constraints: Tuple[Tuple[str, bool], ...],
+    module: str,
+    dependencies: Set[str],
+) -> List[_DependencyState]:
+    current_states = list(states)
+    for node in nodes:
+        if isinstance(node, str):
+            current_states = _deduplicate_dependency_states(
+                [
+                    _append_dependency_text(
+                        state,
+                        node,
+                        active_constraints,
+                        module,
+                        dependencies,
+                    )
+                    for state in current_states
+                ]
+            )
+            continue
+
+        if not isinstance(node, _ConditionalNode):
+            raise AssertionError("Unexpected conditional syntax node.")
+        branch_states = []  # type: List[_DependencyState]
+        for state in current_states:
+            for terms, branch_nodes in node.branches:
+                constrained = _merge_constraints(state.constraints, terms)
+                branch_active = _merge_constraints(
+                    active_constraints, terms
+                )
+                if constrained is None or branch_active is None:
+                    continue
+                processed = _process_conditional_nodes(
+                    branch_nodes,
+                    [_DependencyState(constrained, state.buffer)],
+                    branch_active,
+                    module,
+                    dependencies,
+                )
+                for branch_state in processed:
+                    if not branch_state.buffer:
+                        branch_state = _DependencyState(
+                            active_constraints, ""
+                        )
+                    branch_states.append(branch_state)
+        current_states = _deduplicate_dependency_states(branch_states)
+    return current_states
+
+
 def extract_dependencies(block: ModuleBlock) -> List[str]:
     dependencies = set()  # type: Set[str]
-    for body in expand_conditional_variants(block.body):
+    nodes, _position, _terminator = _parse_conditional_nodes(
+        block.body.splitlines(keepends=True), 0, set()
+    )
+    states = _process_conditional_nodes(
+        nodes,
+        [_DependencyState((), "")],
+        (),
+        block.name,
+        dependencies,
+    )
+    for buffer in {state.buffer for state in states if state.buffer.strip()}:
         dependencies.update(
-            _extract_dependencies_from_body(block.name, body)
+            _extract_dependencies_from_body(block.name, buffer)
         )
     return sorted(dependencies)
 
