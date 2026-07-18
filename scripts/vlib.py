@@ -1159,21 +1159,27 @@ def build_copy_plan(
 
     missing_includes = set()  # type: Set[Tuple[str, str]]
     if with_deps:
-        queue = []  # type: List[Tuple[str, Path]]
-        queued = set()  # type: Set[Path]
+        queue = []  # type: List[Tuple[str, Path, Tuple[Path, ...]]]
+        visited = set()  # type: Set[Tuple[Path, str]]
         for logical_path in sorted(planned):
             physical_path = planned[logical_path]
-            if physical_path not in queued:
-                queue.append((logical_path, physical_path))
-                queued.add(physical_path)
+            state = (physical_path, logical_path)
+            if state not in visited:
+                queue.append((logical_path, physical_path, (physical_path,)))
+                visited.add(state)
+        include_cache = {}  # type: Dict[Path, List[str]]
         position = 0
         while position < len(queue):
-            including_relative, including_file = queue[position]
+            including_relative, including_file, ancestry = queue[position]
             position += 1
-            source = including_file.read_text(
-                encoding="utf-8", errors="replace"
-            )
-            for include_name in extract_includes(source):
+            includes = include_cache.get(including_file)
+            if includes is None:
+                source = including_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                includes = extract_includes(source)
+                include_cache[including_file] = includes
+            for include_name in includes:
                 resolved_include = _resolve_include(
                     include_name, including_relative, repository_root
                 )
@@ -1182,9 +1188,17 @@ def build_copy_plan(
                     continue
                 included_file, included_relative = resolved_include
                 planned[included_relative] = included_file
-                if included_file not in queued:
-                    queue.append((included_relative, included_file))
-                    queued.add(included_file)
+                state = (included_file, included_relative)
+                if included_file in ancestry or state in visited:
+                    continue
+                queue.append(
+                    (
+                        included_relative,
+                        included_file,
+                        ancestry + (included_file,),
+                    )
+                )
+                visited.add(state)
 
     copy_files = [(path, planned[path]) for path in sorted(planned)]
     return copy_files, missing_modules, sorted(missing_includes)
@@ -1436,14 +1450,27 @@ def list_command(_arguments: argparse.Namespace) -> int:
     return 0
 
 
-def copy_command(arguments: argparse.Namespace) -> int:
-    index = load_index()
-    copy_files, missing_modules, missing_includes = build_copy_plan(
-        arguments.module, index, arguments.with_deps
-    )
-    destination_root = Path(arguments.destination).expanduser().resolve()
-    destination_root.mkdir(parents=True, exist_ok=True)
+def _paths_alias(first: Path, second: Path) -> bool:
+    if os.path.normcase(str(first)) == os.path.normcase(str(second)):
+        return True
+    try:
+        return os.path.samefile(str(first), str(second))
+    except (FileNotFoundError, OSError):
+        return False
 
+
+def _copy_path_label(path: Path, repository_root: Path) -> str:
+    try:
+        return path.relative_to(repository_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _preflight_copy_targets(
+    copy_files: Sequence[Tuple[str, Path]], destination_root: Path
+) -> List[Tuple[str, Path, Path, bool]]:
+    repository_root = validate_repository(REPOSITORY_ROOT)
+    mappings = []  # type: List[Tuple[str, Path, Path]]
     for relative_path, source_path in copy_files:
         destination_path = (destination_root / Path(relative_path)).resolve()
         try:
@@ -1454,10 +1481,68 @@ def copy_command(arguments: argparse.Namespace) -> int:
                     relative_path
                 )
             )
+        mappings.append((relative_path, source_path, destination_path))
+
+    for index, mapping in enumerate(mappings):
+        relative_path, _source_path, destination_path = mapping
+        for earlier_mapping in mappings[:index]:
+            earlier_relative, _earlier_source, earlier_target = earlier_mapping
+            if _paths_alias(destination_path, earlier_target):
+                raise VlibError(
+                    "Copy conflict: targets '{}' and '{}' alias each other.".format(
+                        earlier_relative, relative_path
+                    )
+                )
+
+    preflighted = []  # type: List[Tuple[str, Path, Path, bool]]
+    for index, mapping in enumerate(mappings):
+        relative_path, source_path, destination_path = mapping
+        aliasing_sources = [
+            source_index
+            for source_index, (
+                _source_relative,
+                other_source,
+                _target,
+            ) in enumerate(mappings)
+            if _paths_alias(destination_path, other_source)
+        ]
+        safe_no_op = aliasing_sources == [index]
+        if aliasing_sources and not safe_no_op:
+            conflict_index = next(
+                (
+                    source_index
+                    for source_index in aliasing_sources
+                    if source_index != index
+                ),
+                aliasing_sources[0],
+            )
+            conflicting_source = mappings[conflict_index][0]
+            raise VlibError(
+                "Copy conflict: target '{}' for '{}' aliases source '{}'.".format(
+                    _copy_path_label(destination_path, repository_root),
+                    relative_path,
+                    conflicting_source,
+                )
+            )
+        preflighted.append(
+            (relative_path, source_path, destination_path, safe_no_op)
+        )
+    return preflighted
+
+
+def copy_command(arguments: argparse.Namespace) -> int:
+    index = load_index()
+    copy_files, missing_modules, missing_includes = build_copy_plan(
+        arguments.module, index, arguments.with_deps
+    )
+    destination_root = Path(arguments.destination).expanduser().resolve()
+    copy_mappings = _preflight_copy_targets(copy_files, destination_root)
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    for mapping in copy_mappings:
+        relative_path, source_path, destination_path, safe_no_op = mapping
         destination_path.parent.mkdir(parents=True, exist_ok=True)
-        if os.path.normcase(str(source_path)) != os.path.normcase(
-            str(destination_path)
-        ):
+        if not safe_no_op:
             shutil.copy2(str(source_path), str(destination_path))
         print("Copied: {}".format(relative_path))
 

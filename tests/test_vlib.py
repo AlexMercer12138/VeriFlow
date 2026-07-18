@@ -898,3 +898,123 @@ def test_copy_preserves_logical_alias_paths_for_modules_and_includes(
         assert captured.err == ""
     finally:
         remove_directory_alias(alias)
+
+
+def test_copy_rejects_destination_that_overlaps_a_later_source(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    top_source = b"module top;\r\n  child u_child();\r\nendmodule\r\n"
+    child_source = b"module child;\r\nendmodule\r\n"
+    top_path = tmp_path / "a.v"
+    child_path = tmp_path / "z" / "a.v"
+    top_path.write_bytes(top_source)
+    child_path.parent.mkdir()
+    child_path.write_bytes(child_source)
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert (
+        vlib.main(
+            ["copy", "top", str(tmp_path / "z"), "--with-deps"]
+        )
+        == 1
+    )
+
+    assert top_path.read_bytes() == top_source
+    assert child_path.read_bytes() == child_source
+    assert not (tmp_path / "z" / "z" / "a.v").exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "Error: Copy conflict: target 'z/a.v' for 'a.v' aliases "
+        "source 'z/a.v'.\n"
+    )
+
+
+def test_copy_expands_recursive_includes_for_each_logical_alias_route(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/top.v",
+        """`include "a/common.vh"
+`include "b/common.vh"
+module top;
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "shared/common.vh",
+        '`include "nested/defs.vh"\n`define COMMON 1\n',
+    )
+    write_source(
+        tmp_path,
+        "shared/nested/defs.vh",
+        "`define WIDTH 8\n",
+    )
+    aliases = [tmp_path / "a", tmp_path / "b"]
+    created_aliases = []
+    try:
+        for alias in aliases:
+            create_directory_alias(alias, tmp_path / "shared")
+            created_aliases.append(alias)
+        assert vlib.main(["index"]) == 0
+        capsys.readouterr()
+        destination = tmp_path / "copied"
+
+        assert (
+            vlib.main(["copy", "top", str(destination), "--with-deps"])
+            == 0
+        )
+
+        for relative_path in (
+            "a/common.vh",
+            "a/nested/defs.vh",
+            "b/common.vh",
+            "b/nested/defs.vh",
+            "rtl/top.v",
+        ):
+            assert (destination / relative_path).is_file()
+        captured = capsys.readouterr()
+        assert captured.out.splitlines() == [
+            "Copied: a/common.vh",
+            "Copied: a/nested/defs.vh",
+            "Copied: b/common.vh",
+            "Copied: b/nested/defs.vh",
+            "Copied: rtl/top.v",
+        ]
+        assert captured.err == ""
+    finally:
+        for alias in reversed(created_aliases):
+            remove_directory_alias(alias)
+
+
+def test_copy_treats_own_source_hard_link_as_a_safe_no_op(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    source_bytes = b"module top;\r\nendmodule\r\n"
+    source_path = tmp_path / "rtl" / "top.v"
+    source_path.parent.mkdir()
+    source_path.write_bytes(source_bytes)
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    target_path = destination / "rtl" / "top.v"
+    target_path.parent.mkdir(parents=True)
+    try:
+        os.link(str(source_path), str(target_path))
+    except OSError as error:
+        pytest.skip("hard links are unavailable: {}".format(error))
+    assert os.path.samefile(str(source_path), str(target_path))
+
+    assert vlib.main(["copy", "top", str(destination)]) == 0
+
+    assert source_path.read_bytes() == source_bytes
+    assert target_path.read_bytes() == source_bytes
+    captured = capsys.readouterr()
+    assert captured.out == "Copied: rtl/top.v\n"
+    assert captured.err == ""
