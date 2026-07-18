@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -31,6 +32,10 @@ VERILOG_TOKEN = re.compile(
     r'"(?:\\.|[^"\\])*"|\\[^\s]+|[A-Za-z_][A-Za-z0-9_$]*|'
     r"[0-9][A-Za-z0-9_.'?]*|\S",
     re.DOTALL,
+)
+INCLUDE_DIRECTIVE = re.compile(
+    r'^[ \t]*`include[ \t]+(?:"([^"\r\n]+)"|<([^>\r\n]+)>)',
+    re.MULTILINE,
 )
 
 VERILOG_KEYWORDS = {
@@ -1054,6 +1059,124 @@ def resolve_dependencies(
     return known, sorted(missing)
 
 
+def extract_includes(source: str) -> List[str]:
+    uncommented = strip_comments(source)
+    includes = []  # type: List[str]
+    for match in INCLUDE_DIRECTIVE.finditer(uncommented):
+        includes.append(match.group(1) or match.group(2))
+    return includes
+
+
+def _repository_file(
+    repository_root: Path, relative_path: str
+) -> Tuple[Path, str]:
+    indexed_path = Path(relative_path)
+    if indexed_path.is_absolute():
+        raise VlibError(
+            "Invalid repository-relative path: {}".format(relative_path)
+        )
+    source_path = (repository_root / indexed_path).resolve()
+    try:
+        normalized_relative = source_path.relative_to(repository_root)
+    except ValueError:
+        raise VlibError(
+            "Path escapes the repository: {}".format(relative_path)
+        )
+    if not source_path.is_file():
+        raise VlibError("Source file is missing: {}".format(relative_path))
+    return source_path, normalized_relative.as_posix()
+
+
+def _resolve_include(
+    include_name: str, including_file: Path, repository_root: Path
+) -> Optional[Path]:
+    seen = set()  # type: Set[Path]
+    for base in (including_file.parent, repository_root):
+        candidate = (base / Path(include_name)).resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            candidate.relative_to(repository_root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def build_copy_plan(
+    module: str, index: Dict[str, object], with_deps: bool
+) -> Tuple[List[Tuple[str, Path]], List[str], List[Tuple[str, str]]]:
+    modules = index.get("modules")
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+
+    if with_deps:
+        known_dependencies, missing_modules = resolve_dependencies(
+            module, index
+        )
+    else:
+        module_block_from_index(module, index)
+        known_dependencies = []  # type: List[Tuple[str, str]]
+        missing_modules = []  # type: List[str]
+
+    top_relative_path = modules[module]
+    if not isinstance(top_relative_path, str) or not top_relative_path:
+        raise VlibError(
+            "Invalid module index path for module '{}'.".format(module)
+        )
+
+    repository_root = validate_repository(REPOSITORY_ROOT)
+    module_relative_paths = {top_relative_path}
+    module_relative_paths.update(
+        relative_path for _dependency, relative_path in known_dependencies
+    )
+
+    planned = {}  # type: Dict[str, Path]
+    for relative_path in sorted(module_relative_paths):
+        source_path, normalized_relative = _repository_file(
+            repository_root, relative_path
+        )
+        planned[normalized_relative] = source_path
+
+    missing_includes = set()  # type: Set[Tuple[str, str]]
+    if with_deps:
+        queue = [planned[path] for path in sorted(planned)]
+        queued = set(queue)  # type: Set[Path]
+        scanned = set()  # type: Set[Path]
+        position = 0
+        while position < len(queue):
+            including_file = queue[position]
+            position += 1
+            if including_file in scanned:
+                continue
+            scanned.add(including_file)
+            including_relative = including_file.relative_to(
+                repository_root
+            ).as_posix()
+            source = including_file.read_text(
+                encoding="utf-8", errors="replace"
+            )
+            for include_name in extract_includes(source):
+                included_file = _resolve_include(
+                    include_name, including_file, repository_root
+                )
+                if included_file is None:
+                    missing_includes.add((include_name, including_relative))
+                    continue
+                included_relative = included_file.relative_to(
+                    repository_root
+                ).as_posix()
+                planned[included_relative] = included_file
+                if included_file not in queued:
+                    queue.append(included_file)
+                    queued.add(included_file)
+
+    copy_files = [(path, planned[path]) for path in sorted(planned)]
+    return copy_files, missing_modules, sorted(missing_includes)
+
+
 def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
     candidates = (
         path
@@ -1300,6 +1423,43 @@ def list_command(_arguments: argparse.Namespace) -> int:
     return 0
 
 
+def copy_command(arguments: argparse.Namespace) -> int:
+    index = load_index()
+    copy_files, missing_modules, missing_includes = build_copy_plan(
+        arguments.module, index, arguments.with_deps
+    )
+    destination_root = Path(arguments.destination).expanduser().resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    for relative_path, source_path in copy_files:
+        destination_path = (destination_root / Path(relative_path)).resolve()
+        try:
+            destination_path.relative_to(destination_root)
+        except ValueError:
+            raise VlibError(
+                "Copy destination escapes the requested directory: {}".format(
+                    relative_path
+                )
+            )
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.normcase(str(source_path)) != os.path.normcase(
+            str(destination_path)
+        ):
+            shutil.copy2(str(source_path), str(destination_path))
+        print("Copied: {}".format(relative_path))
+
+    for missing_module in missing_modules:
+        print("Missing module: {}".format(missing_module), file=sys.stderr)
+    for include_name, including_relative in missing_includes:
+        print(
+            "Missing include: {} from {}".format(
+                include_name, including_relative
+            ),
+            file=sys.stderr,
+        )
+    return 1 if missing_modules or missing_includes else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage a standalone Verilog module library."
@@ -1323,6 +1483,19 @@ def build_parser() -> argparse.ArgumentParser:
         "list", help="list indexed modules"
     )
     list_parser.set_defaults(handler=list_command)
+    copy_parser = subparsers.add_parser(
+        "copy", help="copy an indexed module into a destination directory"
+    )
+    copy_parser.add_argument("module", help="module name to copy")
+    copy_parser.add_argument(
+        "destination", help="directory that receives repository-relative files"
+    )
+    copy_parser.add_argument(
+        "--with-deps",
+        action="store_true",
+        help="also copy transitive dependencies and included files",
+    )
+    copy_parser.set_defaults(handler=copy_command)
     return parser
 
 

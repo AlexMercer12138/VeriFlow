@@ -692,3 +692,117 @@ def test_deps_discards_labeled_conditional_subprogram_regions(
         "  (none)\n"
     )
     assert maximum_state_count <= 2
+
+
+def test_copy_without_deps_copies_only_top_source_byte_for_byte(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    top_source = b"module top;\r\n  child u_child();\r\nendmodule\r\n"
+    top_path = tmp_path / "rtl" / "top.v"
+    top_path.parent.mkdir(parents=True)
+    top_path.write_bytes(top_source)
+    write_source(
+        tmp_path,
+        "ip/child.v",
+        "module child;\nendmodule\n",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+
+    assert vlib.main(["copy", "top", str(destination)]) == 0
+
+    assert (destination / "rtl" / "top.v").read_bytes() == top_source
+    assert not (destination / "ip" / "child.v").exists()
+    captured = capsys.readouterr()
+    assert captured.out == "Copied: rtl/top.v\n"
+    assert captured.err == ""
+
+
+def test_copy_with_deps_copies_modules_and_recursive_includes_before_errors(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    sources = {
+        "rtl/top.v": (
+            '`include "include/defs.vh"\n'
+            "module top;\n"
+            "  child u_child();\n"
+            "  missing u_missing();\n"
+            "endmodule\n"
+        ),
+        "ip/child.v": "module child;\nendmodule\n",
+        "include/defs.vh": '`include "nested/more.svh"\n`define WIDTH 8\n',
+        "include/nested/more.svh": "`define RESET_VALUE 0\n",
+    }
+    for relative_path, source in sources.items():
+        write_source(tmp_path, relative_path, source)
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 1
+    )
+
+    for relative_path, source in sources.items():
+        copied_source = (destination / relative_path).read_text(
+            encoding="utf-8"
+        )
+        assert copied_source == source
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [
+        "Copied: include/defs.vh",
+        "Copied: include/nested/more.svh",
+        "Copied: ip/child.v",
+        "Copied: rtl/top.v",
+    ]
+    assert captured.err == "Missing module: missing\n"
+
+
+def test_copy_with_deps_handles_angle_includes_cycles_comments_and_escape(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    outside_include = tmp_path.parent / "outside-vlib-copy.vh"
+    outside_include.write_text("`define OUTSIDE 1\n", encoding="utf-8")
+    write_source(
+        tmp_path,
+        "rtl/top.v",
+        """// `include \"ignored-line.vh\"
+/* `include \"ignored-block.vh\" */
+`include <../include/shared.vh>
+`include \"../../outside-vlib-copy.vh\"
+module top;
+endmodule
+""",
+    )
+    write_source(
+        tmp_path,
+        "include/shared.vh",
+        '`include "../rtl/top.v"\n`define SHARED 1\n',
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 1
+    )
+
+    assert (destination / "rtl" / "top.v").is_file()
+    assert (destination / "include" / "shared.vh").is_file()
+    assert not (destination / "ignored-line.vh").exists()
+    assert not (destination / "ignored-block.vh").exists()
+    assert not (destination / "outside-vlib-copy.vh").exists()
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [
+        "Copied: include/shared.vh",
+        "Copied: rtl/top.v",
+    ]
+    assert captured.err == (
+        "Missing include: ../../outside-vlib-copy.vh from rtl/top.v\n"
+    )
