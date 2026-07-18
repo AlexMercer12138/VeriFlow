@@ -165,3 +165,112 @@ def test_build_index_uses_one_snapshot_for_modules_and_hash(
         original_bytes
     ).hexdigest()
     assert source_open_count == 1
+
+
+def test_show_selected_module_parameters_and_ansi_ports(
+    vlib, tmp_path, capsys
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/multiple.sv",
+        """
+module ignored(input logic ignored_i);
+endmodule
+
+module selected #(
+  parameter int WIDTH = $clog2(DEPTH),
+  parameter string MODE = "fast,still-one-value"
+) (
+  input logic signed [WIDTH-1:0] a_i, b_i,
+  output var logic ready_o,
+  inout wire pad_io
+);
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["show", "selected"]) == 0
+
+    stdout = capsys.readouterr().out
+    assert "Parameters:" in stdout
+    assert 'WIDTH | int | $clog2(DEPTH)' in stdout
+    assert 'MODE | string | "fast,still-one-value"' in stdout
+    assert "Ports:" in stdout
+    assert "input | [WIDTH-1:0] | a_i" in stdout
+    assert "input | [WIDTH-1:0] | b_i" in stdout
+    assert "output | - | ready_o" in stdout
+    assert "inout | - | pad_io" in stdout
+    assert "ignored_i" not in stdout
+
+
+def test_show_non_ansi_module_ports(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/legacy.v",
+        """module legacy(clk, rst_n, data_o);
+input wire clk;
+input rst_n;
+output reg [3:0] data_o;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["show", "legacy"]) == 0
+
+    stdout = capsys.readouterr().out
+    assert "input | - | clk" in stdout
+    assert "input | - | rst_n" in stdout
+    assert "output | [3:0] | data_o" in stdout
+
+
+def test_show_ignores_endmodule_keyword_inside_string(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/string_marker.sv",
+        """module string_marker(value_i);
+string marker = "endmodule";
+input logic value_i;
+endmodule
+""",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["show", "string_marker"]) == 0
+
+    assert "input | - | value_i" in capsys.readouterr().out
+
+
+def test_show_reports_non_utf8_index_as_an_error(vlib, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    vlib.INDEX_FILE.write_bytes(b"\xff")
+
+    assert vlib.main(["show", "missing"]) == 1
+
+    assert "Invalid module index JSON" in capsys.readouterr().err
+
+
+def test_show_rejects_boolean_schema_version(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    vlib.INDEX_FILE.write_text(
+        json.dumps(
+            {
+                "schema_version": True,
+                "repository_root": tmp_path.resolve().as_posix(),
+                "files": {},
+                "modules": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert vlib.main(["show", "missing"]) == 1
+
+    assert "Unsupported module index schema" in capsys.readouterr().err

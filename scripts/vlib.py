@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -22,10 +23,35 @@ MODULE_DECLARATION = re.compile(
     r"([A-Za-z_][A-Za-z0-9_$]*)\b",
     re.MULTILINE,
 )
+DIRECTION = re.compile(r"^(input|output|inout)\b")
+IDENTIFIER_AT_END = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_$]*)\s*(?:\[[^\]]*\]\s*)*$"
+)
 
 
 class VlibError(Exception):
     """An expected command failure that can be shown directly to the user."""
+
+
+@dataclass(frozen=True)
+class Parameter:
+    name: str
+    type: str
+    value: str
+
+
+@dataclass(frozen=True)
+class Port:
+    direction: str
+    width: Optional[str]
+    name: str
+
+
+@dataclass(frozen=True)
+class ModuleBlock:
+    name: str
+    parameters: Tuple[Parameter, ...]
+    ports: Tuple[Port, ...]
 
 
 def validate_repository(repository_root: Path) -> Path:
@@ -102,6 +128,277 @@ def strip_comments(text: str) -> str:
 def find_modules(source: str) -> List[str]:
     uncommented = strip_comments(source)
     return [match.group(1) for match in MODULE_DECLARATION.finditer(uncommented)]
+
+
+def find_matching_delimiter(text: str, start: int) -> int:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    opener = text[start] if 0 <= start < len(text) else ""
+    if opener not in pairs:
+        raise VlibError("Expected an opening delimiter at offset {}.".format(start))
+
+    expected = [pairs[opener]]
+    in_string = False
+    escaped = False
+    for index in range(start + 1, len(text)):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character in pairs:
+            expected.append(pairs[character])
+        elif character in ")]}":
+            if not expected or character != expected[-1]:
+                raise VlibError("Unbalanced delimiter at offset {}.".format(index))
+            expected.pop()
+            if not expected:
+                return index
+
+    raise VlibError("Unclosed '{}' delimiter.".format(opener))
+
+
+def split_top_level(
+    text: str, separator: str, maxsplit: int = -1
+) -> List[str]:
+    if len(separator) != 1:
+        raise ValueError("separator must be one character")
+
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    expected = []  # type: List[str]
+    parts = []  # type: List[str]
+    part_start = 0
+    split_count = 0
+    in_string = False
+    escaped = False
+
+    for index, character in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character in pairs:
+            expected.append(pairs[character])
+        elif character in ")]}":
+            if not expected or character != expected[-1]:
+                raise VlibError("Unbalanced delimiter at offset {}.".format(index))
+            expected.pop()
+        elif (
+            character == separator
+            and not expected
+            and (maxsplit < 0 or split_count < maxsplit)
+        ):
+            parts.append(text[part_start:index].strip())
+            part_start = index + 1
+            split_count += 1
+
+    if expected:
+        raise VlibError("Unclosed delimiter in declaration.")
+    parts.append(text[part_start:].strip())
+    return parts
+
+
+def _skip_whitespace(text: str, position: int) -> int:
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
+
+
+def _find_keyword_outside_strings(
+    text: str, keyword: str, start: int
+) -> Optional[int]:
+    position = start
+    in_string = False
+    escaped = False
+    identifier_characters = "_$"
+
+    while position < len(text):
+        character = text[position]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            position += 1
+            continue
+        if character == '"':
+            in_string = True
+            position += 1
+            continue
+
+        keyword_end = position + len(keyword)
+        before = text[position - 1] if position > 0 else ""
+        after = text[keyword_end] if keyword_end < len(text) else ""
+        if (
+            text.startswith(keyword, position)
+            and not (before.isalnum() or before in identifier_characters)
+            and not (after.isalnum() or after in identifier_characters)
+        ):
+            return position
+        position += 1
+    return None
+
+
+def _declaration_name(text: str) -> Tuple[str, str]:
+    match = IDENTIFIER_AT_END.search(text.strip())
+    if match is None:
+        raise VlibError("Cannot parse declaration: {}".format(text.strip()))
+    return match.group(1), text.strip()[: match.start()].strip()
+
+
+def _packed_width(prefix: str) -> Optional[str]:
+    ranges = []  # type: List[str]
+    position = 0
+    while position < len(prefix):
+        if prefix[position] == "[":
+            end = find_matching_delimiter(prefix, position)
+            ranges.append(prefix[position : end + 1].strip())
+            position = end + 1
+        else:
+            position += 1
+    return " ".join(ranges) or None
+
+
+def parse_parameters(parameter_text: Optional[str]) -> Tuple[Parameter, ...]:
+    if parameter_text is None or not parameter_text.strip():
+        return ()
+
+    parameters = []  # type: List[Parameter]
+    inherited_type = "-"
+    for item in split_top_level(parameter_text, ","):
+        declaration = item.strip()
+        keyword = re.match(r"^(?:parameter|localparam)\b", declaration)
+        if keyword is not None:
+            declaration = declaration[keyword.end() :].strip()
+
+        assignment = split_top_level(declaration, "=", maxsplit=1)
+        left = assignment[0]
+        value = assignment[1] if len(assignment) == 2 else "-"
+        name, type_prefix = _declaration_name(left)
+        if type_prefix:
+            inherited_type = type_prefix
+        parameters.append(Parameter(name, inherited_type, value.strip() or "-"))
+    return tuple(parameters)
+
+
+def _starts_with_direction(text: str) -> bool:
+    return DIRECTION.match(text.strip()) is not None
+
+
+def parse_ansi_ports(port_text: str) -> Tuple[Port, ...]:
+    ports = []  # type: List[Port]
+    seen = set()
+    inherited_direction = None  # type: Optional[str]
+    inherited_width = None  # type: Optional[str]
+
+    for item in split_top_level(port_text, ","):
+        declaration = item.strip()
+        if not declaration:
+            continue
+        direction_match = DIRECTION.match(declaration)
+        if direction_match is not None:
+            inherited_direction = direction_match.group(1)
+            declaration = declaration[direction_match.end() :].strip()
+            explicit_direction = True
+        else:
+            explicit_direction = False
+        if inherited_direction is None:
+            continue
+
+        declaration = split_top_level(declaration, "=", maxsplit=1)[0]
+        name, prefix = _declaration_name(declaration)
+        if explicit_direction:
+            inherited_width = _packed_width(prefix)
+        if name not in seen:
+            ports.append(Port(inherited_direction, inherited_width, name))
+            seen.add(name)
+    return tuple(ports)
+
+
+def parse_non_ansi_ports(header_text: str, body: str) -> Tuple[Port, ...]:
+    header_names = []  # type: List[str]
+    for item in split_top_level(header_text, ","):
+        declaration = split_top_level(item, "=", maxsplit=1)[0]
+        if declaration.strip():
+            name, _prefix = _declaration_name(declaration)
+            if name not in header_names:
+                header_names.append(name)
+
+    declarations = {}  # type: Dict[str, Port]
+    for statement in split_top_level(body, ";"):
+        if not _starts_with_direction(statement):
+            continue
+        for port in parse_ansi_ports(statement):
+            declarations.setdefault(port.name, port)
+    return tuple(
+        declarations[name] for name in header_names if name in declarations
+    )
+
+
+def parse_module_blocks(source: str) -> Tuple[ModuleBlock, ...]:
+    text = strip_comments(source)
+    blocks = []  # type: List[ModuleBlock]
+    cursor = 0
+
+    while True:
+        declaration = MODULE_DECLARATION.search(text, cursor)
+        if declaration is None:
+            break
+        name = declaration.group(1)
+        endmodule_start = _find_keyword_outside_strings(
+            text, "endmodule", declaration.end()
+        )
+        if endmodule_start is None:
+            raise VlibError("Module '{}' has no matching endmodule.".format(name))
+
+        position = _skip_whitespace(text, declaration.end())
+        parameter_text = None  # type: Optional[str]
+        if position < endmodule_start and text[position] == "#":
+            position = _skip_whitespace(text, position + 1)
+            if position >= endmodule_start or text[position] != "(":
+                raise VlibError("Module '{}' has an invalid parameter block.".format(name))
+            parameter_end = find_matching_delimiter(text, position)
+            parameter_text = text[position + 1 : parameter_end]
+            position = _skip_whitespace(text, parameter_end + 1)
+
+        port_text = None  # type: Optional[str]
+        if position < endmodule_start and text[position] == "(":
+            port_end = find_matching_delimiter(text, position)
+            port_text = text[position + 1 : port_end]
+            position = _skip_whitespace(text, port_end + 1)
+
+        if position >= endmodule_start or text[position] != ";":
+            raise VlibError("Module '{}' has an invalid header.".format(name))
+        body = text[position + 1 : endmodule_start]
+        parameters = parse_parameters(parameter_text)
+        if port_text is None or not port_text.strip():
+            ports = ()  # type: Tuple[Port, ...]
+        elif any(
+            _starts_with_direction(item)
+            for item in split_top_level(port_text, ",")
+        ):
+            ports = parse_ansi_ports(port_text)
+        else:
+            ports = parse_non_ansi_ports(port_text, body)
+        blocks.append(ModuleBlock(name, parameters, ports))
+        cursor = endmodule_start + len("endmodule")
+
+    return tuple(blocks)
 
 
 def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
@@ -192,6 +489,99 @@ def atomic_write_json(path: Path, data: Dict[str, object]) -> None:
                 pass
 
 
+def load_index(check_root: bool = True) -> Dict[str, object]:
+    if not INDEX_FILE.exists():
+        raise VlibError(
+            "Module index does not exist; run 'vlib index' first: {}".format(
+                INDEX_FILE
+            )
+        )
+    try:
+        index = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VlibError("Invalid module index JSON: {}".format(error))
+
+    if not isinstance(index, dict):
+        raise VlibError("Invalid module index: top level must be an object.")
+    schema_version = index.get("schema_version")
+    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
+        raise VlibError(
+            "Unsupported module index schema {}; expected {}.".format(
+                schema_version, SCHEMA_VERSION
+            )
+        )
+    if not isinstance(index.get("files"), dict):
+        raise VlibError("Invalid module index: 'files' must be an object.")
+    if not isinstance(index.get("modules"), dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+
+    if check_root:
+        indexed_root = index.get("repository_root")
+        if not isinstance(indexed_root, str):
+            raise VlibError(
+                "Invalid module index: 'repository_root' must be a string."
+            )
+        configured_root = validate_repository(REPOSITORY_ROOT)
+        normalized_indexed_root = Path(indexed_root).expanduser().resolve()
+        if os.path.normcase(str(normalized_indexed_root)) != os.path.normcase(
+            str(configured_root)
+        ):
+            raise VlibError(
+                "Module index root '{}' does not match configured root '{}'; "
+                "run 'vlib index'.".format(indexed_root, configured_root)
+            )
+    return index
+
+
+def module_block_from_index(
+    module: str, index: Dict[str, object]
+) -> ModuleBlock:
+    modules = index.get("modules")
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+    if module not in modules:
+        raise VlibError("Unknown module '{}'.".format(module))
+
+    relative_path = modules[module]
+    if not isinstance(relative_path, str) or not relative_path:
+        raise VlibError(
+            "Invalid module index path for module '{}'.".format(module)
+        )
+    indexed_path = Path(relative_path)
+    if indexed_path.is_absolute():
+        raise VlibError(
+            "Invalid module index path for module '{}': {}".format(
+                module, relative_path
+            )
+        )
+
+    repository_root = validate_repository(REPOSITORY_ROOT)
+    source_path = (repository_root / indexed_path).resolve()
+    try:
+        source_path.relative_to(repository_root)
+    except ValueError:
+        raise VlibError(
+            "Indexed path for module '{}' escapes the repository: {}".format(
+                module, relative_path
+            )
+        )
+    if not source_path.is_file():
+        raise VlibError(
+            "Indexed file for module '{}' is missing: {}; run 'vlib index'.".format(
+                module, relative_path
+            )
+        )
+
+    source = source_path.read_text(encoding="utf-8", errors="replace")
+    for block in parse_module_blocks(source):
+        if block.name == module:
+            return block
+    raise VlibError(
+        "Module '{}' is not present in indexed file '{}'; the index is stale. "
+        "Run 'vlib index'.".format(module, relative_path)
+    )
+
+
 def index_command(_arguments: argparse.Namespace) -> int:
     repository_root = validate_repository(REPOSITORY_ROOT)
     index = build_index(repository_root)
@@ -204,6 +594,34 @@ def index_command(_arguments: argparse.Namespace) -> int:
     return 0
 
 
+def show_command(arguments: argparse.Namespace) -> int:
+    index = load_index()
+    block = module_block_from_index(arguments.module, index)
+
+    print("Parameters:")
+    if block.parameters:
+        for parameter in block.parameters:
+            print(
+                "  {} | {} | {}".format(
+                    parameter.name, parameter.type, parameter.value
+                )
+            )
+    else:
+        print("  (none)")
+
+    print("Ports:")
+    if block.ports:
+        for port in block.ports:
+            print(
+                "  {} | {} | {}".format(
+                    port.direction, port.width or "-", port.name
+                )
+            )
+    else:
+        print("  (none)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage a standalone Verilog module library."
@@ -213,6 +631,11 @@ def build_parser() -> argparse.ArgumentParser:
         "index", help="scan the repository and rebuild the module index"
     )
     index_parser.set_defaults(handler=index_command)
+    show_parser = subparsers.add_parser(
+        "show", help="show parameters and ports for an indexed module"
+    )
+    show_parser.add_argument("module", help="module name to inspect")
+    show_parser.set_defaults(handler=show_command)
     return parser
 
 
