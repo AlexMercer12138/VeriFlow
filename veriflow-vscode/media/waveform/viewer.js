@@ -50,7 +50,8 @@ const STYLE = {
     unknown: '#ff5c5c',
     highZ: '#4cb3ff',
     busText: '#ffffff',
-    cursor: '#f6c177',
+    cursorA: '#f6c177',
+    cursorB: '#4cb3ff',
     selection: 'rgba(96,165,250,0.20)',
 };
 
@@ -68,7 +69,9 @@ let waveFirstRow = 0;
 let waveScrollTop = 0;
 let startTime = 0;
 let endTime = 1;
-let cursorTime = 0;
+let cursorA = 0;
+let cursorB = null;
+let activeCursor = 'a';
 let dragging = false;
 let dragMode = 'none';
 let lastMouseX = 0;
@@ -91,6 +94,25 @@ function getCss(name, fallback) {
 
 function stableSignalKey(signal) {
     return signal.fullName + '|' + signal.id;
+}
+
+function activeCursorTime() {
+    return activeCursor === 'b' && cursorB !== null ? cursorB : cursorA;
+}
+
+function setActiveCursorTime(time) {
+    if (!vcd) return;
+    const minTime = Number(vcd.startTime) || 0;
+    const maxTime = Math.max(minTime, Number(vcd.endTime) || 1);
+    const next = clamp(Number(time), minTime, maxTime);
+    if (activeCursor === 'b') cursorB = next;
+    else cursorA = next;
+}
+
+function activateCursor(name) {
+    activeCursor = name === 'b' ? 'b' : 'a';
+    if (activeCursor === 'b' && cursorB === null) cursorB = cursorA;
+    render();
 }
 
 function cssPixelValue(name, fallback) {
@@ -131,9 +153,9 @@ function captureLayout() {
             waveNameWidth: cssPixelValue('--wave-name-width', 150),
         },
         cursors: {
-            a: cursorTime,
-            b: null,
-            active: 'a',
+            a: cursorA,
+            b: cursorB,
+            active: activeCursor,
         },
     };
 }
@@ -279,8 +301,14 @@ function restoreLayout(layout, renderAfter = true) {
         setCssPx('--wave-name-width', clamp(Number(view.waveNameWidth), 86, Math.max(96, waveWidth - 180)));
     }
 
-    const cursorA = Number(validated.cursors?.a);
-    cursorTime = Number.isFinite(cursorA) ? clamp(cursorA, minTime, maxTime) : minTime;
+    const restoredCursorA = Number(validated.cursors?.a);
+    const restoredCursorB = validated.cursors?.b === null || validated.cursors?.b === undefined
+        ? null
+        : Number(validated.cursors.b);
+    cursorA = Number.isFinite(restoredCursorA) ? clamp(restoredCursorA, minTime, maxTime) : minTime;
+    cursorB = Number.isFinite(restoredCursorB) ? clamp(restoredCursorB, minTime, maxTime) : null;
+    activeCursor = validated.cursors?.active === 'b' ? 'b' : 'a';
+    if (activeCursor === 'b' && cursorB === null) activeCursor = 'a';
     renderSignalList();
     if (renderAfter) render();
     return true;
@@ -317,14 +345,16 @@ function setEmptyState() {
     nextGroupId = 1;
     startTime = 0;
     endTime = 1;
-    cursorTime = 0;
+    cursorA = 0;
+    cursorB = null;
+    activeCursor = 'a';
     fileTitle.textContent = 'No waveform file opened';
     searchInput.value = '';
     scopeSelect.innerHTML = '<option value="">No waveform file</option>';
     signalList.scrollTop = 0;
     renderSignalList();
     statusText.textContent = 'No waveform file opened';
-    cursorText.textContent = 'Cursor: -';
+    cursorText.textContent = 'A: - | B: - | Delta: - | Frequency: -';
     rangeText.textContent = 'Range: -';
     render();
 }
@@ -354,7 +384,9 @@ function setData(fileName, data, messageLayout = null) {
     nextGroupId = 1;
     startTime = data.startTime || 0;
     endTime = Math.max(1, data.endTime || 1);
-    cursorTime = startTime;
+    cursorA = startTime;
+    cursorB = null;
+    activeCursor = 'a';
     renderScopeSelect();
     applyFilter();
     const restoredLayout = restoreLayout(loadHostLayout(messageLayout), false);
@@ -440,6 +472,9 @@ function formatScaledNumber(value) {
 }
 
 function formatTime(time, scale = null) {
+    if (waveCore && vcd?.timescale) {
+        return waveCore.formatTicks(time, vcd.timescale);
+    }
     const resolved = scale || compactTimeUnit(Math.max(Math.abs(startTime), Math.abs(endTime), Math.abs(time)));
     const scaled = time / resolved.factor;
     return formatScaledNumber(scaled) + (resolved.unit ? ' ' + resolved.unit : '');
@@ -1347,7 +1382,7 @@ function valueAt(signal, time) {
 }
 
 function currentValueText(signal) {
-    const value = valueAt(signal, cursorTime);
+    const value = valueAt(signal, activeCursorTime());
     if (!value) return '-';
     return signal.width > 1 ? busText(value, signal.width, signal.radix).toUpperCase() : value.toUpperCase();
 }
@@ -1642,11 +1677,12 @@ function drawRows(width, height) {
     ctx.restore();
 }
 
-function drawCursor(width, height) {
-    const x = timeToX(cursorTime, width);
+function drawCursorLine(name, time, color, labelY, width, height) {
+    if (time === null) return;
+    const x = timeToX(time, width);
     if (x < 0 || x > width) return;
     ctx.save();
-    ctx.strokeStyle = STYLE.cursor;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -1654,10 +1690,15 @@ function drawCursor(width, height) {
     ctx.lineTo(snap(x), height);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = STYLE.cursor;
+    ctx.fillStyle = color;
     ctx.font = '11px ' + getCss('--vscode-editor-font-family', 'monospace');
-    ctx.fillText(formatTime(cursorTime), x + 5, 28);
+    ctx.fillText(name + ' ' + formatTime(time), x + 5, labelY);
     ctx.restore();
+}
+
+function drawCursors(width, height) {
+    drawCursorLine('A', cursorA, STYLE.cursorA, 26, width, height);
+    drawCursorLine('B', cursorB, STYLE.cursorB, 36, width, height);
 }
 
 function render() {
@@ -1677,9 +1718,15 @@ function render() {
     if (waveSignals.length) {
         drawRows(width, height);
     }
-    drawCursor(width, height);
+    drawCursors(width, height);
     updateVisibleSignalValues();
-    cursorText.textContent = 'Cursor: ' + formatTime(cursorTime);
+    document.getElementById('cursorA').setAttribute('aria-pressed', String(activeCursor === 'a'));
+    document.getElementById('cursorB').setAttribute('aria-pressed', String(activeCursor === 'b'));
+    const measurement = waveCore.measureCursors(cursorA, cursorB, vcd.timescale || '');
+    cursorText.textContent = 'A: ' + formatTime(cursorA)
+        + ' | B: ' + (cursorB === null ? '-' : formatTime(cursorB))
+        + ' | Delta: ' + measurement.deltaText
+        + ' | Frequency: ' + measurement.frequencyText;
     rangeText.textContent = 'Range: ' + formatRange(Math.round(startTime), Math.round(endTime));
     scheduleLayoutSave();
 }
@@ -1698,7 +1745,7 @@ function updateVisibleSignalValues() {
 
 function updateToolbarState() {
     const disabled = !vcd;
-    ['goStart', 'goEnd', 'prevPage', 'nextPage', 'prevChange', 'nextChange', 'zoomOut', 'zoomIn', 'fit'].forEach(id => {
+    ['goStart', 'goEnd', 'prevPage', 'nextPage', 'prevChange', 'nextChange', 'zoomOut', 'zoomIn', 'fit', 'cursorA', 'cursorB', 'changeSearchMode'].forEach(id => {
         document.getElementById(id).disabled = disabled;
     });
 }
@@ -1722,13 +1769,14 @@ function fit() {
     if (!vcd) return;
     startTime = vcd.startTime || 0;
     endTime = Math.max(1, vcd.endTime || 1);
-    cursorTime = startTime;
+    setActiveCursorTime(startTime);
     render();
 }
 
 function goToStart() {
     if (!vcd) return;
-    cursorTime = vcd.startTime || 0;
+    const cursorTime = vcd.startTime || 0;
+    setActiveCursorTime(cursorTime);
     const range = Math.max(1, endTime - startTime);
     startTime = cursorTime;
     endTime = Math.min(Math.max(1, vcd.endTime || 1), startTime + range);
@@ -1737,7 +1785,8 @@ function goToStart() {
 
 function goToEnd() {
     if (!vcd) return;
-    cursorTime = Math.max(1, vcd.endTime || 1);
+    const cursorTime = Math.max(1, vcd.endTime || 1);
+    setActiveCursorTime(cursorTime);
     const range = Math.max(1, endTime - startTime);
     endTime = cursorTime;
     startTime = Math.max(0, endTime - range);
@@ -1750,7 +1799,7 @@ function panPage(direction) {
     const delta = Math.max(1, Math.round(range * 0.85)) * direction;
     startTime = clamp(startTime + delta, 0, Math.max(0, vcd.endTime - range));
     endTime = startTime + range;
-    cursorTime = clamp(cursorTime + delta, 0, Math.max(1, vcd.endTime || 1));
+    setActiveCursorTime(activeCursorTime() + delta);
     render();
 }
 
@@ -1832,17 +1881,18 @@ function jumpToChange(direction) {
     }
     let target = null;
     if (direction > 0) {
-        target = signal.changes.find(change => change.time > cursorTime);
+        target = signal.changes.find(change => change.time > activeCursorTime());
     } else {
         for (let i = signal.changes.length - 1; i >= 0; i--) {
-            if (signal.changes[i].time < cursorTime) {
+            if (signal.changes[i].time < activeCursorTime()) {
                 target = signal.changes[i];
                 break;
             }
         }
     }
     if (!target) return;
-    cursorTime = target.time;
+    setActiveCursorTime(target.time);
+    const cursorTime = activeCursorTime();
     const range = Math.max(1, endTime - startTime);
     if (cursorTime < startTime || cursorTime > endTime) {
         startTime = clamp(Math.round(cursorTime - range / 2), 0, Math.max(0, (vcd.endTime || 1) - range));
@@ -1856,7 +1906,8 @@ function goToTime() {
     if (!vcd) return;
     const t = Number.parseInt(timeInput.value.trim(), 10);
     if (Number.isNaN(t)) return;
-    cursorTime = clamp(t, 0, Math.max(1, vcd.endTime || 1));
+    setActiveCursorTime(t);
+    const cursorTime = activeCursorTime();
     const range = Math.max(1, endTime - startTime);
     startTime = clamp(Math.round(cursorTime - range / 2), 0, Math.max(0, vcd.endTime - range));
     endTime = Math.min(Math.max(1, vcd.endTime || 1), startTime + range);
@@ -2124,7 +2175,7 @@ function finishTimeRangeSelection(event) {
     const nextEnd = xToTime(maxX, canvas.clientWidth);
     startTime = clamp(Math.min(nextStart, nextEnd), 0, Math.max(0, vcd.endTime - 1));
     endTime = clamp(Math.max(nextStart, nextEnd), startTime + 1, Math.max(1, vcd.endTime || 1));
-    cursorTime = startTime;
+    setActiveCursorTime(startTime);
     render();
 }
 
@@ -2137,6 +2188,8 @@ document.getElementById('zoomOut').onclick = () => zoom(2);
 document.getElementById('prevChange').onclick = () => jumpToChange(-1);
 document.getElementById('nextChange').onclick = () => jumpToChange(1);
 document.getElementById('fit').onclick = fit;
+document.getElementById('cursorA').onclick = () => activateCursor('a');
+document.getElementById('cursorB').onclick = () => activateCursor('b');
 goToTimeButton.onclick = goToTime;
 searchInput.oninput = applyFilter;
 scopeSelect.onchange = applyFilter;
@@ -2163,7 +2216,7 @@ waveCanvasPane.addEventListener('mousedown', (event) => {
     }
     dragMode = 'box';
     boxStart = { x: clamp(event.offsetX, 0, canvas.clientWidth), y: clamp(event.offsetY, HEADER_HEIGHT, canvas.clientHeight) };
-    cursorTime = xToTime(event.offsetX, canvas.clientWidth);
+    setActiveCursorTime(xToTime(event.offsetX, canvas.clientWidth));
     if (rowIndex >= 0 && rowIndex < waveSignals.length) {
         selectWaveSignal(rowIndex, event.ctrlKey || event.metaKey);
     } else if (!event.ctrlKey && !event.metaKey) {
@@ -2285,6 +2338,14 @@ document.addEventListener('keydown', (event) => {
             break;
         case 'ArrowRight':
             jumpToChange(1);
+            break;
+        case 'a':
+        case 'A':
+            activateCursor('a');
+            break;
+        case 'b':
+        case 'B':
+            activateCursor('b');
             break;
         case 'i':
         case 'I':
@@ -2453,6 +2514,24 @@ window.__veriflowWaveViewer = {
             afterBusBits: after.busBits,
         };
     },
+    setCursorSamples(a, b, active = 'a') {
+        const minTime = Number(vcd?.startTime) || 0;
+        const maxTime = Math.max(minTime, Number(vcd?.endTime) || 1);
+        cursorA = clamp(Number(a), minTime, maxTime);
+        cursorB = b === null || b === undefined
+            ? null
+            : clamp(Number(b), minTime, maxTime);
+        activeCursor = active === 'b' && cursorB !== null ? 'b' : 'a';
+        render();
+        const measurement = waveCore.measureCursors(cursorA, cursorB, vcd?.timescale || '');
+        return {
+            cursorA,
+            cursorB,
+            activeCursor,
+            deltaText: measurement.deltaText,
+            frequencyText: measurement.frequencyText,
+        };
+    },
     state() {
         const displayItems = displayedWaveItems();
         return {
@@ -2464,7 +2543,10 @@ window.__veriflowWaveViewer = {
             busBits: displayItems.filter(isBusBitRow).length,
             startTime,
             endTime,
-            cursorTime,
+            cursorTime: activeCursorTime(),
+            cursorA,
+            cursorB,
+            activeCursor,
         };
     },
 };

@@ -166,6 +166,7 @@ def main() -> int:
     formatted = {"done": False}
     name_mode = {"done": False}
     layout_roundtrip = {"done": False}
+    cursor_measure = {"done": False}
     multi_select = {"done": False}
     initial_state = {"checked": False}
 
@@ -373,6 +374,34 @@ def main() -> int:
             view.page().runJavaScript(
                 "JSON.stringify(window.__veriflowWaveViewer ? window.__veriflowWaveViewer.multiSelectSamples() : {});",
                 on_multi_select,
+            )
+            return
+
+        if not cursor_measure["done"]:
+            cursor_measure["done"] = True
+
+            def on_cursor_measure(state) -> None:
+                try:
+                    state = json.loads(state or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "cursor measurement returned invalid state: " + repr(state))
+                    return
+                if (
+                    state.get("cursorA") != 12
+                    or state.get("cursorB") != 17
+                    or state.get("activeCursor") != "b"
+                    or state.get("deltaText") != "50 ns"
+                    or state.get("frequencyText") != "20 MHz"
+                ):
+                    finish(False, "cursor measurement failed: " + repr(state))
+                    return
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer && "
+                "window.__veriflowWaveViewer.setCursorSamples ? "
+                "window.__veriflowWaveViewer.setCursorSamples(12, 17, 'b') : {missing: true});",
+                on_cursor_measure,
             )
             return
 
