@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from pathlib import Path
 
 import pytest
@@ -9,13 +10,20 @@ from src.domain.services.vcd_index_format import (
     INDEX_VERSION,
     MAX_WEB_TIMESTAMP,
     RawRecordCodec,
+    SUMMARY_CHANGED,
+    SUMMARY_HAS_X,
+    SUMMARY_HAS_Z,
     SummaryRecordCodec,
     VcdIndexError,
     pack_logic_value,
     unpack_logic_value,
     validate_manifest,
 )
-from src.domain.services.vcd_index_service import VcdIndexReader, build_vcd_index
+from src.domain.services.vcd_index_service import (
+    VcdIndexCancelled,
+    VcdIndexReader,
+    build_vcd_index,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,3 +163,66 @@ $enddefinitions $end
     assert len(manifest["streams"]) == 1
     assert len(manifest["signals"]) == 2
     assert {signal["stream"] for signal in manifest["signals"]} == {0}
+
+
+@pytest.fixture
+def index_reader(tmp_path: Path) -> VcdIndexReader:
+    index_dir = tmp_path / "query-index"
+    build_vcd_index(WAVEFORM_FIXTURE, index_dir)
+    return VcdIndexReader(index_dir)
+
+
+def _decode_series_values(series: dict) -> list[str]:
+    raw = base64.b64decode(series["values"])
+    stride = series["valueStride"]
+    width = series["width"]
+    return [
+        unpack_logic_value(raw[index : index + stride], width)
+        for index in range(0, len(raw), stride)
+    ]
+
+
+def test_raw_window_includes_boundary_value(index_reader: VcdIndexReader) -> None:
+    series = index_reader.query_window_for_reference("clk", 7, 12, pixel_width=32)
+
+    assert series["kind"] == "raw"
+    assert series["times"] == [5, 10]
+    assert _decode_series_values(series) == ["1", "0"]
+
+
+def test_full_range_uses_summary_with_xz_flags(index_reader: VcdIndexReader) -> None:
+    series = index_reader.query_window_for_reference(
+        "data [3:0]", 0, 20, pixel_width=1
+    )
+
+    assert series["kind"] == "summary"
+    assert len(series["firstTimes"]) <= 2
+    assert series["flags"][0] & SUMMARY_CHANGED
+    assert series["flags"][0] & SUMMARY_HAS_X
+    assert series["flags"][0] & SUMMARY_HAS_Z
+
+
+def test_cursor_values_are_exact(index_reader: VcdIndexReader) -> None:
+    assert index_reader.values_at(["clk", "data [3:0]", "ready"], 11) == {
+        "clk": "0",
+        "data [3:0]": "1010",
+        "ready": "0",
+    }
+
+
+def test_searches_raw_changes_and_bus_bits(index_reader: VcdIndexReader) -> None:
+    assert index_reader.search("clk", 0, 1, "rising")["time"] == 5
+    assert index_reader.search("clk", 12, -1, "falling")["time"] == 10
+    assert index_reader.search("data [3:0]", 0, 1, "value", "0xA")["time"] == 6
+    assert index_reader.search("data [3:0]", 6, 1, "xz")["time"] == 12
+    assert index_reader.search(
+        "data [3:0]", 0, 1, "rising", bit_index=1
+    )["time"] == 6
+    assert index_reader.search("clk", 20, 1, "change") is None
+
+
+def test_query_cancellation(index_reader: VcdIndexReader) -> None:
+    with pytest.raises(VcdIndexCancelled):
+        index_reader.query_window_for_reference(
+            "clk", 0, 20, pixel_width=32, cancelled=lambda: True
+        )
