@@ -246,8 +246,13 @@ def _find_keyword_outside_strings(
         after = text[keyword_end] if keyword_end < len(text) else ""
         if (
             text.startswith(keyword, position)
-            and not (before.isalnum() or before in identifier_characters)
-            and not (after.isalnum() or after in identifier_characters)
+            and not (
+                before
+                and (before.isalnum() or before in identifier_characters)
+            )
+            and not (
+                after and (after.isalnum() or after in identifier_characters)
+            )
         ):
             return position
         position += 1
@@ -284,6 +289,7 @@ def parse_parameters(parameter_text: Optional[str]) -> Tuple[Parameter, ...]:
         declaration = item.strip()
         keyword = re.match(r"^(?:parameter|localparam)\b", declaration)
         if keyword is not None:
+            inherited_type = "integer"
             declaration = declaration[keyword.end() :].strip()
 
         assignment = split_top_level(declaration, "=", maxsplit=1)

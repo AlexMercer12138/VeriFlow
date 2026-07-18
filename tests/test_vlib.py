@@ -274,3 +274,33 @@ def test_show_rejects_boolean_schema_version(vlib, tmp_path, capsys):
     assert vlib.main(["show", "missing"]) == 1
 
     assert "Unsupported module index schema" in capsys.readouterr().err
+
+
+def test_show_parses_endmodule_at_end_of_file(vlib, tmp_path, capsys):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "rtl/eof.sv",
+        "module m(input wire value_i); endmodule",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["show", "m"]) == 0
+
+    assert "input | - | value_i" in capsys.readouterr().out
+
+
+def test_explicit_untyped_parameter_resets_inherited_type(vlib):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+
+    parameters = vlib.parse_parameters(
+        "parameter int A=1, B=2, parameter C=3, localparam D=4"
+    )
+
+    assert parameters == (
+        vlib.Parameter("A", "int", "1"),
+        vlib.Parameter("B", "int", "2"),
+        vlib.Parameter("C", "integer", "3"),
+        vlib.Parameter("D", "integer", "4"),
+    )
