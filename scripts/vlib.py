@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -129,6 +130,15 @@ class CopyMapping:
     plan_file: CopyPlanFile
     destination_path: Path
     safe_no_op: bool
+
+
+@dataclass
+class CopyCommitIntent:
+    destination_path: Path
+    had_destination: bool
+    backup_path: Optional[Path] = None
+    backup_attempted: bool = False
+    install_attempted: bool = False
 
 
 def validate_repository(repository_root: Path) -> Path:
@@ -1871,14 +1881,47 @@ def _stage_copy_mappings(
             _write_staged_snapshot(
                 mapping.plan_file.snapshot.content, staging_path
             )
-            _apply_snapshot_metadata(
-                mapping.plan_file.snapshot, staging_path
-            )
             staged.append((mapping, staging_path))
-    except Exception:
+    except BaseException:
         _cleanup_temporary_paths(staging_paths)
         raise
     return staged
+
+
+def _make_path_writable(path: Path) -> None:
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        return
+    path.chmod(mode | stat.S_IWRITE)
+
+
+def _rollback_copy_intents(
+    intents: Sequence[CopyCommitIntent],
+) -> List[OSError]:
+    errors = []  # type: List[OSError]
+    for intent in reversed(intents):
+        destination_path = intent.destination_path
+        try:
+            if intent.had_destination:
+                backup_path = intent.backup_path
+                if backup_path is None:
+                    continue
+                destination_exists = destination_path.exists()
+                original_was_moved = intent.backup_attempted and (
+                    not destination_exists or intent.install_attempted
+                )
+                if not original_was_moved:
+                    continue
+                if destination_exists:
+                    _make_path_writable(destination_path)
+                os.replace(str(backup_path), str(destination_path))
+            elif intent.install_attempted and destination_path.exists():
+                _make_path_writable(destination_path)
+                _unlink_if_present(destination_path)
+        except OSError as error:
+            errors.append(error)
+    return errors
 
 
 def _commit_staged_mappings(
@@ -1890,39 +1933,53 @@ def _commit_staged_mappings(
         if staging_path is not None
     ]
     backup_paths = []  # type: List[Path]
-    applied = []  # type: List[Tuple[Path, Optional[Path], bool]]
+    intents = []  # type: List[CopyCommitIntent]
     try:
         for mapping, staging_path in staged:
             if staging_path is None:
                 continue
             destination_path = mapping.destination_path
-            backup_path = None  # type: Optional[Path]
-            if destination_path.exists():
+            intent = CopyCommitIntent(
+                destination_path=destination_path,
+                had_destination=destination_path.exists(),
+            )
+            intents.append(intent)
+            if intent.had_destination:
                 backup_path = _temporary_sibling(
                     destination_path, "backup"
                 )
+                intent.backup_path = backup_path
                 backup_paths.append(backup_path)
+                intent.backup_attempted = True
                 os.replace(str(destination_path), str(backup_path))
-            applied.append((destination_path, backup_path, False))
+            intent.install_attempted = True
             os.replace(str(staging_path), str(destination_path))
-            applied[-1] = (destination_path, backup_path, True)
-    except Exception as copy_error:
-        rollback_errors = []  # type: List[OSError]
-        for destination_path, backup_path, installed in reversed(applied):
-            try:
-                if backup_path is not None:
-                    os.replace(str(backup_path), str(destination_path))
-                elif installed:
-                    _unlink_if_present(destination_path)
-            except OSError as rollback_error:
-                rollback_errors.append(rollback_error)
-        _cleanup_temporary_paths(staging_paths)
+        for mapping, staging_path in staged:
+            if staging_path is not None:
+                _apply_snapshot_metadata(
+                    mapping.plan_file.snapshot,
+                    mapping.destination_path,
+                )
+    except BaseException as copy_error:
+        rollback_errors = _rollback_copy_intents(intents)
+        cleanup_errors = []  # type: List[OSError]
+        try:
+            _cleanup_temporary_paths(staging_paths)
+        except OSError as cleanup_error:
+            cleanup_errors.append(cleanup_error)
         if not rollback_errors:
-            _cleanup_temporary_paths(backup_paths)
+            try:
+                _cleanup_temporary_paths(backup_paths)
+            except OSError as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        if not isinstance(copy_error, Exception):
+            raise
+        all_recovery_errors = rollback_errors + cleanup_errors
+        if not all_recovery_errors:
             raise
         raise VlibError(
             "Copy failed: {}; rollback failed: {}".format(
-                copy_error, rollback_errors[0]
+                copy_error, all_recovery_errors[0]
             )
         ) from copy_error
     _cleanup_temporary_paths(staging_paths)

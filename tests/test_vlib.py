@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,15 @@ def remove_directory_alias(alias):
         alias.unlink()
     elif alias.exists():
         os.rmdir(str(alias))
+
+
+def make_tree_writable(root):
+    for path in root.rglob("*"):
+        if path.is_file():
+            try:
+                path.chmod(0o666)
+            except OSError:
+                pass
 
 
 def test_find_modules_parses_multiline_qualified_declarations(vlib):
@@ -1687,3 +1697,216 @@ def test_copy_same_file_no_op_detects_source_change_after_planning(
     assert captured.err == (
         "Error: Source changed after planning: rtl/top.v\n"
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only rollback")
+def test_copy_rollback_restores_existing_target_after_read_only_install(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    top_source = tmp_path / "a" / "top.v"
+    top_source.parent.mkdir(parents=True)
+    top_source.write_text(
+        "module top;\n  child u_child();\nendmodule\n",
+        encoding="utf-8",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    top_source.chmod(stat.S_IREAD)
+    destination = tmp_path / "copied"
+    top_target = destination / "a" / "top.v"
+    child_target = destination / "z" / "child.v"
+    top_target.parent.mkdir(parents=True)
+    child_target.parent.mkdir(parents=True)
+    top_target.write_bytes(b"ORIGINAL_TOP")
+    child_target.write_bytes(b"ORIGINAL_CHILD")
+    original_writable = bool(
+        stat.S_IMODE(top_target.stat().st_mode) & stat.S_IWRITE
+    )
+    original_replace = vlib.os.replace
+
+    def fail_child_commit(source, target):
+        if (
+            Path(target) == child_target
+            and ".vlib-stage-" in Path(source).name
+        ):
+            raise OSError("injected read-only rollback failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(vlib.os, "replace", fail_child_commit)
+    try:
+        assert (
+            vlib.main(
+                ["copy", "top", str(destination), "--with-deps"]
+            )
+            == 1
+        )
+
+        assert top_target.read_bytes() == b"ORIGINAL_TOP"
+        assert child_target.read_bytes() == b"ORIGINAL_CHILD"
+        assert bool(
+            stat.S_IMODE(top_target.stat().st_mode) & stat.S_IWRITE
+        ) == original_writable
+        assert not [
+            path
+            for path in destination.rglob("*")
+            if ".vlib-" in path.name
+        ]
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == (
+            "Error: injected read-only rollback failure\n"
+        )
+    finally:
+        make_tree_writable(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only rollback")
+def test_copy_rollback_removes_new_read_only_target(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    top_source = tmp_path / "a" / "top.v"
+    top_source.parent.mkdir(parents=True)
+    top_source.write_text(
+        "module top;\n  child u_child();\nendmodule\n",
+        encoding="utf-8",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    top_source.chmod(stat.S_IREAD)
+    destination = tmp_path / "copied"
+    top_target = destination / "a" / "top.v"
+    child_target = destination / "z" / "child.v"
+    child_target.parent.mkdir(parents=True)
+    child_target.write_bytes(b"ORIGINAL_CHILD")
+    original_replace = vlib.os.replace
+
+    def fail_child_commit(source, target):
+        if (
+            Path(target) == child_target
+            and ".vlib-stage-" in Path(source).name
+        ):
+            raise OSError("injected read-only new-target failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(vlib.os, "replace", fail_child_commit)
+    try:
+        assert (
+            vlib.main(
+                ["copy", "top", str(destination), "--with-deps"]
+            )
+            == 1
+        )
+
+        assert not top_target.exists()
+        assert child_target.read_bytes() == b"ORIGINAL_CHILD"
+        assert not [
+            path
+            for path in destination.rglob("*")
+            if ".vlib-" in path.name
+        ]
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == (
+            "Error: injected read-only new-target failure\n"
+        )
+    finally:
+        make_tree_writable(tmp_path)
+
+
+def test_copy_keyboard_interrupt_after_replace_rolls_back_and_reraises(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "a/top.v",
+        "module top;\n  child u_child();\nendmodule\n",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    top_target = destination / "a" / "top.v"
+    child_target = destination / "z" / "child.v"
+    top_target.parent.mkdir(parents=True)
+    top_target.write_bytes(b"ORIGINAL_TOP")
+    original_replace = vlib.os.replace
+
+    def interrupt_after_child_replace(source, target):
+        original_replace(source, target)
+        if (
+            Path(target) == child_target
+            and ".vlib-stage-" in Path(source).name
+        ):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        vlib.os, "replace", interrupt_after_child_replace
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+
+    assert top_target.read_bytes() == b"ORIGINAL_TOP"
+    assert not child_target.exists()
+    assert not [
+        path
+        for path in destination.rglob("*")
+        if ".vlib-" in path.name
+    ]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_copy_metadata_failure_rolls_back_all_targets(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "a/top.v",
+        "module top;\n  child u_child();\nendmodule\n",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    top_target = destination / "a" / "top.v"
+    child_target = destination / "z" / "child.v"
+    top_target.parent.mkdir(parents=True)
+    top_target.write_bytes(b"ORIGINAL_TOP")
+    original_apply_metadata = vlib._apply_snapshot_metadata
+    metadata_count = 0
+
+    def fail_second_metadata(snapshot, target):
+        nonlocal metadata_count
+        metadata_count += 1
+        original_apply_metadata(snapshot, target)
+        if metadata_count == 2:
+            raise OSError("injected metadata failure")
+
+    monkeypatch.setattr(
+        vlib, "_apply_snapshot_metadata", fail_second_metadata
+    )
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 1
+    )
+
+    assert metadata_count == 2
+    assert top_target.read_bytes() == b"ORIGINAL_TOP"
+    assert not child_target.exists()
+    assert not [
+        path
+        for path in destination.rglob("*")
+        if ".vlib-" in path.name
+    ]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: injected metadata failure\n"
