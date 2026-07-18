@@ -9,6 +9,7 @@ import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
 import { SimulationRunner } from '../core/simulationRunner';
 import { VcdParser } from '../core/vcdParser';
+import { WaveformLayoutStore } from '../core/waveformLayoutStore';
 
 type WaveCore = {
     validateLayout(value: unknown): any | null;
@@ -623,7 +624,35 @@ function testWaveConditionalSearch(): void {
     assert.strictEqual(waveCore.findSearchMatch([data], 0, 1, 'rising', '').error, 'edge-needs-scalar');
 }
 
-const tests: Array<[string, () => void]> = [
+async function testWaveformLayoutStore(): Promise<void> {
+    const values = new Map<string, unknown>();
+    const memento = {
+        get<T>(key: string, fallback: T): T {
+            return (values.has(key) ? values.get(key) : fallback) as T;
+        },
+        update(key: string, value: unknown): Promise<void> {
+            values.set(key, value);
+            return Promise.resolve();
+        },
+    };
+    const store = new WaveformLayoutStore(memento);
+    await Promise.all([
+        store.save('file:///a.vcd', {
+            version: 1,
+            rows: [{ kind: 'group' }],
+        }),
+        store.save('file:///b.vcd', {
+            version: 1,
+            rows: [{ kind: 'signal' }],
+        }),
+    ]);
+
+    assert.strictEqual((store.load('file:///a.vcd') as any).rows[0].kind, 'group');
+    assert.strictEqual((store.load('file:///b.vcd') as any).rows[0].kind, 'signal');
+    assert.strictEqual(store.load('file:///missing.vcd'), null);
+}
+
+const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
     ['dependency analyzer generate for/if', testDependencyAnalyzerGenerateForIf],
@@ -641,9 +670,17 @@ const tests: Array<[string, () => void]> = [
     ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
     ['wave cursor measurement', testWaveCursorMeasurement],
     ['wave conditional search', testWaveConditionalSearch],
+    ['waveform layout store', testWaveformLayoutStore],
 ];
 
-for (const [name, fn] of tests) {
-    fn();
-    console.log(`ok - ${name}`);
+async function runTests(): Promise<void> {
+    for (const [name, fn] of tests) {
+        await fn();
+        console.log(`ok - ${name}`);
+    }
 }
+
+runTests().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});

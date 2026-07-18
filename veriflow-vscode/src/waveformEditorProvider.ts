@@ -1,14 +1,18 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { VcdData, VcdParser } from './core/vcdParser';
+import { VcdParser } from './core/vcdParser';
+import { WaveformLayoutStore } from './core/waveformLayoutStore';
 
 export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'veriflow.waveformEditor';
 
     private readonly _parser = new VcdParser();
+    private readonly _layoutStore: WaveformLayoutStore;
 
-    constructor(private readonly _context: vscode.ExtensionContext) {}
+    constructor(private readonly _context: vscode.ExtensionContext) {
+        this._layoutStore = new WaveformLayoutStore(_context.workspaceState);
+    }
 
     async openCustomDocument(
         uri: vscode.Uri,
@@ -35,6 +39,8 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
                     document.uri,
                     'default'
                 );
+            } else if (message.type === 'saveLayout') {
+                await this._layoutStore.save(document.uri.toString(), message.layout);
             } else if (message.type === 'ready') {
                 await this._loadVcd(document.uri, webviewPanel.webview);
             }
@@ -50,6 +56,7 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
                 type: 'vcd',
                 fileName: uri.fsPath,
                 data,
+                layout: this._layoutStore.load(uri.toString()),
             });
         } catch (err: any) {
             webview.postMessage({
@@ -64,6 +71,7 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
         const assetsDir = path.join(this._context.extensionPath, 'media', 'waveform');
         const css = fs.readFileSync(path.join(assetsDir, 'viewer.css'), 'utf-8');
         const body = fs.readFileSync(path.join(assetsDir, 'viewer.html'), 'utf-8');
+        const coreScript = fs.readFileSync(path.join(assetsDir, 'viewer-core.js'), 'utf-8');
         const script = fs.readFileSync(path.join(assetsDir, 'viewer.js'), 'utf-8')
             .replace('const bootstrap = ${stateJson};', 'const bootstrap = { nonce: "' + nonce + '" };');
 
@@ -81,6 +89,7 @@ ${css}
 <body>
 ${body}
 <script nonce="${nonce}">
+${coreScript}
 ${script}
 </script>
 </body>

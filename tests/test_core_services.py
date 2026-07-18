@@ -368,6 +368,20 @@ $end
     assert idle.changes[0].value == "x"
 
 
+def test_vscode_waveform_provider_persists_layout_and_loads_core() -> None:
+    provider = (
+        Path(__file__).resolve().parents[1]
+        / "veriflow-vscode"
+        / "src"
+        / "waveformEditorProvider.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "WaveformLayoutStore" in provider
+    assert "message.type === 'saveLayout'" in provider
+    assert "layout: this._layoutStore.load" in provider
+    assert "viewer-core.js" in provider
+
+
 def test_python_waveform_viewer_builds_shared_html() -> None:
     from src.presentation.gui.widgets.waveform_html import _build_waveform_html
 
