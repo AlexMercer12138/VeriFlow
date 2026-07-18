@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 from pathlib import Path
 
 import pytest
@@ -378,7 +379,8 @@ def test_vscode_waveform_provider_persists_layout_and_loads_core() -> None:
 
     assert "WaveformLayoutStore" in provider
     assert "message.type === 'saveLayout'" in provider
-    assert "layout: this._layoutStore.load" in provider
+    assert "WaveformWorkerClient" in provider
+    assert "workspace.fs.readFile" not in provider
     assert "viewer-core.js" in provider
 
 
@@ -409,7 +411,7 @@ $enddefinitions $end
     assert 'id="changeSearchMode"' in html
     assert 'id="changeSearchValue"' in html
     assert 'id="cursorMeasureText"' in html
-    assert "acquireVsCodeApi" not in html
+    assert "const vscode = acquireVsCodeApi();" not in html
     assert "window.postMessage" in html
 
 
@@ -421,7 +423,137 @@ def test_python_waveform_viewer_builds_empty_html() -> None:
     assert "waveCanvas" in html
     assert "No waveform loaded" in html
     assert '"type": "empty"' in html
-    assert "acquireVsCodeApi" not in html
+    assert "const vscode = acquireVsCodeApi();" not in html
+    assert "qrc:///qtwebchannel/qwebchannel.js" in html
+    assert "waveformTransport" in html
+
+
+def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:
+    from src.presentation.gui.widgets.waveform_bridge import (
+        WaveformBridge,
+        WaveformIndexWorker,
+    )
+
+    class FakeCache:
+        def __init__(self) -> None:
+            self.released: list[Path] = []
+
+        def get_or_build(self, source, **callbacks):
+            callbacks["on_metadata"](
+                {
+                    "version": "test",
+                    "date": "",
+                    "timescale": "1ns",
+                    "startTime": 0,
+                    "endTime": 10,
+                    "scopes": [],
+                    "signals": [{"reference": "clk", "width": 1, "stream": 0}],
+                    "warnings": [],
+                }
+            )
+            callbacks["on_progress"](
+                {"phase": "scan", "completed": 1, "total": 2, "percent": 50}
+            )
+            callbacks["on_progress"](
+                {"phase": "complete", "completed": 2, "total": 2, "percent": 100}
+            )
+            return Path(f"index-{Path(source).stem}")
+
+        def release(self, index_dir: Path) -> None:
+            self.released.append(index_dir)
+
+    class FakeReader:
+        def __init__(self, index_dir: Path) -> None:
+            self.index_dir = index_dir
+
+        def query_window_for_reference(self, reference, start, end, **options):
+            if options["cancelled"]():
+                raise AssertionError("cancelled query should not reach the reader")
+            return {
+                "kind": "raw",
+                "width": 1,
+                "times": [0, 10],
+                "values": "QA==",
+                "valueStride": 1,
+            }
+
+        def values_at(self, references, timestamp):
+            return {reference: "1" for reference in references}
+
+        def search(self, reference, cursor_time, direction, mode, query, **options):
+            return {
+                "reference": reference,
+                "time": 10,
+                "value": "1",
+                "fullValue": "1",
+                "bitIndex": options.get("bit_index"),
+            }
+
+    cache = FakeCache()
+    worker = WaveformIndexWorker(cache=cache, reader_factory=FakeReader)
+    bridge = WaveformBridge(worker=worker, start_thread=False)
+    messages: list[dict] = []
+    bridge.message.connect(lambda payload: messages.append(json.loads(payload)))
+
+    generation = bridge.open_file(Path("first.vcd"))
+    assert generation == 1
+    assert [message["type"] for message in messages[:3]] == [
+        "waveformMetadata",
+        "indexProgress",
+        "indexProgress",
+    ]
+    assert messages[3]["type"] == "indexReady"
+    assert all(message["generation"] == 1 for message in messages[:4])
+
+    bridge.send(
+        json.dumps(
+            {
+                "type": "windowRequest",
+                "generation": 1,
+                "requestId": "window-1",
+                "references": ["clk"],
+                "start": 0,
+                "end": 10,
+                "pixelWidth": 64,
+            }
+        )
+    )
+    assert messages[-1]["type"] == "windowData"
+    assert messages[-1]["series"][0]["reference"] == "clk"
+
+    bridge.send(
+        json.dumps(
+            {
+                "type": "cancelRequest",
+                "generation": 1,
+                "requestId": "window-cancelled",
+            }
+        )
+    )
+    before_cancelled_query = len(messages)
+    bridge.send(
+        json.dumps(
+            {
+                "type": "windowRequest",
+                "generation": 1,
+                "requestId": "window-cancelled",
+                "references": ["clk"],
+                "start": 0,
+                "end": 10,
+                "pixelWidth": 64,
+            }
+        )
+    )
+    assert not any(
+        message.get("type") == "windowData"
+        for message in messages[before_cancelled_query:]
+    )
+
+    assert bridge.open_file(Path("second.vcd")) == 2
+    bridge.send("[]")
+    assert messages[-1]["type"] == "bridgeError"
+    bridge.close()
+    assert cache.released[-1] == Path("index-second")
 
 
 def test_python_waveform_viewer_prefers_bundled_assets(

@@ -56,26 +56,28 @@ def _read_asset(name: str) -> str:
     return (_waveform_assets_dir() / name).read_text(encoding="utf-8")
 
 
-def _viewer_script() -> str:
-    return (
-        _read_asset("viewer.js")
-        .replace(
-            "const vscode = acquireVsCodeApi();",
-            "const vscode = { postMessage() {} };",
-        )
-        .replace(
-            "vscode.postMessage({ type: 'ready' });",
-            "",
-        )
-        .replace(
-            "const bootstrap = ${stateJson};",
-            "const bootstrap = {};",
-        )
+def _viewer_script(*, indexed: bool = False) -> str:
+    replacement = (
+        "const vscode = { postMessage(message) { "
+        "window.waveformTransport.send(message); } };"
+        if indexed
+        else "const vscode = { postMessage() {} };"
     )
+    script = _read_asset("viewer.js").replace(
+        "const vscode = acquireVsCodeApi();",
+        replacement,
+    )
+    if not indexed:
+        script = script.replace("vscode.postMessage({ type: 'ready' });", "")
+    return script.replace("const bootstrap = ${stateJson};", "const bootstrap = {};")
 
 
 def _viewer_core_script() -> str:
     return _read_asset("viewer-core.js")
+
+
+def _viewer_transport_script() -> str:
+    return _read_asset("viewer-transport.js")
 
 
 def _build_waveform_html(file_name: str, data: VcdData) -> str:
@@ -114,7 +116,8 @@ def _build_empty_waveform_html() -> str:
     css = _read_asset("viewer.css")
     body = _read_asset("viewer.html")
     core_script = _viewer_core_script()
-    script = _viewer_script()
+    transport_script = _viewer_transport_script()
+    script = _viewer_script(indexed=True)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -127,7 +130,9 @@ def _build_empty_waveform_html() -> str:
 </head>
 <body>
 {body}
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <script>
+{transport_script}
 {core_script}
 {script}
 window.addEventListener('load', () => {{

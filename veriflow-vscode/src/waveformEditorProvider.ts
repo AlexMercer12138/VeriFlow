@@ -1,13 +1,12 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { VcdParser } from './core/vcdParser';
 import { WaveformLayoutStore } from './core/waveformLayoutStore';
+import { WaveformWorkerClient } from './core/waveformWorkerClient';
 
 export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'veriflow.waveformEditor';
 
-    private readonly _parser = new VcdParser();
     private readonly _layoutStore: WaveformLayoutStore;
 
     constructor(private readonly _context: vscode.ExtensionContext) {
@@ -32,7 +31,14 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
             localResourceRoots: [this._context.extensionUri],
         };
         webviewPanel.webview.html = this._getHtml(webviewPanel.webview);
-        webviewPanel.webview.onDidReceiveMessage(async (message) => {
+        const worker = new WaveformWorkerClient();
+        const stopForwarding = worker.onMessage(message => {
+            const payload = message.type === 'waveformMetadata'
+                ? { ...message, layout: this._layoutStore.load(document.uri.toString()) }
+                : message;
+            void webviewPanel.webview.postMessage(payload);
+        });
+        const messageSubscription = webviewPanel.webview.onDidReceiveMessage(async (message) => {
             if (message.type === 'openText') {
                 await vscode.commands.executeCommand(
                     'vscode.openWith',
@@ -42,28 +48,21 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
             } else if (message.type === 'saveLayout') {
                 await this._layoutStore.save(document.uri.toString(), message.layout);
             } else if (message.type === 'ready') {
-                await this._loadVcd(document.uri, webviewPanel.webview);
+                worker.open(document.uri.fsPath);
+            } else if (message.type === 'cancelRequest') {
+                worker.cancelRequest(String(message.requestId));
+            } else if (message.type === 'cancelLoad') {
+                worker.cancelLoad();
+            } else if (['windowRequest', 'valueRequest', 'searchRequest'].includes(message.type)) {
+                worker.forward(message);
             }
         });
-    }
-
-    private async _loadVcd(uri: vscode.Uri, webview: vscode.Webview): Promise<void> {
-        try {
-            const bytes = await vscode.workspace.fs.readFile(uri);
-            const content = Buffer.from(bytes).toString('utf-8');
-            const data = this._parser.parse(content);
-            webview.postMessage({
-                type: 'vcd',
-                fileName: uri.fsPath,
-                data,
-                layout: this._layoutStore.load(uri.toString()),
-            });
-        } catch (err: any) {
-            webview.postMessage({
-                type: 'error',
-                message: err?.message || String(err),
-            });
-        }
+        const panelSubscription = webviewPanel.onDidDispose(() => {
+            stopForwarding();
+            messageSubscription.dispose();
+            void worker.dispose();
+            panelSubscription.dispose();
+        });
     }
 
     private _getHtml(webview: vscode.Webview): string {

@@ -22,6 +22,7 @@ import {
     WaveformCache,
     sourceFingerprint,
 } from '../core/waveformCache';
+import { WaveformWorkerClient } from '../core/waveformWorkerClient';
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const waveformFixture = path.join(repoRoot, 'tests', 'fixtures', 'waveform_debug.vcd');
@@ -237,12 +238,96 @@ async function testWaveformCache(): Promise<void> {
     }
 }
 
+async function testWaveformWorkerClient(): Promise<void> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-worker-'));
+    const client = new WaveformWorkerClient({ cacheRoot: path.join(root, 'cache') });
+    const messages: any[] = [];
+    const disposeListener = client.onMessage((message: any) => messages.push(message));
+    const waitFor = async (predicate: (message: any) => boolean): Promise<any> => {
+        const existing = messages.find(predicate);
+        if (existing) return existing;
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                dispose();
+                reject(new Error('timed out waiting for waveform worker message'));
+            }, 5000);
+            const dispose = client.onMessage((message: any) => {
+                if (!predicate(message)) return;
+                clearTimeout(timeout);
+                dispose();
+                resolve(message);
+            });
+        });
+    };
+    try {
+        const generation = client.open(waveformFixture);
+        await waitFor(message => message.type === 'indexReady' && message.generation === generation);
+        const metadataIndex = messages.findIndex(message => message.type === 'waveformMetadata');
+        const readyIndex = messages.findIndex(message => message.type === 'indexReady');
+        assert.ok(metadataIndex >= 0 && metadataIndex < readyIndex);
+
+        const windowRequest = client.requestWindow({
+            references: ['clk'],
+            start: 0,
+            end: 20,
+            pixelWidth: 64,
+        });
+        const windowData = await waitFor(
+            message => message.type === 'windowData' && message.requestId === windowRequest
+        );
+        assert.deepStrictEqual(windowData.series[0].times, [0, 5, 10, 15, 20]);
+
+        const valueRequest = client.requestValues(['clk', 'data [3:0]'], 11);
+        const values = await waitFor(
+            message => message.type === 'cursorValues' && message.requestId === valueRequest
+        );
+        assert.deepStrictEqual(values.values, { clk: '0', 'data [3:0]': '1010' });
+
+        const searchRequest = client.requestSearch({
+            reference: 'clk',
+            cursorTime: 0,
+            direction: 1,
+            mode: 'rising',
+        });
+        const search = await waitFor(
+            message => message.type === 'searchResult' && message.requestId === searchRequest
+        );
+        assert.strictEqual(search.result.time, 5);
+
+        const cancelledRequest = client.requestWindow({
+            references: ['clk'],
+            start: 0,
+            end: 20,
+            pixelWidth: 64,
+        });
+        client.cancelRequest(cancelledRequest);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert.ok(!messages.some(
+            message => message.type === 'windowData' && message.requestId === cancelledRequest
+        ));
+
+        const secondGeneration = client.open(waveformFixture);
+        await waitFor(
+            message => message.type === 'indexReady' && message.generation === secondGeneration
+        );
+        const secondReady = messages.findIndex(
+            message => message.type === 'indexReady' && message.generation === secondGeneration
+        );
+        assert.ok(messages.slice(secondReady).every(message => message.generation === secondGeneration));
+    } finally {
+        disposeListener();
+        await client.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform logic value codec', testLogicValueRoundTrip],
     ['waveform record codecs', testRecordRoundTrips],
     ['waveform manifest validation', testTimestampAndManifestValidation],
     ['waveform index build and query', testBuildAndQueryIndex],
     ['waveform cache', testWaveformCache],
+    ['waveform worker client', testWaveformWorkerClient],
 ];
 
 async function runTests(): Promise<void> {
