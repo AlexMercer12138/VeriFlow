@@ -140,6 +140,168 @@
         };
     }
 
+    function parseSearchValue(text, width) {
+        const targetWidth = Number(width);
+        if (!Number.isInteger(targetWidth) || targetWidth <= 0) {
+            return { ok: false, error: 'invalid-width' };
+        }
+        const cleaned = String(text || '').toLowerCase().replace(/[\s_]+/g, '');
+        let digits = '';
+        let radix = 10;
+        if (/^(?:0b|b)[01]+$/.test(cleaned)) {
+            digits = cleaned.replace(/^(?:0b|b)/, '');
+            radix = 2;
+        } else if (/^(?:0x|h)[0-9a-f]+$/.test(cleaned)) {
+            digits = cleaned.replace(/^(?:0x|h)/, '');
+            radix = 16;
+        } else if (/^\d+$/.test(cleaned)) {
+            digits = cleaned;
+        } else {
+            return { ok: false, error: 'invalid-format' };
+        }
+
+        let numeric;
+        try {
+            numeric = radix === 16
+                ? BigInt('0x' + digits)
+                : radix === 2
+                    ? BigInt('0b' + digits)
+                    : BigInt(digits);
+        } catch (_error) {
+            return { ok: false, error: 'invalid-format' };
+        }
+        const limit = 1n << BigInt(targetWidth);
+        if (numeric < 0n || numeric >= limit) {
+            return { ok: false, error: 'value-overflow' };
+        }
+        return {
+            ok: true,
+            bits: numeric.toString(2).padStart(targetWidth, '0'),
+        };
+    }
+
+    function normalizeChangeBits(value) {
+        return String(value ?? '')
+            .toLowerCase()
+            .replace(/^b/, '')
+            .replace(/[\s_]+/g, '');
+    }
+
+    function targetValue(target, value) {
+        const bits = normalizeChangeBits(value);
+        if (!Number.isInteger(target.bitIndex)) return bits;
+        if (!bits) return 'x';
+        if (bits.length === 1) return bits;
+        const bitIndex = Number(target.bitIndex);
+        if (bitIndex < 0) return 'x';
+        if (bitIndex >= bits.length) return '0';
+        return bits[bits.length - 1 - bitIndex] || 'x';
+    }
+
+    function isScalarTarget(target) {
+        return Number(target.width) === 1 || Number.isInteger(target.bitIndex);
+    }
+
+    function candidateForTarget(target, cursorTime, direction, mode, queryBits) {
+        const changes = Array.isArray(target.changes) ? target.changes : [];
+        const indices = direction > 0
+            ? Array.from({ length: changes.length }, (_unused, index) => index)
+            : Array.from({ length: changes.length }, (_unused, index) => changes.length - 1 - index);
+
+        for (const index of indices) {
+            const change = changes[index];
+            if (direction > 0 ? change.time <= cursorTime : change.time >= cursorTime) continue;
+            const current = targetValue(target, change.value);
+            let matches = false;
+            if (mode === 'change') {
+                matches = true;
+            } else if (mode === 'xz') {
+                matches = /[xz]/i.test(current);
+            } else if (mode === 'value') {
+                matches = current === queryBits;
+            } else if ((mode === 'rising' || mode === 'falling') && index > 0) {
+                const previous = targetValue(target, changes[index - 1].value);
+                matches = mode === 'rising'
+                    ? previous === '0' && current === '1'
+                    : previous === '1' && current === '0';
+            }
+            if (matches) {
+                return {
+                    time: change.time,
+                    target,
+                    value: current,
+                };
+            }
+        }
+        return null;
+    }
+
+    function findSearchMatch(targets, cursorTime, direction, mode, query) {
+        if (!Array.isArray(targets) || !targets.length) {
+            return { match: null, error: 'no-targets' };
+        }
+        const normalizedDirection = direction < 0 ? -1 : 1;
+        const validModes = new Set(['change', 'rising', 'falling', 'value', 'xz']);
+        if (!validModes.has(mode)) {
+            return { match: null, error: 'invalid-mode' };
+        }
+
+        let applicable = targets;
+        if (mode === 'rising' || mode === 'falling') {
+            applicable = targets.filter(isScalarTarget);
+            if (!applicable.length) {
+                return { match: null, error: 'edge-needs-scalar' };
+            }
+        }
+
+        let validValueTarget = mode !== 'value';
+        const candidates = [];
+        for (const target of applicable) {
+            let queryBits = '';
+            if (mode === 'value') {
+                const width = Number.isInteger(target.bitIndex) ? 1 : Number(target.width);
+                const parsed = parseSearchValue(query, width);
+                if (!parsed.ok) {
+                    if (parsed.error === 'invalid-format') {
+                        return { match: null, error: 'invalid-value' };
+                    }
+                    continue;
+                }
+                validValueTarget = true;
+                queryBits = parsed.bits;
+            }
+            const candidate = candidateForTarget(
+                target,
+                cursorTime,
+                normalizedDirection,
+                mode,
+                queryBits
+            );
+            if (candidate) candidates.push(candidate);
+        }
+        if (!validValueTarget) {
+            return { match: null, error: 'invalid-value' };
+        }
+        if (!candidates.length) {
+            return { match: null, error: 'no-match' };
+        }
+
+        candidates.sort((left, right) => {
+            const timeOrder = normalizedDirection > 0
+                ? left.time - right.time
+                : right.time - left.time;
+            if (timeOrder !== 0) return timeOrder;
+            return Number(left.target.order || 0) - Number(right.target.order || 0);
+        });
+        const best = candidates[0];
+        return {
+            match: best,
+            time: best.time,
+            target: best.target,
+            value: best.value,
+        };
+    }
+
     return {
         LAYOUT_VERSION,
         validateLayout,
@@ -148,5 +310,7 @@
         parseTimescale,
         formatTicks,
         measureCursors,
+        parseSearchValue,
+        findSearchMatch,
     };
 });

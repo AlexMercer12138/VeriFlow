@@ -29,6 +29,18 @@ type WaveCore = {
         deltaText: string;
         frequencyText: string;
     };
+    parseSearchValue(text: string, width: number): {
+        ok: boolean;
+        bits?: string;
+        error?: string;
+    };
+    findSearchMatch(
+        targets: any[],
+        cursorTime: number,
+        direction: number,
+        mode: string,
+        query: string
+    ): any;
 };
 
 const waveCore = require('../../media/waveform/viewer-core.js') as WaveCore;
@@ -553,6 +565,64 @@ function testWaveCursorMeasurement(): void {
     assert.strictEqual(waveCore.measureCursors(0, 1, '1ps').frequencyText, '1 THz');
 }
 
+function testWaveConditionalSearch(): void {
+    assert.deepStrictEqual(waveCore.parseSearchValue('0xA', 4), {
+        ok: true,
+        bits: '1010',
+    });
+    assert.deepStrictEqual(waveCore.parseSearchValue('0b0011', 4), {
+        ok: true,
+        bits: '0011',
+    });
+    assert.deepStrictEqual(waveCore.parseSearchValue('10', 8), {
+        ok: true,
+        bits: '00001010',
+    });
+    assert.strictEqual(waveCore.parseSearchValue('0x10', 4).ok, false);
+    assert.strictEqual(waveCore.parseSearchValue('2z', 4).ok, false);
+
+    const clk = {
+        order: 0,
+        name: 'top.clk',
+        width: 1,
+        changes: [
+            { time: 0, value: '0' },
+            { time: 5, value: '1' },
+            { time: 10, value: '0' },
+            { time: 15, value: 'x' },
+            { time: 20, value: '1' },
+        ],
+    };
+    const data = {
+        order: 1,
+        name: 'top.data',
+        width: 4,
+        changes: [
+            { time: 0, value: '0000' },
+            { time: 6, value: '1010' },
+            { time: 12, value: '10xz' },
+            { time: 18, value: '0011' },
+        ],
+    };
+    const bit = {
+        ...data,
+        order: 2,
+        name: 'top.data[1]',
+        width: 1,
+        bitIndex: 1,
+        parentWidth: 4,
+    };
+
+    assert.strictEqual(waveCore.findSearchMatch([clk], 0, 1, 'rising', '').time, 5);
+    assert.strictEqual(waveCore.findSearchMatch([clk], 12, -1, 'falling', '').time, 10);
+    assert.strictEqual(waveCore.findSearchMatch([data], 0, 1, 'value', '0xA').time, 6);
+    assert.strictEqual(waveCore.findSearchMatch([data], 6, 1, 'xz', '').time, 12);
+    assert.strictEqual(waveCore.findSearchMatch([bit], 0, 1, 'rising', '').time, 6);
+    assert.strictEqual(waveCore.findSearchMatch([clk, data], 0, 1, 'change', '').time, 5);
+    assert.strictEqual(waveCore.findSearchMatch([clk], 20, 1, 'change', '').match, null);
+    assert.strictEqual(waveCore.findSearchMatch([data], 0, 1, 'rising', '').error, 'edge-needs-scalar');
+}
+
 const tests: Array<[string, () => void]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -570,6 +640,7 @@ const tests: Array<[string, () => void]> = [
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],
     ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
     ['wave cursor measurement', testWaveCursorMeasurement],
+    ['wave conditional search', testWaveConditionalSearch],
 ];
 
 for (const [name, fn] of tests) {
