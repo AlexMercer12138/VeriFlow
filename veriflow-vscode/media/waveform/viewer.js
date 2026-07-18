@@ -2669,7 +2669,6 @@ window.__veriflowWaveViewer = {
         selectedWaveIndices = new Set([0]);
         selectedBusBit = null;
         cursorA = 0;
-        cursorB = null;
         activeCursor = 'a';
 
         changeSearchMode.value = 'rising';
@@ -2730,6 +2729,16 @@ window.__veriflowWaveViewer = {
             bitRising,
             invalidStayed,
             boundaryStayed,
+        };
+    },
+    flushLayoutSave() {
+        lastSavedLayoutJson = '';
+        persistLayoutNow();
+        const layout = captureLayout();
+        const snapshot = this.state();
+        return {
+            saved: !!layout && lastSavedLayoutJson === JSON.stringify(layout),
+            ...snapshot,
         };
     },
     state() {

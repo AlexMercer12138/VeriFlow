@@ -168,6 +168,16 @@ def main() -> int:
     layout_roundtrip = {"done": False}
     cursor_measure = {"done": False}
     conditional_search = {"done": False}
+    layout_reload = {
+        "requested": False,
+        "verified": False,
+        "waveforms": 0,
+        "groups": 0,
+        "bus_bits": 0,
+        "cursor_a": 0,
+        "cursor_b": None,
+        "active_cursor": "a",
+    }
     multi_select = {"done": False}
     initial_state = {"checked": False}
 
@@ -450,6 +460,60 @@ def main() -> int:
             QTimer.singleShot(900, inspect)
             return
 
+        if not layout_reload["requested"]:
+            def on_layout_flushed(state) -> None:
+                try:
+                    state = json.loads(state or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "layout flush returned invalid state: " + repr(state))
+                    return
+                if not state.get("saved") or state.get("waveforms", 0) <= 0:
+                    finish(False, "layout flush failed: " + repr(state))
+                    return
+                layout_reload["requested"] = True
+                layout_reload["waveforms"] = state.get("waveforms", 0)
+                layout_reload["groups"] = state.get("groups", 0)
+                layout_reload["bus_bits"] = state.get("busBits", 0)
+                layout_reload["cursor_a"] = state.get("cursorA")
+                layout_reload["cursor_b"] = state.get("cursorB")
+                layout_reload["active_cursor"] = state.get("activeCursor")
+                view.setHtml(html, QUrl.fromLocalFile(str(wave_file.parent)))
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer && "
+                "window.__veriflowWaveViewer.flushLayoutSave ? "
+                "window.__veriflowWaveViewer.flushLayoutSave() : {missing: true});",
+                on_layout_flushed,
+            )
+            return
+
+        if not layout_reload["verified"]:
+            def on_layout_reloaded(state) -> None:
+                try:
+                    state = json.loads(state or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "reloaded layout returned invalid state: " + repr(state))
+                    return
+                if (
+                    state.get("waveforms") != layout_reload["waveforms"]
+                    or state.get("groups") != layout_reload["groups"]
+                    or state.get("busBits") != layout_reload["bus_bits"]
+                    or state.get("cursorA") != layout_reload["cursor_a"]
+                    or state.get("cursorB") != layout_reload["cursor_b"]
+                    or state.get("activeCursor") != layout_reload["active_cursor"]
+                ):
+                    finish(False, "persisted layout reload failed: " + repr(state))
+                    return
+                layout_reload["verified"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer ? "
+                "window.__veriflowWaveViewer.state() : {});",
+                on_layout_reloaded,
+            )
+            return
+
         QApplication.processEvents()
         stats = _grab_waveform_stats(view)
         attempts["count"] += 1
@@ -477,6 +541,7 @@ def main() -> int:
         scope_text = grouped["scope"] or "All scopes"
         print(
             "[OK] Built-in waveform viewer rendered; "
+            "persisted layout reload checked; dual cursors checked; conditional search checked; "
             f"grouped scope checked: {scope_text}; "
             f"bus bits checked: {bus_expanded['bits']}; "
             f"{result['message']}"
