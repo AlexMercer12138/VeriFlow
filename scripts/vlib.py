@@ -637,22 +637,28 @@ def _is_declaration_only_subprogram(
     }.issubset(prefixes)
 
 
-def mask_procedural_regions(body: str) -> str:
+def _procedural_mask(
+    body: str,
+) -> Tuple[str, List[Tuple[int, int]]]:
     text = re.sub(
         r"(?m)^[ \t]*`[^\r\n]*",
         lambda match: _spaces_preserving_lines(match.group(0)),
         body,
     )
     tokens = _verilog_tokens(text)
-    ranges = []  # type: List[Tuple[int, int]]
+    token_count = len(tokens)
+    scan_tokens = tokens + [
+        ("__vlib_incomplete_sentinel", len(text), len(text))
+    ]
+    ranges = []  # type: List[Tuple[int, int, bool]]
     position = 0
 
-    while position < len(tokens):
+    while position < token_count:
         value = tokens[position][0]
         if value in {"task", "function"} and _is_declaration_only_subprogram(
-            tokens, position
+            scan_tokens, position
         ):
-            end = _consume_simple_statement(tokens, position)
+            end = _consume_simple_statement(scan_tokens, position)
         elif value in {"task", "function", "specify"}:
             terminator = {
                 "task": "endtask",
@@ -660,7 +666,7 @@ def mask_procedural_regions(body: str) -> str:
                 "specify": "endspecify",
             }[value]
             end = _consume_through_keyword(
-                tokens, position, value, terminator
+                scan_tokens, position, value, terminator
             )
         elif value in {
             "initial",
@@ -670,21 +676,32 @@ def mask_procedural_regions(body: str) -> str:
             "always_latch",
             "final",
         }:
-            end = _consume_procedural_statement(tokens, position + 1)
+            end = _consume_procedural_statement(
+                scan_tokens, position + 1
+            )
         else:
             position += 1
             continue
 
-        range_end = tokens[end - 1][2] if end > position else tokens[position][2]
-        ranges.append((tokens[position][1], range_end))
+        complete = end <= token_count
+        range_end = tokens[end - 1][2] if complete else len(text)
+        ranges.append((tokens[position][1], range_end, complete))
         position = max(end, position + 1)
 
     characters = list(text)
-    for start, end in ranges:
+    for start, end, _complete in ranges:
         for index in range(start, end):
             if characters[index] not in "\r\n":
                 characters[index] = " "
-    return "".join(characters)
+    completed_ranges = [
+        (start, end) for start, end, complete in ranges if complete
+    ]
+    return "".join(characters), completed_ranges
+
+
+def mask_procedural_regions(body: str) -> str:
+    masked, _completed_ranges = _procedural_mask(body)
+    return masked
 
 
 def _is_identifier(value: str) -> bool:
@@ -793,7 +810,11 @@ def _merge_constraints(
 
 
 def _split_safe_dependency_statements(text: str) -> Tuple[List[str], str]:
-    masked = mask_procedural_regions(text)
+    masked, completed_ranges = _procedural_mask(text)
+    buffer_characters = list(text)
+    for start, end in completed_ranges:
+        buffer_characters[start:end] = masked[start:end]
+    buffer_text = "".join(buffer_characters)
     pairs = {"(": ")", "[": "]", "{": "}"}
     expected = []  # type: List[str]
     statement_ends = []  # type: List[int]
@@ -822,9 +843,9 @@ def _split_safe_dependency_statements(text: str) -> Tuple[List[str], str]:
     statements = []  # type: List[str]
     start = 0
     for end in statement_ends:
-        statements.append(text[start:end])
+        statements.append(buffer_text[start:end])
         start = end
-    return statements, text[start:]
+    return statements, buffer_text[start:]
 
 
 def _deduplicate_dependency_states(
