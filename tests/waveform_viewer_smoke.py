@@ -166,6 +166,7 @@ def main() -> int:
     formatted = {"done": False}
     name_mode = {"done": False}
     layout_roundtrip = {"done": False}
+    bus_bit_click = {"done": False}
     cursor_measure = {"done": False}
     conditional_search = {"done": False}
     layout_reload = {
@@ -385,6 +386,28 @@ def main() -> int:
             view.page().runJavaScript(
                 "JSON.stringify(window.__veriflowWaveViewer ? window.__veriflowWaveViewer.multiSelectSamples() : {});",
                 on_multi_select,
+            )
+            return
+
+        if not bus_bit_click["done"]:
+            bus_bit_click["done"] = True
+
+            def on_bus_bit_click(state) -> None:
+                try:
+                    state = json.loads(state or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "bus-bit click returned invalid state: " + repr(state))
+                    return
+                if not state.get("selected"):
+                    finish(False, "bus-bit click selection failed: " + repr(state))
+                    return
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer && "
+                "window.__veriflowWaveViewer.busBitClickSelectionSample ? "
+                "window.__veriflowWaveViewer.busBitClickSelectionSample() : {missing: true});",
+                on_bus_bit_click,
             )
             return
 

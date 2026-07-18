@@ -45,7 +45,8 @@
     }
 
     function describeSignal(signal, signals) {
-        const signalIndex = signals.indexOf(signal);
+        const signalIndex = signals.findIndex(item => item === signal
+            || (signal.key !== undefined && item.key === signal.key));
         const occurrence = signals
             .slice(0, Math.max(0, signalIndex))
             .filter(item => sameSignal(item, signal))

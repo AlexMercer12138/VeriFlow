@@ -2250,8 +2250,21 @@ function updateSelectionBox(event) {
 function finishBoxSelection(event) {
     if (!boxStart) return;
     const rect = waveCanvasPane.getBoundingClientRect();
+    const localX = clamp(event.clientX - rect.left, 0, rect.width);
+    const localY = clamp(event.clientY - rect.top, HEADER_HEIGHT, rect.height);
+    const clickDistance = Math.max(
+        Math.abs(localX - boxStart.x),
+        Math.abs(localY - boxStart.y)
+    );
+    if (selectedBusBit !== null && clickDistance < 6) {
+        boxStart = null;
+        boxCurrent = null;
+        selectionBox.style.display = 'none';
+        render();
+        return;
+    }
     const y1 = boxStart.y;
-    const y2 = clamp(event.clientY - rect.top, HEADER_HEIGHT, rect.height);
+    const y2 = localY;
     const a = Math.floor((Math.min(y1, y2) - HEADER_HEIGHT + waveScrollTop) / ROW_HEIGHT);
     const b = Math.floor((Math.max(y1, y2) - HEADER_HEIGHT + waveScrollTop) / ROW_HEIGHT);
     const next = new Set();
@@ -2729,6 +2742,23 @@ window.__veriflowWaveViewer = {
             bitRising,
             invalidStayed,
             boundaryStayed,
+        };
+    },
+    busBitClickSelectionSample() {
+        const data = allSignals.find(signal => Number(signal.width) > 1);
+        if (!data) return { selected: false, error: 'bus-missing' };
+        waveSignals = [makeWaveSignal(data)];
+        waveSignals[0].busExpanded = true;
+        const bitRow = makeBusBitRow(waveSignals[0], 0, 0);
+        selectBusBit(bitRow);
+        const displayIndex = displayedWaveItems().findIndex(item => isSelectedBusBit(item));
+        const rect = waveCanvasPane.getBoundingClientRect();
+        const localY = HEADER_HEIGHT + displayIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+        boxStart = { x: 20, y: localY };
+        boxCurrent = null;
+        finishBoxSelection({ clientX: rect.left + 20, clientY: rect.top + localY });
+        return {
+            selected: selectedBusBit?.parentWaveIndex === 0 && selectedBusBit?.bitIndex === 0,
         };
     },
     flushLayoutSave() {

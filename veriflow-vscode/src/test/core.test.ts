@@ -517,11 +517,11 @@ function testWaveLayoutValidationAndMatching(): void {
     assert.strictEqual(waveCore.validateLayout({ version: 1, rows: 'bad' }), null);
 
     const signals = [
-        { fullName: 'top.a', reference: 'a', width: 1 },
-        { fullName: 'top.a', reference: 'a', width: 1 },
-        { fullName: 'top.data', reference: 'data', width: 8 },
+        { key: 'a-0', fullName: 'top.a', reference: 'a', width: 1 },
+        { key: 'a-1', fullName: 'top.a', reference: 'a', width: 1 },
+        { key: 'data-0', fullName: 'top.data', reference: 'data', width: 8 },
     ];
-    assert.deepStrictEqual(waveCore.describeSignal(signals[1], signals), {
+    assert.deepStrictEqual(waveCore.describeSignal({ ...signals[1] }, signals), {
         fullName: 'top.a',
         reference: 'a',
         width: 1,
