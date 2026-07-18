@@ -36,6 +36,7 @@ class WaveformIndexWorker(QObject):
         self._reader_generation = 0
         self._index_dir: Optional[Path] = None
         self._generation = 0
+        self._last_source: Optional[Path] = None
         self._cancelled_loads: set[int] = set()
         self._cancelled_requests: set[tuple[int, str]] = set()
         self._state_lock = threading.RLock()
@@ -137,7 +138,12 @@ class WaveformIndexWorker(QObject):
             self._index_dir = index_dir
             if previous_dir is not None and previous_dir != index_dir:
                 cache.release(previous_dir)
-            self._send("indexReady", generation, fileName=str(source))
+            self._send(
+                "indexReady",
+                generation,
+                fileName=str(source),
+                data=getattr(reader, "metadata", None),
+            )
         except VcdIndexCancelled:
             self._send("indexCancelled", generation)
         except Exception as error:
@@ -190,15 +196,36 @@ class WaveformIndexWorker(QObject):
             return
         if self._reader is None or self._reader_generation != generation:
             raise RuntimeError("waveform index is not ready")
-        result = self._reader.search(
-            str(message["reference"]),
-            int(message.get("cursorTime", 0)),
-            int(message.get("direction", 1)),
-            str(message.get("mode", "change")),
-            str(message.get("query", "")),
-            bit_index=message.get("bitIndex"),
-            cancelled=lambda: self._request_cancelled(generation, request_id),
+        targets = message.get("targets") or [
+            {
+                "reference": message["reference"],
+                "bitIndex": message.get("bitIndex"),
+                "order": 0,
+            }
+        ]
+        matches = []
+        for target in targets:
+            if self._request_cancelled(generation, request_id):
+                return
+            match = self._reader.search(
+                str(target["reference"]),
+                int(message.get("cursorTime", 0)),
+                int(message.get("direction", 1)),
+                str(message.get("mode", "change")),
+                str(message.get("query", "")),
+                bit_index=target.get("bitIndex"),
+                cancelled=lambda: self._request_cancelled(generation, request_id),
+            )
+            if match is not None:
+                matches.append({**match, "target": target})
+        direction = int(message.get("direction", 1))
+        matches.sort(
+            key=lambda item: (
+                item["time"] if direction >= 0 else -item["time"],
+                int(item["target"].get("order", 0)),
+            )
         )
+        result = matches[0] if matches else None
         if not self._request_cancelled(generation, request_id):
             self._send("searchResult", generation, requestId=request_id, result=result)
 
@@ -326,11 +353,16 @@ class WaveformBridge(QObject):
         if message_type == "cancelLoad":
             self._worker.request_cancel_load(generation)
             return
-        if message_type in {"ready", "retryLoad"}:
+        if message_type == "retryLoad":
+            if self._last_source is not None:
+                self.open_file(self._last_source)
+            return
+        if message_type == "ready":
             return
         self._dispatch.emit(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
 
     def open_file(self, source: Path) -> int:
+        self._last_source = Path(source).resolve()
         if self._generation:
             self._worker.request_cancel_load(self._generation)
         self._generation += 1
@@ -339,7 +371,7 @@ class WaveformBridge(QObject):
                 {
                     "type": "openFile",
                     "generation": self._generation,
-                    "source": str(Path(source).resolve()),
+                    "source": str(self._last_source),
                 },
                 ensure_ascii=False,
             )

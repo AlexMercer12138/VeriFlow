@@ -382,6 +382,7 @@ def test_vscode_waveform_provider_persists_layout_and_loads_core() -> None:
     assert "WaveformWorkerClient" in provider
     assert "workspace.fs.readFile" not in provider
     assert "viewer-core.js" in provider
+    assert "viewer-transport.js" in provider
 
 
 def test_python_waveform_viewer_builds_shared_html() -> None:
@@ -426,6 +427,55 @@ def test_python_waveform_viewer_builds_empty_html() -> None:
     assert "const vscode = acquireVsCodeApi();" not in html
     assert "qrc:///qtwebchannel/qwebchannel.js" in html
     assert "waveformTransport" in html
+    assert 'id="indexProgress"' in html
+    assert 'id="cancelIndex"' in html
+    assert 'id="retryIndex"' in html
+
+
+def test_waveform_progress_controls_have_stable_layout() -> None:
+    root = Path(__file__).resolve().parents[1]
+    body = (root / "veriflow-vscode" / "media" / "waveform" / "viewer.html").read_text(
+        encoding="utf-8"
+    )
+    css = (root / "veriflow-vscode" / "media" / "waveform" / "viewer.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="indexOverlay"' in body
+    assert 'role="progressbar"' in body
+    assert 'aria-label="Cancel waveform indexing"' in body
+    assert 'id="retryIndex"' in body
+    assert ".index-progress" in css
+    assert "height: 18px" in css
+
+
+def test_indexed_waveform_viewer_uses_async_protocol() -> None:
+    viewer = (
+        Path(__file__).resolve().parents[1]
+        / "veriflow-vscode"
+        / "media"
+        / "waveform"
+        / "viewer.js"
+    ).read_text(encoding="utf-8")
+
+    for message_type in (
+        "waveformMetadata",
+        "indexProgress",
+        "indexReady",
+        "windowRequest",
+        "windowData",
+        "valueRequest",
+        "cursorValues",
+        "searchRequest",
+        "searchResult",
+        "cancelRequest",
+        "cancelLoad",
+        "retryLoad",
+    ):
+        assert message_type in viewer
+    assert "decodeWindowPayload" in viewer
+    assert "new waveCore.WindowCache" in viewer
+    assert "new waveCore.RequestTracker" in viewer
 
 
 def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:

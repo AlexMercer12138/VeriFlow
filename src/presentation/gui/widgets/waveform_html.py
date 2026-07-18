@@ -57,18 +57,9 @@ def _read_asset(name: str) -> str:
 
 
 def _viewer_script(*, indexed: bool = False) -> str:
-    replacement = (
-        "const vscode = { postMessage(message) { "
-        "window.waveformTransport.send(message); } };"
-        if indexed
-        else "const vscode = { postMessage() {} };"
-    )
-    script = _read_asset("viewer.js").replace(
-        "const vscode = acquireVsCodeApi();",
-        replacement,
-    )
+    script = _read_asset("viewer.js")
     if not indexed:
-        script = script.replace("vscode.postMessage({ type: 'ready' });", "")
+        script = script.replace("waveformTransport.send({ type: 'ready' });", "")
     return script.replace("const bootstrap = ${stateJson};", "const bootstrap = {};")
 
 
@@ -88,6 +79,7 @@ def _build_waveform_html(file_name: str, data: VcdData) -> str:
     css = _read_asset("viewer.css")
     body = _read_asset("viewer.html")
     core_script = _viewer_core_script()
+    transport_script = _viewer_transport_script()
     script = _viewer_script()
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -102,6 +94,7 @@ def _build_waveform_html(file_name: str, data: VcdData) -> str:
 <body>
 {body}
 <script>
+{transport_script}
 {core_script}
 {script}
 window.addEventListener('load', () => {{

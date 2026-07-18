@@ -1,7 +1,12 @@
 const bootstrap = ${stateJson};
-const vscode = acquireVsCodeApi();
+const waveformTransport = globalThis.waveformTransport;
+const vscode = {
+    postMessage(message) { waveformTransport.send(message); },
+    getState() { return waveformTransport.getState(); },
+    setState(value) { waveformTransport.setState(value); },
+};
 const waveCore = globalThis.VeriflowWaveCore;
-const isVsCodeHost = typeof vscode.getState === 'function' && typeof vscode.setState === 'function';
+const isVsCodeHost = waveformTransport.kind === 'vscode';
 const canvas = document.getElementById('waveCanvas');
 const ctx = canvas.getContext('2d');
 const waveWrap = document.getElementById('waveWrap');
@@ -23,6 +28,14 @@ const contextMenu = document.getElementById('contextMenu');
 const selectionBox = document.getElementById('selectionBox');
 const mainResize = document.getElementById('mainResize');
 const waveNameResize = document.getElementById('waveNameResize');
+const indexOverlay = document.getElementById('indexOverlay');
+const indexOverlayText = document.getElementById('indexOverlayText');
+const indexProgress = document.getElementById('indexProgress');
+const indexProgressText = document.getElementById('indexProgressText');
+const indexProgressTrack = indexProgress.querySelector('[role="progressbar"]');
+const indexProgressFill = document.getElementById('indexProgressFill');
+const cancelIndex = document.getElementById('cancelIndex');
+const retryIndex = document.getElementById('retryIndex');
 
 const DEFAULT_WAVE_COLOR = '#22e36d';
 const COLORS = [
@@ -85,6 +98,19 @@ let layoutReady = false;
 let layoutSaveTimer = null;
 let lastSavedLayoutJson = '';
 let layoutStorageWarningShown = false;
+let indexedMode = false;
+let indexReady = false;
+let currentGeneration = 0;
+let loadingGeneration = 0;
+const windowCache = new waveCore.WindowCache(192);
+const requestTracker = new waveCore.RequestTracker();
+const cursorValues = new Map();
+let windowRequestTimer = null;
+let valueRequestTimer = null;
+let pendingWindowRequest = null;
+let pendingValueRequest = null;
+let pendingSearchRequest = null;
+let lastValueRequestKey = '';
 const ROW_HEIGHT = 32;
 const HEADER_HEIGHT = 38;
 const TIME_UNITS = ['fs', 'ps', 'ns', 'us', 'ms', 's'];
@@ -108,6 +134,10 @@ function setActiveCursorTime(time) {
     const minTime = Number(vcd.startTime) || 0;
     const maxTime = Math.max(minTime, Number(vcd.endTime) || 1);
     const next = clamp(Number(time), minTime, maxTime);
+    if (indexedMode && next !== activeCursorTime()) {
+        cursorValues.clear();
+        lastValueRequestKey = '';
+    }
     if (activeCursor === 'b') cursorB = next;
     else cursorA = next;
 }
@@ -334,6 +364,21 @@ function setEmptyState() {
     if (layoutSaveTimer !== null) clearTimeout(layoutSaveTimer);
     layoutSaveTimer = null;
     lastSavedLayoutJson = '';
+    indexedMode = false;
+    indexReady = false;
+    currentGeneration = 0;
+    loadingGeneration = 0;
+    requestTracker.setGeneration(0);
+    windowCache.clear();
+    cursorValues.clear();
+    pendingWindowRequest = null;
+    pendingValueRequest = null;
+    pendingSearchRequest = null;
+    lastValueRequestKey = '';
+    if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
+    if (valueRequestTimer !== null) clearTimeout(valueRequestTimer);
+    windowRequestTimer = null;
+    valueRequestTimer = null;
     vcd = null;
     currentFileName = '';
     allSignals = [];
@@ -363,6 +408,9 @@ function setEmptyState() {
     statusText.textContent = 'No waveform file opened';
     cursorText.textContent = 'A: - | B: - | Delta: - | Frequency: -';
     rangeText.textContent = 'Range: -';
+    indexOverlay.hidden = true;
+    indexProgress.hidden = true;
+    retryIndex.hidden = true;
     render();
 }
 
@@ -372,6 +420,8 @@ function setData(fileName, data, messageLayout = null) {
     layoutSaveTimer = null;
     lastSavedLayoutJson = '';
     layoutStorageWarningShown = false;
+    indexedMode = false;
+    indexReady = true;
     vcd = data;
     currentFileName = String(fileName || '');
     fileTitle.textContent = fileName;
@@ -379,6 +429,7 @@ function setData(fileName, data, messageLayout = null) {
     changeSearchValue.value = '';
     allSignals = (data.signals || []).map((signal, index) => ({
         ...signal,
+        changes: Array.isArray(signal.changes) ? signal.changes : [],
         key: stableSignalKey(signal) + '|' + index,
         color: DEFAULT_WAVE_COLOR,
         radix: 'default',
@@ -414,6 +465,108 @@ function setData(fileName, data, messageLayout = null) {
     if (restoredLayout) {
         setStatus('Restored saved waveform layout.');
     }
+}
+
+function setIndexLoading(loading, text = 'Preparing waveform') {
+    indexOverlay.hidden = !loading;
+    indexOverlayText.textContent = text;
+    if (loading) {
+        indexProgress.hidden = false;
+        cancelIndex.hidden = false;
+        retryIndex.hidden = true;
+    }
+}
+
+function setIndexedMetadata(message) {
+    loadingGeneration = Number(message.generation) || 0;
+    setData(message.fileName, message.data || {}, message.layout);
+    indexedMode = true;
+    indexReady = false;
+    currentGeneration = loadingGeneration;
+    requestTracker.setGeneration(currentGeneration);
+    windowCache.clear();
+    cursorValues.clear();
+    lastValueRequestKey = '';
+    pendingWindowRequest = null;
+    pendingValueRequest = null;
+    pendingSearchRequest = null;
+    allSignals.forEach(signal => { signal.changes = []; });
+    waveSignals.forEach(signal => {
+        if (!isGroupRow(signal)) signal.changes = [];
+    });
+    setIndexLoading(true, 'Indexing waveform');
+    updateToolbarState();
+    render();
+}
+
+function progressText(progress) {
+    const phase = String(progress.phase || 'indexing');
+    const percent = Number.isFinite(Number(progress.percent))
+        ? Math.max(0, Math.min(100, Math.round(Number(progress.percent))))
+        : null;
+    const completed = Number(progress.completed || 0);
+    const total = Number(progress.total || 0);
+    let work = '';
+    if (phase === 'scan' && total > 0) {
+        work = ' ' + (completed / 1048576).toFixed(1) + '/' + (total / 1048576).toFixed(1) + ' MiB';
+    } else if (total > 0) {
+        work = ' ' + completed + '/' + total;
+    }
+    return phase + (percent === null ? '' : ' ' + percent + '%') + work;
+}
+
+function handleIndexProgress(message) {
+    const generation = Number(message.generation) || 0;
+    if (generation < currentGeneration) return;
+    loadingGeneration = generation;
+    const progress = message.progress || {};
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    indexProgress.hidden = false;
+    cancelIndex.hidden = false;
+    retryIndex.hidden = true;
+    indexProgressText.textContent = progressText(progress);
+    indexProgressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
+    indexProgressFill.style.width = percent + '%';
+    if (!indexReady) setIndexLoading(true, 'Indexing waveform');
+}
+
+function handleIndexReady(message) {
+    if (Number(message.generation) !== currentGeneration) return;
+    if (message.data && vcd) {
+        vcd = {
+            ...vcd,
+            ...message.data,
+            signals: vcd.signals,
+        };
+        const minimum = Number(vcd.startTime) || 0;
+        const maximum = Math.max(minimum + 1, Number(vcd.endTime) || 1);
+        startTime = clamp(startTime, minimum, maximum - 1);
+        endTime = clamp(
+            endTime <= minimum + 1 ? maximum : endTime,
+            startTime + 1,
+            maximum
+        );
+        cursorA = clamp(cursorA, minimum, maximum);
+        if (cursorB !== null) cursorB = clamp(cursorB, minimum, maximum);
+    }
+    indexReady = true;
+    loadingGeneration = currentGeneration;
+    indexOverlay.hidden = true;
+    indexProgress.hidden = true;
+    retryIndex.hidden = true;
+    updateToolbarState();
+    setStatus('Waveform index ready.');
+    render();
+}
+
+function handleIndexFailure(message, cancelled = false) {
+    if (Number(message.generation) !== loadingGeneration) return;
+    indexReady = false;
+    setIndexLoading(true, cancelled ? 'Indexing cancelled' : 'Indexing failed');
+    indexProgressText.textContent = cancelled ? 'cancelled' : String(message.message || 'failed');
+    cancelIndex.hidden = true;
+    retryIndex.hidden = false;
+    updateToolbarState();
 }
 
 function applyFilter() {
@@ -1410,7 +1563,170 @@ function busText(value, width, radix = 'default') {
     }
 }
 
+function visibleWaveSignals() {
+    const items = displayedWaveItems();
+    const height = Math.max(1, canvas.clientHeight - HEADER_HEIGHT);
+    const first = Math.max(0, Math.floor(waveScrollTop / ROW_HEIGHT));
+    const count = Math.max(1, Math.ceil(height / ROW_HEIGHT) + 1);
+    return items.slice(first, first + count).filter(item => !isGroupRow(item));
+}
+
+function windowDescriptor() {
+    if (!vcd) return null;
+    const range = waveCore.prefetchRange(
+        startTime,
+        endTime,
+        Number(vcd.startTime) || 0,
+        Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)
+    );
+    return {
+        start: Math.floor(range.start),
+        end: Math.ceil(range.end),
+        pixelWidth: Math.max(1, Math.round(canvas.clientWidth || 1)),
+    };
+}
+
+function windowKey(reference, descriptor) {
+    return [
+        currentGeneration,
+        reference,
+        descriptor.start,
+        descriptor.end,
+        descriptor.pixelWidth,
+    ].join('|');
+}
+
+function seriesForSignal(signal) {
+    if (!indexedMode) {
+        return { kind: 'raw', width: Number(signal.width), changes: signal.changes || [] };
+    }
+    const descriptor = windowDescriptor();
+    if (!descriptor) return null;
+    return windowCache.get(windowKey(signal.reference, descriptor)) || null;
+}
+
+function cancelPendingRequest(pending) {
+    if (!pending) return;
+    requestTracker.cancel(pending.requestId);
+    waveformTransport.send({
+        type: 'cancelRequest',
+        generation: currentGeneration,
+        requestId: pending.requestId,
+    });
+}
+
+function scheduleWindowRequest() {
+    if (!indexedMode || !indexReady || !vcd || !waveSignals.length) return;
+    if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
+    windowRequestTimer = setTimeout(() => {
+        windowRequestTimer = null;
+        const descriptor = windowDescriptor();
+        if (!descriptor) return;
+        const references = Array.from(new Set(
+            visibleWaveSignals().map(signal => signal.reference).filter(Boolean)
+        ));
+        const missing = references.filter(
+            reference => !windowCache.has(windowKey(reference, descriptor))
+        );
+        if (!missing.length) return;
+        if (
+            pendingWindowRequest
+            && pendingWindowRequest.descriptor.start === descriptor.start
+            && pendingWindowRequest.descriptor.end === descriptor.end
+            && pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth
+            && missing.every(reference => pendingWindowRequest.references.includes(reference))
+        ) return;
+        cancelPendingRequest(pendingWindowRequest);
+        const requestId = requestTracker.next('window');
+        pendingWindowRequest = { requestId, descriptor, references: missing };
+        waveformTransport.send({
+            type: 'windowRequest',
+            generation: currentGeneration,
+            requestId,
+            references: missing,
+            start: descriptor.start,
+            end: descriptor.end,
+            pixelWidth: descriptor.pixelWidth,
+            prefetch: 0.5,
+        });
+    }, 50);
+}
+
+function handleWindowData(message) {
+    if (!requestTracker.accepts(message)) return;
+    if (!pendingWindowRequest || message.requestId !== pendingWindowRequest.requestId) return;
+    const descriptor = pendingWindowRequest.descriptor;
+    try {
+        (message.series || []).forEach(series => {
+            windowCache.set(
+                windowKey(series.reference, descriptor),
+                waveCore.decodeWindowPayload(series)
+            );
+        });
+    } catch (error) {
+        setStatus('Waveform window decode failed: ' + String(error));
+    }
+    pendingWindowRequest = null;
+    render();
+}
+
+function visibleValueReferences() {
+    const library = filteredSignals.slice(
+        listFirstRow,
+        listFirstRow + Math.max(1, listRenderedCount)
+    );
+    return Array.from(new Set(
+        [...library, ...visibleWaveSignals()].map(signal => signal.reference).filter(Boolean)
+    )).sort();
+}
+
+function scheduleValueRequest() {
+    if (!indexedMode || !indexReady || !vcd) return;
+    if (valueRequestTimer !== null) clearTimeout(valueRequestTimer);
+    valueRequestTimer = setTimeout(() => {
+        valueRequestTimer = null;
+        const references = visibleValueReferences();
+        if (!references.length) return;
+        const time = Math.round(activeCursorTime());
+        const key = currentGeneration + '|' + time + '|' + references.join('\u0000');
+        if (key === lastValueRequestKey && references.every(reference => cursorValues.has(reference))) {
+            return;
+        }
+        if (pendingValueRequest?.key === key) return;
+        cancelPendingRequest(pendingValueRequest);
+        const requestId = requestTracker.next('values');
+        pendingValueRequest = { requestId, key, references, time };
+        waveformTransport.send({
+            type: 'valueRequest',
+            generation: currentGeneration,
+            requestId,
+            references,
+            time,
+        });
+    }, 50);
+}
+
+function handleCursorValues(message) {
+    if (!requestTracker.accepts(message)) return;
+    if (!pendingValueRequest || message.requestId !== pendingValueRequest.requestId) return;
+    cursorValues.clear();
+    Object.entries(message.values || {}).forEach(([reference, value]) => {
+        cursorValues.set(reference, String(value));
+    });
+    lastValueRequestKey = pendingValueRequest.key;
+    pendingValueRequest = null;
+    renderSignalList();
+    render();
+}
+
 function valueAt(signal, time) {
+    if (indexedMode) {
+        const fullValue = cursorValues.get(signal.reference) || '';
+        if (!fullValue) return '';
+        return Number.isInteger(signal.bitIndex)
+            ? bitValue(fullValue, signal.bitIndex, signal.parentWidth || fullValue.length)
+            : fullValue;
+    }
     const changes = signal.changes || [];
     if (!changes.length) return '';
     let lo = 0;
@@ -1488,8 +1804,70 @@ function drawDenseBlock(signal, x1, x2, highY, lowY) {
     ctx.strokeRect(snap(x1), snap(highY), Math.max(1, x2 - x1), lowY - highY);
 }
 
+function drawSummarySeries(signal, series, y, rowHeight, width, mode) {
+    const highY = y + rowHeight * (mode === 'bus' ? 0.28 : 0.30);
+    const lowY = y + rowHeight * (mode === 'bus' ? 0.72 : 0.70);
+    (series.records || []).forEach(record => {
+        const x1 = clamp(timeToX(record.firstTime, width), 0, width);
+        const x2 = clamp(timeToX(Math.max(record.firstTime, record.lastTime), width), 0, width);
+        if (x2 <= x1) return;
+        let firstValue = record.firstValue;
+        let lastValue = record.lastValue;
+        if (mode === 'bit') {
+            firstValue = bitValue(firstValue, signal.bitIndex, signal.parentWidth || firstValue.length);
+            lastValue = bitValue(lastValue, signal.bitIndex, signal.parentWidth || lastValue.length);
+        }
+        if (record.flags & 1) {
+            drawDenseBlock(signal, x1, x2, highY, lowY);
+            if (record.flags & 2) {
+                ctx.fillStyle = hexAlpha(STYLE.unknown, 0.22);
+                ctx.fillRect(x1, highY, x2 - x1, lowY - highY);
+            } else if (record.flags & 4) {
+                ctx.fillStyle = hexAlpha(STYLE.highZ, 0.20);
+                ctx.fillRect(x1, highY, x2 - x1, lowY - highY);
+            }
+            return;
+        }
+        if (mode === 'bus') {
+            drawBusSegment(signal, x1, x2, highY, lowY, firstValue);
+            return;
+        }
+        const firstY = valueY(firstValue, highY, lowY);
+        const lastY = valueY(lastValue, highY, lowY);
+        if (firstValue === '1') drawHighFill(x1, x2, highY, lowY, signal.color);
+        ctx.strokeStyle = signalPen(signal, firstValue);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(snap(x1), snap(firstY));
+        ctx.lineTo(snap(x2), snap(firstY));
+        if (Math.abs(firstY - lastY) > 0.1) ctx.lineTo(snap(x2), snap(lastY));
+        ctx.stroke();
+    });
+}
+
+function drawLoadingRow(signal, y, rowHeight, width) {
+    ctx.save();
+    ctx.strokeStyle = hexAlpha(signal.color, 0.28);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(0, snap(y + rowHeight / 2));
+    ctx.lineTo(width, snap(y + rowHeight / 2));
+    ctx.stroke();
+    ctx.restore();
+}
+
 function drawSingleBit(signal, y, rowHeight, width) {
-    const changes = signal.changes || [];
+    const series = seriesForSignal(signal);
+    if (!series) {
+        drawLoadingRow(signal, y, rowHeight, width);
+        return;
+    }
+    if (series.kind === 'summary') {
+        drawSummarySeries(signal, series, y, rowHeight, width, 'scalar');
+        return;
+    }
+    const changes = series.changes || [];
     if (!changes.length) return;
     const [startIdx, endIdx] = visibleRange(changes, startTime, endTime);
     const visibleCount = Math.max(0, endIdx - startIdx - 1);
@@ -1545,7 +1923,16 @@ function drawSingleBit(signal, y, rowHeight, width) {
 }
 
 function drawBusBit(signal, y, rowHeight, width) {
-    const changes = signal.changes || [];
+    const series = seriesForSignal(signal);
+    if (!series) {
+        drawLoadingRow(signal, y, rowHeight, width);
+        return;
+    }
+    if (series.kind === 'summary') {
+        drawSummarySeries(signal, series, y, rowHeight, width, 'bit');
+        return;
+    }
+    const changes = series.changes || [];
     if (!changes.length) return;
     const [startIdx, endIdx] = visibleRange(changes, startTime, endTime);
     const visibleCount = Math.max(0, endIdx - startIdx - 1);
@@ -1648,7 +2035,16 @@ function drawBusSegment(signal, x1, x2, highY, lowY, value) {
 }
 
 function drawBus(signal, y, rowHeight, width) {
-    const changes = signal.changes || [];
+    const series = seriesForSignal(signal);
+    if (!series) {
+        drawLoadingRow(signal, y, rowHeight, width);
+        return;
+    }
+    if (series.kind === 'summary') {
+        drawSummarySeries(signal, series, y, rowHeight, width, 'bus');
+        return;
+    }
+    const changes = series.changes || [];
     if (!changes.length) return;
     const [startIdx, endIdx] = visibleRange(changes, startTime, endTime);
     const visibleCount = Math.max(0, endIdx - startIdx - 1);
@@ -1763,6 +2159,8 @@ function render() {
     }
     drawCursors(width, height);
     updateVisibleSignalValues();
+    scheduleWindowRequest();
+    scheduleValueRequest();
     document.getElementById('cursorA').setAttribute('aria-pressed', String(activeCursor === 'a'));
     document.getElementById('cursorB').setAttribute('aria-pressed', String(activeCursor === 'b'));
     const measurement = waveCore.measureCursors(cursorA, cursorB, vcd.timescale || '');
@@ -1787,7 +2185,7 @@ function updateVisibleSignalValues() {
 }
 
 function updateToolbarState() {
-    const disabled = !vcd;
+    const disabled = !vcd || (indexedMode && !indexReady);
     ['goStart', 'goEnd', 'prevPage', 'nextPage', 'prevChange', 'nextChange', 'zoomOut', 'zoomIn', 'fit', 'cursorA', 'cursorB', 'changeSearchMode'].forEach(id => {
         document.getElementById(id).disabled = disabled;
     });
@@ -1796,7 +2194,7 @@ function updateToolbarState() {
 
 function updateSearchControls() {
     const exactValue = changeSearchMode.value === 'value';
-    changeSearchValue.disabled = !vcd || !exactValue;
+    changeSearchValue.disabled = !vcd || (indexedMode && !indexReady) || !exactValue;
     const condition = changeSearchMode.options[changeSearchMode.selectedIndex]?.text || 'change';
     document.getElementById('prevChange').title = 'Previous ' + condition.toLowerCase() + ' (Left)';
     document.getElementById('nextChange').title = 'Next ' + condition.toLowerCase() + ' (Right)';
@@ -1931,6 +2329,7 @@ function makeSearchTarget(signal, waveIndex, order, bitIndex = null) {
     return {
         order,
         name: isBit ? signal.fullName + '[' + bitIndex + ']' : signal.fullName,
+        reference: signal.reference,
         width: isBit ? 1 : signal.width,
         changes: signal.changes || [],
         waveIndex,
@@ -1976,6 +2375,50 @@ function jumpToCondition(direction) {
     if (!vcd || !waveCore) return { match: null, error: 'no-targets' };
     const mode = changeSearchMode.value || 'change';
     const targets = selectedSearchTargets();
+    if (indexedMode) {
+        if (!indexReady || !targets.length) {
+            const result = { match: null, error: 'no-targets' };
+            setStatus(searchErrorMessage(result.error, direction));
+            return result;
+        }
+        if ((mode === 'rising' || mode === 'falling') && !targets.some(target => target.width === 1)) {
+            const result = { match: null, error: 'edge-needs-scalar' };
+            setStatus(searchErrorMessage(result.error, direction));
+            return result;
+        }
+        if (mode === 'value') {
+            const valid = targets.some(target => waveCore.parseSearchValue(
+                changeSearchValue.value,
+                Number.isInteger(target.bitIndex) ? 1 : target.width
+            ).ok);
+            if (!valid) {
+                const result = { match: null, error: 'invalid-value' };
+                setStatus(searchErrorMessage(result.error, direction));
+                return result;
+            }
+        }
+        cancelPendingRequest(pendingSearchRequest);
+        const requestId = requestTracker.next('search');
+        pendingSearchRequest = { requestId, direction, targets };
+        waveformTransport.send({
+            type: 'searchRequest',
+            generation: currentGeneration,
+            requestId,
+            targets: targets.map(target => ({
+                reference: target.reference,
+                bitIndex: target.bitIndex,
+                waveIndex: target.waveIndex,
+                name: target.name,
+                order: target.order,
+            })),
+            cursorTime: activeCursorTime(),
+            direction,
+            mode,
+            query: changeSearchValue.value,
+        });
+        setStatus('Searching waveform index...');
+        return { pending: true, requestId };
+    }
     const result = waveCore.findSearchMatch(
         targets,
         activeCursorTime(),
@@ -2013,6 +2456,44 @@ function jumpToCondition(direction) {
     const condition = changeSearchMode.options[changeSearchMode.selectedIndex]?.text || mode;
     setStatus('Found ' + condition + ' on ' + target.name + ' at ' + formatTime(result.time) + '.');
     return result;
+}
+
+function handleSearchResult(message) {
+    if (!requestTracker.accepts(message)) return;
+    if (!pendingSearchRequest || message.requestId !== pendingSearchRequest.requestId) return;
+    const pending = pendingSearchRequest;
+    pendingSearchRequest = null;
+    const result = message.result;
+    if (!result) {
+        setStatus(searchErrorMessage('no-match', pending.direction));
+        return;
+    }
+    const target = result.target || pending.targets[0];
+    if (Number.isInteger(target.bitIndex)) {
+        selectedBusBit = {
+            parentWaveIndex: target.waveIndex,
+            bitIndex: target.bitIndex,
+        };
+    } else {
+        selectedBusBit = null;
+    }
+    selectedWaveIndex = Number(target.waveIndex);
+    selectedWaveIndices = new Set([selectedWaveIndex]);
+    setActiveCursorTime(result.time);
+    const range = Math.max(1, endTime - startTime);
+    if (result.time < startTime || result.time > endTime) {
+        startTime = clamp(
+            Math.round(result.time - range / 2),
+            Number(vcd.startTime) || 0,
+            Math.max(Number(vcd.startTime) || 0, (Number(vcd.endTime) || 1) - range)
+        );
+        endTime = Math.min(Number(vcd.endTime) || 1, startTime + range);
+    }
+    cursorValues.clear();
+    lastValueRequestKey = '';
+    renderSignalList();
+    render();
+    setStatus('Found ' + (target.name || target.reference) + ' at ' + formatTime(result.time) + '.');
 }
 
 function goToTime() {
@@ -2515,10 +2996,50 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+cancelIndex.addEventListener('click', () => {
+    waveformTransport.send({
+        type: 'cancelLoad',
+        generation: loadingGeneration || currentGeneration,
+    });
+    cancelIndex.disabled = true;
+    indexProgressText.textContent = 'cancelling';
+});
+
+retryIndex.addEventListener('click', () => {
+    waveformTransport.send({
+        type: 'retryLoad',
+        generation: loadingGeneration || currentGeneration,
+    });
+    retryIndex.hidden = true;
+    cancelIndex.hidden = false;
+    cancelIndex.disabled = false;
+    indexProgressText.textContent = 'retrying';
+});
+
 window.addEventListener('message', event => {
-    const msg = event.data;
+    const msg = event.data || {};
     if (msg.type === 'vcd') {
         setData(msg.fileName, msg.data, msg.layout);
+    } else if (msg.type === 'waveformMetadata') {
+        setIndexedMetadata(msg);
+    } else if (msg.type === 'indexProgress') {
+        handleIndexProgress(msg);
+    } else if (msg.type === 'indexReady') {
+        handleIndexReady(msg);
+    } else if (msg.type === 'windowData') {
+        handleWindowData(msg);
+    } else if (msg.type === 'cursorValues') {
+        handleCursorValues(msg);
+    } else if (msg.type === 'searchResult') {
+        handleSearchResult(msg);
+    } else if (msg.type === 'indexCancelled') {
+        handleIndexFailure(msg, true);
+    } else if (msg.type === 'reloadFailed') {
+        handleIndexFailure(msg, false);
+    } else if (msg.type === 'requestError' || msg.type === 'bridgeError') {
+        if (Number(msg.generation) >= currentGeneration) {
+            setStatus('Waveform request failed: ' + String(msg.message || 'unknown error'));
+        }
     } else if (msg.type === 'empty') {
         setEmptyState();
     } else if (msg.type === 'error') {
@@ -2790,4 +3311,4 @@ window.__veriflowWaveViewer = {
     },
 };
 resizeCanvas();
-vscode.postMessage({ type: 'ready' });
+waveformTransport.send({ type: 'ready' });

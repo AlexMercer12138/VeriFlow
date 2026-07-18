@@ -12,6 +12,25 @@ import { VcdParser } from '../core/vcdParser';
 import { WaveformLayoutStore } from '../core/waveformLayoutStore';
 
 type WaveCore = {
+    WindowCache: new (capacity?: number) => {
+        get(key: string): any;
+        set(key: string, value: any): void;
+        has(key: string): boolean;
+        clear(): void;
+        readonly size: number;
+    };
+    RequestTracker: new () => {
+        generation: number;
+        setGeneration(generation: number): void;
+        next(kind: string): string;
+        cancel(requestId: string): void;
+        accepts(message: any): boolean;
+    };
+    decodeWindowPayload(payload: any): any;
+    prefetchRange(start: number, end: number, minimum: number, maximum: number): {
+        start: number;
+        end: number;
+    };
     validateLayout(value: unknown): any | null;
     describeSignal(signal: any, signals: any[]): any;
     matchSignalDescriptors(descriptors: any[], signals: any[]): Array<number | null>;
@@ -624,6 +643,130 @@ function testWaveConditionalSearch(): void {
     assert.strictEqual(waveCore.findSearchMatch([data], 0, 1, 'rising', '').error, 'edge-needs-scalar');
 }
 
+function testIndexedWaveCore(): void {
+    const raw = waveCore.decodeWindowPayload({
+        kind: 'raw',
+        width: 4,
+        times: [0, 12],
+        values: Buffer.from([0x00, 0x4b]).toString('base64'),
+        valueStride: 1,
+    });
+    assert.deepStrictEqual(raw, {
+        kind: 'raw',
+        width: 4,
+        changes: [
+            { time: 0, value: '0000' },
+            { time: 12, value: '10xz' },
+        ],
+    });
+    const summary = waveCore.decodeWindowPayload({
+        kind: 'summary',
+        width: 4,
+        firstTimes: [0],
+        lastTimes: [12],
+        firstValues: Buffer.from([0x00]).toString('base64'),
+        lastValues: Buffer.from([0x4b]).toString('base64'),
+        valueStride: 1,
+        flags: [7],
+    });
+    assert.deepStrictEqual(summary.records, [{
+        firstTime: 0,
+        lastTime: 12,
+        firstValue: '0000',
+        lastValue: '10xz',
+        flags: 7,
+    }]);
+
+    const cache = new waveCore.WindowCache(2);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    assert.strictEqual(cache.get('a'), 1);
+    cache.set('c', 3);
+    assert.strictEqual(cache.has('a'), true);
+    assert.strictEqual(cache.has('b'), false);
+    assert.strictEqual(cache.size, 2);
+
+    const requests = new waveCore.RequestTracker();
+    requests.setGeneration(4);
+    const requestId = requests.next('window');
+    assert.strictEqual(requests.accepts({ generation: 4, requestId }), true);
+    requests.cancel(requestId);
+    assert.strictEqual(requests.accepts({ generation: 4, requestId }), false);
+    requests.setGeneration(5);
+    assert.strictEqual(requests.accepts({ generation: 4, requestId }), false);
+    assert.deepStrictEqual(waveCore.prefetchRange(10, 20, 0, 100), { start: 5, end: 25 });
+}
+
+function testWaveformTransportAdapters(): void {
+    const transportModule = require(path.join(
+        __dirname,
+        '..',
+        '..',
+        'media',
+        'waveform',
+        'viewer-transport.js'
+    ));
+    const vscodeSent: any[] = [];
+    let state: any = null;
+    const vscodeTransport = transportModule.createWaveformTransport({
+        acquireVsCodeApi: () => ({
+            postMessage: (message: any) => vscodeSent.push(message),
+            getState: () => state,
+            setState: (value: any) => { state = value; },
+        }),
+        addEventListener: () => undefined,
+    });
+    vscodeTransport.send({ type: 'ready' });
+    vscodeTransport.setState({ layout: 1 });
+    assert.strictEqual(vscodeTransport.kind, 'vscode');
+    assert.deepStrictEqual(vscodeSent, [{ type: 'ready' }]);
+    assert.deepStrictEqual(vscodeTransport.getState(), { layout: 1 });
+
+    const memorySent: any[] = [];
+    let memoryIncoming: ((message: any) => void) | undefined;
+    const memoryTransport = transportModule.createWaveformTransport({
+        __waveformMemoryTransport: {
+            send: (message: any) => memorySent.push(message),
+            onMessage: (listener: (message: any) => void) => {
+                memoryIncoming = listener;
+                return () => undefined;
+            },
+        },
+    });
+    const received: any[] = [];
+    memoryTransport.onMessage((message: any) => received.push(message));
+    memoryTransport.send({ type: 'windowRequest' });
+    memoryIncoming?.({ type: 'windowData' });
+    assert.strictEqual(memoryTransport.kind, 'memory');
+    assert.strictEqual(memorySent.length, 1);
+    assert.deepStrictEqual(received, [{ type: 'windowData' }]);
+
+    let bridgeIncoming: ((payload: string) => void) | undefined;
+    const bridgeSent: string[] = [];
+    const qtTransport = transportModule.createWaveformTransport({
+        qt: { webChannelTransport: {} },
+        QWebChannel: class {
+            constructor(_transport: unknown, ready: (channel: any) => void) {
+                ready({
+                    objects: {
+                        waveformBridge: {
+                            send: (payload: string) => bridgeSent.push(payload),
+                            message: { connect: (listener: (payload: string) => void) => { bridgeIncoming = listener; } },
+                        },
+                    },
+                });
+            }
+        },
+    });
+    const qtReceived: any[] = [];
+    qtTransport.onMessage((message: any) => qtReceived.push(message));
+    qtTransport.send({ type: 'valueRequest' });
+    bridgeIncoming?.(JSON.stringify({ type: 'cursorValues' }));
+    assert.strictEqual(qtTransport.kind, 'qt');
+    assert.strictEqual(JSON.parse(bridgeSent[0]).type, 'valueRequest');
+    assert.deepStrictEqual(qtReceived, [{ type: 'cursorValues' }]);
+}
+
 async function testWaveformLayoutStore(): Promise<void> {
     const values = new Map<string, unknown>();
     const memento = {
@@ -670,6 +813,8 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
     ['wave cursor measurement', testWaveCursorMeasurement],
     ['wave conditional search', testWaveConditionalSearch],
+    ['indexed waveform core', testIndexedWaveCore],
+    ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
 ];
 

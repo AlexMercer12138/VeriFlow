@@ -75,7 +75,10 @@ async function openFile(message: WorkerRequest): Promise<void> {
         reader = nextReader;
         readerGeneration = generation;
         indexDir = nextIndexDir;
-        post('indexReady', generation, { fileName: message.source });
+        post('indexReady', generation, {
+            fileName: message.source,
+            data: nextReader.metadata,
+        });
     } catch (error) {
         if (error instanceof VcdIndexCancelled || loadCancelled(generation)) {
             post('indexCancelled', generation);
@@ -126,15 +129,28 @@ function valueRequest(message: WorkerRequest): void {
 
 function searchRequest(message: WorkerRequest): void {
     const current = requireReader(message);
-    const result = current.search(
-        message.reference,
-        message.cursorTime ?? 0,
-        message.direction ?? 1,
-        message.mode ?? 'change',
-        message.query ?? '',
-        message.bitIndex,
-        () => requestCancelled(message)
-    );
+    const targets = Array.isArray(message.targets) && message.targets.length
+        ? message.targets
+        : [{ reference: message.reference, bitIndex: message.bitIndex, order: 0 }];
+    const matches = targets.flatMap((target: Record<string, any>) => {
+        if (requestCancelled(message)) return [];
+        const result = current.search(
+            target.reference,
+            message.cursorTime ?? 0,
+            message.direction ?? 1,
+            message.mode ?? 'change',
+            message.query ?? '',
+            target.bitIndex,
+            () => requestCancelled(message)
+        );
+        return result ? [{ ...result, target }] : [];
+    });
+    const direction = message.direction ?? 1;
+    matches.sort((left, right) => {
+        const timeOrder = direction >= 0 ? left.time - right.time : right.time - left.time;
+        return timeOrder || Number(left.target.order ?? 0) - Number(right.target.order ?? 0);
+    });
+    const result = matches[0] ?? null;
     if (!requestCancelled(message)) {
         post('searchResult', message.generation, { requestId: message.requestId, result });
     }

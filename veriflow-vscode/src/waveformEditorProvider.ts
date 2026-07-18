@@ -53,6 +53,8 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
                 worker.cancelRequest(String(message.requestId));
             } else if (message.type === 'cancelLoad') {
                 worker.cancelLoad();
+            } else if (message.type === 'retryLoad') {
+                worker.open(document.uri.fsPath);
             } else if (['windowRequest', 'valueRequest', 'searchRequest'].includes(message.type)) {
                 worker.forward(message);
             }
@@ -71,6 +73,7 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
         const css = fs.readFileSync(path.join(assetsDir, 'viewer.css'), 'utf-8');
         const body = fs.readFileSync(path.join(assetsDir, 'viewer.html'), 'utf-8');
         const coreScript = fs.readFileSync(path.join(assetsDir, 'viewer-core.js'), 'utf-8');
+        const transportScript = fs.readFileSync(path.join(assetsDir, 'viewer-transport.js'), 'utf-8');
         const script = fs.readFileSync(path.join(assetsDir, 'viewer.js'), 'utf-8')
             .replace('const bootstrap = ${stateJson};', 'const bootstrap = { nonce: "' + nonce + '" };');
 
@@ -88,6 +91,7 @@ ${css}
 <body>
 ${body}
 <script nonce="${nonce}">
+${transportScript}
 ${coreScript}
 ${script}
 </script>

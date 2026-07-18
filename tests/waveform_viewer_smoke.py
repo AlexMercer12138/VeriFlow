@@ -134,7 +134,7 @@ def _grab_waveform_stats(view) -> dict:
     return max(stats, key=lambda item: (item["ok"], item["colored"], item["different"]))
 
 
-def main() -> int:
+def _legacy_main() -> int:
     _configure_qt_webengine()
 
     from PySide6.QtCore import QTimer, QUrl
@@ -153,6 +153,7 @@ def main() -> int:
     html = _build_waveform_html(str(wave_file), data)
 
     app = QApplication.instance() or QApplication([])
+    app.setQuitOnLastWindowClosed(False)
     view = QWebEngineView()
     view.resize(1280, 720)
     view.setWindowTitle("VeriFlow Waveform Viewer Smoke Test")
@@ -572,6 +573,201 @@ def main() -> int:
         return 0
     print(f"[ERROR] Built-in waveform viewer smoke test failed: {result['message']}")
     return 1
+
+
+def _indexed_main() -> int:
+    import shutil
+    import tempfile
+
+    _configure_qt_webengine()
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from src.infrastructure.waveform_cache import WaveformCache
+    from src.presentation.gui.widgets.waveform_bridge import (
+        WaveformBridge,
+        WaveformIndexWorker,
+    )
+    from src.presentation.gui.widgets.waveform_viewer_panel import WaveformViewerPanel
+
+    requested = [argument for argument in sys.argv[1:] if argument != "--legacy"]
+    wave_file = Path(requested[0]) if requested else _default_vcd()
+    if not wave_file.exists():
+        print(f"[ERROR] VCD file not found: {wave_file}")
+        return 2
+
+    temporary = tempfile.TemporaryDirectory(prefix="veriflow-indexed-smoke-")
+    root = Path(temporary.name)
+    source = root / wave_file.name
+    shutil.copyfile(wave_file, source)
+    with source.open("a", encoding="utf-8") as handle:
+        for timestamp in range(21, 5001):
+            handle.write(f"#{timestamp}\n{timestamp % 2}!\n")
+    cache = WaveformCache(root=root / "cache")
+    bridge = WaveformBridge(
+        worker=WaveformIndexWorker(cache=cache),
+        start_thread=True,
+    )
+
+    app = QApplication.instance() or QApplication([])
+    panel = WaveformViewerPanel(bridge=bridge)
+    app.setQuitOnLastWindowClosed(False)
+    panel.resize(1280, 720)
+    panel.setWindowTitle("VeriFlow Indexed Waveform Smoke Test")
+    panel.show()
+    view = panel._view
+    if view is None:
+        temporary.cleanup()
+        print("[ERROR] QtWebEngine is unavailable")
+        return 2
+
+    messages = []
+    bridge.message.connect(lambda payload: messages.append(json.loads(payload)))
+    state = {
+        "primed": False,
+        "search_requested": False,
+        "javascript_pending": False,
+        "done": False,
+    }
+    result = {"ok": False, "message": "timeout"}
+
+    def finish(ok: bool, message: str) -> None:
+        if state["done"]:
+            return
+        state["done"] = True
+        result["ok"] = ok
+        result["message"] = message
+        panel.close()
+
+        def quit_after_worker() -> None:
+            thread = bridge._thread
+            if thread is not None and thread.isRunning():
+                QTimer.singleShot(20, quit_after_worker)
+                return
+            panel.deleteLater()
+            QTimer.singleShot(0, app.quit)
+
+        QTimer.singleShot(0, quit_after_worker)
+
+    def inspect() -> None:
+        if state["done"]:
+            return
+        types = [message.get("type") for message in messages]
+        failures = [
+            message for message in messages
+            if message.get("type") in {"reloadFailed", "requestError", "bridgeError"}
+        ]
+        if failures:
+            finish(False, "host failure: " + repr(failures[-1]))
+            return
+
+        metadata = next(
+            (message for message in messages if message.get("type") == "waveformMetadata"),
+            None,
+        )
+        if metadata is not None:
+            signals = metadata.get("data", {}).get("signals", [])
+            if any("changes" in signal for signal in signals):
+                finish(False, "indexed metadata contains complete changes")
+                return
+
+        if "indexReady" not in types:
+            QTimer.singleShot(100, inspect)
+            return
+        if not state["primed"]:
+            state["primed"] = True
+            view.page().runJavaScript(
+                "window.__veriflowWaveViewer && window.__veriflowWaveViewer.addFirstSignals(6);"
+            )
+            QTimer.singleShot(200, inspect)
+            return
+
+        windows = [message for message in messages if message.get("type") == "windowData"]
+        values = [message for message in messages if message.get("type") == "cursorValues"]
+        if not windows or not values:
+            QTimer.singleShot(100, inspect)
+            return
+        total_records = 0
+        kinds = set()
+        for series in windows[-1].get("series", []):
+            kinds.add(series.get("kind"))
+            total_records += len(series.get("times", series.get("firstTimes", [])))
+        if total_records > 32768:
+            finish(False, f"window response exceeded record cap: {total_records}")
+            return
+        if not {"raw", "summary"}.issubset(kinds):
+            finish(False, "expected raw and summary windows: " + repr(kinds))
+            return
+
+        if not state["search_requested"]:
+            state["search_requested"] = True
+            view.page().runJavaScript(
+                "document.getElementById('changeSearchMode').value='rising';"
+                "document.getElementById('nextChange').click();"
+            )
+            QTimer.singleShot(100, inspect)
+            return
+        if "searchResult" not in types:
+            QTimer.singleShot(100, inspect)
+            return
+        if state["javascript_pending"]:
+            return
+        state["javascript_pending"] = True
+
+        def checked(payload) -> None:
+            state["javascript_pending"] = False
+            try:
+                page_state = json.loads(payload or "{}")
+            except json.JSONDecodeError:
+                finish(False, "invalid indexed viewer state: " + repr(payload))
+                return
+            if page_state.get("cursorA") != 5:
+                finish(False, "indexed search did not move cursor: " + repr(page_state))
+                return
+            if not page_state.get("indexReady") or not page_state.get("progressHidden"):
+                finish(False, "indexed ready controls are inconsistent: " + repr(page_state))
+                return
+            QApplication.processEvents()
+            pixels = _grab_waveform_stats(view)
+            if not pixels["ok"]:
+                finish(False, "indexed waveform pixels are blank: " + repr(pixels))
+                return
+            screenshot = os.environ.get("VERIFLOW_SMOKE_SCREENSHOT")
+            if screenshot:
+                view.grab().save(screenshot)
+            finish(
+                True,
+                f"records={total_records}; messages={types}; pixels={pixels}",
+            )
+
+        view.page().runJavaScript(
+            "JSON.stringify(Object.assign({}, "
+            "window.__veriflowWaveViewer ? window.__veriflowWaveViewer.state() : {}, {"
+            "indexReady: !document.getElementById('goStart').disabled,"
+            "progressHidden: document.getElementById('indexProgress').hidden"
+            "}));",
+            checked,
+        )
+
+    QTimer.singleShot(0, lambda: panel.open_vcd(source))
+    QTimer.singleShot(100, inspect)
+    QTimer.singleShot(15000, lambda: finish(False, "timeout; messages=" + repr(messages[-8:])))
+    app.exec()
+    temporary.cleanup()
+
+    if result["ok"]:
+        print("[OK] Indexed waveform viewer rendered; " + result["message"])
+        return 0
+    print("[ERROR] Indexed waveform viewer smoke test failed: " + result["message"])
+    return 1
+
+
+def main() -> int:
+    if "--legacy" in sys.argv:
+        sys.argv.remove("--legacy")
+        return _legacy_main()
+    return _indexed_main()
 
 
 if __name__ == "__main__":

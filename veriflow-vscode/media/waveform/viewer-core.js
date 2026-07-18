@@ -24,6 +24,163 @@
         { unit: 'THz', factor: 1e12 },
     ];
 
+    function base64Bytes(value) {
+        const text = String(value || '');
+        if (typeof Buffer !== 'undefined') {
+            return Uint8Array.from(Buffer.from(text, 'base64'));
+        }
+        const binary = atob(text);
+        return Uint8Array.from(binary, character => character.charCodeAt(0));
+    }
+
+    function unpackLogicValue(bytes, width) {
+        const targetWidth = Number(width);
+        const stride = Math.ceil(targetWidth * 2 / 8);
+        if (!Number.isInteger(targetWidth) || targetWidth <= 0 || bytes.length !== stride) {
+            throw new Error('packed waveform value has an invalid size');
+        }
+        const symbols = '01xz';
+        const slots = stride * 4;
+        let value = '';
+        for (let index = 0; index < targetWidth; index++) {
+            const shift = (slots - index - 1) * 2;
+            const byteIndex = Math.floor((stride * 8 - shift - 2) / 8);
+            value += symbols[(bytes[byteIndex] >> (shift % 8)) & 3];
+        }
+        return value;
+    }
+
+    function decodeValues(encoded, width, stride, count) {
+        const bytes = base64Bytes(encoded);
+        const valueStride = Number(stride);
+        if (!Number.isInteger(valueStride) || valueStride <= 0 || bytes.length !== count * valueStride) {
+            throw new Error('packed waveform payload has an invalid length');
+        }
+        return Array.from({ length: count }, (_unused, index) => unpackLogicValue(
+            bytes.slice(index * valueStride, (index + 1) * valueStride),
+            width
+        ));
+    }
+
+    function decodeWindowPayload(payload) {
+        if (!payload || (payload.kind !== 'raw' && payload.kind !== 'summary')) {
+            throw new Error('unsupported waveform window payload');
+        }
+        const width = Number(payload.width);
+        if (payload.kind === 'raw') {
+            const times = Array.isArray(payload.times) ? payload.times.map(Number) : [];
+            const values = decodeValues(payload.values, width, payload.valueStride, times.length);
+            return {
+                kind: 'raw',
+                width,
+                changes: times.map((time, index) => ({ time, value: values[index] })),
+            };
+        }
+        const firstTimes = Array.isArray(payload.firstTimes) ? payload.firstTimes.map(Number) : [];
+        const lastTimes = Array.isArray(payload.lastTimes) ? payload.lastTimes.map(Number) : [];
+        const flags = Array.isArray(payload.flags) ? payload.flags.map(Number) : [];
+        if (lastTimes.length !== firstTimes.length || flags.length !== firstTimes.length) {
+            throw new Error('waveform summary payload arrays do not match');
+        }
+        const firstValues = decodeValues(
+            payload.firstValues,
+            width,
+            payload.valueStride,
+            firstTimes.length
+        );
+        const lastValues = decodeValues(
+            payload.lastValues,
+            width,
+            payload.valueStride,
+            firstTimes.length
+        );
+        return {
+            kind: 'summary',
+            width,
+            records: firstTimes.map((firstTime, index) => ({
+                firstTime,
+                lastTime: lastTimes[index],
+                firstValue: firstValues[index],
+                lastValue: lastValues[index],
+                flags: flags[index],
+            })),
+        };
+    }
+
+    class WindowCache {
+        constructor(capacity = 128) {
+            this.capacity = Math.max(1, Math.trunc(Number(capacity) || 1));
+            this.entries = new Map();
+        }
+
+        get size() {
+            return this.entries.size;
+        }
+
+        has(key) {
+            return this.entries.has(key);
+        }
+
+        get(key) {
+            if (!this.entries.has(key)) return undefined;
+            const value = this.entries.get(key);
+            this.entries.delete(key);
+            this.entries.set(key, value);
+            return value;
+        }
+
+        set(key, value) {
+            this.entries.delete(key);
+            this.entries.set(key, value);
+            while (this.entries.size > this.capacity) {
+                this.entries.delete(this.entries.keys().next().value);
+            }
+        }
+
+        clear() {
+            this.entries.clear();
+        }
+    }
+
+    class RequestTracker {
+        constructor() {
+            this.generation = 0;
+            this.counter = 0;
+            this.cancelled = new Set();
+        }
+
+        setGeneration(generation) {
+            this.generation = Number(generation) || 0;
+            this.counter = 0;
+            this.cancelled.clear();
+        }
+
+        next(kind) {
+            this.counter += 1;
+            return this.generation + ':' + String(kind || 'request') + ':' + this.counter;
+        }
+
+        cancel(requestId) {
+            this.cancelled.add(String(requestId));
+        }
+
+        accepts(message) {
+            return !!message
+                && Number(message.generation) === this.generation
+                && (!message.requestId || !this.cancelled.has(String(message.requestId)));
+        }
+    }
+
+    function prefetchRange(start, end, minimum, maximum) {
+        const low = Math.min(Number(start), Number(end));
+        const high = Math.max(Number(start), Number(end));
+        const margin = Math.max(0, high - low) / 2;
+        return {
+            start: Math.max(Number(minimum), low - margin),
+            end: Math.min(Number(maximum), high + margin),
+        };
+    }
+
     function validateLayout(value) {
         if (!value || value.version !== LAYOUT_VERSION || !Array.isArray(value.rows)) {
             return null;
@@ -305,6 +462,10 @@
 
     return {
         LAYOUT_VERSION,
+        WindowCache,
+        RequestTracker,
+        decodeWindowPayload,
+        prefetchRange,
         validateLayout,
         describeSignal,
         matchSignalDescriptors,

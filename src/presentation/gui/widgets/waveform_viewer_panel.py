@@ -16,10 +16,10 @@ except Exception:  # pragma: no cover - depends on optional QtWebEngine install
 
 
 class WaveformViewerPanel(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, bridge=None):
         super().__init__(parent)
         self._view = None
-        self._bridge = None
+        self._bridge = bridge
         self._channel = None
         self._page_loaded = False
         self._pending_file = None
@@ -39,7 +39,10 @@ class WaveformViewerPanel(QWidget):
             self._view = QWebEngineView()
             self._view.setStyleSheet("background: #111318;")
             self._view.page().setBackgroundColor(QColor("#111318"))
-            self._bridge = WaveformBridge(self)
+            if self._bridge is None:
+                self._bridge = WaveformBridge(self)
+            elif self._bridge.parent() is None:
+                self._bridge.setParent(self)
             self._channel = QWebChannel(self._view.page())
             self._channel.registerObject("waveformBridge", self._bridge)
             self._view.page().setWebChannel(self._channel)
