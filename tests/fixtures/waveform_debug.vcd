@@ -1,0 +1,37 @@
+$date
+  Sat Jul 18 2026
+$end
+$version
+  VeriFlow waveform debug fixture
+$end
+$timescale 10ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$var wire 4 " data [3:0] $end
+$var wire 1 # ready $end
+$var wire 1 $ valid $end
+$var wire 1 % error $end
+$var wire 1 & enable $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 "
+0#
+0$
+0%
+1&
+#5
+1!
+#6
+b1010 "
+#10
+0!
+#12
+b10xz "
+#15
+1!
+#18
+b0011 "
+#20
+0!

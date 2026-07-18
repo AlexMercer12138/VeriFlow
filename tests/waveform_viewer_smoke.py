@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 
 def _default_vcd() -> Path:
     candidates = [
+        ROOT / "tests" / "fixtures" / "waveform_debug.vcd",
         Path("D:/Software/VeriWave/test-vcd-file-2.vcd"),
         ROOT / "tests" / "project_test" / "uart_tb.vcd",
     ]
@@ -164,6 +165,7 @@ def main() -> int:
     bus_expanded = {"done": False, "bits": 0}
     formatted = {"done": False}
     name_mode = {"done": False}
+    layout_roundtrip = {"done": False}
     multi_select = {"done": False}
     initial_state = {"checked": False}
 
@@ -312,6 +314,35 @@ def main() -> int:
             view.page().runJavaScript(
                 "JSON.stringify(window.__veriflowWaveViewer ? window.__veriflowWaveViewer.formatSamples() : {});",
                 on_formatted,
+            )
+            return
+
+        if not layout_roundtrip["done"]:
+            layout_roundtrip["done"] = True
+
+            def on_layout_roundtrip(state) -> None:
+                try:
+                    state = json.loads(state or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "layout round-trip returned invalid state: " + repr(state))
+                    return
+                if (
+                    state.get("version") != 1
+                    or state.get("beforeWaveforms", 0) <= 0
+                    or state.get("beforeWaveforms") != state.get("afterWaveforms")
+                    or state.get("beforeGroups") != state.get("afterGroups")
+                    or state.get("beforeBusBits") != state.get("afterBusBits")
+                    or not state.get("restored")
+                ):
+                    finish(False, "layout round-trip failed: " + repr(state))
+                    return
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer && "
+                "window.__veriflowWaveViewer.layoutRoundTripSamples ? "
+                "window.__veriflowWaveViewer.layoutRoundTripSamples() : {missing: true});",
+                on_layout_roundtrip,
             )
             return
 

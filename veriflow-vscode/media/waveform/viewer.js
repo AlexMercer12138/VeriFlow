@@ -1,5 +1,7 @@
 const bootstrap = ${stateJson};
 const vscode = acquireVsCodeApi();
+const waveCore = globalThis.VeriflowWaveCore;
+const isVsCodeHost = typeof vscode.getState === 'function' && typeof vscode.setState === 'function';
 const canvas = document.getElementById('waveCanvas');
 const ctx = canvas.getContext('2d');
 const waveWrap = document.getElementById('waveWrap');
@@ -53,6 +55,7 @@ const STYLE = {
 };
 
 let vcd = null;
+let currentFileName = '';
 let allSignals = [];
 let filteredSignals = [];
 let waveSignals = [];
@@ -72,9 +75,14 @@ let lastMouseX = 0;
 let boxStart = null;
 let boxCurrent = null;
 let nextGroupId = 1;
+let layoutReady = false;
+let layoutSaveTimer = null;
+let lastSavedLayoutJson = '';
+let layoutStorageWarningShown = false;
 const ROW_HEIGHT = 32;
 const HEADER_HEIGHT = 38;
 const TIME_UNITS = ['fs', 'ps', 'ns', 'us', 'ms', 's'];
+const LAYOUT_STORAGE_PREFIX = 'veriflow.waveform.layout.v1:';
 
 function getCss(name, fallback) {
     const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -83,6 +91,199 @@ function getCss(name, fallback) {
 
 function stableSignalKey(signal) {
     return signal.fullName + '|' + signal.id;
+}
+
+function cssPixelValue(name, fallback) {
+    const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function captureLayout() {
+    if (!vcd || !waveCore) return null;
+    const rows = waveSignals.map(item => {
+        if (isGroupRow(item)) {
+            return {
+                kind: 'group',
+                id: item.id,
+                name: displayName(item),
+                expanded: item.expanded !== false,
+            };
+        }
+        return {
+            kind: 'signal',
+            signal: waveCore.describeSignal(item, allSignals),
+            groupId: item.groupId || '',
+            color: item.color || DEFAULT_WAVE_COLOR,
+            radix: item.radix || 'default',
+            nameMode: item.nameMode || 'short',
+            displayName: item.displayName || '',
+            busExpanded: !!item.busExpanded,
+        };
+    });
+    return {
+        version: 1,
+        rows,
+        view: {
+            startTime,
+            endTime,
+            waveScrollTop,
+            libraryWidth: cssPixelValue('--library-width', 300),
+            waveNameWidth: cssPixelValue('--wave-name-width', 150),
+        },
+        cursors: {
+            a: cursorTime,
+            b: null,
+            active: 'a',
+        },
+    };
+}
+
+function localLayoutKey() {
+    return LAYOUT_STORAGE_PREFIX + currentFileName;
+}
+
+function showLayoutStorageWarning(message) {
+    if (layoutStorageWarningShown) return;
+    layoutStorageWarningShown = true;
+    statusText.textContent = message;
+}
+
+function loadHostLayout(messageLayout) {
+    if (messageLayout && typeof messageLayout === 'object') return messageLayout;
+    try {
+        if (isVsCodeHost) {
+            return vscode.getState()?.layout || null;
+        }
+        const stored = localStorage.getItem(localLayoutKey());
+        return stored ? JSON.parse(stored) : null;
+    } catch (_error) {
+        showLayoutStorageWarning('Waveform layout restore is unavailable.');
+        return null;
+    }
+}
+
+function persistLayoutNow() {
+    layoutSaveTimer = null;
+    if (!layoutReady || !vcd) return;
+    const layout = captureLayout();
+    if (!layout) return;
+    const serialized = JSON.stringify(layout);
+    if (serialized === lastSavedLayoutJson) return;
+    try {
+        if (isVsCodeHost) {
+            vscode.setState({ layout });
+            vscode.postMessage({ type: 'saveLayout', layout });
+        } else {
+            localStorage.setItem(localLayoutKey(), serialized);
+        }
+        lastSavedLayoutJson = serialized;
+    } catch (_error) {
+        showLayoutStorageWarning('Waveform layout save is unavailable.');
+    }
+}
+
+function scheduleLayoutSave() {
+    if (!layoutReady || !vcd) return;
+    if (layoutSaveTimer !== null) clearTimeout(layoutSaveTimer);
+    layoutSaveTimer = setTimeout(persistLayoutNow, 250);
+}
+
+function groupRowFromLayout(row, id) {
+    const name = typeof row.name === 'string' && row.name.trim()
+        ? row.name.trim()
+        : 'Group';
+    return {
+        kind: 'group',
+        id,
+        key: '__group__' + id,
+        name,
+        displayName: name,
+        expanded: row.expanded !== false,
+        color: '#888888',
+    };
+}
+
+function restoreLayout(layout, renderAfter = true) {
+    if (!vcd || !waveCore) return false;
+    const validated = waveCore.validateLayout(layout);
+    if (!validated) return false;
+
+    const signalRows = validated.rows.filter(row => row.kind === 'signal' && row.signal && typeof row.signal === 'object');
+    const signalIndices = waveCore.matchSignalDescriptors(
+        signalRows.map(row => row.signal),
+        allSignals
+    );
+    let matchedSignalIndex = 0;
+    const groupIdMap = new Map();
+    let restoredGroupIndex = 1;
+    validated.rows.forEach(row => {
+        if (row.kind !== 'group') return;
+        const sourceId = typeof row.id === 'string' ? row.id : '__group_' + restoredGroupIndex;
+        if (!groupIdMap.has(sourceId)) {
+            groupIdMap.set(sourceId, 'group-' + restoredGroupIndex++);
+        }
+    });
+
+    const restored = [];
+    validated.rows.forEach(row => {
+        if (row.kind === 'group') {
+            const sourceId = typeof row.id === 'string' ? row.id : '__group_' + (restored.length + 1);
+            const restoredId = groupIdMap.get(sourceId);
+            if (restoredId) restored.push(groupRowFromLayout(row, restoredId));
+            return;
+        }
+        if (row.kind !== 'signal' || !row.signal || typeof row.signal !== 'object') return;
+        const allSignalIndex = signalIndices[matchedSignalIndex++];
+        if (allSignalIndex === null || allSignalIndex === undefined) return;
+        const source = allSignals[allSignalIndex];
+        const groupId = typeof row.groupId === 'string'
+            ? groupIdMap.get(row.groupId) || ''
+            : '';
+        const item = makeWaveSignal(source, groupId);
+        if (typeof row.color === 'string' && /^#[0-9a-f]{6}$/i.test(row.color)) {
+            item.color = row.color;
+        }
+        if (RADIXES.some(radix => radix.key === row.radix)) item.radix = row.radix;
+        if (row.nameMode === 'full' || row.nameMode === 'short') item.nameMode = row.nameMode;
+        if (typeof row.displayName === 'string') item.displayName = row.displayName.slice(0, 256);
+        item.busExpanded = !!row.busExpanded && item.width > 1;
+        restored.push(item);
+        syncLibrarySignal(item);
+    });
+    waveSignals = restored;
+    nextGroupId = Math.max(1, restoredGroupIndex);
+    selectedWaveIndex = waveSignals.findIndex(isBaseWaveSignal);
+    selectedWaveIndices = selectedWaveIndex >= 0 ? new Set([selectedWaveIndex]) : new Set();
+
+    const minTime = Number(vcd.startTime) || 0;
+    const maxTime = Math.max(minTime + 1, Number(vcd.endTime) || 1);
+    const view = validated.view || {};
+    const restoredStart = Number(view.startTime);
+    const restoredEnd = Number(view.endTime);
+    startTime = Number.isFinite(restoredStart)
+        ? clamp(restoredStart, minTime, maxTime - 1)
+        : minTime;
+    endTime = Number.isFinite(restoredEnd)
+        ? clamp(restoredEnd, startTime + 1, maxTime)
+        : maxTime;
+    waveScrollTop = Number.isFinite(Number(view.waveScrollTop))
+        ? Math.max(0, Number(view.waveScrollTop))
+        : 0;
+
+    const mainWidth = document.querySelector('.main')?.getBoundingClientRect().width || 1000;
+    const waveWidth = waveWrap.getBoundingClientRect().width || 700;
+    if (Number.isFinite(Number(view.libraryWidth))) {
+        setCssPx('--library-width', clamp(Number(view.libraryWidth), 160, Math.max(180, mainWidth - 220)));
+    }
+    if (Number.isFinite(Number(view.waveNameWidth))) {
+        setCssPx('--wave-name-width', clamp(Number(view.waveNameWidth), 86, Math.max(96, waveWidth - 180)));
+    }
+
+    const cursorA = Number(validated.cursors?.a);
+    cursorTime = Number.isFinite(cursorA) ? clamp(cursorA, minTime, maxTime) : minTime;
+    renderSignalList();
+    if (renderAfter) render();
+    return true;
 }
 
 function resizeCanvas() {
@@ -97,7 +298,12 @@ function resizeCanvas() {
 }
 
 function setEmptyState() {
+    layoutReady = false;
+    if (layoutSaveTimer !== null) clearTimeout(layoutSaveTimer);
+    layoutSaveTimer = null;
+    lastSavedLayoutJson = '';
     vcd = null;
+    currentFileName = '';
     allSignals = [];
     filteredSignals = [];
     waveSignals = [];
@@ -123,8 +329,14 @@ function setEmptyState() {
     render();
 }
 
-function setData(fileName, data) {
+function setData(fileName, data, messageLayout = null) {
+    layoutReady = false;
+    if (layoutSaveTimer !== null) clearTimeout(layoutSaveTimer);
+    layoutSaveTimer = null;
+    lastSavedLayoutJson = '';
+    layoutStorageWarningShown = false;
     vcd = data;
+    currentFileName = String(fileName || '');
     fileTitle.textContent = fileName;
     allSignals = (data.signals || []).map((signal, index) => ({
         ...signal,
@@ -145,6 +357,7 @@ function setData(fileName, data) {
     cursorTime = startTime;
     renderScopeSelect();
     applyFilter();
+    const restoredLayout = restoreLayout(loadHostLayout(messageLayout), false);
     updateEmptyState();
     const warningText = data.warnings && data.warnings.length
         ? ', ' + data.warnings.length + ' parser warning' + (data.warnings.length === 1 ? '' : 's')
@@ -152,7 +365,13 @@ function setData(fileName, data) {
     statusText.textContent = data.timescale
         ? allSignals.length + ' signals, 0 waveforms, timescale ' + data.timescale + warningText
         : allSignals.length + ' signals, 0 waveforms' + warningText;
+    layoutReady = true;
+    const currentLayout = captureLayout();
+    lastSavedLayoutJson = currentLayout ? JSON.stringify(currentLayout) : '';
     render();
+    if (restoredLayout) {
+        setStatus('Restored saved waveform layout.');
+    }
 }
 
 function applyFilter() {
@@ -1462,6 +1681,7 @@ function render() {
     updateVisibleSignalValues();
     cursorText.textContent = 'Cursor: ' + formatTime(cursorTime);
     rangeText.textContent = 'Range: ' + formatRange(Math.round(startTime), Math.round(endTime));
+    scheduleLayoutSave();
 }
 
 function updateVisibleSignalValues() {
@@ -2098,7 +2318,7 @@ document.addEventListener('keydown', (event) => {
 window.addEventListener('message', event => {
     const msg = event.data;
     if (msg.type === 'vcd') {
-        setData(msg.fileName, msg.data);
+        setData(msg.fileName, msg.data, msg.layout);
     } else if (msg.type === 'empty') {
         setEmptyState();
     } else if (msg.type === 'error') {
@@ -2206,6 +2426,31 @@ window.__veriflowWaveViewer = {
             bit1: bitValue('b1010', 1, 4),
             bit3: bitValue('b1010', 3, 4),
             bit8: bitValue('b1010', 8, 4),
+        };
+    },
+    captureLayout() {
+        return captureLayout();
+    },
+    restoreLayout(layout) {
+        return restoreLayout(layout);
+    },
+    layoutRoundTripSamples() {
+        const layout = captureLayout();
+        const before = this.state();
+        waveSignals = [];
+        selectedWaveIndex = -1;
+        selectedWaveIndices = new Set();
+        const restored = restoreLayout(layout);
+        const after = this.state();
+        return {
+            version: layout?.version || 0,
+            restored,
+            beforeWaveforms: before.waveforms,
+            afterWaveforms: after.waveforms,
+            beforeGroups: before.groups,
+            afterGroups: after.groups,
+            beforeBusBits: before.busBits,
+            afterBusBits: after.busBits,
         };
     },
     state() {
