@@ -649,3 +649,46 @@ def test_deps_discards_complete_conditional_procedural_regions(
         "  (none)\n"
     )
     assert maximum_state_count <= 2
+
+
+def test_deps_discards_labeled_conditional_subprogram_regions(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    original_deduplicate = vlib._deduplicate_dependency_states
+    maximum_state_count = 0
+
+    def track_state_count(states):
+        nonlocal maximum_state_count
+        maximum_state_count = max(maximum_state_count, len(states))
+        return original_deduplicate(states)
+
+    monkeypatch.setattr(
+        vlib, "_deduplicate_dependency_states", track_state_count
+    )
+    source_lines = ["module top;"]
+    for index in range(12):
+        source_lines.extend(
+            [
+                "`ifdef LABELED_{}".format(index),
+                "function automatic int function_{};".format(index),
+                "  function_{} = {};".format(index, index),
+                "endfunction : function_{}".format(index),
+                "`else",
+                "task automatic \\task_{} ;".format(index),
+                "endtask : \\task_{}".format(index),
+                "`endif",
+            ]
+        )
+    source_lines.extend(["endmodule", ""])
+    write_source(tmp_path, "rtl/top.sv", "\n".join(source_lines))
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+
+    assert vlib.main(["deps", "top"]) == 0
+
+    assert capsys.readouterr().out == (
+        "Dependencies for top:\n"
+        "  (none)\n"
+    )
+    assert maximum_state_count <= 2

@@ -637,6 +637,13 @@ def _is_declaration_only_subprogram(
     }.issubset(prefixes)
 
 
+def _is_subprogram_label(value: str) -> bool:
+    return (
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", value) is not None
+        or value.startswith("\\") and len(value) > 1
+    )
+
+
 def _procedural_mask(
     body: str,
 ) -> Tuple[str, List[Tuple[int, int]]]:
@@ -668,6 +675,13 @@ def _procedural_mask(
             end = _consume_through_keyword(
                 scan_tokens, position, value, terminator
             )
+            if (
+                value in {"task", "function"}
+                and end + 1 < token_count
+                and tokens[end][0] == ":"
+                and _is_subprogram_label(tokens[end + 1][0])
+            ):
+                end += 2
         elif value in {
             "initial",
             "always",
