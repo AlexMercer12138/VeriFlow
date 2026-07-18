@@ -1468,3 +1468,222 @@ def test_copy_treats_own_source_hard_link_as_a_safe_no_op(
     captured = capsys.readouterr()
     assert captured.out == "Copied: rtl/top.v\n"
     assert captured.err == ""
+
+
+def test_copy_staging_failure_preserves_existing_target(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(tmp_path, "rtl/top.v", "module top;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    target = destination / "rtl" / "top.v"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"ORIGINAL")
+
+    def fail_after_partial_stage(_snapshot, staging_path):
+        staging_path.write_bytes(b"PARTIAL")
+        raise OSError("injected staging failure")
+
+    monkeypatch.setattr(
+        vlib,
+        "_write_staged_snapshot",
+        fail_after_partial_stage,
+        raising=False,
+    )
+
+    assert vlib.main(["copy", "top", str(destination)]) == 1
+
+    assert target.read_bytes() == b"ORIGINAL"
+    assert [path.name for path in target.parent.iterdir()] == ["top.v"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: injected staging failure\n"
+
+
+def test_copy_later_staging_failure_commits_no_planned_files(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "a/top.v",
+        "module top;\n  child u_child();\nendmodule\n",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    existing_target = destination / "a" / "top.v"
+    existing_target.parent.mkdir(parents=True)
+    existing_target.write_bytes(b"ORIGINAL_TOP")
+    new_target = destination / "z" / "child.v"
+    stage_count = 0
+
+    def fail_second_stage(snapshot, staging_path):
+        nonlocal stage_count
+        stage_count += 1
+        staging_path.write_bytes(
+            snapshot if stage_count == 1 else b"PARTIAL"
+        )
+        if stage_count == 2:
+            raise OSError("injected later staging failure")
+
+    monkeypatch.setattr(
+        vlib,
+        "_write_staged_snapshot",
+        fail_second_stage,
+        raising=False,
+    )
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 1
+    )
+
+    assert stage_count == 2
+    assert existing_target.read_bytes() == b"ORIGINAL_TOP"
+    assert not new_target.exists()
+    assert [path.name for path in existing_target.parent.iterdir()] == [
+        "top.v"
+    ]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: injected later staging failure\n"
+
+
+def test_copy_uses_planned_source_snapshot_when_source_changes(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    original_source = b"module top;\r\nendmodule\r\n"
+    changed_source = (
+        b"module top;\r\n  late_dependency u_late();\r\nendmodule\r\n"
+    )
+    top_path = tmp_path / "rtl" / "top.v"
+    top_path.parent.mkdir(parents=True)
+    top_path.write_bytes(original_source)
+    write_source(
+        tmp_path,
+        "ip/late.v",
+        "module late_dependency;\nendmodule\n",
+    )
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    original_build_copy_plan = vlib.build_copy_plan
+
+    def build_plan_then_mutate(module, index, with_deps):
+        plan = original_build_copy_plan(module, index, with_deps)
+        top_path.write_bytes(changed_source)
+        return plan
+
+    monkeypatch.setattr(vlib, "build_copy_plan", build_plan_then_mutate)
+    destination = tmp_path / "copied"
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 0
+    )
+
+    assert top_path.read_bytes() == changed_source
+    assert (destination / "rtl" / "top.v").read_bytes() == original_source
+    assert not (destination / "ip" / "late.v").exists()
+    captured = capsys.readouterr()
+    assert captured.out == "Copied: rtl/top.v\n"
+    assert captured.err == ""
+
+
+def test_copy_commit_failure_rolls_back_replaced_and_new_targets(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    write_source(
+        tmp_path,
+        "a/top.v",
+        "module top;\n  middle u_middle();\nendmodule\n",
+    )
+    write_source(
+        tmp_path,
+        "m/middle.v",
+        "module middle;\n  child u_child();\nendmodule\n",
+    )
+    write_source(tmp_path, "z/child.v", "module child;\nendmodule\n")
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    top_target = destination / "a" / "top.v"
+    middle_target = destination / "m" / "middle.v"
+    child_target = destination / "z" / "child.v"
+    top_target.parent.mkdir(parents=True)
+    child_target.parent.mkdir(parents=True)
+    top_target.write_bytes(b"ORIGINAL_TOP")
+    child_target.write_bytes(b"ORIGINAL_CHILD")
+    original_replace = vlib.os.replace
+
+    def fail_final_child_replace(source, target):
+        source_path = Path(source)
+        target_path = Path(target)
+        if (
+            target_path == child_target
+            and ".vlib-stage-" in source_path.name
+        ):
+            raise OSError("injected commit failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(vlib.os, "replace", fail_final_child_replace)
+
+    assert (
+        vlib.main(["copy", "top", str(destination), "--with-deps"])
+        == 1
+    )
+
+    assert top_target.read_bytes() == b"ORIGINAL_TOP"
+    assert child_target.read_bytes() == b"ORIGINAL_CHILD"
+    assert not middle_target.exists()
+    assert sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file()
+    ) == ["a/top.v", "z/child.v"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: injected commit failure\n"
+
+
+def test_copy_same_file_no_op_detects_source_change_after_planning(
+    vlib, tmp_path, capsys, monkeypatch
+):
+    assert vlib is not None, "scripts/vlib.py is not implemented"
+    original_source = b"module top;\r\nendmodule\r\n"
+    changed_source = b"module top;\r\n  logic changed;\r\nendmodule\r\n"
+    source_path = tmp_path / "rtl" / "top.v"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(original_source)
+    assert vlib.main(["index"]) == 0
+    capsys.readouterr()
+    destination = tmp_path / "copied"
+    target_path = destination / "rtl" / "top.v"
+    target_path.parent.mkdir(parents=True)
+    try:
+        os.link(str(source_path), str(target_path))
+    except OSError as error:
+        pytest.skip("hard links are unavailable: {}".format(error))
+    original_build_copy_plan = vlib.build_copy_plan
+
+    def build_plan_then_mutate(module, index, with_deps):
+        plan = original_build_copy_plan(module, index, with_deps)
+        source_path.write_bytes(changed_source)
+        return plan
+
+    monkeypatch.setattr(vlib, "build_copy_plan", build_plan_then_mutate)
+
+    assert vlib.main(["copy", "top", str(destination)]) == 1
+
+    assert source_path.read_bytes() == changed_source
+    assert target_path.read_bytes() == changed_source
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "Error: Source changed after planning: rtl/top.v\n"
+    )

@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -108,6 +107,28 @@ class ModuleBlock:
     parameters: Tuple[Parameter, ...]
     ports: Tuple[Port, ...]
     body: str = ""
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    source_path: Path
+    content: bytes
+    mode: int
+    atime_ns: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
+class CopyPlanFile:
+    relative_path: str
+    snapshot: FileSnapshot
+
+
+@dataclass(frozen=True)
+class CopyMapping:
+    plan_file: CopyPlanFile
+    destination_path: Path
+    safe_no_op: bool
 
 
 def validate_repository(repository_root: Path) -> Path:
@@ -1131,60 +1152,133 @@ def _resolve_include(
     return None
 
 
-def build_copy_plan(
-    module: str, index: Dict[str, object], with_deps: bool
-) -> Tuple[List[Tuple[str, Path]], List[str], List[Tuple[str, str]]]:
+def _file_snapshot(
+    source_path: Path, cache: Dict[Path, FileSnapshot]
+) -> FileSnapshot:
+    snapshot = cache.get(source_path)
+    if snapshot is None:
+        content = source_path.read_bytes()
+        metadata = source_path.stat()
+        snapshot = FileSnapshot(
+            source_path=source_path,
+            content=content,
+            mode=metadata.st_mode,
+            atime_ns=metadata.st_atime_ns,
+            mtime_ns=metadata.st_mtime_ns,
+        )
+        cache[source_path] = snapshot
+    return snapshot
+
+
+def _copy_module_snapshot(
+    module: str,
+    index: Dict[str, object],
+    snapshot_cache: Dict[Path, FileSnapshot],
+    module_cache: Dict[str, Tuple[ModuleBlock, str, FileSnapshot]],
+) -> Tuple[ModuleBlock, str, FileSnapshot]:
+    cached = module_cache.get(module)
+    if cached is not None:
+        return cached
+
     modules = index.get("modules")
     if not isinstance(modules, dict):
         raise VlibError("Invalid module index: 'modules' must be an object.")
-
-    if with_deps:
-        known_dependencies, missing_modules = resolve_dependencies(
-            module, index
-        )
-    else:
-        module_block_from_index(module, index)
-        known_dependencies = []  # type: List[Tuple[str, str]]
-        missing_modules = []  # type: List[str]
-
-    top_relative_path = modules[module]
-    if not isinstance(top_relative_path, str) or not top_relative_path:
+    if module not in modules:
+        raise VlibError("Unknown module '{}'.".format(module))
+    relative_path = modules[module]
+    if not isinstance(relative_path, str) or not relative_path:
         raise VlibError(
             "Invalid module index path for module '{}'.".format(module)
         )
 
     repository_root = validate_repository(REPOSITORY_ROOT)
-    module_relative_paths = {top_relative_path}
-    module_relative_paths.update(
-        relative_path for _dependency, relative_path in known_dependencies
+    source_path, normalized_relative = _repository_file(
+        repository_root, relative_path
+    )
+    snapshot = _file_snapshot(source_path, snapshot_cache)
+    source = snapshot.content.decode("utf-8", errors="replace")
+    for block in parse_module_blocks(source):
+        if block.name == module:
+            result = (block, normalized_relative, snapshot)
+            module_cache[module] = result
+            return result
+    raise VlibError(
+        "Module '{}' is not present in indexed file '{}'; the index is stale. "
+        "Run 'vlib index'.".format(module, relative_path)
     )
 
-    planned = {}  # type: Dict[str, Path]
-    for relative_path in sorted(module_relative_paths):
-        source_path, normalized_relative = _repository_file(
-            repository_root, relative_path
-        )
-        planned[normalized_relative] = source_path
+
+def build_copy_plan(
+    module: str, index: Dict[str, object], with_deps: bool
+) -> Tuple[List[CopyPlanFile], List[str], List[Tuple[str, str]]]:
+    modules = index.get("modules")
+    if not isinstance(modules, dict):
+        raise VlibError("Invalid module index: 'modules' must be an object.")
+
+    repository_root = validate_repository(REPOSITORY_ROOT)
+    snapshot_cache = {}  # type: Dict[Path, FileSnapshot]
+    module_cache = {}  # type: Dict[str, Tuple[ModuleBlock, str, FileSnapshot]]
+    top_block, top_relative, top_snapshot = _copy_module_snapshot(
+        module, index, snapshot_cache, module_cache
+    )
+    planned = {top_relative: top_snapshot}  # type: Dict[str, FileSnapshot]
+    missing_module_names = set()  # type: Set[str]
+
+    if with_deps:
+        queue = [(module, top_block, top_relative, top_snapshot)]
+        visited_modules = {module}
+        position = 0
+        while position < len(queue):
+            _current, block, relative_path, snapshot = queue[position]
+            position += 1
+            planned[relative_path] = snapshot
+            for dependency in extract_dependencies(block):
+                if dependency == module or dependency in visited_modules:
+                    continue
+                visited_modules.add(dependency)
+                if dependency not in modules:
+                    missing_module_names.add(dependency)
+                    continue
+                dependency_data = _copy_module_snapshot(
+                    dependency, index, snapshot_cache, module_cache
+                )
+                dependency_block, dependency_relative, dependency_snapshot = (
+                    dependency_data
+                )
+                queue.append(
+                    (
+                        dependency,
+                        dependency_block,
+                        dependency_relative,
+                        dependency_snapshot,
+                    )
+                )
 
     missing_includes = set()  # type: Set[Tuple[str, str]]
     if with_deps:
-        queue = []  # type: List[Tuple[str, Path, Tuple[Path, ...]]]
+        include_queue = []  # type: List[Tuple[str, FileSnapshot, Tuple[Path, ...]]]
         visited = set()  # type: Set[Tuple[Path, str]]
         for logical_path in sorted(planned):
-            physical_path = planned[logical_path]
+            snapshot = planned[logical_path]
+            physical_path = snapshot.source_path
             state = (physical_path, logical_path)
             if state not in visited:
-                queue.append((logical_path, physical_path, (physical_path,)))
+                include_queue.append(
+                    (logical_path, snapshot, (physical_path,))
+                )
                 visited.add(state)
         include_cache = {}  # type: Dict[Path, List[str]]
         position = 0
-        while position < len(queue):
-            including_relative, including_file, ancestry = queue[position]
+        while position < len(include_queue):
+            including_relative, including_snapshot, ancestry = (
+                include_queue[position]
+            )
             position += 1
+            including_file = including_snapshot.source_path
             includes = include_cache.get(including_file)
             if includes is None:
-                source = including_file.read_text(
-                    encoding="utf-8", errors="replace"
+                source = including_snapshot.content.decode(
+                    "utf-8", errors="replace"
                 )
                 includes = extract_includes(source)
                 include_cache[including_file] = includes
@@ -1196,21 +1290,26 @@ def build_copy_plan(
                     missing_includes.add((include_name, including_relative))
                     continue
                 included_file, included_relative = resolved_include
-                planned[included_relative] = included_file
+                included_snapshot = _file_snapshot(
+                    included_file, snapshot_cache
+                )
+                planned[included_relative] = included_snapshot
                 state = (included_file, included_relative)
                 if included_file in ancestry or state in visited:
                     continue
-                queue.append(
+                include_queue.append(
                     (
                         included_relative,
-                        included_file,
+                        included_snapshot,
                         ancestry + (included_file,),
                     )
                 )
                 visited.add(state)
 
-    copy_files = [(path, planned[path]) for path in sorted(planned)]
-    return copy_files, missing_modules, sorted(missing_includes)
+    copy_files = [
+        CopyPlanFile(path, planned[path]) for path in sorted(planned)
+    ]
+    return copy_files, sorted(missing_module_names), sorted(missing_includes)
 
 
 def iter_verilog_files(repository_root: Path) -> Iterator[Path]:
@@ -1627,11 +1726,12 @@ def _copy_path_label(path: Path, repository_root: Path) -> str:
 
 
 def _preflight_copy_targets(
-    copy_files: Sequence[Tuple[str, Path]], destination_root: Path
-) -> List[Tuple[str, Path, Path, bool]]:
+    copy_files: Sequence[CopyPlanFile], destination_root: Path
+) -> List[CopyMapping]:
     repository_root = validate_repository(REPOSITORY_ROOT)
-    mappings = []  # type: List[Tuple[str, Path, Path]]
-    for relative_path, source_path in copy_files:
+    mappings = []  # type: List[CopyMapping]
+    for plan_file in copy_files:
+        relative_path = plan_file.relative_path
         destination_path = (destination_root / Path(relative_path)).resolve()
         try:
             destination_path.relative_to(destination_root)
@@ -1641,30 +1741,33 @@ def _preflight_copy_targets(
                     relative_path
                 )
             )
-        mappings.append((relative_path, source_path, destination_path))
+        mappings.append(CopyMapping(plan_file, destination_path, False))
 
     for index, mapping in enumerate(mappings):
-        relative_path, _source_path, destination_path = mapping
+        relative_path = mapping.plan_file.relative_path
+        destination_path = mapping.destination_path
         for earlier_mapping in mappings[:index]:
-            earlier_relative, _earlier_source, earlier_target = earlier_mapping
-            if _paths_alias(destination_path, earlier_target):
+            earlier_relative = earlier_mapping.plan_file.relative_path
+            if _paths_alias(
+                destination_path, earlier_mapping.destination_path
+            ):
                 raise VlibError(
                     "Copy conflict: targets '{}' and '{}' alias each other.".format(
                         earlier_relative, relative_path
                     )
                 )
 
-    preflighted = []  # type: List[Tuple[str, Path, Path, bool]]
+    preflighted = []  # type: List[CopyMapping]
     for index, mapping in enumerate(mappings):
-        relative_path, source_path, destination_path = mapping
+        relative_path = mapping.plan_file.relative_path
+        destination_path = mapping.destination_path
         aliasing_sources = [
             source_index
-            for source_index, (
-                _source_relative,
-                other_source,
-                _target,
-            ) in enumerate(mappings)
-            if _paths_alias(destination_path, other_source)
+            for source_index, other_mapping in enumerate(mappings)
+            if _paths_alias(
+                destination_path,
+                other_mapping.plan_file.snapshot.source_path,
+            )
         ]
         safe_no_op = aliasing_sources == [index]
         if aliasing_sources and not safe_no_op:
@@ -1676,7 +1779,9 @@ def _preflight_copy_targets(
                 ),
                 aliasing_sources[0],
             )
-            conflicting_source = mappings[conflict_index][0]
+            conflicting_source = mappings[
+                conflict_index
+            ].plan_file.relative_path
             raise VlibError(
                 "Copy conflict: target '{}' for '{}' aliases source '{}'.".format(
                     _copy_path_label(destination_path, repository_root),
@@ -1685,9 +1790,143 @@ def _preflight_copy_targets(
                 )
             )
         preflighted.append(
-            (relative_path, source_path, destination_path, safe_no_op)
+            CopyMapping(mapping.plan_file, destination_path, safe_no_op)
         )
     return preflighted
+
+
+def _temporary_sibling(destination_path: Path, purpose: str) -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=str(destination_path.parent),
+        prefix=".{}.vlib-{}-".format(destination_path.name, purpose),
+        suffix=".tmp",
+        delete=False,
+    ) as temporary_file:
+        return Path(temporary_file.name)
+
+
+def _write_staged_snapshot(snapshot: bytes, staging_path: Path) -> None:
+    with staging_path.open("wb") as staged_file:
+        staged_file.write(snapshot)
+        staged_file.flush()
+        os.fsync(staged_file.fileno())
+
+
+def _apply_snapshot_metadata(
+    snapshot: FileSnapshot, staging_path: Path
+) -> None:
+    os.chmod(str(staging_path), snapshot.mode & 0o7777)
+    os.utime(
+        str(staging_path),
+        ns=(snapshot.atime_ns, snapshot.mtime_ns),
+    )
+
+
+def _unlink_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _cleanup_temporary_paths(paths: Sequence[Path]) -> None:
+    first_error = None  # type: Optional[OSError]
+    for path in reversed(paths):
+        try:
+            _unlink_if_present(path)
+        except OSError as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
+
+
+def _stage_copy_mappings(
+    mappings: Sequence[CopyMapping],
+) -> List[Tuple[CopyMapping, Optional[Path]]]:
+    staged = []  # type: List[Tuple[CopyMapping, Optional[Path]]]
+    staging_paths = []  # type: List[Path]
+    try:
+        for mapping in mappings:
+            if mapping.safe_no_op:
+                current_content = (
+                    mapping.plan_file.snapshot.source_path.read_bytes()
+                )
+                if current_content != mapping.plan_file.snapshot.content:
+                    raise VlibError(
+                        "Source changed after planning: {}".format(
+                            mapping.plan_file.relative_path
+                        )
+                    )
+                staged.append((mapping, None))
+                continue
+            mapping.destination_path.parent.mkdir(
+                parents=True, exist_ok=True
+            )
+            staging_path = _temporary_sibling(
+                mapping.destination_path, "stage"
+            )
+            staging_paths.append(staging_path)
+            _write_staged_snapshot(
+                mapping.plan_file.snapshot.content, staging_path
+            )
+            _apply_snapshot_metadata(
+                mapping.plan_file.snapshot, staging_path
+            )
+            staged.append((mapping, staging_path))
+    except Exception:
+        _cleanup_temporary_paths(staging_paths)
+        raise
+    return staged
+
+
+def _commit_staged_mappings(
+    staged: Sequence[Tuple[CopyMapping, Optional[Path]]],
+) -> None:
+    staging_paths = [
+        staging_path
+        for _mapping, staging_path in staged
+        if staging_path is not None
+    ]
+    backup_paths = []  # type: List[Path]
+    applied = []  # type: List[Tuple[Path, Optional[Path], bool]]
+    try:
+        for mapping, staging_path in staged:
+            if staging_path is None:
+                continue
+            destination_path = mapping.destination_path
+            backup_path = None  # type: Optional[Path]
+            if destination_path.exists():
+                backup_path = _temporary_sibling(
+                    destination_path, "backup"
+                )
+                backup_paths.append(backup_path)
+                os.replace(str(destination_path), str(backup_path))
+            applied.append((destination_path, backup_path, False))
+            os.replace(str(staging_path), str(destination_path))
+            applied[-1] = (destination_path, backup_path, True)
+    except Exception as copy_error:
+        rollback_errors = []  # type: List[OSError]
+        for destination_path, backup_path, installed in reversed(applied):
+            try:
+                if backup_path is not None:
+                    os.replace(str(backup_path), str(destination_path))
+                elif installed:
+                    _unlink_if_present(destination_path)
+            except OSError as rollback_error:
+                rollback_errors.append(rollback_error)
+        _cleanup_temporary_paths(staging_paths)
+        if not rollback_errors:
+            _cleanup_temporary_paths(backup_paths)
+            raise
+        raise VlibError(
+            "Copy failed: {}; rollback failed: {}".format(
+                copy_error, rollback_errors[0]
+            )
+        ) from copy_error
+    _cleanup_temporary_paths(staging_paths)
+    _cleanup_temporary_paths(backup_paths)
 
 
 def copy_command(arguments: argparse.Namespace) -> int:
@@ -1697,14 +1936,11 @@ def copy_command(arguments: argparse.Namespace) -> int:
     )
     destination_root = Path(arguments.destination).expanduser().resolve()
     copy_mappings = _preflight_copy_targets(copy_files, destination_root)
-    destination_root.mkdir(parents=True, exist_ok=True)
+    staged_mappings = _stage_copy_mappings(copy_mappings)
+    _commit_staged_mappings(staged_mappings)
 
     for mapping in copy_mappings:
-        relative_path, source_path, destination_path, safe_no_op = mapping
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        if not safe_no_op:
-            shutil.copy2(str(source_path), str(destination_path))
-        print("Copied: {}".format(relative_path))
+        print("Copied: {}".format(mapping.plan_file.relative_path))
 
     for missing_module in missing_modules:
         print("Missing module: {}".format(missing_module), file=sys.stderr)
