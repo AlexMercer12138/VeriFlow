@@ -74,6 +74,10 @@ def _viewer_script() -> str:
     )
 
 
+def _viewer_core_script() -> str:
+    return _read_asset("viewer-core.js")
+
+
 def _build_waveform_html(file_name: str, data: VcdData) -> str:
     payload = json.dumps(
         {"type": "vcd", "fileName": file_name, "data": _to_web_data(data)},
@@ -81,6 +85,7 @@ def _build_waveform_html(file_name: str, data: VcdData) -> str:
     )
     css = _read_asset("viewer.css")
     body = _read_asset("viewer.html")
+    core_script = _viewer_core_script()
     script = _viewer_script()
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -95,6 +100,7 @@ def _build_waveform_html(file_name: str, data: VcdData) -> str:
 <body>
 {body}
 <script>
+{core_script}
 {script}
 window.addEventListener('load', () => {{
     window.postMessage({payload}, '*');
@@ -107,6 +113,7 @@ window.addEventListener('load', () => {{
 def _build_empty_waveform_html() -> str:
     css = _read_asset("viewer.css")
     body = _read_asset("viewer.html")
+    core_script = _viewer_core_script()
     script = _viewer_script()
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -121,6 +128,7 @@ def _build_empty_waveform_html() -> str:
 <body>
 {body}
 <script>
+{core_script}
 {script}
 window.addEventListener('load', () => {{
     window.postMessage({{"type": "empty"}}, '*');

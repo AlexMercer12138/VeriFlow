@@ -403,6 +403,12 @@ $enddefinitions $end
 
     assert "waveCanvas" in html
     assert "top.clk" in html
+    assert "VeriflowWaveCore" in html
+    assert 'id="cursorA"' in html
+    assert 'id="cursorB"' in html
+    assert 'id="changeSearchMode"' in html
+    assert 'id="changeSearchValue"' in html
+    assert 'id="cursorMeasureText"' in html
     assert "acquireVsCodeApi" not in html
     assert "window.postMessage" in html
 

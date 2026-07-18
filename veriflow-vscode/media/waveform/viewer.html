@@ -30,6 +30,20 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="4" width="12" height="12"/><line x1="7" y1="13" x2="13" y2="7"/><line x1="13" y1="7" x2="10.5" y2="7"/><line x1="13" y1="7" x2="13" y2="9.5"/><line x1="7" y1="13" x2="7" y2="10.5"/><line x1="7" y1="13" x2="9.5" y2="13"/></svg>
             </button>
         </div>
+        <div class="tool-group cursor-controls" aria-label="Waveform cursors">
+            <button class="cursor-toggle" id="cursorA" title="Activate cursor A (A)" aria-label="Activate cursor A" aria-pressed="true">A</button>
+            <button class="cursor-toggle" id="cursorB" title="Activate cursor B (B)" aria-label="Activate cursor B" aria-pressed="false">B</button>
+        </div>
+        <div class="change-search" aria-label="Waveform condition search">
+            <select id="changeSearchMode" title="Change search condition" aria-label="Change search condition">
+                <option value="change">Any change</option>
+                <option value="rising">Rising edge</option>
+                <option value="falling">Falling edge</option>
+                <option value="value">Exact value</option>
+                <option value="xz">Any X/Z</option>
+            </select>
+            <input id="changeSearchValue" type="text" placeholder="value" aria-label="Exact waveform value" disabled />
+        </div>
         <button id="goToTime">Go to</button>
         <input id="timeInput" type="text" placeholder="time" />
     </div>
@@ -55,7 +69,7 @@
     </div>
     <div class="status">
         <div id="statusText">Ready</div>
-        <div id="cursorText">Cursor: -</div>
+        <div id="cursorMeasureText">A: - | B: - | Delta: - | Frequency: -</div>
         <div id="rangeText">Range: -</div>
     </div>
     <div class="context-menu" id="contextMenu"></div>

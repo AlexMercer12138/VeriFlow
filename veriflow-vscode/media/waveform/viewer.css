@@ -24,13 +24,15 @@ body {
 }
 .toolbar {
     display: grid;
-    grid-template-columns: minmax(160px, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
     border-bottom: 1px solid var(--vscode-panel-border, #30363d);
     background: var(--vscode-sideBar-background, #171b21);
     min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
 }
 .file-title {
     overflow: hidden;
@@ -42,6 +44,36 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
+}
+.cursor-controls {
+    gap: 2px;
+}
+.toolbar .cursor-toggle {
+    width: 28px;
+    padding: 4px 0;
+    font-family: var(--vscode-editor-font-family, Consolas, monospace);
+    font-weight: 700;
+}
+.toolbar .cursor-toggle[aria-pressed="true"] {
+    color: var(--vscode-button-foreground, #ffffff);
+    background: var(--vscode-button-background, #0e639c);
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+.change-search {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.change-search select {
+    width: 112px;
+    height: 28px;
+    min-width: 0;
+    background: var(--vscode-dropdown-background, var(--vscode-input-background, #0d1117));
+    color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground, #d6dde8));
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, #30363d));
+    border-radius: 3px;
+    padding: 3px 5px;
+    font: inherit;
 }
 .toolbar button {
     background: var(--vscode-button-secondaryBackground, var(--vscode-button-background, #2b313a));
@@ -96,6 +128,23 @@ body {
     padding: 4px 6px;
     font: inherit;
     line-height: 18px;
+}
+.toolbar #changeSearchValue {
+    width: 76px;
+}
+.toolbar #changeSearchValue:disabled {
+    display: none;
+}
+@media (max-width: 900px) {
+    .toolbar {
+        grid-template-columns: auto auto auto auto auto;
+    }
+    .file-title {
+        display: none;
+    }
+    .toolbar input {
+        width: 88px;
+    }
 }
 .main {
     display: grid;
