@@ -35,3 +35,8 @@ veriflow-vscode/*.vsix
 # OS
 Thumbs.db
 .DS_Store
+
+# Agents
+.codegraph/
+.superpowers/
+superpowers/
