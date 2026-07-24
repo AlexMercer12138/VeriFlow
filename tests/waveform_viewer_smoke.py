@@ -577,7 +577,6 @@ def _legacy_main() -> int:
 
 
 def _indexed_main() -> int:
-    import shutil
     import tempfile
 
     _configure_qt_webengine()
@@ -601,7 +600,37 @@ def _indexed_main() -> int:
     temporary = tempfile.TemporaryDirectory(prefix="veriflow-indexed-smoke-")
     root = Path(temporary.name)
     source = root / wave_file.name
-    shutil.copyfile(wave_file, source)
+    direct_references = ["clk", "data [7:0]"] + [f"signal_{index:03d}" for index in range(72)]
+    vcd_lines = [
+        "$timescale 1ns $end",
+        "$scope module smoke_many $end",
+        "$var wire 1 ! clk $end",
+        '$var wire 8 " data [7:0] $end',
+    ]
+    vcd_lines.extend(
+        f"$var wire 1 signal_{index} signal_{index:03d} $end"
+        for index in range(72)
+    )
+    vcd_lines.extend([
+        "$scope module child $end",
+        "$var wire 1 child_only child_signal $end",
+        "$upscope $end",
+        "$upscope $end",
+        "$enddefinitions $end",
+        "#0",
+        "0!",
+        'b00000000 "',
+        "0signal_0",
+        "0signal_1",
+        "0signal_2",
+        "0signal_3",
+        "#5",
+        "1!",
+        "1signal_0",
+        "#10",
+        "0!",
+    ])
+    source.write_text("\n".join(vcd_lines) + "\n", encoding="utf-8")
     with source.open("a", encoding="utf-8") as handle:
         for timestamp in range(21, 5001):
             handle.write(f"#{timestamp}\n{timestamp % 2}!\n")
@@ -634,6 +663,11 @@ def _indexed_main() -> int:
         "reload_ready_at": None,
         "initial_records": 0,
         "initial_pixels": None,
+        "scope_smoke_requested": False,
+        "scope_smoke_checked": False,
+        "first_indexed_frame_checked": False,
+        "rapid_pan_requested": False,
+        "rapid_pan_checked": False,
         "done": False,
     }
     result = {"ok": False, "message": "timeout"}
@@ -737,6 +771,48 @@ def _indexed_main() -> int:
                 f"{[message.get('generation') for message in ready_messages]}; pixels={pixels}",
             )
             return
+        if not state["scope_smoke_requested"]:
+            state["scope_smoke_requested"] = True
+
+            def checked_scope(payload) -> None:
+                try:
+                    library = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid scoped library state: " + repr(payload))
+                    return
+                filtered = library.get("filteredReferences", [])
+                rendered = library.get("renderedIndices", [])
+                if library.get("selectedScope") != "smoke_many":
+                    finish(False, "scope selection did not apply: " + repr(library))
+                    return
+                if not set(direct_references).issubset(filtered) or "child_signal" in filtered:
+                    finish(False, "scope filter included/excluded wrong signals: " + repr(library))
+                    return
+                if library.get("filteredCount") != len(direct_references):
+                    finish(False, "scope filter count is wrong: " + repr(library))
+                    return
+                if library["filteredCount"] - 1 not in rendered:
+                    finish(False, "last scoped signal is not rendered at list bottom: " + repr(library))
+                    return
+                if not library.get("scrollTop", 0) > 0 or not library.get("scrollHeight", 0) > library.get("clientHeight", 0):
+                    finish(False, "scoped library did not retain a scrollable bottom position: " + repr(library))
+                    return
+                state["scope_smoke_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "const scope = document.getElementById('scopeSelect');"
+                "scope.value = 'smoke_many';"
+                "scope.dispatchEvent(new Event('change'));"
+                "const list = document.getElementById('signalList');"
+                "list.scrollTop = list.scrollHeight;"
+                "list.dispatchEvent(new Event('scroll'));"
+                "JSON.stringify(window.__veriflowWaveViewer.libraryState());",
+                checked_scope,
+            )
+            return
+        if not state["scope_smoke_checked"]:
+            return
         if not state["primed"]:
             state["primed"] = True
             view.page().runJavaScript(
@@ -751,15 +827,67 @@ def _indexed_main() -> int:
             QTimer.singleShot(100, inspect)
             return
         total_records = 0
-        kinds = set()
+        kinds = {
+            series.get("kind")
+            for window in windows
+            for series in window.get("series", [])
+        }
         for series in windows[-1].get("series", []):
-            kinds.add(series.get("kind"))
             total_records += len(series.get("times", series.get("firstTimes", [])))
         if total_records > 32768:
             finish(False, f"window response exceeded record cap: {total_records}")
             return
         if not {"raw", "summary"}.issubset(kinds):
             finish(False, "expected raw and summary windows: " + repr(kinds))
+            return
+
+        if not state["first_indexed_frame_checked"]:
+            QApplication.processEvents()
+            pixels = _grab_waveform_stats(view)
+            if not pixels["ok"]:
+                QTimer.singleShot(50, inspect)
+                return
+            state["first_indexed_frame_checked"] = True
+            QTimer.singleShot(0, inspect)
+            return
+
+        if not state["rapid_pan_requested"]:
+            state["rapid_pan_requested"] = True
+
+            def check_rapid_pan(payload) -> None:
+                try:
+                    pan_state = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid rapid pan state: " + repr(payload))
+                    return
+                if pan_state.get("after", 0) <= pan_state.get("before", 0):
+                    finish(False, "rapid wheel input did not pan the viewport: " + repr(pan_state))
+                    return
+
+                def inspect_rapid_pan() -> None:
+                    QApplication.processEvents()
+                    pixels = _grab_waveform_stats(view)
+                    if not pixels["ok"]:
+                        finish(False, "rapid pan cleared indexed waveform: " + repr(pixels))
+                        return
+                    state["rapid_pan_checked"] = True
+                    QTimer.singleShot(0, inspect)
+
+                QTimer.singleShot(0, inspect_rapid_pan)
+
+            view.page().runJavaScript(
+                "const pane = document.getElementById('waveCanvasPane');"
+                "const before = window.__veriflowWaveViewer.state().startTime;"
+                "for (let index = 0; index < 12; index += 1) {"
+                "pane.dispatchEvent(new WheelEvent('wheel', {"
+                "deltaY: -120, ctrlKey: index === 0, bubbles: true, cancelable: true"
+                "}));"
+                "}"
+                "JSON.stringify({before, after: window.__veriflowWaveViewer.state().startTime});",
+                check_rapid_pan,
+            )
+            return
+        if not state["rapid_pan_checked"]:
             return
 
         if not state["search_requested"]:

@@ -474,7 +474,14 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     ):
         assert message_type in viewer
     assert "decodeWindowPayload" in viewer
-    assert "new waveCore.WindowCache" in viewer
+    assert "new waveCore.WaveWindowCache(192)" in viewer
+    assert "waveCore.calculateVirtualWindow(" in viewer
+    assert "waveCore.signalMatchesSelectedScope(signal.scope, selectedScope)" in viewer
+    assert "windowCache.find({" in viewer
+    assert "waveCore.windowNeedsRefresh(entry, viewport, 0.25, {" in viewer
+    assert "start: Number(vcd.startTime) || 0" in viewer
+    assert "end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)" in viewer
+    assert "new waveCore.FrameScheduler(callback => requestAnimationFrame(callback))" in viewer
     assert "new waveCore.RequestTracker" in viewer
 
 

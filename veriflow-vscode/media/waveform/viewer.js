@@ -102,8 +102,10 @@ let indexedMode = false;
 let indexReady = false;
 let currentGeneration = 0;
 let loadingGeneration = 0;
-const windowCache = new waveCore.WindowCache(192);
+const windowCache = new waveCore.WaveWindowCache(192);
 const requestTracker = new waveCore.RequestTracker();
+const renderScheduler = new waveCore.FrameScheduler(callback => requestAnimationFrame(callback));
+let pendingWaveNameRender = false;
 const cursorValues = new Map();
 let windowRequestTimer = null;
 let valueRequestTimer = null;
@@ -646,7 +648,7 @@ function applyFilter() {
     const query = searchInput.value.trim().toLowerCase();
     const selectedScope = scopeSelect.value;
     filteredSignals = allSignals.filter(signal => {
-        const matchesScope = !selectedScope || signal.scope === selectedScope || signal.scope.startsWith(selectedScope + '.');
+        const matchesScope = waveCore.signalMatchesSelectedScope(signal.scope, selectedScope);
         const matchesQuery = !query || signal.fullName.toLowerCase().includes(query) || signal.reference.toLowerCase().includes(query);
         return matchesScope && matchesQuery;
     });
@@ -777,22 +779,25 @@ function renderSignalList() {
         signalList.appendChild(placeholder);
         return;
     }
-    const totalHeight = filteredSignals.length * ROW_HEIGHT;
     const viewportHeight = signalList.clientHeight || ROW_HEIGHT * 16;
-    const overscan = 4;
-    listFirstRow = clamp(
-        Math.floor(signalList.scrollTop / ROW_HEIGHT) - overscan,
+    const virtualWindow = waveCore.calculateVirtualWindow(
+        filteredSignals.length,
+        viewportHeight,
+        savedScrollTop,
+        ROW_HEIGHT,
+        4
+    );
+    const restoredScrollTop = clamp(
+        savedScrollTop,
         0,
-        Math.max(0, filteredSignals.length - 1)
+        Math.max(0, virtualWindow.totalHeight - viewportHeight)
     );
-    listRenderedCount = Math.min(
-        filteredSignals.length - listFirstRow,
-        Math.ceil(viewportHeight / ROW_HEIGHT) + overscan * 2
-    );
+    listFirstRow = virtualWindow.firstRow;
+    listRenderedCount = virtualWindow.renderedCount;
 
     const spacer = document.createElement('div');
     spacer.className = 'signal-list-spacer';
-    spacer.style.height = totalHeight + 'px';
+    spacer.style.height = virtualWindow.totalHeight + 'px';
 
     const windowEl = document.createElement('div');
     windowEl.className = 'signal-list-window';
@@ -859,9 +864,7 @@ function renderSignalList() {
 
     signalList.appendChild(spacer);
     signalList.appendChild(windowEl);
-    if (Math.abs(signalList.scrollTop - savedScrollTop) > 0.5) {
-        signalList.scrollTop = savedScrollTop;
-    }
+    signalList.scrollTop = restoredScrollTop;
 }
 
 function renderWaveNameList() {
@@ -1644,8 +1647,22 @@ function visibleWaveSignals() {
     return items.slice(first, first + count).filter(item => !isGroupRow(item));
 }
 
-function windowDescriptor() {
+function visibleWindowDescriptor() {
     if (!vcd) return null;
+    const start = Math.floor(startTime);
+    const end = Math.max(start, Math.ceil(endTime));
+    const pixelWidth = Math.max(1, Math.round(canvas.clientWidth || 1));
+    return {
+        start,
+        end,
+        pixelWidth,
+        ticksPerPixel: Math.max(Number.EPSILON, (end - start) / pixelWidth),
+    };
+}
+
+function requestWindowDescriptor() {
+    const viewport = visibleWindowDescriptor();
+    if (!viewport || !vcd) return null;
     const range = waveCore.prefetchRange(
         startTime,
         endTime,
@@ -1655,27 +1672,27 @@ function windowDescriptor() {
     return {
         start: Math.floor(range.start),
         end: Math.ceil(range.end),
-        pixelWidth: Math.max(1, Math.round(canvas.clientWidth || 1)),
+        pixelWidth: viewport.pixelWidth,
+        ticksPerPixel: viewport.ticksPerPixel,
     };
 }
 
-function windowKey(reference, descriptor) {
-    return [
-        currentGeneration,
+function cachedWindowEntry(reference, descriptor = visibleWindowDescriptor()) {
+    if (!descriptor || !reference) return null;
+    return windowCache.find({
+        generation: currentGeneration,
         reference,
-        descriptor.start,
-        descriptor.end,
-        descriptor.pixelWidth,
-    ].join('|');
+        start: descriptor.start,
+        end: descriptor.end,
+        ticksPerPixel: descriptor.ticksPerPixel,
+    }) || null;
 }
 
 function seriesForSignal(signal) {
     if (!indexedMode) {
         return { kind: 'raw', width: Number(signal.width), changes: signal.changes || [] };
     }
-    const descriptor = windowDescriptor();
-    if (!descriptor) return null;
-    return windowCache.get(windowKey(signal.reference, descriptor)) || null;
+    return cachedWindowEntry(signal.reference)?.series || null;
 }
 
 function cancelPendingRequest(pending) {
@@ -1693,30 +1710,34 @@ function scheduleWindowRequest() {
     if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
     windowRequestTimer = setTimeout(() => {
         windowRequestTimer = null;
-        const descriptor = windowDescriptor();
-        if (!descriptor) return;
+        const viewport = visibleWindowDescriptor();
+        const descriptor = requestWindowDescriptor();
+        if (!viewport || !descriptor) return;
         const references = Array.from(new Set(
             visibleWaveSignals().map(signal => signal.reference).filter(Boolean)
         ));
-        const missing = references.filter(
-            reference => !windowCache.has(windowKey(reference, descriptor))
-        );
-        if (!missing.length) return;
+        const needed = references.filter(reference => {
+            const entry = cachedWindowEntry(reference, viewport);
+            return waveCore.windowNeedsRefresh(entry, viewport, 0.25, {
+                start: Number(vcd.startTime) || 0,
+                end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1),
+            });
+        });
+        if (!needed.length) return;
         if (
             pendingWindowRequest
-            && pendingWindowRequest.descriptor.start === descriptor.start
-            && pendingWindowRequest.descriptor.end === descriptor.end
-            && pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth
-            && missing.every(reference => pendingWindowRequest.references.includes(reference))
+            && pendingWindowRequest.descriptor.start <= viewport.start
+            && pendingWindowRequest.descriptor.end >= viewport.end
+            && needed.every(reference => pendingWindowRequest.references.includes(reference))
         ) return;
         cancelPendingRequest(pendingWindowRequest);
         const requestId = requestTracker.next('window');
-        pendingWindowRequest = { requestId, descriptor, references: missing };
+        pendingWindowRequest = { requestId, descriptor, references: needed };
         waveformTransport.send({
             type: 'windowRequest',
             generation: currentGeneration,
             requestId,
-            references: missing,
+            references: needed,
             start: descriptor.start,
             end: descriptor.end,
             pixelWidth: descriptor.pixelWidth,
@@ -1731,16 +1752,20 @@ function handleWindowData(message) {
     const descriptor = pendingWindowRequest.descriptor;
     try {
         (message.series || []).forEach(series => {
-            windowCache.set(
-                windowKey(series.reference, descriptor),
-                waveCore.decodeWindowPayload(series)
-            );
+            windowCache.set({
+                generation: currentGeneration,
+                reference: series.reference,
+                start: descriptor.start,
+                end: descriptor.end,
+                ticksPerPixel: descriptor.ticksPerPixel,
+                series: waveCore.decodeWindowPayload(series),
+            });
         });
     } catch (error) {
         setStatus('Waveform window decode failed: ' + String(error));
     }
     pendingWindowRequest = null;
-    render();
+    renderCanvas();
 }
 
 function visibleValueReferences() {
@@ -2213,17 +2238,30 @@ function drawCursors(width, height) {
     drawCursorLine('B', cursorB, STYLE.cursorB, 36, width, height);
 }
 
-function render() {
+function renderNow(renderWaveNames = true) {
     if (!ctx) return;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
+    updateEmptyState();
+    if (renderWaveNames) renderWaveNameList();
+    updateToolbarState();
+    if (!vcd) {
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = STYLE.background;
+        ctx.fillRect(0, 0, width, height);
+        return;
+    }
+    const visibleSignals = visibleWaveSignals();
+    scheduleWindowRequest();
+    scheduleValueRequest();
+    if (indexedMode && indexReady && visibleSignals.some(signal => !seriesForSignal(signal))) {
+        updateVisibleSignalValues();
+        scheduleLayoutSave();
+        return;
+    }
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = STYLE.background;
     ctx.fillRect(0, 0, width, height);
-    updateEmptyState();
-    renderWaveNameList();
-    updateToolbarState();
-    if (!vcd) return;
     ctx.fillStyle = getCss('--vscode-sideBar-background', STYLE.background);
     ctx.fillRect(0, 0, width, HEADER_HEIGHT);
     drawGrid(width, height);
@@ -2232,8 +2270,6 @@ function render() {
     }
     drawCursors(width, height);
     updateVisibleSignalValues();
-    scheduleWindowRequest();
-    scheduleValueRequest();
     document.getElementById('cursorA').setAttribute('aria-pressed', String(activeCursor === 'a'));
     document.getElementById('cursorB').setAttribute('aria-pressed', String(activeCursor === 'b'));
     const measurement = waveCore.measureCursors(cursorA, cursorB, vcd.timescale || '');
@@ -2243,6 +2279,19 @@ function render() {
         + ' | Frequency: ' + measurement.frequencyText;
     rangeText.textContent = 'Range: ' + formatRange(Math.round(startTime), Math.round(endTime));
     scheduleLayoutSave();
+}
+
+function render(renderWaveNames = true) {
+    if (renderWaveNames) pendingWaveNameRender = true;
+    renderScheduler.schedule(() => {
+        const nextRenderWaveNames = pendingWaveNameRender;
+        pendingWaveNameRender = false;
+        renderNow(nextRenderWaveNames);
+    });
+}
+
+function renderCanvas() {
+    render(false);
 }
 
 function updateVisibleSignalValues() {
@@ -2273,7 +2322,7 @@ function updateSearchControls() {
     document.getElementById('nextChange').title = 'Next ' + condition.toLowerCase() + ' (Right)';
 }
 
-function zoom(factor, anchorX) {
+function zoom(factor, anchorX, renderWaveNames = true) {
     if (!vcd) return;
     const width = canvas.clientWidth;
     const anchorTime = xToTime(anchorX ?? width / 2, width);
@@ -2285,7 +2334,7 @@ function zoom(factor, anchorX) {
     if (endTime - startTime < nextRange) {
         startTime = Math.max(0, endTime - nextRange);
     }
-    render();
+    render(renderWaveNames);
 }
 
 function fit() {
@@ -2326,13 +2375,13 @@ function panPage(direction) {
     render();
 }
 
-function panFraction(fraction) {
+function panFraction(fraction, renderWaveNames = true) {
     if (!vcd) return;
     const range = Math.max(1, endTime - startTime);
     const delta = Math.round(range * fraction);
     startTime = clamp(startTime + delta, 0, Math.max(0, vcd.endTime - range));
     endTime = startTime + range;
-    render();
+    render(renderWaveNames);
 }
 
 function selectedSignal() {
@@ -2941,9 +2990,9 @@ waveCanvasPane.addEventListener('wheel', (event) => {
         waveScrollTop += (event.deltaY > 0 ? 3 : -3) * ROW_HEIGHT;
         render();
     } else if (event.ctrlKey || event.metaKey) {
-        zoom(event.deltaY < 0 ? 0.8 : 1.25, event.offsetX);
+        zoom(event.deltaY < 0 ? 0.8 : 1.25, event.offsetX, false);
     } else {
-        panFraction(event.deltaY > 0 ? -0.12 : 0.12);
+        panFraction(event.deltaY > 0 ? -0.12 : 0.12, false);
     }
 }, { passive: false });
 
@@ -3380,6 +3429,18 @@ window.__veriflowWaveViewer = {
             cursorA,
             cursorB,
             activeCursor,
+        };
+    },
+    libraryState() {
+        return {
+            selectedScope: scopeSelect.value || '',
+            filteredCount: filteredSignals.length,
+            renderedIndices: Array.from(signalList.querySelectorAll('.signal-row'))
+                .map(row => Number(row.dataset.index)),
+            scrollTop: signalList.scrollTop,
+            scrollHeight: signalList.scrollHeight,
+            clientHeight: signalList.clientHeight,
+            filteredReferences: filteredSignals.map(signal => signal.reference),
         };
     },
 };
