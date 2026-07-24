@@ -194,7 +194,13 @@ class WaveformIndexWorker(QObject):
             )
             series.append({"reference": reference, **payload})
         if not self._request_cancelled(generation, request_id):
-            self._send("windowData", generation, requestId=request_id, series=series)
+            self._send(
+                "windowData",
+                generation,
+                requestId=request_id,
+                pixelWidth=pixel_width,
+                series=series,
+            )
 
     def _value_request(self, message: dict) -> None:
         generation = int(message["generation"])

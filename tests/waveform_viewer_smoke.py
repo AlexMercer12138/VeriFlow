@@ -592,6 +592,37 @@ def _indexed_main() -> int:
     )
     from src.presentation.gui.widgets.waveform_viewer_panel import WaveformViewerPanel
 
+    class RecoverableErrorWorker(WaveformIndexWorker):
+        def __init__(self, **options) -> None:
+            super().__init__(**options)
+            self.window_request_ids: list[str] = []
+            self.value_request_ids: list[str] = []
+            self.search_request_ids: list[str] = []
+            self.hold_window_requests = False
+            self.hold_value_requests = False
+
+        def _window_request(self, message: dict) -> None:
+            self.window_request_ids.append(str(message["requestId"]))
+            if len(self.window_request_ids) == 1:
+                raise RuntimeError("injected window request failure")
+            if self.hold_window_requests:
+                return
+            super()._window_request(message)
+
+        def _value_request(self, message: dict) -> None:
+            self.value_request_ids.append(str(message["requestId"]))
+            if len(self.value_request_ids) == 1:
+                raise RuntimeError("injected value request failure")
+            if self.hold_value_requests:
+                return
+            super()._value_request(message)
+
+        def _search_request(self, message: dict) -> None:
+            self.search_request_ids.append(str(message["requestId"]))
+            if len(self.search_request_ids) <= 2:
+                raise RuntimeError("injected search request failure")
+            super()._search_request(message)
+
     requested = [argument for argument in sys.argv[1:] if argument != "--legacy"]
     wave_file = Path(requested[0]) if requested else _default_vcd()
     use_synthetic_fixture = not requested
@@ -642,10 +673,8 @@ def _indexed_main() -> int:
     else:
         shutil.copyfile(wave_file, source)
     cache = WaveformCache(root=root / "cache")
-    bridge = WaveformBridge(
-        worker=WaveformIndexWorker(cache=cache),
-        start_thread=True,
-    )
+    worker = RecoverableErrorWorker(cache=cache)
+    bridge = WaveformBridge(worker=worker, start_thread=True)
 
     app = QApplication.instance() or QApplication([])
     panel = WaveformViewerPanel(bridge=bridge)
@@ -673,6 +702,9 @@ def _indexed_main() -> int:
         "scope_smoke_requested": False,
         "scope_smoke_checked": False,
         "first_indexed_frame_checked": False,
+        "request_error_wiring_started": False,
+        "request_error_wiring_checked": False,
+        "search_exhaustion_requested": False,
         "vertical_scroll_checked": False,
         "vertical_scroll_settled": False,
         "rapid_pan_requested": False,
@@ -711,6 +743,7 @@ def _indexed_main() -> int:
         failures = [
             message for message in messages
             if message.get("type") in {"reloadFailed", "requestError", "bridgeError"}
+            and "injected " not in str(message.get("message", ""))
         ]
         if failures:
             finish(False, "host failure: " + repr(failures[-1]))
@@ -925,6 +958,20 @@ def _indexed_main() -> int:
         if not windows or not values:
             QTimer.singleShot(100, inspect)
             return
+        if (
+            len(worker.window_request_ids) < 2
+            or len(set(worker.window_request_ids[:2])) != 2
+            or windows[0].get("requestId") != worker.window_request_ids[1]
+        ):
+            finish(False, "window request did not recover with a fresh request id")
+            return
+        if (
+            len(worker.value_request_ids) < 2
+            or len(set(worker.value_request_ids[:2])) != 2
+            or values[0].get("requestId") != worker.value_request_ids[1]
+        ):
+            finish(False, "value request did not recover with a fresh request id")
+            return
         if not use_synthetic_fixture:
             QApplication.processEvents()
             pixels = _grab_waveform_stats(view)
@@ -946,6 +993,170 @@ def _indexed_main() -> int:
             return
         if not {"raw", "summary"}.issubset(kinds):
             finish(False, "expected raw and summary windows: " + repr(kinds))
+            return
+
+        if not state["request_error_wiring_started"]:
+            state["request_error_wiring_started"] = True
+            worker.hold_window_requests = True
+            worker.hold_value_requests = True
+
+            def begin_error_wiring(payload) -> None:
+                try:
+                    before = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid pre-error frame state: " + repr(payload))
+                    return
+                panel.resize(1340, 720)
+                view.page().runJavaScript(
+                    "window.__veriflowWaveViewer.setCursorSamples(6, null, 'a');",
+                    lambda _result: QTimer.singleShot(150, inspect_error_pending),
+                )
+
+                def inspect_error_pending() -> None:
+                    view.page().runJavaScript(
+                        "JSON.stringify({requests: window.__veriflowWaveViewer.requestState(), "
+                        "width: document.getElementById('waveCanvas').width});",
+                        lambda pending: check_error_pending(before, pending),
+                    )
+
+            def check_error_pending(before: dict, payload) -> None:
+                try:
+                    pending = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid pending request state: " + repr(payload))
+                    return
+                requests = pending.get("requests", {})
+                if (
+                    not requests.get("window", {}).get("requestId")
+                    or not requests.get("value", {}).get("requestId")
+                    or not requests.get("resizeRequestPending")
+                    or pending.get("width") != before.get("width")
+                ):
+                    finish(False, "failed to hold window/value requests over the old frame: " + repr(pending))
+                    return
+                view.page().runJavaScript(
+                    "(() => { const before = window.__veriflowWaveViewer.requestState();"
+                    "waveformTransport.dispatch({type:'requestError', generation:before.generation - 1, requestId:before.window.requestId, message:'stale generation'});"
+                    "waveformTransport.dispatch({type:'requestError', generation:before.generation, requestId:'nonmatching', message:'stale id'});"
+                    "return JSON.stringify({before, after:window.__veriflowWaveViewer.requestState()}); })();",
+                    lambda stale: check_stale_errors(before, stale),
+                )
+
+            def check_stale_errors(frame_before: dict, payload) -> None:
+                try:
+                    stale = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid stale-error state: " + repr(payload))
+                    return
+                before = stale.get("before", {})
+                after = stale.get("after", {})
+                if before.get("window") != after.get("window") or before.get("value") != after.get("value"):
+                    finish(False, "stale requestError cleared a current request: " + repr(stale))
+                    return
+                view.page().runJavaScript(
+                    "(() => { const before = window.__veriflowWaveViewer.requestState();"
+                    "waveformTransport.dispatch({type:'requestError', generation:before.generation, requestId:before.window.requestId, message:'injected persistent window failure'});"
+                    "const middle = window.__veriflowWaveViewer.requestState();"
+                    "waveformTransport.dispatch({type:'requestError', generation:middle.generation, requestId:middle.value.requestId, message:'injected persistent value failure'});"
+                    "return JSON.stringify({before, middle, after:window.__veriflowWaveViewer.requestState(), width:document.getElementById('waveCanvas').width}); })();",
+                    lambda retry: check_first_retries(frame_before, retry),
+                )
+
+            def check_first_retries(frame_before: dict, payload) -> None:
+                try:
+                    retry = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid first-retry state: " + repr(payload))
+                    return
+                before = retry.get("before", {})
+                middle = retry.get("middle", {})
+                after = retry.get("after", {})
+                if (
+                    middle.get("window", {}).get("requestId") == before.get("window", {}).get("requestId")
+                    or middle.get("value") != before.get("value")
+                    or after.get("value", {}).get("requestId") == before.get("value", {}).get("requestId")
+                    or after.get("window") != middle.get("window")
+                    or after.get("resizeRequestPending")
+                    or retry.get("width") != frame_before.get("width")
+                ):
+                    finish(False, "requestError retry changed the wrong slot or old frame: " + repr(retry))
+                    return
+                view.page().runJavaScript(
+                    "(() => { const before = window.__veriflowWaveViewer.requestState();"
+                    "waveformTransport.dispatch({type:'requestError', generation:before.generation, requestId:before.window.requestId, message:'injected persistent window failure'});"
+                    "waveformTransport.dispatch({type:'requestError', generation:before.generation, requestId:before.value.requestId, message:'injected persistent value failure'});"
+                    "return JSON.stringify(window.__veriflowWaveViewer.requestState()); })();",
+                    check_exhausted_requests,
+                )
+
+            def check_exhausted_requests(payload) -> None:
+                try:
+                    exhausted = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid exhausted request state: " + repr(payload))
+                    return
+                if exhausted.get("window") is not None or exhausted.get("value") is not None:
+                    finish(False, "persistent errors left requests pending: " + repr(exhausted))
+                    return
+                counts = (len(worker.window_request_ids), len(worker.value_request_ids))
+
+                def confirm_bounded(bounded_payload) -> None:
+                    try:
+                        bounded = json.loads(bounded_payload or "{}")
+                    except json.JSONDecodeError:
+                        finish(False, "invalid bounded request state: " + repr(bounded_payload))
+                        return
+                    if (
+                        bounded.get("window") is not None
+                        or bounded.get("value") is not None
+                        or counts != (len(worker.window_request_ids), len(worker.value_request_ids))
+                    ):
+                        finish(False, "persistent request errors triggered an unbounded retry")
+                        return
+                    worker.hold_window_requests = False
+                    worker.hold_value_requests = False
+                    panel.resize(1400, 720)
+                    view.page().runJavaScript(
+                        "window.__veriflowWaveViewer.setCursorSamples(0, null, 'a');",
+                        lambda _result: QTimer.singleShot(250, check_changed_key_recovery),
+                    )
+
+                QTimer.singleShot(
+                    150,
+                    lambda: view.page().runJavaScript(
+                        "JSON.stringify(window.__veriflowWaveViewer.requestState());",
+                        confirm_bounded,
+                    ),
+                )
+
+            def check_changed_key_recovery() -> None:
+                def checked(payload) -> None:
+                    try:
+                        recovered = json.loads(payload or "{}")
+                    except json.JSONDecodeError:
+                        finish(False, "invalid changed-key recovery state: " + repr(payload))
+                        return
+                    if (
+                        recovered.get("window") is not None
+                        or recovered.get("value") is not None
+                        or "Waveform request failed" in recovered.get("status", "")
+                    ):
+                        finish(False, "changed request keys did not recover: " + repr(recovered))
+                        return
+                    state["request_error_wiring_checked"] = True
+                    QTimer.singleShot(0, inspect)
+
+                view.page().runJavaScript(
+                    "JSON.stringify(window.__veriflowWaveViewer.requestState());",
+                    checked,
+                )
+
+            view.page().runJavaScript(
+                "JSON.stringify({width:document.getElementById('waveCanvas').width});",
+                begin_error_wiring,
+            )
+            return
+        if not state["request_error_wiring_checked"]:
             return
 
         if not state["first_indexed_frame_checked"]:
@@ -1146,6 +1357,28 @@ def _indexed_main() -> int:
             QTimer.singleShot(100, inspect)
             return
         if "searchResult" not in types:
+            if len(worker.search_request_ids) < 2:
+                QTimer.singleShot(100, inspect)
+                return
+            if not state["search_exhaustion_requested"]:
+                state["search_exhaustion_requested"] = True
+                before = len(worker.search_request_ids)
+
+                def check_identical_search(_payload=None) -> None:
+                    if len(worker.search_request_ids) != before:
+                        finish(False, "identical exhausted search bypassed retry bound")
+                        return
+                    view.page().runJavaScript(
+                        "window.__veriflowWaveViewer.setCursorSamples(1, null, 'a');"
+                        "document.getElementById('nextChange').click();"
+                    )
+                    QTimer.singleShot(100, inspect)
+
+                view.page().runJavaScript(
+                    "document.getElementById('nextChange').click();",
+                    lambda _result: QTimer.singleShot(150, check_identical_search),
+                )
+                return
             QTimer.singleShot(100, inspect)
             return
         if state["javascript_pending"]:

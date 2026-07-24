@@ -638,10 +638,13 @@ def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:
             self.released.append(index_dir)
 
     class FakeReader:
+        pixel_widths: list[int] = []
+
         def __init__(self, index_dir: Path) -> None:
             self.index_dir = index_dir
 
         def query_window_for_reference(self, reference, start, end, **options):
+            self.pixel_widths.append(options["pixel_width"])
             if options["cancelled"]():
                 raise AssertionError("cancelled query should not reach the reader")
             return {
@@ -699,6 +702,24 @@ def test_python_waveform_bridge_orders_messages_and_cancels_requests() -> None:
     )
     assert messages[-1]["type"] == "windowData"
     assert messages[-1]["series"][0]["reference"] == "clk"
+    assert messages[-1]["pixelWidth"] == 64
+
+    bridge.send(
+        json.dumps(
+            {
+                "type": "windowRequest",
+                "generation": 1,
+                "requestId": "window-capped",
+                "references": ["clk"] * 4,
+                "start": 0,
+                "end": 10,
+                "pixelWidth": 8192,
+            }
+        )
+    )
+    assert messages[-1]["type"] == "windowData"
+    assert messages[-1]["pixelWidth"] == 4096
+    assert FakeReader.pixel_widths[-4:] == [4096] * 4
 
     bridge.send(
         json.dumps(

@@ -114,7 +114,11 @@ function windowRequest(message: WorkerRequest): void {
         ),
     }));
     if (!requestCancelled(message)) {
-        post('windowData', message.generation, { requestId: message.requestId, series });
+        post('windowData', message.generation, {
+            requestId: message.requestId,
+            pixelWidth,
+            series,
+        });
     }
 }
 

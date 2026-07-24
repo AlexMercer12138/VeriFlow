@@ -300,6 +300,18 @@ async function testWaveformWorkerClient(): Promise<void> {
             message => message.type === 'windowData' && message.requestId === windowRequest
         );
         assert.deepStrictEqual(windowData.series[0].times, [0, 5, 10, 15, 20]);
+        assert.strictEqual(windowData.pixelWidth, 64);
+
+        const cappedWindowRequest = client.requestWindow({
+            references: ['clk', 'clk', 'clk', 'clk'],
+            start: 0,
+            end: 20,
+            pixelWidth: 8192,
+        });
+        const cappedWindowData = await waitFor(
+            message => message.type === 'windowData' && message.requestId === cappedWindowRequest
+        );
+        assert.strictEqual(cappedWindowData.pixelWidth, 4096);
 
         const valueRequest = client.requestValues(['clk', 'data [3:0]'], 11);
         const values = await waitFor(

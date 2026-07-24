@@ -250,6 +250,70 @@
         }
     }
 
+    function effectiveWindowTicksPerPixel(descriptor, responsePixelWidth) {
+        if (!descriptor || typeof descriptor !== 'object') {
+            throw new TypeError('invalid waveform window descriptor');
+        }
+        const start = finiteNumber(descriptor.start);
+        const end = finiteNumber(descriptor.end);
+        const fallback = finiteNumber(descriptor.ticksPerPixel);
+        const requestedPixelWidth = finiteNumber(descriptor.pixelWidth);
+        if (start === null || end === null || fallback === null || requestedPixelWidth === null
+            || start > end || fallback <= 0 || !Number.isInteger(requestedPixelWidth)
+            || requestedPixelWidth <= 0) {
+            throw new TypeError('invalid waveform window descriptor');
+        }
+        const pixelWidth = finiteNumber(responsePixelWidth);
+        const span = end - start;
+        if (pixelWidth === null || !Number.isInteger(pixelWidth) || pixelWidth <= 0
+            || pixelWidth > requestedPixelWidth || span <= 0) {
+            return fallback;
+        }
+        const effective = span / pixelWidth;
+        return Number.isFinite(effective) && effective > 0
+            ? effective
+            : fallback;
+    }
+
+    function matchPendingRequest(requestId, pending) {
+        if (!pending || typeof pending !== 'object') return null;
+        for (const [kind, request] of Object.entries(pending)) {
+            if (request && request.requestId === requestId) {
+                return { kind, pending: request };
+            }
+        }
+        return null;
+    }
+
+    class BoundedRequestRetry {
+        constructor(maxRetries = 1) {
+            this.maxRetries = Math.max(0, Math.trunc(Number(maxRetries) || 0));
+            this.exhausted = new Map();
+        }
+
+        canStart(kind, key) {
+            const exhaustedKey = this.exhausted.get(kind);
+            if (exhaustedKey === undefined) return true;
+            if (exhaustedKey === key) return false;
+            this.exhausted.delete(kind);
+            return true;
+        }
+
+        recordFailure(kind, key, retryCount) {
+            if (Math.max(0, Math.trunc(Number(retryCount) || 0)) < this.maxRetries) return true;
+            this.exhausted.set(kind, key);
+            return false;
+        }
+
+        recordSuccess(kind, key) {
+            if (this.exhausted.get(kind) === key) this.exhausted.delete(kind);
+        }
+
+        clear() {
+            this.exhausted.clear();
+        }
+    }
+
     function normalizeRange(value) {
         if (!value || typeof value !== 'object') return null;
         const start = finiteNumber(value.start);
@@ -644,6 +708,9 @@
         signalMatchesSelectedScope,
         WindowCache,
         WaveWindowCache,
+        effectiveWindowTicksPerPixel,
+        matchPendingRequest,
+        BoundedRequestRetry,
         windowNeedsRefresh,
         FrameScheduler,
         RequestTracker,

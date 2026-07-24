@@ -104,6 +104,7 @@ let currentGeneration = 0;
 let loadingGeneration = 0;
 const windowCache = new waveCore.WaveWindowCache(192);
 const requestTracker = new waveCore.RequestTracker();
+const requestRetries = new waveCore.BoundedRequestRetry(1);
 const renderScheduler = new waveCore.FrameScheduler(callback => requestAnimationFrame(callback));
 let pendingWaveNameRender = false;
 let pendingCanvasSize = null;
@@ -116,6 +117,8 @@ let pendingValueRequest = null;
 let pendingSearchRequest = null;
 let pendingReloadMetadata = null;
 let lastValueRequestKey = '';
+let activeRequestStatus = '';
+const failedRequestKinds = new Set();
 const ROW_HEIGHT = 32;
 const HEADER_HEIGHT = 38;
 const TIME_UNITS = ['fs', 'ps', 'ns', 'us', 'ms', 's'];
@@ -390,6 +393,9 @@ function setEmptyState() {
     currentGeneration = 0;
     loadingGeneration = 0;
     requestTracker.setGeneration(0);
+    requestRetries.clear();
+    failedRequestKinds.clear();
+    activeRequestStatus = '';
     windowCache.clear();
     cursorValues.clear();
     pendingWindowRequest = null;
@@ -518,6 +524,9 @@ function activateIndexedMetadata(message, layout = message.layout) {
     indexReady = false;
     currentGeneration = loadingGeneration;
     requestTracker.setGeneration(currentGeneration);
+    requestRetries.clear();
+    failedRequestKinds.clear();
+    activeRequestStatus = '';
     windowCache.clear();
     cursorValues.clear();
     lastValueRequestKey = '';
@@ -1451,6 +1460,25 @@ function setStatus(text) {
         + (text ? ' - ' + text : '');
 }
 
+function setRequestStatus(text) {
+    activeRequestStatus = String(text || '');
+    setStatus(activeRequestStatus);
+}
+
+function markRequestRecovered(kind) {
+    if (!failedRequestKinds.delete(kind)) return;
+    const ownsStatus = activeRequestStatus && (
+        statusText.textContent === activeRequestStatus
+        || statusText.textContent.endsWith(' - ' + activeRequestStatus)
+    );
+    if (ownsStatus && failedRequestKinds.size === 0) {
+        activeRequestStatus = '';
+        setStatus('Waveform request recovered.');
+    } else if (failedRequestKinds.size === 0) {
+        activeRequestStatus = '';
+    }
+}
+
 function timeToX(time, width) {
     const range = Math.max(1, endTime - startTime);
     return ((time - startTime) / range) * width;
@@ -1729,6 +1757,36 @@ function cancelPendingRequest(pending) {
     });
 }
 
+function windowRequestKey(descriptor, references) {
+    return JSON.stringify([
+        currentGeneration,
+        descriptor.start,
+        descriptor.end,
+        descriptor.pixelWidth,
+        descriptor.ticksPerPixel,
+        references,
+    ]);
+}
+
+function sendWindowRequest(descriptor, references, retryCount = 0) {
+    const key = windowRequestKey(descriptor, references);
+    if (!requestRetries.canStart('window', key)) return false;
+    cancelPendingRequest(pendingWindowRequest);
+    const requestId = requestTracker.next('window');
+    pendingWindowRequest = { requestId, descriptor, references, key, retryCount };
+    waveformTransport.send({
+        type: 'windowRequest',
+        generation: currentGeneration,
+        requestId,
+        references,
+        start: descriptor.start,
+        end: descriptor.end,
+        pixelWidth: descriptor.pixelWidth,
+        prefetch: 0.5,
+    });
+    return true;
+}
+
 function scheduleWindowRequest(forceRefresh = false) {
     if (!indexedMode || !indexReady || !vcd || !waveSignals.length) return;
     if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
@@ -1757,19 +1815,7 @@ function scheduleWindowRequest(forceRefresh = false) {
             && pendingWindowRequest.descriptor.ticksPerPixel === descriptor.ticksPerPixel
             && needed.every(reference => pendingWindowRequest.references.includes(reference))
         ) return;
-        cancelPendingRequest(pendingWindowRequest);
-        const requestId = requestTracker.next('window');
-        pendingWindowRequest = { requestId, descriptor, references: needed };
-        waveformTransport.send({
-            type: 'windowRequest',
-            generation: currentGeneration,
-            requestId,
-            references: needed,
-            start: descriptor.start,
-            end: descriptor.end,
-            pixelWidth: descriptor.pixelWidth,
-            prefetch: 0.5,
-        });
+        sendWindowRequest(descriptor, needed);
     }, 50);
 }
 
@@ -1777,21 +1823,28 @@ function handleWindowData(message) {
     if (!requestTracker.accepts(message)) return;
     if (!pendingWindowRequest || message.requestId !== pendingWindowRequest.requestId) return;
     const descriptor = pendingWindowRequest.descriptor;
+    const requestKey = pendingWindowRequest.key;
     const resizeDescriptor = resizeRequestPending ? requestWindowDescriptor() : null;
     try {
+        const ticksPerPixel = waveCore.effectiveWindowTicksPerPixel(
+            descriptor,
+            message.pixelWidth
+        );
         (message.series || []).forEach(series => {
             windowCache.set({
                 generation: currentGeneration,
                 reference: series.reference,
                 start: descriptor.start,
                 end: descriptor.end,
-                ticksPerPixel: descriptor.ticksPerPixel,
+                ticksPerPixel,
                 series: waveCore.decodeWindowPayload(series),
             });
         });
     } catch (error) {
         setStatus('Waveform window decode failed: ' + String(error));
     }
+    requestRetries.recordSuccess('window', requestKey);
+    markRequestRecovered('window');
     pendingWindowRequest = null;
     resizeRequestPending = !!(
         resizeDescriptor
@@ -1828,17 +1881,23 @@ function scheduleValueRequest() {
             return;
         }
         if (pendingValueRequest?.key === key) return;
-        cancelPendingRequest(pendingValueRequest);
-        const requestId = requestTracker.next('values');
-        pendingValueRequest = { requestId, key, references, time };
-        waveformTransport.send({
-            type: 'valueRequest',
-            generation: currentGeneration,
-            requestId,
-            references,
-            time,
-        });
+        sendValueRequest(key, references, time);
     }, 50);
+}
+
+function sendValueRequest(key, references, time, retryCount = 0) {
+    if (!requestRetries.canStart('value', key)) return false;
+    cancelPendingRequest(pendingValueRequest);
+    const requestId = requestTracker.next('values');
+    pendingValueRequest = { requestId, key, references, time, retryCount };
+    waveformTransport.send({
+        type: 'valueRequest',
+        generation: currentGeneration,
+        requestId,
+        references,
+        time,
+    });
+    return true;
 }
 
 function handleCursorValues(message) {
@@ -1849,6 +1908,8 @@ function handleCursorValues(message) {
         cursorValues.set(reference, String(value));
     });
     lastValueRequestKey = pendingValueRequest.key;
+    requestRetries.recordSuccess('value', pendingValueRequest.key);
+    markRequestRecovered('value');
     pendingValueRequest = null;
     renderSignalList();
     render();
@@ -2536,6 +2597,32 @@ function searchErrorMessage(error, direction) {
         : 'No earlier waveform match.';
 }
 
+function searchRequestKey(request) {
+    return JSON.stringify([
+        currentGeneration,
+        request.cursorTime,
+        request.direction,
+        request.mode,
+        request.query,
+        request.targets,
+    ]);
+}
+
+function sendSearchRequest(request, targets, retryCount = 0) {
+    const key = searchRequestKey(request);
+    if (!requestRetries.canStart('search', key)) return false;
+    cancelPendingRequest(pendingSearchRequest);
+    const requestId = requestTracker.next('search');
+    pendingSearchRequest = { requestId, direction: request.direction, targets, request, key, retryCount };
+    waveformTransport.send({
+        type: 'searchRequest',
+        generation: currentGeneration,
+        requestId,
+        ...request,
+    });
+    return true;
+}
+
 function jumpToCondition(direction) {
     if (!vcd || !waveCore) return { match: null, error: 'no-targets' };
     const mode = changeSearchMode.value || 'change';
@@ -2562,13 +2649,7 @@ function jumpToCondition(direction) {
                 return result;
             }
         }
-        cancelPendingRequest(pendingSearchRequest);
-        const requestId = requestTracker.next('search');
-        pendingSearchRequest = { requestId, direction, targets };
-        waveformTransport.send({
-            type: 'searchRequest',
-            generation: currentGeneration,
-            requestId,
+        const request = {
             targets: targets.map(target => ({
                 reference: target.reference,
                 bitIndex: target.bitIndex,
@@ -2580,9 +2661,13 @@ function jumpToCondition(direction) {
             direction,
             mode,
             query: changeSearchValue.value,
-        });
+        };
+        if (!sendSearchRequest(request, targets)) {
+            setStatus('Search retry limit reached. Change the search or cursor to retry.');
+            return { pending: false, error: 'retry-exhausted' };
+        }
         setStatus('Searching waveform index...');
-        return { pending: true, requestId };
+        return { pending: true, requestId: pendingSearchRequest?.requestId };
     }
     const result = waveCore.findSearchMatch(
         targets,
@@ -2628,6 +2713,8 @@ function handleSearchResult(message) {
     if (!pendingSearchRequest || message.requestId !== pendingSearchRequest.requestId) return;
     const pending = pendingSearchRequest;
     pendingSearchRequest = null;
+    requestRetries.recordSuccess('search', pending.key);
+    markRequestRecovered('search');
     const result = message.result;
     if (!result) {
         setStatus(searchErrorMessage('no-match', pending.direction));
@@ -2659,6 +2746,51 @@ function handleSearchResult(message) {
     renderSignalList();
     render();
     setStatus('Found ' + (target.name || target.reference) + ' at ' + formatTime(result.time) + '.');
+}
+
+function clearMatchingPendingRequest(message) {
+    if (!requestTracker.accepts(message)) return null;
+    const match = waveCore.matchPendingRequest(message.requestId, {
+        window: pendingWindowRequest,
+        value: pendingValueRequest,
+        search: pendingSearchRequest,
+    });
+    if (!match) return null;
+    if (match.kind === 'window') {
+        pendingWindowRequest = null;
+        resizeRequestPending = false;
+    } else if (match.kind === 'value') {
+        pendingValueRequest = null;
+        lastValueRequestKey = '';
+    } else if (match.kind === 'search') {
+        pendingSearchRequest = null;
+    }
+    return match;
+}
+
+function retryFailedRequest(match, errorMessage) {
+    const pending = match.pending;
+    const retryCount = Math.max(0, Number(pending.retryCount) || 0);
+    const shouldRetry = requestRetries.recordFailure(match.kind, pending.key, retryCount);
+    setRequestStatus(shouldRetry
+        ? 'Retrying waveform request...'
+        : 'Waveform request failed: ' + String(errorMessage || 'unknown error'));
+    if (!shouldRetry) return false;
+    if (match.kind === 'window') {
+        sendWindowRequest(pending.descriptor, pending.references, retryCount + 1);
+    } else if (match.kind === 'value') {
+        sendValueRequest(pending.key, pending.references, pending.time, retryCount + 1);
+    } else if (match.kind === 'search') {
+        sendSearchRequest(pending.request, pending.targets, retryCount + 1);
+    }
+    return true;
+}
+
+function handleRequestError(message) {
+    const failed = clearMatchingPendingRequest(message);
+    if (!failed) return;
+    failedRequestKinds.add(failed.kind);
+    retryFailedRequest(failed, message.message);
 }
 
 function goToTime() {
@@ -3200,8 +3332,10 @@ window.addEventListener('message', event => {
         handleIndexFailure(msg, true);
     } else if (msg.type === 'reloadFailed') {
         handleIndexFailure(msg, false);
-    } else if (msg.type === 'requestError' || msg.type === 'bridgeError') {
-        if (Number(msg.generation) >= currentGeneration) {
+    } else if (msg.type === 'requestError') {
+        handleRequestError(msg);
+    } else if (msg.type === 'bridgeError') {
+        if (msg.generation === undefined || Number(msg.generation) >= currentGeneration) {
             setStatus('Waveform request failed: ' + String(msg.message || 'unknown error'));
         }
     } else if (msg.type === 'empty') {
@@ -3471,6 +3605,21 @@ window.__veriflowWaveViewer = {
             cursorA,
             cursorB,
             activeCursor,
+        };
+    },
+    requestState() {
+        const snapshot = pending => pending ? {
+            requestId: pending.requestId,
+            key: pending.key,
+            retryCount: pending.retryCount,
+        } : null;
+        return {
+            generation: currentGeneration,
+            window: snapshot(pendingWindowRequest),
+            value: snapshot(pendingValueRequest),
+            search: snapshot(pendingSearchRequest),
+            resizeRequestPending,
+            status: statusText.textContent,
         };
     },
     libraryState() {

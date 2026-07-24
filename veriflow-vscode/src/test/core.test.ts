@@ -32,6 +32,14 @@ type WaveCore = {
         find(query: any): any | undefined;
         clear(): void;
     };
+    BoundedRequestRetry: new (maxRetries?: number) => {
+        canStart(kind: string, key: string): boolean;
+        recordFailure(kind: string, key: string, retryCount: number): boolean;
+        recordSuccess(kind: string, key: string): void;
+        clear(): void;
+    };
+    effectiveWindowTicksPerPixel(descriptor: any, responsePixelWidth: unknown): number;
+    matchPendingRequest(requestId: unknown, pending: Record<string, any>): any | null;
     FrameScheduler: new (requestFrame: (callback: () => void) => unknown) => {
         schedule(callback: () => void): void;
         cancel(): void;
@@ -822,6 +830,46 @@ function testWaveWindowReuseAndFrameScheduling(): void {
     assert.ok(lru.find({ generation: 2, reference: 'clk', start: 50, end: 150, ticksPerPixel: 1 }));
     assert.strictEqual(lru.find({ generation: 2, reference: 'data', start: 50, end: 150, ticksPerPixel: 2 }), undefined);
 
+    const prefetchedRange = waveCore.prefetchRange(0, 100, 0, 1000);
+    assert.deepStrictEqual(prefetchedRange, { start: 0, end: 150 });
+    const prefetched = { ...prefetchedRange, pixelWidth: 100, ticksPerPixel: 1 };
+    const effectiveTicksPerPixel = waveCore.effectiveWindowTicksPerPixel(prefetched, 50);
+    assert.strictEqual(effectiveTicksPerPixel, 3);
+    const cappedSummary = {
+        generation: 2,
+        reference: 'capped-summary',
+        start: prefetched.start,
+        end: prefetched.end,
+        ticksPerPixel: effectiveTicksPerPixel,
+        series: { kind: 'summary' },
+    };
+    const cappedRaw = {
+        ...cappedSummary,
+        reference: 'capped-raw',
+        series: { kind: 'raw' },
+    };
+    const cappedCache = new waveCore.WaveWindowCache(2);
+    cappedCache.set(cappedSummary);
+    cappedCache.set(cappedRaw);
+    assert.strictEqual(cappedCache.find({
+        generation: 2,
+        reference: 'capped-summary',
+        start: 25,
+        end: 125,
+        ticksPerPixel: 1,
+    }), undefined);
+    assert.deepStrictEqual(cappedCache.find({
+        generation: 2,
+        reference: 'capped-raw',
+        start: 25,
+        end: 125,
+        ticksPerPixel: 1,
+    }), cappedRaw);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, undefined), 1);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, Infinity), 1);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 50.5), 1);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 101), 1);
+
     const frames: Array<() => void> = [];
     const paints: number[] = [];
     const scheduler = new waveCore.FrameScheduler(callback => {
@@ -837,6 +885,59 @@ function testWaveWindowReuseAndFrameScheduling(): void {
     scheduler.cancel();
     frames[1]();
     assert.deepStrictEqual(paints, [2]);
+}
+
+function testRecoverableWaveformRequestErrors(): void {
+    const retries = new waveCore.BoundedRequestRetry(1);
+    const requests = new waveCore.RequestTracker();
+    requests.setGeneration(7);
+    const sent: Array<{ kind: string; key: string; requestId: string; retryCount: number }> = [];
+    const send = (kind: string, key: string, retryCount = 0) => {
+        assert.strictEqual(retries.canStart(kind, key), true);
+        const requestId = requests.next(kind);
+        const pending = { kind, key, requestId, retryCount };
+        sent.push(pending);
+        return pending;
+    };
+
+    let pendingWindow = send('window', '0:150:50');
+    let pendingValue = send('value', '7:5:clk');
+    const pendingSearch = send('search', 'rising:5:clk');
+    assert.strictEqual(waveCore.matchPendingRequest('stale-window', {
+        window: pendingWindow,
+        value: pendingValue,
+        search: pendingSearch,
+    }), null);
+
+    const failedWindow = waveCore.matchPendingRequest(pendingWindow.requestId, {
+        window: pendingWindow,
+        value: pendingValue,
+        search: pendingSearch,
+    });
+    assert.strictEqual(failedWindow.kind, 'window');
+    assert.strictEqual(retries.recordFailure('window', pendingWindow.key, pendingWindow.retryCount), true);
+    pendingWindow = send('window', pendingWindow.key, pendingWindow.retryCount + 1);
+    assert.notStrictEqual(pendingWindow.requestId, failedWindow.pending.requestId);
+    retries.recordSuccess('window', pendingWindow.key);
+
+    const failedValue = waveCore.matchPendingRequest(pendingValue.requestId, {
+        window: pendingWindow,
+        value: pendingValue,
+        search: pendingSearch,
+    });
+    assert.strictEqual(failedValue.kind, 'value');
+    assert.strictEqual(retries.recordFailure('value', pendingValue.key, pendingValue.retryCount), true);
+    pendingValue = send('value', pendingValue.key, pendingValue.retryCount + 1);
+    assert.notStrictEqual(pendingValue.requestId, failedValue.pending.requestId);
+    retries.recordSuccess('value', pendingValue.key);
+
+    const persistent = send('window', '150:300:50');
+    assert.strictEqual(retries.recordFailure('window', persistent.key, persistent.retryCount), true);
+    const persistentRetry = send('window', persistent.key, persistent.retryCount + 1);
+    assert.strictEqual(retries.recordFailure('window', persistentRetry.key, persistentRetry.retryCount), false);
+    assert.strictEqual(retries.canStart('window', persistent.key), false);
+    assert.strictEqual(retries.canStart('window', '300:450:50'), true);
+    assert.strictEqual(sent.filter(item => item.key === persistent.key).length, 2);
 }
 
 function testWaveWindowHardening(): void {
@@ -1038,6 +1139,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['indexed waveform core', testIndexedWaveCore],
     ['wave window reuse and frame scheduling', testWaveWindowReuseAndFrameScheduling],
     ['wave window hardening', testWaveWindowHardening],
+    ['recoverable waveform request errors', testRecoverableWaveformRequestErrors],
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
 ];
