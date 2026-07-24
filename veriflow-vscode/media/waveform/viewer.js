@@ -1726,8 +1726,9 @@ function scheduleWindowRequest() {
         if (!needed.length) return;
         if (
             pendingWindowRequest
-            && pendingWindowRequest.descriptor.start <= viewport.start
-            && pendingWindowRequest.descriptor.end >= viewport.end
+            && pendingWindowRequest.descriptor.start === descriptor.start
+            && pendingWindowRequest.descriptor.end === descriptor.end
+            && pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth
             && needed.every(reference => pendingWindowRequest.references.includes(reference))
         ) return;
         cancelPendingRequest(pendingWindowRequest);
@@ -3440,7 +3441,7 @@ window.__veriflowWaveViewer = {
             scrollTop: signalList.scrollTop,
             scrollHeight: signalList.scrollHeight,
             clientHeight: signalList.clientHeight,
-            filteredReferences: filteredSignals.map(signal => signal.reference),
+            references: filteredSignals.map(signal => signal.reference),
         };
     },
 };

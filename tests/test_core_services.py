@@ -482,6 +482,11 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "start: Number(vcd.startTime) || 0" in viewer
     assert "end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)" in viewer
     assert "new waveCore.FrameScheduler(callback => requestAnimationFrame(callback))" in viewer
+    assert "pendingWindowRequest.descriptor.start === descriptor.start" in viewer
+    assert "pendingWindowRequest.descriptor.end === descriptor.end" in viewer
+    assert "pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth" in viewer
+    assert "needed.every(reference => pendingWindowRequest.references.includes(reference))" in viewer
+    assert "references: filteredSignals.map(signal => signal.reference)" in viewer
     assert "new waveCore.RequestTracker" in viewer
 
 

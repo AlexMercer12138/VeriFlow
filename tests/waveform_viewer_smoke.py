@@ -577,6 +577,7 @@ def _legacy_main() -> int:
 
 
 def _indexed_main() -> int:
+    import shutil
     import tempfile
 
     _configure_qt_webengine()
@@ -593,6 +594,7 @@ def _indexed_main() -> int:
 
     requested = [argument for argument in sys.argv[1:] if argument != "--legacy"]
     wave_file = Path(requested[0]) if requested else _default_vcd()
+    use_synthetic_fixture = not requested
     if not wave_file.exists():
         print(f"[ERROR] VCD file not found: {wave_file}")
         return 2
@@ -601,39 +603,42 @@ def _indexed_main() -> int:
     root = Path(temporary.name)
     source = root / wave_file.name
     direct_references = ["clk", "data [7:0]"] + [f"signal_{index:03d}" for index in range(72)]
-    vcd_lines = [
-        "$timescale 1ns $end",
-        "$scope module smoke_many $end",
-        "$var wire 1 ! clk $end",
-        '$var wire 8 " data [7:0] $end',
-    ]
-    vcd_lines.extend(
-        f"$var wire 1 signal_{index} signal_{index:03d} $end"
-        for index in range(72)
-    )
-    vcd_lines.extend([
-        "$scope module child $end",
-        "$var wire 1 child_only child_signal $end",
-        "$upscope $end",
-        "$upscope $end",
-        "$enddefinitions $end",
-        "#0",
-        "0!",
-        'b00000000 "',
-        "0signal_0",
-        "0signal_1",
-        "0signal_2",
-        "0signal_3",
-        "#5",
-        "1!",
-        "1signal_0",
-        "#10",
-        "0!",
-    ])
-    source.write_text("\n".join(vcd_lines) + "\n", encoding="utf-8")
-    with source.open("a", encoding="utf-8") as handle:
-        for timestamp in range(21, 5001):
-            handle.write(f"#{timestamp}\n{timestamp % 2}!\n")
+    if use_synthetic_fixture:
+        vcd_lines = [
+            "$timescale 1ns $end",
+            "$scope module smoke_many $end",
+            "$var wire 1 ! clk $end",
+            '$var wire 8 " data [7:0] $end',
+        ]
+        vcd_lines.extend(
+            f"$var wire 1 signal_{index} signal_{index:03d} $end"
+            for index in range(72)
+        )
+        vcd_lines.extend([
+            "$scope module child $end",
+            "$var wire 1 child_only child_signal $end",
+            "$upscope $end",
+            "$upscope $end",
+            "$enddefinitions $end",
+            "#0",
+            "0!",
+            'b00000000 "',
+            "0signal_0",
+            "0signal_1",
+            "0signal_2",
+            "0signal_3",
+            "#5",
+            "1!",
+            "1signal_0",
+            "#10",
+            "0!",
+        ])
+        source.write_text("\n".join(vcd_lines) + "\n", encoding="utf-8")
+        with source.open("a", encoding="utf-8") as handle:
+            for timestamp in range(21, 5001):
+                handle.write(f"#{timestamp}\n{timestamp % 2}!\n")
+    else:
+        shutil.copyfile(wave_file, source)
     cache = WaveformCache(root=root / "cache")
     bridge = WaveformBridge(
         worker=WaveformIndexWorker(cache=cache),
@@ -771,7 +776,7 @@ def _indexed_main() -> int:
                 f"{[message.get('generation') for message in ready_messages]}; pixels={pixels}",
             )
             return
-        if not state["scope_smoke_requested"]:
+        if use_synthetic_fixture and not state["scope_smoke_requested"]:
             state["scope_smoke_requested"] = True
 
             def checked_scope(payload) -> None:
@@ -780,7 +785,7 @@ def _indexed_main() -> int:
                 except json.JSONDecodeError:
                     finish(False, "invalid scoped library state: " + repr(payload))
                     return
-                filtered = library.get("filteredReferences", [])
+                filtered = library.get("references", [])
                 rendered = library.get("renderedIndices", [])
                 if library.get("selectedScope") != "smoke_many":
                     finish(False, "scope selection did not apply: " + repr(library))
@@ -811,7 +816,7 @@ def _indexed_main() -> int:
                 checked_scope,
             )
             return
-        if not state["scope_smoke_checked"]:
+        if use_synthetic_fixture and not state["scope_smoke_checked"]:
             return
         if not state["primed"]:
             state["primed"] = True
@@ -825,6 +830,14 @@ def _indexed_main() -> int:
         values = [message for message in messages if message.get("type") == "cursorValues"]
         if not windows or not values:
             QTimer.singleShot(100, inspect)
+            return
+        if not use_synthetic_fixture:
+            QApplication.processEvents()
+            pixels = _grab_waveform_stats(view)
+            if not pixels["ok"]:
+                QTimer.singleShot(50, inspect)
+                return
+            finish(True, f"provided VCD rendered; pixels={pixels}")
             return
         total_records = 0
         kinds = {
