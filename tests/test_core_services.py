@@ -493,7 +493,14 @@ def test_waveform_progress_controls_cover_waveform_workspace() -> None:
     assert not is_descendant(progress, markup.by_id["statusText"]["parent"])
     assert ".index-overlay-content" in css
     assert ".index-progress.indeterminate" in css
-    assert "background: var(--vscode-editor-background, #111318);" in css
+    overlay_rule_start = css.index(".index-overlay {")
+    overlay_rule_end = css.index("\n}", overlay_rule_start) + 2
+    overlay_rule = css[overlay_rule_start:overlay_rule_end]
+    assert "position: absolute;" in overlay_rule
+    assert "inset: 0;" in overlay_rule
+    assert "z-index: 40;" in overlay_rule
+    assert "display: flex;" in overlay_rule
+    assert "background: var(--vscode-editor-background, #111318);" in overlay_rule
 
 
 def test_indexed_waveform_viewer_uses_async_protocol() -> None:
