@@ -482,6 +482,16 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "start: Number(vcd.startTime) || 0" in viewer
     assert "end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)" in viewer
     assert "new waveCore.FrameScheduler(callback => requestAnimationFrame(callback))" in viewer
+    render_now = viewer[viewer.index("function renderNow("):viewer.index("function render(", viewer.index("function renderNow("))]
+    assert render_now.index("const visibleSignals = visibleWaveSignals();") < render_now.rindex("if (renderWaveNames) renderWaveNameList();")
+    assert "let pendingCanvasSize = null;" in viewer
+    assert "let resizeRequestPending = false;" in viewer
+    assert "scheduleWindowRequest(resizeRequestPending);" in viewer
+    assert "const resizeDescriptor = resizeRequestPending ? requestWindowDescriptor() : null;" in viewer
+    assert "if (!vcd) {\n        resizeRequestPending = false;" in viewer
+    assert "if (!indexedMode || !indexReady || !visibleSignals.length) resizeRequestPending = false;" in viewer
+    assert "resizeFrameOverlay" not in viewer
+    assert "canvas.toDataURL()" not in viewer
     assert "pendingWindowRequest.descriptor.start === descriptor.start" in viewer
     assert "pendingWindowRequest.descriptor.end === descriptor.end" in viewer
     assert "pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth" in viewer

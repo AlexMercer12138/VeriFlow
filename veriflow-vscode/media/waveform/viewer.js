@@ -106,6 +106,8 @@ const windowCache = new waveCore.WaveWindowCache(192);
 const requestTracker = new waveCore.RequestTracker();
 const renderScheduler = new waveCore.FrameScheduler(callback => requestAnimationFrame(callback));
 let pendingWaveNameRender = false;
+let pendingCanvasSize = null;
+let resizeRequestPending = false;
 const cursorValues = new Map();
 let windowRequestTimer = null;
 let valueRequestTimer = null;
@@ -354,12 +356,28 @@ function restoreLayout(layout, renderAfter = true) {
 function resizeCanvas() {
     const rect = waveCanvasPane.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+    const sizeChanged = canvas.width !== width || canvas.height !== height;
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pendingCanvasSize = sizeChanged ? { width, height, dpr } : null;
+    resizeRequestPending = !!(
+        sizeChanged
+        && indexedMode
+        && indexReady
+        && vcd
+        && visibleWaveSignals().length
+    );
     render();
+}
+
+function applyPendingCanvasSize() {
+    if (!pendingCanvasSize) return;
+    canvas.width = pendingCanvasSize.width;
+    canvas.height = pendingCanvasSize.height;
+    ctx.setTransform(pendingCanvasSize.dpr, 0, 0, pendingCanvasSize.dpr, 0, 0);
+    pendingCanvasSize = null;
 }
 
 function setEmptyState() {
@@ -1705,7 +1723,7 @@ function cancelPendingRequest(pending) {
     });
 }
 
-function scheduleWindowRequest() {
+function scheduleWindowRequest(forceRefresh = false) {
     if (!indexedMode || !indexReady || !vcd || !waveSignals.length) return;
     if (windowRequestTimer !== null) clearTimeout(windowRequestTimer);
     windowRequestTimer = setTimeout(() => {
@@ -1717,6 +1735,7 @@ function scheduleWindowRequest() {
             visibleWaveSignals().map(signal => signal.reference).filter(Boolean)
         ));
         const needed = references.filter(reference => {
+            if (forceRefresh) return true;
             const entry = cachedWindowEntry(reference, viewport);
             return waveCore.windowNeedsRefresh(entry, viewport, 0.25, {
                 start: Number(vcd.startTime) || 0,
@@ -1752,6 +1771,7 @@ function handleWindowData(message) {
     if (!requestTracker.accepts(message)) return;
     if (!pendingWindowRequest || message.requestId !== pendingWindowRequest.requestId) return;
     const descriptor = pendingWindowRequest.descriptor;
+    const resizeDescriptor = resizeRequestPending ? requestWindowDescriptor() : null;
     try {
         (message.series || []).forEach(series => {
             windowCache.set({
@@ -1767,6 +1787,15 @@ function handleWindowData(message) {
         setStatus('Waveform window decode failed: ' + String(error));
     }
     pendingWindowRequest = null;
+    resizeRequestPending = !!(
+        resizeDescriptor
+        && (
+            descriptor.start !== resizeDescriptor.start
+            || descriptor.end !== resizeDescriptor.end
+            || descriptor.pixelWidth !== resizeDescriptor.pixelWidth
+            || descriptor.ticksPerPixel !== resizeDescriptor.ticksPerPixel
+        )
+    );
     renderCanvas();
 }
 
@@ -2245,22 +2274,28 @@ function renderNow(renderWaveNames = true) {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     updateEmptyState();
-    if (renderWaveNames) renderWaveNameList();
     updateToolbarState();
     if (!vcd) {
+        resizeRequestPending = false;
+        if (renderWaveNames) renderWaveNameList();
+        applyPendingCanvasSize();
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = STYLE.background;
         ctx.fillRect(0, 0, width, height);
         return;
     }
     const visibleSignals = visibleWaveSignals();
-    scheduleWindowRequest();
+    if (!indexedMode || !indexReady || !visibleSignals.length) resizeRequestPending = false;
+    scheduleWindowRequest(resizeRequestPending);
     scheduleValueRequest();
-    if (indexedMode && indexReady && visibleSignals.some(signal => !seriesForSignal(signal))) {
+    if (resizeRequestPending || (indexedMode && indexReady && visibleSignals.some(signal => !seriesForSignal(signal)))) {
+        if (renderWaveNames) pendingWaveNameRender = true;
         updateVisibleSignalValues();
         scheduleLayoutSave();
         return;
     }
+    if (renderWaveNames) renderWaveNameList();
+    applyPendingCanvasSize();
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = STYLE.background;
     ctx.fillRect(0, 0, width, height);

@@ -623,16 +623,18 @@ def _indexed_main() -> int:
             "#0",
             "0!",
             'b00000000 "',
-            "0signal_0",
-            "0signal_1",
-            "0signal_2",
-            "0signal_3",
+        ])
+        vcd_lines.extend(f"0signal_{index}" for index in range(72))
+        vcd_lines.extend([
             "#5",
             "1!",
-            "1signal_0",
+        ])
+        vcd_lines.extend(f"1signal_{index}" for index in range(72))
+        vcd_lines.extend([
             "#10",
             "0!",
         ])
+        vcd_lines.extend(f"0signal_{index}" for index in range(72))
         source.write_text("\n".join(vcd_lines) + "\n", encoding="utf-8")
         with source.open("a", encoding="utf-8") as handle:
             for timestamp in range(21, 5001):
@@ -671,8 +673,13 @@ def _indexed_main() -> int:
         "scope_smoke_requested": False,
         "scope_smoke_checked": False,
         "first_indexed_frame_checked": False,
+        "vertical_scroll_checked": False,
+        "vertical_scroll_settled": False,
         "rapid_pan_requested": False,
         "rapid_pan_checked": False,
+        "resize_requested": False,
+        "resize_checked": False,
+        "resize_settled": False,
         "done": False,
     }
     result = {"ok": False, "message": "timeout"}
@@ -738,7 +745,7 @@ def _indexed_main() -> int:
                     except json.JSONDecodeError:
                         finish(False, "invalid reloaded viewer state: " + repr(payload))
                         return
-                    if page_state.get("waveforms") != 6 or page_state.get("cursorA") != 5:
+                    if page_state.get("waveforms") != 30 or page_state.get("cursorA") != 5:
                         finish(False, "reload did not preserve layout/cursor: " + repr(page_state))
                         return
                     if not page_state.get("indexReady") or not page_state.get("progressHidden"):
@@ -821,7 +828,7 @@ def _indexed_main() -> int:
         if not state["primed"]:
             state["primed"] = True
             view.page().runJavaScript(
-                "window.__veriflowWaveViewer && window.__veriflowWaveViewer.addFirstSignals(6);"
+                "window.__veriflowWaveViewer && window.__veriflowWaveViewer.addFirstSignals(30);"
             )
             QTimer.singleShot(200, inspect)
             return
@@ -864,6 +871,59 @@ def _indexed_main() -> int:
             QTimer.singleShot(0, inspect)
             return
 
+        if use_synthetic_fixture and state["rapid_pan_checked"] and not state["vertical_scroll_checked"]:
+            def checked_vertical(payload) -> None:
+                try:
+                    vertical = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid vertical-scroll state: " + repr(payload))
+                    return
+                QApplication.processEvents()
+                pixels = _grab_waveform_stats(view)
+                if vertical.get("after") != vertical.get("before") or not pixels["ok"]:
+                    finish(False, "uncached vertical scroll mismatched labels/frame: " + repr({"vertical": vertical, "pixels": pixels}))
+                    return
+                state["vertical_scroll_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            def inspect_vertical() -> None:
+                view.page().runJavaScript(
+                    "JSON.stringify({before: window.__veriflowVerticalBefore, after: Number(document.querySelector('.wave-name-row')?.dataset.index || -1)});",
+                    checked_vertical,
+                )
+
+            view.page().runJavaScript(
+                "window.__veriflowVerticalBefore = Number(document.querySelector('.wave-name-row')?.dataset.index || -1);"
+                "const pane = document.getElementById('waveCanvasPane');"
+                "for (let index = 0; index < 4; index += 1) pane.dispatchEvent(new WheelEvent('wheel', {deltaY: 120, altKey: true, bubbles: true, cancelable: true}));",
+                lambda _payload: QTimer.singleShot(0, inspect_vertical),
+            )
+            return
+
+        if use_synthetic_fixture and state["rapid_pan_checked"] and not state["vertical_scroll_settled"]:
+            def checked_vertical_settled(payload) -> None:
+                try:
+                    vertical = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid settled vertical-scroll state: " + repr(payload))
+                    return
+                if vertical.get("after") <= vertical.get("before"):
+                    QTimer.singleShot(50, inspect)
+                    return
+                QApplication.processEvents()
+                pixels = _grab_waveform_stats(view)
+                if not pixels["ok"]:
+                    finish(False, "settled vertical scroll is blank: " + repr(pixels))
+                    return
+                state["vertical_scroll_settled"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify({before: window.__veriflowVerticalBefore, after: Number(document.querySelector('.wave-name-row')?.dataset.index || -1)});",
+                checked_vertical_settled,
+            )
+            return
+
         if not state["rapid_pan_requested"]:
             state["rapid_pan_requested"] = True
 
@@ -889,10 +949,10 @@ def _indexed_main() -> int:
                 QTimer.singleShot(0, inspect_rapid_pan)
 
             view.page().runJavaScript(
-                "const pane = document.getElementById('waveCanvasPane');"
+                "const rapidPane = document.getElementById('waveCanvasPane');"
                 "const before = window.__veriflowWaveViewer.state().startTime;"
                 "for (let index = 0; index < 12; index += 1) {"
-                "pane.dispatchEvent(new WheelEvent('wheel', {"
+                "rapidPane.dispatchEvent(new WheelEvent('wheel', {"
                 "deltaY: -120, ctrlKey: index === 0, bubbles: true, cancelable: true"
                 "}));"
                 "}"
@@ -901,6 +961,93 @@ def _indexed_main() -> int:
             )
             return
         if not state["rapid_pan_checked"]:
+            return
+
+        if use_synthetic_fixture and state["vertical_scroll_settled"] and not state["resize_requested"]:
+            state["resize_requested"] = True
+
+            def begin_resize(payload) -> None:
+                try:
+                    before = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid pre-resize state: " + repr(payload))
+                    return
+                panel.resize(1540, 720)
+
+                def inspect_resize() -> None:
+                    def checked_resize(resize_payload) -> None:
+                        try:
+                            resize = json.loads(resize_payload or "{}")
+                        except json.JSONDecodeError:
+                            finish(False, "invalid immediate resize state: " + repr(resize_payload))
+                            return
+                        if resize.get("clientWidth", 0) <= before.get("clientWidth", 0):
+                            QTimer.singleShot(10, inspect_resize)
+                            return
+                        if resize.get("width") != before.get("width"):
+                            finish(False, "indexed resize replaced the backing store before data arrived: " + repr({"before": before, "after": resize}))
+                            return
+                        if before.get("backingColored", 0) <= 0 or resize.get("backingColored") != before.get("backingColored"):
+                            finish(False, "indexed resize did not preserve the complete backing pixels: " + repr({"before": before, "after": resize}))
+                            return
+                        QApplication.processEvents()
+                        pixels = _grab_waveform_stats(view)
+                        if not pixels["ok"]:
+                            finish(False, "widening resize cleared indexed waveform: " + repr({"before": before, "resize": resize, "pixels": pixels}))
+                            return
+                        state["resize_checked"] = True
+                        QTimer.singleShot(0, inspect)
+
+                    view.page().runJavaScript(
+                        "(() => { const element = document.getElementById('waveCanvas');"
+                        "const data = element.getContext('2d').getImageData(0, 0, element.width, element.height).data;"
+                        "let colored = 0; for (let index = 0; index < data.length; index += 4) {"
+                        "const r = data[index], g = data[index + 1], b = data[index + 2];"
+                        "if (Math.max(r, g, b) > 105 && Math.max(r, g, b) - Math.min(r, g, b) > 42) colored += 1; }"
+                        "return JSON.stringify({width: element.width, clientWidth: element.clientWidth, dpr: window.devicePixelRatio || 1, backingColored: colored}); })();",
+                        checked_resize,
+                    )
+
+                QTimer.singleShot(0, inspect_resize)
+
+            view.page().runJavaScript(
+                "(() => { const element = document.getElementById('waveCanvas');"
+                "const data = element.getContext('2d').getImageData(0, 0, element.width, element.height).data;"
+                "let colored = 0; for (let index = 0; index < data.length; index += 4) {"
+                "const r = data[index], g = data[index + 1], b = data[index + 2];"
+                "if (Math.max(r, g, b) > 105 && Math.max(r, g, b) - Math.min(r, g, b) > 42) colored += 1; }"
+                "return JSON.stringify({width: element.width, clientWidth: element.clientWidth, dpr: window.devicePixelRatio || 1, backingColored: colored}); })();",
+                begin_resize,
+            )
+            return
+
+        if use_synthetic_fixture and state["resize_requested"] and not state["resize_checked"]:
+            return
+
+        if use_synthetic_fixture and state["resize_checked"] and not state["resize_settled"]:
+            def checked_resize_settled(payload) -> None:
+                try:
+                    resize = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid resize state: " + repr(payload))
+                    return
+                expected_width = max(1, int(resize.get("clientWidth", 0) * resize.get("dpr", 1)))
+                if resize.get("width") != expected_width:
+                    QTimer.singleShot(50, inspect)
+                    return
+                QApplication.processEvents()
+                pixels = _grab_waveform_stats(view)
+                if not pixels["ok"]:
+                    finish(False, "settled resize waveform is blank: " + repr(pixels))
+                    return
+                state["resize_settled"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "(() => { const element = document.getElementById('waveCanvas');"
+                "return JSON.stringify({width: element.width, clientWidth: element.clientWidth, dpr: window.devicePixelRatio || 1}); })();",
+                checked_resize_settled,
+            )
             return
 
         if not state["search_requested"]:
