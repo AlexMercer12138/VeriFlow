@@ -485,6 +485,7 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "pendingWindowRequest.descriptor.start === descriptor.start" in viewer
     assert "pendingWindowRequest.descriptor.end === descriptor.end" in viewer
     assert "pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth" in viewer
+    assert "pendingWindowRequest.descriptor.ticksPerPixel === descriptor.ticksPerPixel" in viewer
     assert "needed.every(reference => pendingWindowRequest.references.includes(reference))" in viewer
     assert "references: filteredSignals.map(signal => signal.reference)" in viewer
     assert "new waveCore.RequestTracker" in viewer

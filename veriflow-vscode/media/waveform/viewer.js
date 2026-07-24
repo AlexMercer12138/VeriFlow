@@ -1729,6 +1729,7 @@ function scheduleWindowRequest() {
             && pendingWindowRequest.descriptor.start === descriptor.start
             && pendingWindowRequest.descriptor.end === descriptor.end
             && pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth
+            && pendingWindowRequest.descriptor.ticksPerPixel === descriptor.ticksPerPixel
             && needed.every(reference => pendingWindowRequest.references.includes(reference))
         ) return;
         cancelPendingRequest(pendingWindowRequest);
