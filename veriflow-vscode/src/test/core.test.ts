@@ -665,9 +665,24 @@ function testWaveLibraryWindowing(): void {
         waveCore.calculateVirtualWindow(5, 320, 0, 32, 4),
         { firstRow: 0, renderedCount: 5, totalHeight: 160, overflow: false }
     );
+    assert.deepStrictEqual(
+        waveCore.calculateVirtualWindow(100, 320, 33, 32, 0),
+        { firstRow: 1, renderedCount: 11, totalHeight: 3200, overflow: true }
+    );
+    assert.deepStrictEqual(
+        waveCore.calculateVirtualWindow(100, 320, 33, 32, -1),
+        { firstRow: 1, renderedCount: 11, totalHeight: 3200, overflow: true }
+    );
+    assert.deepStrictEqual(
+        waveCore.calculateVirtualWindow(100, 320, 33, 32, NaN),
+        { firstRow: 1, renderedCount: 11, totalHeight: 3200, overflow: true }
+    );
     assert.strictEqual(waveCore.signalMatchesSelectedScope('top', ''), true);
     assert.strictEqual(waveCore.signalMatchesSelectedScope('top', 'top'), true);
     assert.strictEqual(waveCore.signalMatchesSelectedScope('top.child', 'top'), false);
+    assert.strictEqual(waveCore.signalMatchesSelectedScope('top', false as any), false);
+    assert.strictEqual(waveCore.signalMatchesSelectedScope('top', 0 as any), false);
+    assert.strictEqual(waveCore.signalMatchesSelectedScope(1 as any, '1' as any), false);
 }
 
 function testIndexedWaveCore(): void {

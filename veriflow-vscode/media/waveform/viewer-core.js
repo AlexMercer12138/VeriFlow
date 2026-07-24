@@ -119,15 +119,16 @@
             0,
             Math.min(Math.floor(offset / itemHeight) - extraRows, Math.max(0, rows - 1))
         );
-        const renderedCount = Math.min(
-            Math.max(0, rows - firstRow),
-            Math.ceil(height / itemHeight) + extraRows * 2
+        const endRow = Math.min(
+            rows,
+            Math.ceil((offset + height) / itemHeight) + extraRows
         );
+        const renderedCount = Math.max(0, endRow - firstRow);
         return { firstRow, renderedCount, totalHeight, overflow: totalHeight > height };
     }
 
     function signalMatchesSelectedScope(signalScope, selectedScope) {
-        return !selectedScope || String(signalScope || '') === String(selectedScope);
+        return selectedScope === '' || signalScope === selectedScope;
     }
 
     class WindowCache {
