@@ -170,6 +170,92 @@
         }
     }
 
+    class WaveWindowCache {
+        constructor(capacity = 128) {
+            this.capacity = Math.max(1, Math.trunc(Number(capacity) || 1));
+            this.entries = new Map();
+            this.counter = 0;
+        }
+
+        get size() {
+            return this.entries.size;
+        }
+
+        set(entry) {
+            const normalized = {
+                generation: Number(entry.generation) || 0,
+                reference: String(entry.reference || ''),
+                start: Number(entry.start),
+                end: Number(entry.end),
+                ticksPerPixel: Math.max(Number.EPSILON, Number(entry.ticksPerPixel) || 1),
+                series: entry.series,
+            };
+            const key = [
+                normalized.generation,
+                normalized.reference,
+                normalized.start,
+                normalized.end,
+                normalized.ticksPerPixel,
+                ++this.counter,
+            ].join('|');
+            this.entries.set(key, normalized);
+            while (this.entries.size > this.capacity) {
+                this.entries.delete(this.entries.keys().next().value);
+            }
+        }
+
+        find(query) {
+            const candidates = Array.from(this.entries.entries()).reverse();
+            for (const [key, entry] of candidates) {
+                if (entry.generation !== Number(query.generation)) continue;
+                if (entry.reference !== String(query.reference)) continue;
+                if (entry.start > Number(query.start) || entry.end < Number(query.end)) continue;
+                if (entry.series?.kind === 'summary' && entry.ticksPerPixel > Number(query.ticksPerPixel)) continue;
+                this.entries.delete(key);
+                this.entries.set(key, entry);
+                return entry;
+            }
+            return undefined;
+        }
+
+        clear() {
+            this.entries.clear();
+        }
+    }
+
+    function windowNeedsRefresh(entry, viewport, threshold = 0.25) {
+        if (!entry) return true;
+        const span = Math.max(1, Number(viewport.end) - Number(viewport.start));
+        const margin = span * Math.max(0, Number(threshold) || 0);
+        return Number(viewport.start) - entry.start < margin
+            || entry.end - Number(viewport.end) < margin;
+    }
+
+    class FrameScheduler {
+        constructor(requestFrame) {
+            this.requestFrame = requestFrame;
+            this.pending = false;
+            this.callback = null;
+        }
+
+        schedule(callback) {
+            this.callback = callback;
+            if (this.pending) return;
+            this.pending = true;
+            this.requestFrame(() => {
+                this.pending = false;
+                const next = this.callback;
+                this.callback = null;
+                if (next) next();
+            });
+        }
+
+        cancel() {
+            this.pending = false;
+            this.callback = null;
+        }
+    }
+
     class RequestTracker {
         constructor() {
             this.generation = 0;
@@ -493,6 +579,9 @@
         calculateVirtualWindow,
         signalMatchesSelectedScope,
         WindowCache,
+        WaveWindowCache,
+        windowNeedsRefresh,
+        FrameScheduler,
         RequestTracker,
         decodeWindowPayload,
         prefetchRange,

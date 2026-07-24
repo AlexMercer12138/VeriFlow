@@ -26,6 +26,17 @@ type WaveCore = {
         cancel(requestId: string): void;
         accepts(message: any): boolean;
     };
+    WaveWindowCache: new (capacity?: number) => {
+        readonly size: number;
+        set(entry: any): void;
+        find(query: any): any | undefined;
+        clear(): void;
+    };
+    FrameScheduler: new (requestFrame: (callback: () => void) => unknown) => {
+        schedule(callback: () => void): void;
+        cancel(): void;
+    };
+    windowNeedsRefresh(entry: any, viewport: any, threshold?: number): boolean;
     decodeWindowPayload(payload: any): any;
     prefetchRange(start: number, end: number, minimum: number, maximum: number): {
         start: number;
@@ -747,6 +758,87 @@ function testIndexedWaveCore(): void {
     assert.deepStrictEqual(waveCore.prefetchRange(10, 20, 0, 100), { start: 5, end: 25 });
 }
 
+function testWaveWindowReuseAndFrameScheduling(): void {
+    const cache = new waveCore.WaveWindowCache(2);
+    const raw = {
+        generation: 2,
+        reference: 'clk',
+        start: 0,
+        end: 200,
+        ticksPerPixel: 1,
+        series: { kind: 'raw' },
+    };
+    const summary = {
+        generation: 2,
+        reference: 'data',
+        start: 0,
+        end: 200,
+        ticksPerPixel: 2,
+        series: { kind: 'summary' },
+    };
+    cache.set(raw);
+    cache.set(summary);
+
+    assert.deepStrictEqual(cache.find({
+        generation: 2,
+        reference: 'clk',
+        start: 50,
+        end: 150,
+        ticksPerPixel: 0.25,
+    }), raw);
+    assert.deepStrictEqual(cache.find({
+        generation: 3,
+        reference: 'clk',
+        start: 50,
+        end: 150,
+        ticksPerPixel: 0.25,
+    }), undefined);
+    assert.strictEqual(cache.find({
+        generation: 2,
+        reference: 'data',
+        start: 50,
+        end: 150,
+        ticksPerPixel: 1,
+    }), undefined);
+    assert.deepStrictEqual(cache.find({
+        generation: 2,
+        reference: 'data',
+        start: 50,
+        end: 150,
+        ticksPerPixel: 2,
+    }), summary);
+    assert.strictEqual(cache.size, 2);
+    assert.strictEqual(waveCore.windowNeedsRefresh(raw, { start: 50, end: 150 }), false);
+    assert.strictEqual(waveCore.windowNeedsRefresh(raw, { start: 95, end: 195 }), true);
+    assert.strictEqual(waveCore.windowNeedsRefresh(null, { start: 50, end: 150 }), true);
+    cache.clear();
+    assert.strictEqual(cache.size, 0);
+
+    const lru = new waveCore.WaveWindowCache(2);
+    lru.set(raw);
+    lru.set(summary);
+    lru.find({ generation: 2, reference: 'clk', start: 50, end: 150, ticksPerPixel: 1 });
+    lru.set({ ...raw, reference: 'reset' });
+    assert.ok(lru.find({ generation: 2, reference: 'clk', start: 50, end: 150, ticksPerPixel: 1 }));
+    assert.strictEqual(lru.find({ generation: 2, reference: 'data', start: 50, end: 150, ticksPerPixel: 2 }), undefined);
+
+    const frames: Array<() => void> = [];
+    const paints: number[] = [];
+    const scheduler = new waveCore.FrameScheduler(callback => {
+        frames.push(callback);
+        return frames.length;
+    });
+    scheduler.schedule(() => paints.push(1));
+    scheduler.schedule(() => paints.push(2));
+    assert.strictEqual(frames.length, 1);
+    frames[0]();
+    assert.deepStrictEqual(paints, [2]);
+    scheduler.schedule(() => paints.push(3));
+    scheduler.cancel();
+    frames[1]();
+    assert.deepStrictEqual(paints, [2]);
+}
+
 function testWaveformTransportAdapters(): void {
     const transportModule = require(path.join(
         __dirname,
@@ -865,6 +957,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['wave conditional search', testWaveConditionalSearch],
     ['wave library windowing', testWaveLibraryWindowing],
     ['indexed waveform core', testIndexedWaveCore],
+    ['wave window reuse and frame scheduling', testWaveWindowReuseAndFrameScheduling],
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
 ];
