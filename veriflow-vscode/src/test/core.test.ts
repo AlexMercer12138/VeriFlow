@@ -865,10 +865,38 @@ function testWaveWindowReuseAndFrameScheduling(): void {
         end: 125,
         ticksPerPixel: 1,
     }), cappedRaw);
-    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, undefined), 1);
-    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, Infinity), 1);
-    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 50.5), 1);
-    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 101), 1);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, undefined), 1.5);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, Infinity), 1.5);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 50.5), 1.5);
+    assert.strictEqual(waveCore.effectiveWindowTicksPerPixel(prefetched, 101), 1.5);
+
+    const legacySummary = {
+        ...cappedSummary,
+        reference: 'legacy-summary',
+        ticksPerPixel: waveCore.effectiveWindowTicksPerPixel(prefetched, undefined),
+    };
+    const legacyRaw = {
+        ...legacySummary,
+        reference: 'legacy-raw',
+        series: { kind: 'raw' },
+    };
+    const legacyCache = new waveCore.WaveWindowCache(2);
+    legacyCache.set(legacySummary);
+    legacyCache.set(legacyRaw);
+    assert.strictEqual(legacyCache.find({
+        generation: 2,
+        reference: 'legacy-summary',
+        start: 25,
+        end: 125,
+        ticksPerPixel: 1.25,
+    }), undefined);
+    assert.deepStrictEqual(legacyCache.find({
+        generation: 2,
+        reference: 'legacy-raw',
+        start: 25,
+        end: 125,
+        ticksPerPixel: 1.25,
+    }), legacyRaw);
 
     const frames: Array<() => void> = [];
     const paints: number[] = [];

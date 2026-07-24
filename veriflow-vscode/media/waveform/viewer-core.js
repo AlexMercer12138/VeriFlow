@@ -265,9 +265,15 @@
         }
         const pixelWidth = finiteNumber(responsePixelWidth);
         const span = end - start;
+        if (!Number.isFinite(span)) {
+            throw new TypeError('invalid waveform window descriptor');
+        }
+        const conservativeFallback = span > 0
+            ? Math.max(fallback, span / requestedPixelWidth)
+            : fallback;
         if (pixelWidth === null || !Number.isInteger(pixelWidth) || pixelWidth <= 0
             || pixelWidth > requestedPixelWidth || span <= 0) {
-            return fallback;
+            return conservativeFallback;
         }
         const effective = span / pixelWidth;
         return Number.isFinite(effective) && effective > 0

@@ -1139,7 +1139,10 @@ def _indexed_main() -> int:
                     if (
                         recovered.get("window") is not None
                         or recovered.get("value") is not None
-                        or "Waveform request failed" in recovered.get("status", "")
+                        or any(
+                            text in recovered.get("status", "")
+                            for text in ("Waveform request failed", "Retrying waveform request")
+                        )
                     ):
                         finish(False, "changed request keys did not recover: " + repr(recovered))
                         return
