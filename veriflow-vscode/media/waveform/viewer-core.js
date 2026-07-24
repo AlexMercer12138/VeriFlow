@@ -107,6 +107,29 @@
         };
     }
 
+    function calculateVirtualWindow(totalRows, viewportHeight, scrollTop, rowHeight, overscan) {
+        const rows = Math.max(0, Math.trunc(Number(totalRows) || 0));
+        const height = Math.max(0, Number(viewportHeight) || 0);
+        const itemHeight = Math.max(1, Number(rowHeight) || 1);
+        const extraRows = Math.max(0, Math.trunc(Number(overscan) || 0));
+        const totalHeight = rows * itemHeight;
+        const maxScrollTop = Math.max(0, totalHeight - height);
+        const offset = Math.max(0, Math.min(Number(scrollTop) || 0, maxScrollTop));
+        const firstRow = Math.max(
+            0,
+            Math.min(Math.floor(offset / itemHeight) - extraRows, Math.max(0, rows - 1))
+        );
+        const renderedCount = Math.min(
+            Math.max(0, rows - firstRow),
+            Math.ceil(height / itemHeight) + extraRows * 2
+        );
+        return { firstRow, renderedCount, totalHeight, overflow: totalHeight > height };
+    }
+
+    function signalMatchesSelectedScope(signalScope, selectedScope) {
+        return !selectedScope || String(signalScope || '') === String(selectedScope);
+    }
+
     class WindowCache {
         constructor(capacity = 128) {
             this.capacity = Math.max(1, Math.trunc(Number(capacity) || 1));
@@ -462,6 +485,8 @@
 
     return {
         LAYOUT_VERSION,
+        calculateVirtualWindow,
+        signalMatchesSelectedScope,
         WindowCache,
         RequestTracker,
         decodeWindowPayload,

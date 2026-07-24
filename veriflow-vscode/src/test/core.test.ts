@@ -61,6 +61,19 @@ type WaveCore = {
         mode: string,
         query: string
     ): any;
+    calculateVirtualWindow(
+        totalRows: number,
+        viewportHeight: number,
+        scrollTop: number,
+        rowHeight: number,
+        overscan: number
+    ): {
+        firstRow: number;
+        renderedCount: number;
+        totalHeight: number;
+        overflow: boolean;
+    };
+    signalMatchesSelectedScope(signalScope: string, selectedScope: string): boolean;
 };
 
 const waveCore = require('../../media/waveform/viewer-core.js') as WaveCore;
@@ -643,6 +656,20 @@ function testWaveConditionalSearch(): void {
     assert.strictEqual(waveCore.findSearchMatch([data], 0, 1, 'rising', '').error, 'edge-needs-scalar');
 }
 
+function testWaveLibraryWindowing(): void {
+    assert.deepStrictEqual(
+        waveCore.calculateVirtualWindow(100, 320, 2880, 32, 4),
+        { firstRow: 86, renderedCount: 14, totalHeight: 3200, overflow: true }
+    );
+    assert.deepStrictEqual(
+        waveCore.calculateVirtualWindow(5, 320, 0, 32, 4),
+        { firstRow: 0, renderedCount: 5, totalHeight: 160, overflow: false }
+    );
+    assert.strictEqual(waveCore.signalMatchesSelectedScope('top', ''), true);
+    assert.strictEqual(waveCore.signalMatchesSelectedScope('top', 'top'), true);
+    assert.strictEqual(waveCore.signalMatchesSelectedScope('top.child', 'top'), false);
+}
+
 function testIndexedWaveCore(): void {
     const raw = waveCore.decodeWindowPayload({
         kind: 'raw',
@@ -813,6 +840,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['wave layout validation and matching', testWaveLayoutValidationAndMatching],
     ['wave cursor measurement', testWaveCursorMeasurement],
     ['wave conditional search', testWaveConditionalSearch],
+    ['wave library windowing', testWaveLibraryWindowing],
     ['indexed waveform core', testIndexedWaveCore],
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
