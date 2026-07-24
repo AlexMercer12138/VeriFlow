@@ -115,13 +115,17 @@
         const totalHeight = rows * itemHeight;
         const maxScrollTop = Math.max(0, totalHeight - height);
         const offset = Math.max(0, Math.min(Number(scrollTop) || 0, maxScrollTop));
-        const firstRow = Math.max(
+        const visibleStart = Math.max(
             0,
-            Math.min(Math.floor(offset / itemHeight) - extraRows, Math.max(0, rows - 1))
+            Math.min(Math.floor(offset / itemHeight), rows)
         );
+        const visibleEnd = height === 0
+            ? visibleStart
+            : Math.min(rows, Math.ceil((offset + height) / itemHeight));
+        const firstRow = Math.max(0, visibleStart - extraRows);
         const endRow = Math.min(
             rows,
-            Math.ceil((offset + height) / itemHeight) + extraRows
+            visibleEnd + extraRows
         );
         const renderedCount = Math.max(0, endRow - firstRow);
         return { firstRow, renderedCount, totalHeight, overflow: totalHeight > height };
