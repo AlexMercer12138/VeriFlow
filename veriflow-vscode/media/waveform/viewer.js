@@ -493,11 +493,12 @@ function setIndexLoading(loading, text = 'Preparing waveform', resetProgress = t
     indexOverlay.hidden = !loading;
     indexOverlayText.textContent = text;
     if (loading) {
+        hideContextMenu();
         indexProgress.hidden = false;
         cancelIndex.hidden = false;
-        cancelIndex.disabled = false;
         retryIndex.hidden = true;
         if (resetProgress) {
+            cancelIndex.disabled = false;
             indexProgress.classList.add('indeterminate');
             indexProgressText.textContent = 'Starting index';
             indexProgressTrack.removeAttribute('aria-valuenow');
@@ -658,6 +659,9 @@ function handleIndexFailure(message, cancelled = false) {
     }
     indexReady = false;
     setIndexLoading(true, cancelled ? 'Indexing cancelled' : 'Indexing failed', false);
+    indexProgress.classList.remove('indeterminate');
+    indexProgressTrack.removeAttribute('aria-valuenow');
+    indexProgressFill.style.width = '0%';
     indexProgressText.textContent = cancelled ? 'cancelled' : String(message.message || 'failed');
     cancelIndex.hidden = true;
     retryIndex.hidden = false;
@@ -3091,6 +3095,7 @@ document.addEventListener('keydown', (event) => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) {
         return;
     }
+    if (!indexOverlay.hidden) return;
     let handled = true;
     switch (event.key) {
         case 'Delete':

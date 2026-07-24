@@ -555,6 +555,38 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "new waveCore.RequestTracker" in viewer
 
 
+def test_indexed_waveform_viewer_locks_interactions_during_indexing() -> None:
+    viewer = (
+        Path(__file__).resolve().parents[1]
+        / "veriflow-vscode"
+        / "media"
+        / "waveform"
+        / "viewer.js"
+    ).read_text(encoding="utf-8")
+
+    loading = viewer[
+        viewer.index("function setIndexLoading("):viewer.index("function activateIndexedMetadata(")
+    ]
+    progress = viewer[
+        viewer.index("function handleIndexProgress("):viewer.index("function handleIndexReady(")
+    ]
+    failure = viewer[
+        viewer.index("function handleIndexFailure("):viewer.index("function applyFilter(")
+    ]
+    keyboard = viewer[
+        viewer.index("document.addEventListener('keydown'"):viewer.index("cancelIndex.addEventListener")
+    ]
+
+    assert "hideContextMenu();" in loading
+    assert "if (resetProgress) {\n            cancelIndex.disabled = false;" in loading
+    assert "cancelIndex.disabled = false;" not in progress
+    assert "if (!indexOverlay.hidden) return;" in keyboard
+    assert "indexProgress.classList.remove('indeterminate');" in failure
+    assert "indexProgressTrack.removeAttribute('aria-valuenow');" in failure
+    assert "indexProgressFill.style.width = '0%';" in failure
+    assert "retryIndex.hidden = false;" in failure
+
+
 def test_python_waveform_panel_watches_for_stable_reload() -> None:
     panel = (
         Path(__file__).resolve().parents[1]

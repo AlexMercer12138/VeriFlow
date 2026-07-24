@@ -681,6 +681,7 @@ def _indexed_main() -> int:
         "resize_checked": False,
         "resize_settled": False,
         "overlay_checked": False,
+        "overlay_interaction_checked": False,
         "done": False,
     }
     result = {"ok": False, "message": "timeout"}
@@ -774,6 +775,44 @@ def _indexed_main() -> int:
                 "overlay.hidden = overlayHidden; progress.hidden = progressHidden;"
                 "return JSON.stringify(result); })();",
                 checked_overlay,
+            )
+            return
+        if not state["overlay_interaction_checked"] and not state["javascript_pending"]:
+            state["javascript_pending"] = True
+
+            def checked_overlay_interaction(payload) -> None:
+                state["javascript_pending"] = False
+                try:
+                    interaction = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid indexing interaction state: " + repr(payload))
+                    return
+                if (
+                    interaction.get("menuVisible")
+                    or not interaction.get("cancelStayedDisabled")
+                    or interaction.get("cursorBefore") != interaction.get("cursorAfter")
+                ):
+                    finish(False, "indexing overlay did not lock interactions: " + repr(interaction))
+                    return
+                state["overlay_interaction_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "(() => {"
+                "const menu = document.getElementById('contextMenu');"
+                "const cancel = document.getElementById('cancelIndex');"
+                "menu.style.display = 'block';"
+                "window.dispatchEvent(new MessageEvent('message', {data: {type: 'indexProgress', generation: 1, progress: {phase: 'scan', percent: 25}}}));"
+                "cancel.click();"
+                "window.dispatchEvent(new MessageEvent('message', {data: {type: 'indexProgress', generation: 1, progress: {phase: 'scan', percent: 30}}}));"
+                "const cursorBefore = window.__veriflowWaveViewer.state().cursorA;"
+                "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'End', bubbles: true, cancelable: true}));"
+                "const cursorAfter = window.__veriflowWaveViewer.state().cursorA;"
+                "const result = {menuVisible: menu.style.display !== 'none', cancelStayedDisabled: cancel.disabled, cursorBefore, cursorAfter};"
+                "document.getElementById('indexOverlay').hidden = true;"
+                "document.getElementById('indexProgress').hidden = true;"
+                "return JSON.stringify(result); })();",
+                checked_overlay_interaction,
             )
             return
         if state["reload_requested"]:
