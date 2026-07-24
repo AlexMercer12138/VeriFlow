@@ -36,7 +36,7 @@ type WaveCore = {
         schedule(callback: () => void): void;
         cancel(): void;
     };
-    windowNeedsRefresh(entry: any, viewport: any, threshold?: number): boolean;
+    windowNeedsRefresh(entry: any, viewport: any, threshold?: number, bounds?: any): boolean;
     decodeWindowPayload(payload: any): any;
     prefetchRange(start: number, end: number, minimum: number, maximum: number): {
         start: number;
@@ -839,6 +839,85 @@ function testWaveWindowReuseAndFrameScheduling(): void {
     assert.deepStrictEqual(paints, [2]);
 }
 
+function testWaveWindowHardening(): void {
+    const raw = {
+        generation: 2,
+        reference: 'clk',
+        start: 0,
+        end: 200,
+        ticksPerPixel: 1,
+        series: { kind: 'raw' },
+    };
+    const cache = new waveCore.WaveWindowCache(2);
+    const unrelated = { ...raw, reference: 'reset' };
+    const replacement = { ...raw, series: { kind: 'raw', replacement: true } };
+    cache.set(unrelated);
+    cache.set(raw);
+    cache.set(replacement);
+    assert.strictEqual(cache.size, 2);
+    assert.deepStrictEqual(cache.find({ generation: 2, reference: 'reset', start: 0, end: 200, ticksPerPixel: 1 }), unrelated);
+    assert.deepStrictEqual(cache.find({ generation: 2, reference: 'clk', start: 0, end: 200, ticksPerPixel: 1 }), replacement);
+
+    assert.throws(() => cache.set({ ...raw, start: NaN }), TypeError);
+    assert.throws(() => cache.set({ ...raw, generation: Infinity }), TypeError);
+    assert.throws(() => cache.set({ ...raw, end: Infinity }), TypeError);
+    assert.throws(() => cache.set({ ...raw, start: 201, end: 200 }), TypeError);
+    assert.throws(() => cache.set({ ...raw, ticksPerPixel: 0 }), TypeError);
+    assert.throws(() => cache.set({ ...raw, ticksPerPixel: Infinity }), TypeError);
+    assert.strictEqual(cache.find({ ...raw, generation: NaN }), undefined);
+    assert.strictEqual(cache.find({ ...raw, start: Infinity }), undefined);
+    assert.strictEqual(cache.find({ ...raw, start: 201, end: 200 }), undefined);
+    assert.strictEqual(cache.find({ ...raw, ticksPerPixel: 0 }), undefined);
+    assert.strictEqual(cache.find({ ...raw, ticksPerPixel: Infinity }), undefined);
+
+    assert.strictEqual(waveCore.windowNeedsRefresh(
+        { start: 0, end: 125 }, { start: 0, end: 100 }, 0.25, { start: 0, end: 1000 }
+    ), false);
+    assert.strictEqual(waveCore.windowNeedsRefresh(
+        { start: 875, end: 1000 }, { start: 900, end: 1000 }, 0.25, { start: 0, end: 1000 }
+    ), false);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 75, end: 225 }, { start: 100, end: 200 }), false);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 100, end: 200 }, { start: 100, end: 200 }, Infinity), true);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 100, end: 200 }, { start: 100, end: 200 }, -1), false);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 0, end: Infinity }, { start: 0, end: 100 }), true);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 100, end: 0 }, { start: 0, end: 100 }), true);
+    assert.strictEqual(waveCore.windowNeedsRefresh({ start: 0, end: 100 }, { start: NaN, end: 100 }), true);
+    assert.strictEqual(waveCore.windowNeedsRefresh(
+        { start: 0, end: 100 }, { start: 0, end: 100 }, 0.25, { start: 100, end: 0 }
+    ), true);
+
+    const frames: Array<() => void> = [];
+    const paints: string[] = [];
+    const scheduler = new waveCore.FrameScheduler(callback => {
+        frames.push(callback);
+        return frames.length;
+    });
+    scheduler.schedule(() => paints.push('A'));
+    scheduler.cancel();
+    scheduler.schedule(() => paints.push('B'));
+    assert.strictEqual(frames.length, 2);
+    frames[0]();
+    assert.deepStrictEqual([...paints], []);
+    frames[1]();
+    assert.deepStrictEqual([...paints], ['B']);
+
+    const retryFrames: Array<() => void> = [];
+    let throws = true;
+    const retryScheduler = new waveCore.FrameScheduler(callback => {
+        if (throws) {
+            throws = false;
+            throw new Error('request frame failed');
+        }
+        retryFrames.push(callback);
+        return retryFrames.length;
+    });
+    assert.throws(() => retryScheduler.schedule(() => paints.push('failed')), /request frame failed/);
+    retryScheduler.schedule(() => paints.push('retry'));
+    assert.strictEqual(retryFrames.length, 1);
+    retryFrames[0]();
+    assert.deepStrictEqual([...paints], ['B', 'retry']);
+}
+
 function testWaveformTransportAdapters(): void {
     const transportModule = require(path.join(
         __dirname,
@@ -958,6 +1037,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['wave library windowing', testWaveLibraryWindowing],
     ['indexed waveform core', testIndexedWaveCore],
     ['wave window reuse and frame scheduling', testWaveWindowReuseAndFrameScheduling],
+    ['wave window hardening', testWaveWindowHardening],
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
 ];

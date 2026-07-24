@@ -170,11 +170,48 @@
         }
     }
 
+    function finiteNumber(value) {
+        try {
+            const normalized = Number(value);
+            return Number.isFinite(normalized) ? normalized : null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function normalizeWindowDescriptor(value) {
+        if (!value || typeof value !== 'object') return null;
+        const generation = finiteNumber(value.generation);
+        const start = finiteNumber(value.start);
+        const end = finiteNumber(value.end);
+        const ticksPerPixel = finiteNumber(value.ticksPerPixel);
+        if (generation === null || start === null || end === null || ticksPerPixel === null
+            || start > end || ticksPerPixel <= 0) {
+            return null;
+        }
+        let reference;
+        try {
+            reference = String(value.reference || '');
+        } catch (_error) {
+            return null;
+        }
+        return { generation, reference, start, end, ticksPerPixel, series: value.series };
+    }
+
+    function windowCacheKey(entry) {
+        return JSON.stringify([
+            entry.generation,
+            entry.reference,
+            entry.start,
+            entry.end,
+            entry.ticksPerPixel,
+        ]);
+    }
+
     class WaveWindowCache {
         constructor(capacity = 128) {
             this.capacity = Math.max(1, Math.trunc(Number(capacity) || 1));
             this.entries = new Map();
-            this.counter = 0;
         }
 
         get size() {
@@ -182,22 +219,10 @@
         }
 
         set(entry) {
-            const normalized = {
-                generation: Number(entry.generation) || 0,
-                reference: String(entry.reference || ''),
-                start: Number(entry.start),
-                end: Number(entry.end),
-                ticksPerPixel: Math.max(Number.EPSILON, Number(entry.ticksPerPixel) || 1),
-                series: entry.series,
-            };
-            const key = [
-                normalized.generation,
-                normalized.reference,
-                normalized.start,
-                normalized.end,
-                normalized.ticksPerPixel,
-                ++this.counter,
-            ].join('|');
+            const normalized = normalizeWindowDescriptor(entry);
+            if (!normalized) throw new TypeError('invalid waveform window entry');
+            const key = windowCacheKey(normalized);
+            this.entries.delete(key);
             this.entries.set(key, normalized);
             while (this.entries.size > this.capacity) {
                 this.entries.delete(this.entries.keys().next().value);
@@ -205,12 +230,14 @@
         }
 
         find(query) {
+            const normalized = normalizeWindowDescriptor(query);
+            if (!normalized) return undefined;
             const candidates = Array.from(this.entries.entries()).reverse();
             for (const [key, entry] of candidates) {
-                if (entry.generation !== Number(query.generation)) continue;
-                if (entry.reference !== String(query.reference)) continue;
-                if (entry.start > Number(query.start) || entry.end < Number(query.end)) continue;
-                if (entry.series?.kind === 'summary' && entry.ticksPerPixel > Number(query.ticksPerPixel)) continue;
+                if (entry.generation !== normalized.generation) continue;
+                if (entry.reference !== normalized.reference) continue;
+                if (entry.start > normalized.start || entry.end < normalized.end) continue;
+                if (entry.series?.kind === 'summary' && entry.ticksPerPixel > normalized.ticksPerPixel) continue;
                 this.entries.delete(key);
                 this.entries.set(key, entry);
                 return entry;
@@ -223,12 +250,37 @@
         }
     }
 
-    function windowNeedsRefresh(entry, viewport, threshold = 0.25) {
-        if (!entry) return true;
-        const span = Math.max(1, Number(viewport.end) - Number(viewport.start));
-        const margin = span * Math.max(0, Number(threshold) || 0);
-        return Number(viewport.start) - entry.start < margin
-            || entry.end - Number(viewport.end) < margin;
+    function normalizeRange(value) {
+        if (!value || typeof value !== 'object') return null;
+        const start = finiteNumber(value.start);
+        const end = finiteNumber(value.end);
+        if (start === null || end === null || start > end) return null;
+        return { start, end };
+    }
+
+    function windowNeedsRefresh(entry, viewport, threshold = 0.25, bounds) {
+        const windowRange = normalizeRange(entry);
+        const viewportRange = normalizeRange(viewport);
+        if (!windowRange || !viewportRange) return true;
+        const span = viewportRange.end - viewportRange.start;
+        if (!Number.isFinite(span)) return true;
+        // Invalid thresholds use the default margin; negative thresholds disable it.
+        const normalizedThreshold = finiteNumber(threshold);
+        const margin = span * Math.max(0, normalizedThreshold === null ? 0.25 : normalizedThreshold);
+        if (!Number.isFinite(margin)) return true;
+        let minimum = -Infinity;
+        let maximum = Infinity;
+        if (bounds !== undefined) {
+            const rangeBounds = normalizeRange(bounds);
+            if (!rangeBounds || viewportRange.start < rangeBounds.start || viewportRange.end > rangeBounds.end) {
+                return true;
+            }
+            minimum = rangeBounds.start;
+            maximum = rangeBounds.end;
+        }
+        const requiredStart = Math.max(minimum, viewportRange.start - margin);
+        const requiredEnd = Math.min(maximum, viewportRange.end + margin);
+        return windowRange.start > requiredStart || windowRange.end < requiredEnd;
     }
 
     class FrameScheduler {
@@ -236,21 +288,33 @@
             this.requestFrame = requestFrame;
             this.pending = false;
             this.callback = null;
+            this.token = 0;
         }
 
         schedule(callback) {
             this.callback = callback;
             if (this.pending) return;
             this.pending = true;
-            this.requestFrame(() => {
-                this.pending = false;
-                const next = this.callback;
-                this.callback = null;
-                if (next) next();
-            });
+            const token = this.token;
+            try {
+                this.requestFrame(() => {
+                    if (token !== this.token) return;
+                    this.pending = false;
+                    const next = this.callback;
+                    this.callback = null;
+                    if (next) next();
+                });
+            } catch (error) {
+                if (token === this.token) {
+                    this.pending = false;
+                    this.callback = null;
+                }
+                throw error;
+            }
         }
 
         cancel() {
+            this.token += 1;
             this.pending = false;
             this.callback = null;
         }
