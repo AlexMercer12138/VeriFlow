@@ -489,12 +489,23 @@ function setData(fileName, data, messageLayout = null) {
     }
 }
 
-function setIndexLoading(loading, text = 'Preparing waveform') {
+function setIndexLoading(loading, text = 'Preparing waveform', resetProgress = true) {
     indexOverlay.hidden = !loading;
     indexOverlayText.textContent = text;
     if (loading) {
         indexProgress.hidden = false;
         cancelIndex.hidden = false;
+        cancelIndex.disabled = false;
+        retryIndex.hidden = true;
+        if (resetProgress) {
+            indexProgress.classList.add('indeterminate');
+            indexProgressText.textContent = 'Starting index';
+            indexProgressTrack.removeAttribute('aria-valuenow');
+            indexProgressFill.style.width = '35%';
+        }
+    } else {
+        indexProgress.hidden = true;
+        cancelIndex.hidden = true;
         retryIndex.hidden = true;
     }
 }
@@ -526,10 +537,8 @@ function setIndexedMetadata(message) {
     if (indexedMode && indexReady && generation > currentGeneration) {
         loadingGeneration = generation;
         pendingReloadMetadata = message;
-        indexOverlay.hidden = true;
-        indexProgress.hidden = false;
-        cancelIndex.hidden = false;
-        retryIndex.hidden = true;
+        setIndexLoading(true, 'Reloading waveform');
+        updateToolbarState();
         return;
     }
     activateIndexedMetadata(message);
@@ -583,17 +592,15 @@ function handleIndexProgress(message) {
     loadingGeneration = generation;
     const progress = message.progress || {};
     const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-    indexProgress.hidden = false;
-    cancelIndex.hidden = false;
-    retryIndex.hidden = true;
+    indexProgress.classList.remove('indeterminate');
     indexProgressText.textContent = progressText(progress);
     indexProgressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
     indexProgressFill.style.width = percent + '%';
-    if (!indexReady) {
-        setIndexLoading(true, 'Indexing waveform');
-    } else if (generation > currentGeneration) {
-        indexOverlay.hidden = true;
-    }
+    setIndexLoading(
+        true,
+        generation > currentGeneration ? 'Reloading waveform' : 'Indexing waveform',
+        false
+    );
 }
 
 function handleIndexReady(message) {
@@ -634,9 +641,7 @@ function handleIndexReady(message) {
     }
     indexReady = true;
     loadingGeneration = currentGeneration;
-    indexOverlay.hidden = true;
-    indexProgress.hidden = true;
-    retryIndex.hidden = true;
+    setIndexLoading(false);
     updateToolbarState();
     setStatus('Waveform index ready.');
     render();
@@ -647,15 +652,12 @@ function handleIndexFailure(message, cancelled = false) {
     if (indexReady) {
         pendingReloadMetadata = null;
         loadingGeneration = currentGeneration;
-        indexOverlay.hidden = true;
-        indexProgress.hidden = true;
-        cancelIndex.hidden = true;
-        retryIndex.hidden = true;
+        setIndexLoading(false);
         setStatus(cancelled ? 'Waveform reload cancelled.' : 'Waveform reload failed: ' + String(message.message || 'unknown error'));
         return;
     }
     indexReady = false;
-    setIndexLoading(true, cancelled ? 'Indexing cancelled' : 'Indexing failed');
+    setIndexLoading(true, cancelled ? 'Indexing cancelled' : 'Indexing failed', false);
     indexProgressText.textContent = cancelled ? 'cancelled' : String(message.message || 'failed');
     cancelIndex.hidden = true;
     retryIndex.hidden = false;
@@ -3169,9 +3171,7 @@ retryIndex.addEventListener('click', () => {
         type: 'retryLoad',
         generation: loadingGeneration || currentGeneration,
     });
-    retryIndex.hidden = true;
-    cancelIndex.hidden = false;
-    cancelIndex.disabled = false;
+    setIndexLoading(true, 'Indexing waveform');
     indexProgressText.textContent = 'retrying';
 });
 

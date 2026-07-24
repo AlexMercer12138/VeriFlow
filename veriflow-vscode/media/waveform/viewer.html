@@ -64,8 +64,15 @@
                 <canvas id="waveCanvas"></canvas>
                 <div class="selection-box" id="selectionBox"></div>
                 <div class="empty" id="emptyState">Open a VCD file to preview waveforms.</div>
-                <div class="index-overlay" id="indexOverlay" hidden aria-live="polite">
+            </div>
+            <div class="index-overlay" id="indexOverlay" hidden aria-live="polite">
+                <div class="index-overlay-content">
                     <div class="index-overlay-text" id="indexOverlayText">Preparing waveform</div>
+                    <div class="index-progress indeterminate" id="indexProgress">
+                        <span id="indexProgressText">Starting index</span>
+                        <div class="index-progress-track" role="progressbar" aria-label="Waveform indexing progress" aria-valuemin="0" aria-valuemax="100"><div class="index-progress-fill" id="indexProgressFill"></div></div>
+                        <div class="index-progress-actions"><button class="status-icon-button" id="cancelIndex" title="Cancel waveform indexing" aria-label="Cancel waveform indexing">&#x2715;</button><button class="status-command" id="retryIndex" hidden>Retry</button></div>
+                    </div>
                 </div>
             </div>
         </main>
@@ -73,14 +80,6 @@
     <div class="status">
         <div class="status-primary">
             <div id="statusText">Ready</div>
-            <div class="index-progress" id="indexProgress" hidden>
-                <span id="indexProgressText"></span>
-                <div class="index-progress-track" role="progressbar" aria-label="Waveform indexing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                    <div class="index-progress-fill" id="indexProgressFill"></div>
-                </div>
-                <button class="status-icon-button" id="cancelIndex" title="Cancel waveform indexing" aria-label="Cancel waveform indexing">&#x2715;</button>
-                <button class="status-command" id="retryIndex" hidden>Retry</button>
-            </div>
         </div>
         <div id="cursorMeasureText">A: - | B: - | Delta: - | Frequency: -</div>
         <div id="rangeText">Range: -</div>

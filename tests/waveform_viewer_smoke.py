@@ -680,6 +680,7 @@ def _indexed_main() -> int:
         "resize_requested": False,
         "resize_checked": False,
         "resize_settled": False,
+        "overlay_checked": False,
         "done": False,
     }
     result = {"ok": False, "message": "timeout"}
@@ -727,6 +728,53 @@ def _indexed_main() -> int:
         ]
         if not ready_messages:
             QTimer.singleShot(100, inspect)
+            return
+        if not state["overlay_checked"] and not state["javascript_pending"]:
+            state["javascript_pending"] = True
+
+            def checked_overlay(payload) -> None:
+                state["javascript_pending"] = False
+                try:
+                    overlay = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid indexing overlay state: " + repr(payload))
+                    return
+                if (
+                    max(
+                        abs(overlay.get("overlayLeft", 0) - overlay.get("waveLeft", 0)),
+                        abs(overlay.get("overlayTop", 0) - overlay.get("waveTop", 0)),
+                        abs(overlay.get("overlayWidth", 0) - overlay.get("waveWidth", 0)),
+                        abs(overlay.get("overlayHeight", 0) - overlay.get("waveHeight", 0)),
+                    ) > 1
+                    or overlay.get("progressHeight", 0) <= 0
+                    or overlay.get("backgroundAlpha", 0) < 1
+                ):
+                    finish(False, "indexing overlay does not cover waveform workspace: " + repr(overlay))
+                    return
+                state["overlay_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "(() => {"
+                "const overlay = document.getElementById('indexOverlay');"
+                "const progress = document.getElementById('indexProgress');"
+                "const waveWrap = document.getElementById('waveWrap');"
+                "const overlayHidden = overlay.hidden; const progressHidden = progress.hidden;"
+                "overlay.hidden = false; progress.hidden = false;"
+                "const overlayRect = overlay.getBoundingClientRect();"
+                "const waveRect = waveWrap.getBoundingClientRect();"
+                "const background = getComputedStyle(overlay).backgroundColor;"
+                "const alphaMatch = background.match(/rgba?\\((?:[^,]+,){3}\\s*([0-9.]+)\\)/);"
+                "const backgroundAlpha = alphaMatch ? Number(alphaMatch[1]) : 1;"
+                "const result = {overlayLeft: overlayRect.left, overlayTop: overlayRect.top, "
+                "overlayWidth: overlayRect.width, overlayHeight: overlayRect.height, "
+                "waveLeft: waveRect.left, waveTop: waveRect.top, waveWidth: waveRect.width, "
+                "waveHeight: waveRect.height, progressHeight: progress.getBoundingClientRect().height, "
+                "backgroundAlpha};"
+                "overlay.hidden = overlayHidden; progress.hidden = progressHidden;"
+                "return JSON.stringify(result); })();",
+                checked_overlay,
+            )
             return
         if state["reload_requested"]:
             if len(ready_messages) < 2:

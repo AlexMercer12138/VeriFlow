@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -432,7 +433,7 @@ def test_python_waveform_viewer_builds_empty_html() -> None:
     assert 'id="retryIndex"' in html
 
 
-def test_waveform_progress_controls_have_stable_layout() -> None:
+def test_waveform_progress_controls_cover_waveform_workspace() -> None:
     root = Path(__file__).resolve().parents[1]
     body = (root / "veriflow-vscode" / "media" / "waveform" / "viewer.html").read_text(
         encoding="utf-8"
@@ -441,12 +442,58 @@ def test_waveform_progress_controls_have_stable_layout() -> None:
         encoding="utf-8"
     )
 
-    assert 'id="indexOverlay"' in body
-    assert 'role="progressbar"' in body
-    assert 'aria-label="Cancel waveform indexing"' in body
-    assert 'id="retryIndex"' in body
-    assert ".index-progress" in css
-    assert "height: 18px" in css
+    class ViewerMarkup(HTMLParser):
+        VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[dict] = []
+            self.by_id: dict[str, dict] = {}
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            node = {"tag": tag, "attrs": dict(attrs), "children": [], "parent": None}
+            if self.stack:
+                node["parent"] = self.stack[-1]
+                self.stack[-1]["children"].append(node)
+            if node["attrs"].get("id"):
+                self.by_id[node["attrs"]["id"]] = node
+            if tag not in self.VOID_TAGS:
+                self.stack.append(node)
+
+        def handle_endtag(self, tag: str) -> None:
+            if self.stack and self.stack[-1]["tag"] == tag:
+                self.stack.pop()
+
+    markup = ViewerMarkup()
+    markup.feed(body)
+    overlay = markup.by_id["indexOverlay"]
+    wave_wrap = markup.by_id["waveWrap"]
+
+    assert wave_wrap["tag"] == "main"
+    assert "wave-wrap" in wave_wrap["attrs"].get("class", "").split()
+    assert overlay["parent"] is wave_wrap
+    assert wave_wrap["children"][-1] is overlay
+
+    def is_descendant(node: dict, ancestor: dict) -> bool:
+        while node.get("parent") is not None:
+            node = node["parent"]
+            if node is ancestor:
+                return True
+        return False
+
+    progress = markup.by_id["indexProgress"]
+    progress_track = next(
+        child for child in progress["children"] if child["attrs"].get("role") == "progressbar"
+    )
+    assert is_descendant(progress, overlay)
+    assert progress_track["attrs"].get("aria-label") == "Waveform indexing progress"
+    assert is_descendant(markup.by_id["cancelIndex"], overlay)
+    assert markup.by_id["cancelIndex"]["attrs"].get("aria-label") == "Cancel waveform indexing"
+    assert is_descendant(markup.by_id["retryIndex"], overlay)
+    assert not is_descendant(progress, markup.by_id["statusText"]["parent"])
+    assert ".index-overlay-content" in css
+    assert ".index-progress.indeterminate" in css
+    assert "background: var(--vscode-editor-background, #111318);" in css
 
 
 def test_indexed_waveform_viewer_uses_async_protocol() -> None:
