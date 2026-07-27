@@ -532,7 +532,9 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "waveCore.calculateVirtualWindow(" in viewer
     assert "waveCore.signalMatchesSelectedScope(signal.scope, selectedScope)" in viewer
     assert "windowCache.find({" in viewer
-    assert "waveCore.windowNeedsRefresh(entry, viewport, 0.25, {" in viewer
+    assert "const cacheMargin = descriptor.start === viewport.start && descriptor.end === viewport.end" in viewer
+    assert "? 0\n            : 0.25;" in viewer
+    assert "waveCore.windowNeedsRefresh(entry, viewport, cacheMargin, {" in viewer
     assert "start: Number(vcd.startTime) || 0" in viewer
     assert "end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)" in viewer
     assert "new waveCore.FrameScheduler(callback => requestAnimationFrame(callback))" in viewer
@@ -550,7 +552,13 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     assert "pendingWindowRequest.descriptor.end === descriptor.end" in viewer
     assert "pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth" in viewer
     assert "pendingWindowRequest.descriptor.ticksPerPixel === descriptor.ticksPerPixel" in viewer
-    assert "needed.every(reference => pendingWindowRequest.references.includes(reference))" in viewer
+    assert "const batch = needed.slice(0, maxReferences);" in viewer
+    assert "batch.every(reference => pendingWindowRequest.references.includes(reference))" in viewer
+    assert "pendingWindowRequest.keyReferences.length === needed.length" in viewer
+    assert "needed.every(reference => pendingWindowRequest.keyReferences.includes(reference))" in viewer
+    assert "sendWindowRequest(descriptor, batch, 0, needed);" in viewer
+    assert "pendingWindowRequest = { requestId, descriptor, references, keyReferences, key, retryCount };" in viewer
+    assert "pending.keyReferences || pending.references" in viewer
     assert "references: filteredSignals.map(signal => signal.reference)" in viewer
     assert "new waveCore.RequestTracker" in viewer
 

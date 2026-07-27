@@ -582,7 +582,8 @@ def _indexed_main() -> int:
 
     _configure_qt_webengine()
 
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QPoint, QPointF, Qt, QTimer
+    from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
     from src.infrastructure.waveform_cache import WaveformCache
@@ -596,12 +597,14 @@ def _indexed_main() -> int:
         def __init__(self, **options) -> None:
             super().__init__(**options)
             self.window_request_ids: list[str] = []
+            self.window_requests: list[dict] = []
             self.value_request_ids: list[str] = []
             self.search_request_ids: list[str] = []
             self.hold_window_requests = False
             self.hold_value_requests = False
 
         def _window_request(self, message: dict) -> None:
+            self.window_requests.append(dict(message))
             self.window_request_ids.append(str(message["requestId"]))
             if len(self.window_request_ids) == 1:
                 raise RuntimeError("injected window request failure")
@@ -692,6 +695,9 @@ def _indexed_main() -> int:
     bridge.message.connect(lambda payload: messages.append(json.loads(payload)))
     state = {
         "primed": False,
+        "prime_window_request_baseline": 0,
+        "prime_batch_started_at": 0.0,
+        "prime_batch_checked": False,
         "search_requested": False,
         "javascript_pending": False,
         "reload_requested": False,
@@ -701,6 +707,19 @@ def _indexed_main() -> int:
         "initial_pixels": None,
         "scope_smoke_requested": False,
         "scope_smoke_checked": False,
+        "native_zoom_requested": False,
+        "native_zoom_checked": False,
+        "native_zoom_range": 0,
+        "native_add_requested": False,
+        "native_add_checked": False,
+        "native_add_before": 0,
+        "native_add_index": -1,
+        "native_interactions_checked": False,
+        "native_window_request_baseline": 0,
+        "wide_resize_requested": False,
+        "wide_resize_checked": False,
+        "wide_resize_restored": False,
+        "wide_window_request_baseline": 0,
         "first_indexed_frame_checked": False,
         "request_error_wiring_started": False,
         "request_error_wiring_checked": False,
@@ -945,8 +964,209 @@ def _indexed_main() -> int:
             return
         if use_synthetic_fixture and not state["scope_smoke_checked"]:
             return
+        if use_synthetic_fixture and not state["native_zoom_requested"]:
+            state["native_zoom_requested"] = True
+
+            def native_zoom(payload) -> None:
+                try:
+                    target = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid native zoom target: " + repr(payload))
+                    return
+                state["native_zoom_range"] = int(target.get("endTime", 0)) - int(target.get("startTime", 0))
+                target_widget = view.focusProxy() or view
+                view_point = QPoint(int(target.get("x", 0)), int(target.get("y", 0)))
+                target_point = target_widget.mapFrom(view, view_point)
+                point = QPointF(target_point)
+                event = QWheelEvent(
+                    point,
+                    target_widget.mapToGlobal(target_point).toPointF(),
+                    QPoint(0, 0),
+                    QPoint(0, 120),
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.ControlModifier,
+                    Qt.ScrollPhase.NoScrollPhase,
+                    False,
+                )
+                QApplication.sendEvent(target_widget, event)
+                QTimer.singleShot(250, inspect)
+
+            view.page().runJavaScript(
+                "(() => { const canvas = document.getElementById('waveCanvas');"
+                "window.__veriflowNativeWheelEvents = 0;"
+                "document.getElementById('waveCanvasPane').addEventListener('wheel', (event) => {"
+                "window.__veriflowNativeWheelEvents += 1;"
+                "window.__veriflowNativeWheel = {ctrlKey: event.ctrlKey, deltaY: event.deltaY};"
+                "}, {capture: true});"
+                "const rect = canvas.getBoundingClientRect(); const state = window.__veriflowWaveViewer.state();"
+                "return JSON.stringify({x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, "
+                "startTime: state.startTime, endTime: state.endTime}); })();",
+                native_zoom,
+            )
+            return
+        if use_synthetic_fixture and not state["native_zoom_checked"]:
+            state["javascript_pending"] = True
+
+            def checked_native_zoom(payload) -> None:
+                state["javascript_pending"] = False
+                try:
+                    current = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid native zoom result: " + repr(payload))
+                    return
+                current_range = int(current.get("endTime", 0)) - int(current.get("startTime", 0))
+                if current_range >= state["native_zoom_range"]:
+                    finish(False, "native Ctrl+wheel did not zoom waveform: " + repr(current))
+                    return
+                state["native_zoom_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify(Object.assign({}, window.__veriflowWaveViewer.state(), {nativeEvents: window.__veriflowNativeWheelEvents || 0, nativeWheel: window.__veriflowNativeWheel || null}));",
+                checked_native_zoom,
+            )
+            return
+        if use_synthetic_fixture and not state["native_add_requested"]:
+            state["native_add_requested"] = True
+
+            def checked_native_add(payload) -> None:
+                try:
+                    current = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid library double-click result: " + repr(payload))
+                    return
+                if not current.get("connectedAfterFirstClick") or current.get("waveforms", 0) <= current.get("before", 0):
+                    finish(False, "library click replaced the double-click target: " + repr(current))
+                    return
+                state["native_add_before"] = int(current.get("before", 0))
+                state["native_add_index"] = int(current.get("targetIndex", -1))
+                state["native_add_checked"] = True
+                state["native_window_request_baseline"] = len(worker.window_request_ids)
+                QTimer.singleShot(750, inspect)
+
+            view.page().runJavaScript(
+                "(() => { const row = document.querySelector('.signal-row');"
+                "const targetIndex = Number(row.dataset.index);"
+                "const before = window.__veriflowWaveViewer.state().waveforms;"
+                "row.dispatchEvent(new MouseEvent('click', {bubbles: true, detail: 1}));"
+                "const connectedAfterFirstClick = row.isConnected;"
+                "if (connectedAfterFirstClick) {"
+                "row.dispatchEvent(new MouseEvent('click', {bubbles: true, detail: 2}));"
+                "row.dispatchEvent(new MouseEvent('dblclick', {bubbles: true, detail: 2}));"
+                "}"
+                "return JSON.stringify({before, targetIndex, connectedAfterFirstClick, "
+                "waveforms: window.__veriflowWaveViewer.state().waveforms}); })();",
+                checked_native_add,
+            )
+            return
+        if use_synthetic_fixture and not state["native_add_checked"]:
+            return
+        if use_synthetic_fixture and not state["native_interactions_checked"]:
+            state["javascript_pending"] = True
+
+            def checked_native_interactions(payload) -> None:
+                state["javascript_pending"] = False
+                try:
+                    current = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid native interaction request state: " + repr(payload))
+                    return
+                if not state["wide_resize_requested"]:
+                    additional_requests = len(worker.window_request_ids) - state["native_window_request_baseline"]
+                    if additional_requests > 6 or current.get("window") is not None:
+                        finish(
+                            False,
+                            "native zoom/add requests did not settle: "
+                            + repr({"additionalRequests": additional_requests, "requests": current}),
+                        )
+                        return
+                    state["wide_resize_requested"] = True
+                    state["wide_window_request_baseline"] = len(worker.window_request_ids)
+
+                    def checked_wide_resize(width) -> None:
+                        if int(width or 0) < 9000:
+                            finish(False, "wide waveform canvas did not resize: " + repr(width))
+                            return
+                        QTimer.singleShot(750, inspect)
+
+                    view.page().runJavaScript(
+                        "(() => { const pane = document.getElementById('waveCanvasPane');"
+                        "pane.__smokeOriginalRect = pane.getBoundingClientRect.bind(pane);"
+                        "pane.getBoundingClientRect = () => { const rect = pane.__smokeOriginalRect();"
+                        "return Object.assign({}, rect, {width:9000, right:rect.left + 9000}); };"
+                        "resizeCanvas(); return document.getElementById('waveCanvas').clientWidth; })();",
+                        checked_wide_resize,
+                    )
+                    return
+
+                wide_requests = len(worker.window_request_ids) - state["wide_window_request_baseline"]
+                if not state["wide_resize_checked"]:
+                    if wide_requests > 6 or current.get("window") is not None:
+                        finish(
+                            False,
+                            "wide waveform requests did not settle: "
+                            + repr({"additionalRequests": wide_requests, "requests": current}),
+                        )
+                        return
+                    state["wide_resize_checked"] = True
+                    state["wide_window_request_baseline"] = len(worker.window_request_ids)
+                    view.page().runJavaScript(
+                        "(() => { const pane = document.getElementById('waveCanvasPane');"
+                        "pane.getBoundingClientRect = pane.__smokeOriginalRect;"
+                        "delete pane.__smokeOriginalRect; resizeCanvas(); })();",
+                        lambda _result: QTimer.singleShot(750, inspect),
+                    )
+                    return
+
+                if not state["wide_resize_restored"]:
+                    if wide_requests > 6 or current.get("window") is not None:
+                        finish(
+                            False,
+                            "restored waveform requests did not settle: "
+                            + repr({"additionalRequests": wide_requests, "requests": current}),
+                        )
+                        return
+                    state["wide_resize_restored"] = True
+
+                if current.get("window") is not None:
+                    finish(
+                        False,
+                        "native interaction request remained pending: " + repr(current),
+                    )
+                    return
+
+                def checked_cleanup(cleanup_payload) -> None:
+                    try:
+                        cleanup = json.loads(cleanup_payload or "{}")
+                    except json.JSONDecodeError:
+                        finish(False, "invalid native interaction cleanup: " + repr(cleanup_payload))
+                        return
+                    if (
+                        cleanup.get("waveforms") != state["native_add_before"]
+                        or cleanup.get("targetVisible")
+                    ):
+                        finish(False, "native interaction cleanup did not restore waveforms: " + repr(cleanup))
+                        return
+                    state["native_interactions_checked"] = True
+                    QTimer.singleShot(0, inspect)
+
+                view.page().runJavaScript(
+                    "document.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));"
+                    f"JSON.stringify(Object.assign({{}}, window.__veriflowWaveViewer.state(), {{"
+                    f"targetVisible:document.querySelector('.signal-row[data-index=\"{state['native_add_index']}\"]')?.classList.contains('visible') || false"
+                    "}));",
+                    checked_cleanup,
+                )
+
+            view.page().runJavaScript(
+                "JSON.stringify(window.__veriflowWaveViewer.requestState());",
+                checked_native_interactions,
+            )
+            return
         if not state["primed"]:
             state["primed"] = True
+            state["prime_window_request_baseline"] = len(worker.window_requests)
+            state["prime_batch_started_at"] = time.monotonic()
             view.page().runJavaScript(
                 "window.__veriflowWaveViewer && window.__veriflowWaveViewer.addFirstSignals(30);"
             )
@@ -971,6 +1191,57 @@ def _indexed_main() -> int:
             or values[0].get("requestId") != worker.value_request_ids[1]
         ):
             finish(False, "value request did not recover with a fresh request id")
+            return
+        if use_synthetic_fixture and not state["prime_batch_checked"]:
+            state["javascript_pending"] = True
+
+            def checked_prime_batches(payload) -> None:
+                state["javascript_pending"] = False
+                try:
+                    current = json.loads(payload or "{}")
+                except json.JSONDecodeError:
+                    finish(False, "invalid multi-batch request state: " + repr(payload))
+                    return
+                recent = worker.window_requests[state["prime_window_request_baseline"]:]
+                requested_references = {
+                    str(reference)
+                    for request in recent
+                    for reference in request.get("references", [])
+                }
+                expected_references = set(current.get("visibleReferences", []))
+                pending = current.get("requests", {}).get("window")
+                complete = expected_references.issubset(requested_references) and pending is None
+                if not complete:
+                    if time.monotonic() - state["prime_batch_started_at"] < 3.0:
+                        QTimer.singleShot(100, inspect)
+                        return
+                    finish(
+                        False,
+                        "multi-batch requests did not cover visible signals: "
+                        + repr({
+                            "expected": sorted(expected_references),
+                            "requested": sorted(requested_references),
+                            "pending": pending,
+                        }),
+                    )
+                    return
+                if len(recent) < 2:
+                    finish(False, "multi-batch fixture completed without multiple requests")
+                    return
+                for request in recent:
+                    pixel_width = max(1, int(request.get("pixelWidth", 1)))
+                    max_references = max(1, 32768 // (2 * pixel_width))
+                    if len(request.get("references", [])) > max_references:
+                        finish(False, "window request exceeded host record budget: " + repr(request))
+                        return
+                state["prime_batch_checked"] = True
+                QTimer.singleShot(0, inspect)
+
+            view.page().runJavaScript(
+                "JSON.stringify({requests:window.__veriflowWaveViewer.requestState(),"
+                "visibleReferences:visibleWaveSignals().map(signal => signal.reference)});",
+                checked_prime_batches,
+            )
             return
         if not use_synthetic_fixture:
             QApplication.processEvents()
@@ -1115,10 +1386,105 @@ def _indexed_main() -> int:
                         return
                     worker.hold_window_requests = False
                     worker.hold_value_requests = False
-                    panel.resize(1400, 720)
+                    add_request_baseline = len(worker.window_requests)
+                    exhausted_request = worker.window_requests[-1]
+                    batch_size = len(exhausted_request.get("references", []))
+
+                    def began_add_after_exhaustion(add_payload) -> None:
+                        try:
+                            added = json.loads(add_payload or "{}")
+                        except json.JSONDecodeError:
+                            finish(False, "invalid add-after-exhaustion state: " + repr(add_payload))
+                            return
+                        target_reference = str(added.get("reference", ""))
+                        if not target_reference:
+                            finish(False, "add-after-exhaustion fixture has no target signal")
+                            return
+                        started_at = time.monotonic()
+
+                        def poll_recovery() -> None:
+                            view.page().runJavaScript(
+                                "JSON.stringify(window.__veriflowWaveViewer.requestState());",
+                                checked_recovery,
+                            )
+
+                        def checked_recovery(recovery_payload) -> None:
+                            try:
+                                recovery = json.loads(recovery_payload or "{}")
+                            except json.JSONDecodeError:
+                                finish(False, "invalid add-after-exhaustion recovery: " + repr(recovery_payload))
+                                return
+                            recent = worker.window_requests[add_request_baseline:]
+                            if recent and (
+                                recent[0].get("start") != exhausted_request.get("start")
+                                or recent[0].get("end") != exhausted_request.get("end")
+                                or recent[0].get("pixelWidth") != exhausted_request.get("pixelWidth")
+                                or recent[0].get("references") != exhausted_request.get("references")
+                            ):
+                                finish(
+                                    False,
+                                    "add-after-exhaustion fixture changed the first batch: "
+                                    + repr({"exhausted": exhausted_request, "recovery": recent[0]}),
+                                )
+                                return
+                            requested = {
+                                str(reference)
+                                for request in recent
+                                for reference in request.get("references", [])
+                            }
+                            if target_reference not in requested or recovery.get("window") is not None:
+                                if time.monotonic() - started_at < 3.0:
+                                    QTimer.singleShot(100, poll_recovery)
+                                    return
+                                finish(
+                                    False,
+                                    "adding a signal did not recover an exhausted batch: "
+                                    + repr({
+                                        "target": target_reference,
+                                        "requested": sorted(requested),
+                                        "requests": recovery,
+                                    }),
+                                )
+                                return
+
+                            def checked_cleanup(cleanup_payload) -> None:
+                                try:
+                                    cleanup = json.loads(cleanup_payload or "{}")
+                                except json.JSONDecodeError:
+                                    finish(False, "invalid add-after-exhaustion cleanup: " + repr(cleanup_payload))
+                                    return
+                                if (
+                                    not cleanup.get("visibleBefore")
+                                    or cleanup.get("visibleAfter")
+                                    or cleanup.get("waveforms") != 30
+                                ):
+                                    finish(False, "add-after-exhaustion cleanup failed: " + repr(cleanup))
+                                    return
+                                panel.resize(1400, 720)
+                                view.page().runJavaScript(
+                                    "window.__veriflowWaveViewer.setCursorSamples(0, null, 'a');",
+                                    lambda _result: QTimer.singleShot(250, check_changed_key_recovery),
+                                )
+
+                            view.page().runJavaScript(
+                                "(() => { const signal = allSignals.find(item => item.reference === "
+                                + json.dumps(target_reference)
+                                + "); const visibleBefore = isWaveVisible(signal);"
+                                "document.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true}));"
+                                "return JSON.stringify({visibleBefore, visibleAfter:isWaveVisible(signal),"
+                                "waveforms:window.__veriflowWaveViewer.state().waveforms}); })();",
+                                checked_cleanup,
+                            )
+
+                        QTimer.singleShot(100, poll_recovery)
+
                     view.page().runJavaScript(
-                        "window.__veriflowWaveViewer.setCursorSamples(0, null, 'a');",
-                        lambda _result: QTimer.singleShot(250, check_changed_key_recovery),
+                        "(() => { const signal = filteredSignals.find(item => !isWaveVisible(item));"
+                        "if (!signal) return JSON.stringify({});"
+                        f"addSignalToWaveform(signal, {batch_size});"
+                        "return JSON.stringify({reference:signal.reference,"
+                        "waveforms:window.__veriflowWaveViewer.state().waveforms}); })();",
+                        began_add_after_exhaustion,
                     )
 
                 QTimer.singleShot(
@@ -1155,6 +1521,7 @@ def _indexed_main() -> int:
                 )
 
             view.page().runJavaScript(
+                "windowCache.clear();"
                 "JSON.stringify({width:document.getElementById('waveCanvas').width});",
                 begin_error_wiring,
             )

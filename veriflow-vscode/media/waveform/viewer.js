@@ -121,6 +121,9 @@ let activeRequestStatus = '';
 const failedRequestKinds = new Set();
 const ROW_HEIGHT = 32;
 const HEADER_HEIGHT = 38;
+const MAX_WINDOW_PIXEL_WIDTH = 8192;
+const MAX_WINDOW_RECORDS = 32768;
+const WINDOW_RECORDS_PER_PIXEL = 2;
 const TIME_UNITS = ['fs', 'ps', 'ns', 'us', 'ms', 's'];
 const LAYOUT_STORAGE_PREFIX = 'veriflow.waveform.layout.v1:';
 
@@ -802,6 +805,13 @@ function scopeLabel(scope) {
     return scope || 'All scopes';
 }
 
+function selectLibrarySignal(index) {
+    selectedLibraryIndex = index;
+    signalList.querySelectorAll('.signal-row').forEach(row => {
+        row.classList.toggle('selected', Number(row.dataset.index) === index);
+    });
+}
+
 function renderSignalList() {
     const savedScrollTop = signalList.scrollTop;
     signalList.innerHTML = '';
@@ -845,14 +855,12 @@ function renderSignalList() {
         row.draggable = true;
         row.title = signal.fullName + '\nDrag into the waveform area or right-click to add.';
         row.onclick = () => {
-            selectedLibraryIndex = index;
-            renderSignalList();
+            selectLibrarySignal(index);
         };
         row.ondblclick = () => addSignalToWaveform(signal);
         row.oncontextmenu = (event) => {
             event.preventDefault();
-            selectedLibraryIndex = index;
-            renderSignalList();
+            selectLibrarySignal(index);
             showLibrarySignalMenu(event.clientX, event.clientY, signal);
         };
         row.ondragstart = (event) => {
@@ -1703,7 +1711,11 @@ function visibleWindowDescriptor() {
     if (!vcd) return null;
     const start = Math.floor(startTime);
     const end = Math.max(start, Math.ceil(endTime));
-    const pixelWidth = Math.max(1, Math.round(canvas.clientWidth || 1));
+    const pixelWidth = clamp(
+        Math.round(canvas.clientWidth || 1),
+        1,
+        MAX_WINDOW_PIXEL_WIDTH
+    );
     return {
         start,
         end,
@@ -1721,12 +1733,11 @@ function requestWindowDescriptor() {
         Number(vcd.startTime) || 0,
         Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1)
     );
-    return {
-        start: Math.floor(range.start),
-        end: Math.ceil(range.end),
-        pixelWidth: viewport.pixelWidth,
-        ticksPerPixel: viewport.ticksPerPixel,
-    };
+    const start = Math.floor(range.start);
+    const end = Math.ceil(range.end);
+    const pixelWidth = Math.max(1, Math.ceil((end - start) / viewport.ticksPerPixel));
+    if (pixelWidth > MAX_WINDOW_PIXEL_WIDTH) return viewport;
+    return { start, end, pixelWidth, ticksPerPixel: viewport.ticksPerPixel };
 }
 
 function cachedWindowEntry(reference, descriptor = visibleWindowDescriptor()) {
@@ -1768,12 +1779,12 @@ function windowRequestKey(descriptor, references) {
     ]);
 }
 
-function sendWindowRequest(descriptor, references, retryCount = 0) {
-    const key = windowRequestKey(descriptor, references);
+function sendWindowRequest(descriptor, references, retryCount = 0, keyReferences = references) {
+    const key = windowRequestKey(descriptor, keyReferences);
     if (!requestRetries.canStart('window', key)) return false;
     cancelPendingRequest(pendingWindowRequest);
     const requestId = requestTracker.next('window');
-    pendingWindowRequest = { requestId, descriptor, references, key, retryCount };
+    pendingWindowRequest = { requestId, descriptor, references, keyReferences, key, retryCount };
     waveformTransport.send({
         type: 'windowRequest',
         generation: currentGeneration,
@@ -1795,27 +1806,37 @@ function scheduleWindowRequest(forceRefresh = false) {
         const viewport = visibleWindowDescriptor();
         const descriptor = requestWindowDescriptor();
         if (!viewport || !descriptor) return;
+        const cacheMargin = descriptor.start === viewport.start && descriptor.end === viewport.end
+            ? 0
+            : 0.25;
         const references = Array.from(new Set(
             visibleWaveSignals().map(signal => signal.reference).filter(Boolean)
         ));
         const needed = references.filter(reference => {
             if (forceRefresh) return true;
             const entry = cachedWindowEntry(reference, viewport);
-            return waveCore.windowNeedsRefresh(entry, viewport, 0.25, {
+            return waveCore.windowNeedsRefresh(entry, viewport, cacheMargin, {
                 start: Number(vcd.startTime) || 0,
                 end: Math.max(Number(vcd.startTime) || 0, Number(vcd.endTime) || 1),
             });
         });
         if (!needed.length) return;
+        const maxReferences = Math.max(
+            1,
+            Math.floor(MAX_WINDOW_RECORDS / (WINDOW_RECORDS_PER_PIXEL * descriptor.pixelWidth))
+        );
+        const batch = needed.slice(0, maxReferences);
         if (
             pendingWindowRequest
             && pendingWindowRequest.descriptor.start === descriptor.start
             && pendingWindowRequest.descriptor.end === descriptor.end
             && pendingWindowRequest.descriptor.pixelWidth === descriptor.pixelWidth
             && pendingWindowRequest.descriptor.ticksPerPixel === descriptor.ticksPerPixel
-            && needed.every(reference => pendingWindowRequest.references.includes(reference))
+            && batch.every(reference => pendingWindowRequest.references.includes(reference))
+            && pendingWindowRequest.keyReferences.length === needed.length
+            && needed.every(reference => pendingWindowRequest.keyReferences.includes(reference))
         ) return;
-        sendWindowRequest(descriptor, needed);
+        sendWindowRequest(descriptor, batch, 0, needed);
     }, 50);
 }
 
@@ -2777,7 +2798,12 @@ function retryFailedRequest(match, errorMessage) {
         : 'Waveform request failed: ' + String(errorMessage || 'unknown error'));
     if (!shouldRetry) return false;
     if (match.kind === 'window') {
-        sendWindowRequest(pending.descriptor, pending.references, retryCount + 1);
+        sendWindowRequest(
+            pending.descriptor,
+            pending.references,
+            retryCount + 1,
+            pending.keyReferences || pending.references
+        );
     } else if (match.kind === 'value') {
         sendValueRequest(pending.key, pending.references, pending.time, retryCount + 1);
     } else if (match.kind === 'search') {
