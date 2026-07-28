@@ -107,12 +107,25 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "veriflow.instantiateModule",
+        "title": "Instantiate Module",
+        "category": "VeriFlow",
+        "icon": "$(symbol-method)"
+      },
+      {
         "command": "veriflow.showOutput",
         "title": "Show Output Panel",
         "icon": "$(output)"
       }
     ],
     "menus": {
+      "editor/context": [
+        {
+          "command": "veriflow.instantiateModule",
+          "when": "editorLangId == verilog || editorLangId == systemverilog",
+          "group": "navigation@10"
+        }
+      ],
       "explorer/context": [
         {
           "command": "veriflow.openVcdViewer",

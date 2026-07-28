@@ -9,6 +9,7 @@ import {
     getDependencyResult, setDependencyResult,
 } from './config';
 import { ModuleTreeProvider } from './moduleTreeProvider';
+import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
 import * as output from './output';
@@ -115,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.openWave', () => cmdOpenWave(context)],
         ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
         ['veriflow.scanModules', () => cmdScanModules(context)],
+        ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
         ['veriflow.showOutput', () => output.show()],
     ];
     for (const [name, fn] of cmds) {
@@ -394,9 +396,9 @@ function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult
     };
 }
 
-async function cmdScanModules(context: vscode.ExtensionContext): Promise<void> {
+async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
     const root = getWorkspaceRoot();
-    if (!root) { return; }
+    if (!root) { return null; }
 
     const settings = getSettings();
     statusBarItem.text = '$(sync~spin) VeriFlow: scanning...';
@@ -415,6 +417,18 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<void> {
     }
 
     statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
+    return result;
+}
+
+async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
+    if (!getWorkspaceRoot()) {
+        vscode.window.showWarningMessage('No workspace folder open.');
+        return;
+    }
+    const result = await cmdScanModules(context);
+    if (result) {
+        await showModuleInstantiationPicker(result);
+    }
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {

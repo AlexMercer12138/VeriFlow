@@ -1288,6 +1288,31 @@ function testModuleInstantiationChoices(): void {
     ]);
 }
 
+function testModuleInstantiationManifestContribution(): void {
+    const manifest = JSON.parse(fs.readFileSync(
+        path.join(repoRoot, 'veriflow-vscode', 'package.json'),
+        'utf-8'
+    ));
+    const command = manifest.contributes.commands.find(
+        (entry: any) => entry.command === 'veriflow.instantiateModule'
+    );
+    const editorMenu = (manifest.contributes.menus['editor/context'] || []).find(
+        (entry: any) => entry.command === 'veriflow.instantiateModule'
+    );
+
+    assert.deepStrictEqual(command, {
+        command: 'veriflow.instantiateModule',
+        title: 'Instantiate Module',
+        category: 'VeriFlow',
+        icon: '$(symbol-method)',
+    });
+    assert.deepStrictEqual(editorMenu, {
+        command: 'veriflow.instantiateModule',
+        when: 'editorLangId == verilog || editorLangId == systemverilog',
+        group: 'navigation@10',
+    });
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -1318,6 +1343,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['module instantiation formatter without parameters', testModuleInstantiationFormatterWithoutParameters],
     ['module instantiation formatter without ports', testModuleInstantiationFormatterWithoutPorts],
     ['module instantiation choices', testModuleInstantiationChoices],
+    ['module instantiation manifest contribution', testModuleInstantiationManifestContribution],
 ];
 
 async function runTests(): Promise<void> {
