@@ -3,7 +3,7 @@
   "displayName": "Verilog Simulation Flow",
   "description": "Lightweight Verilog simulation manager for VS Code — analyze, compile, simulate, view waveforms, and generate testbenches",
   "icon": "media/icon.png",
-  "version": "1.3.0",
+  "version": "1.3.2",
   "publisher": "Vikai-mercer",
   "license": "MIT",
   "engines": {
