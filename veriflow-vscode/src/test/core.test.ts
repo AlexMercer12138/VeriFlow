@@ -270,6 +270,30 @@ function testPortParser(): void {
     );
 }
 
+function testPortParserSelectsNamedModule(): void {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-multi-module-'));
+    const filepath = path.join(projectDir, 'combined.sv');
+    fs.writeFileSync(filepath, [
+        'module first(input logic wrong_port);',
+        'endmodule',
+        '',
+        'module selected #(',
+        '    parameter WIDTH = 16',
+        ') (',
+        '    input logic clk,',
+        '    output logic [WIDTH-1:0] data_o',
+        ');',
+        'endmodule',
+        '',
+    ].join('\n'), 'utf-8');
+
+    const info = new PortParser().parseFile(filepath, 'selected');
+
+    assert.strictEqual(info.name, 'selected');
+    assert.deepStrictEqual(info.parameters.map(parameter => parameter.name), ['WIDTH']);
+    assert.deepStrictEqual(info.ports.map(port => port.name), ['clk', 'data_o']);
+}
+
 function testPortParserConditionalCompilation(): void {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-cond-'));
     const filepath = path.join(projectDir, 'cond_ports.v');
@@ -1211,6 +1235,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer generate for/if', testDependencyAnalyzerGenerateForIf],
     ['dependency analyzer procedural statements', testDependencyAnalyzerProceduralStatements],
     ['port parser', testPortParser],
+    ['port parser selects named module', testPortParserSelectsNamedModule],
     ['port parser conditional compilation', testPortParserConditionalCompilation],
     ['port parser SystemVerilog and non-ANSI', testPortParserSystemVerilogAndNonAnsi],
     ['testbench generator', testTestbenchGenerator],

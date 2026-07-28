@@ -6,14 +6,14 @@ const PARAM_DECL_RE = /\b(parameter|localparam)\b\s*([\s\S]*)/;
 const ANSI_PORT_RE = /\b(input|output|inout)\b\s*([\s\S]*)/;
 
 export class PortParser {
-    parseFile(filepath: string): ModuleInfo {
+    parseFile(filepath: string, targetModuleName?: string): ModuleInfo {
         const content = readText(filepath);
-        return this._parseContent(content, filepath);
+        return this._parseContent(content, filepath, targetModuleName);
     }
 
-    private _parseContent(content: string, filepath: string): ModuleInfo {
+    private _parseContent(content: string, filepath: string, targetModuleName?: string): ModuleInfo {
         content = preprocessVerilog(removeComments(content));
-        const parsed = this._parseModuleHeader(content);
+        const parsed = this._parseModuleHeader(content, targetModuleName);
         if (!parsed) {
             return {
                 name: 'unknown',
@@ -41,13 +41,21 @@ export class PortParser {
         };
     }
 
-    private _parseModuleHeader(content: string): {
+    private _parseModuleHeader(content: string, targetModuleName?: string): {
         moduleName: string;
         paramsStr: string;
         portsStr: string;
         bodyStart: number;
     } | null {
-        const moduleMatch = /\bmodule\s+(\w+)\b/.exec(content);
+        const moduleDeclRe = /\bmodule\s+(\w+)\b/g;
+        let moduleMatch: RegExpExecArray | null = null;
+        let candidate: RegExpExecArray | null;
+        while ((candidate = moduleDeclRe.exec(content)) !== null) {
+            if (!targetModuleName || candidate[1] === targetModuleName) {
+                moduleMatch = candidate;
+                break;
+            }
+        }
         if (!moduleMatch || moduleMatch.index === undefined) {
             return null;
         }
