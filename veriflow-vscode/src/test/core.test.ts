@@ -418,9 +418,22 @@ function testTestbenchGenerator(): void {
     const filepath = new TestbenchGenerator().generate(config, outputDir);
     assert.strictEqual(filepath, path.join(outputDir, `${tbSpec.name}.v`));
     const content = fs.readFileSync(filepath, 'utf-8');
-    for (const snippet of tbSpec.required_snippets) {
-        assert.ok(content.includes(snippet), `missing snippet: ${snippet}`);
-    }
+    assert.ok(content.includes(`module ${tbSpec.name};`));
+    assert.ok(content.includes(`$dumpfile("${tbSpec.wave_file}");`));
+    assert.ok(content.includes([
+        '    uart_tx #(',
+        '        .SYS_CLK_FREQ ( 1_000_000 ),',
+        '        .BAUD_RATE    ( 115200    ),',
+        '        .STOP_BIT_CNT ( 1         ),',
+        '        .PARITY_TYPE  ( "none"    ))',
+        '    u_tx0 (',
+        '        .clk      ( clk        ),',
+        '        .rst_n    ( rst_n      ),',
+        '        .tx_valid ( tx_valid   ),',
+        '        .tx_ready ( tx_ready   ),',
+        '        .tx_data  ( tx_payload ),',
+        '        .uart_tx  ( uart_tx    ));',
+    ].join('\n')));
 }
 
 function testLogParser(): void {

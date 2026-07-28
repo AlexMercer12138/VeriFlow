@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { formatModuleInstantiation } from './moduleInstantiationFormatter';
 import { PortParser } from './portParser';
 import { Port, Parameter } from './types';
 
@@ -150,7 +151,7 @@ export class TestbenchGenerator {
 
         for (const mod of modules) {
             const filepath = mod.filepath || '';
-            const { ports, params } = this._parseModule(filepath);
+            const { ports, params } = this._parseModule(filepath, mod.module_name);
             // Build param value map for width resolution
             const paramValues = mod.param_values || {};
             const paramMap: Record<string, string> = {};
@@ -232,28 +233,20 @@ export class TestbenchGenerator {
 
             L.push(`    // ---- DUT: ${modName} (${instName}) ----`);
 
-            const hasParams = params.length > 0;
-            if (hasParams) {
-                L.push(`    ${modName} #(`);
-                for (let i = 0; i < params.length; i++) {
-                    const param = params[i];
-                    const pvalue = paramValues[param.name] || param.value;
-                    const comma = i < params.length - 1 ? ',' : '';
-                    L.push(`        .${param.name}(${pvalue})${comma}`);
-                }
-                L.push(`    ) ${instName} (`);
-            } else {
-                L.push(`    ${modName} ${instName} (`);
-            }
-
-            for (let i = 0; i < ports.length; i++) {
-                const port = ports[i];
-                const sigName = portSignals[port.name] || port.name;
-                const comma = i < ports.length - 1 ? ',' : '';
-                L.push(`        .${port.name}(${sigName})${comma}`);
-            }
-
-            L.push('    );');
+            const instantiation = formatModuleInstantiation({
+                moduleName: modName,
+                instanceName: instName,
+                parameters: params.map(param => ({
+                    name: param.name,
+                    value: paramValues[param.name] || param.value,
+                })),
+                ports: ports.map(port => ({
+                    name: port.name,
+                    value: portSignals[port.name] || port.name,
+                })),
+                baseIndent: '    ',
+            });
+            L.push(...instantiation.split('\n'));
             L.push('');
         }
 
@@ -306,12 +299,12 @@ export class TestbenchGenerator {
         return port.width;
     }
 
-    private _parseModule(filepath: string): { ports: Port[]; params: Parameter[] } {
+    private _parseModule(filepath: string, moduleName: string): { ports: Port[]; params: Parameter[] } {
         if (!filepath || !fs.existsSync(filepath)) {
             return { ports: [], params: [] };
         }
         try {
-            const info = this._parser.parseFile(filepath);
+            const info = this._parser.parseFile(filepath, moduleName);
             return { ports: info.ports, params: info.parameters };
         } catch {
             return { ports: [], params: [] };
