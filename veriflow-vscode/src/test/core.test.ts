@@ -1170,6 +1170,41 @@ function testModuleInstantiationFormatterAlignment(): void {
     ].join('\n'));
 }
 
+function testModuleInstantiationFormatterWithoutParameters(): void {
+    const actual = formatModuleInstantiation({
+        moduleName: 'child',
+        instanceName: 'u_child',
+        parameters: [],
+        ports: [{ name: 'a', value: 'a' }],
+        baseIndent: '    ',
+    });
+
+    assert.strictEqual(actual, [
+        '    child u_child (',
+        '        .a ( a ));',
+    ].join('\n'));
+}
+
+function testModuleInstantiationFormatterWithoutPorts(): void {
+    assert.strictEqual(formatModuleInstantiation({
+        moduleName: 'leaf',
+        instanceName: 'u_leaf',
+        parameters: [],
+        ports: [],
+    }), 'leaf u_leaf ();');
+
+    assert.strictEqual(formatModuleInstantiation({
+        moduleName: 'configured_leaf',
+        instanceName: 'u_configured_leaf',
+        parameters: [{ name: 'WIDTH', value: 'WIDTH' }],
+        ports: [],
+    }), [
+        'configured_leaf #(',
+        '    .WIDTH ( WIDTH ))',
+        'u_configured_leaf ();',
+    ].join('\n'));
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -1196,6 +1231,8 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
     ['module instantiation formatter alignment', testModuleInstantiationFormatterAlignment],
+    ['module instantiation formatter without parameters', testModuleInstantiationFormatterWithoutParameters],
+    ['module instantiation formatter without ports', testModuleInstantiationFormatterWithoutPorts],
 ];
 
 async function runTests(): Promise<void> {

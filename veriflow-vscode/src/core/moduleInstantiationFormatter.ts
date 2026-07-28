@@ -28,16 +28,24 @@ function formatConnections(
 }
 
 export function formatModuleInstantiation(options: ModuleInstantiationOptions): string {
-    if (options.parameters.length === 0 || options.ports.length === 0) {
-        throw new Error('Empty connection groups are not implemented yet.');
+    const baseIndent = options.baseIndent ?? '';
+    const connectionIndent = `${baseIndent}    `;
+    const lines: string[] = [];
+
+    if (options.parameters.length > 0) {
+        lines.push(`${baseIndent}${options.moduleName} #(`);
+        lines.push(...formatConnections(options.parameters, connectionIndent, '))'));
+        if (options.ports.length === 0) {
+            lines.push(`${baseIndent}${options.instanceName} ();`);
+            return lines.join('\n');
+        }
+        lines.push(`${baseIndent}${options.instanceName} (`);
+    } else if (options.ports.length > 0) {
+        lines.push(`${baseIndent}${options.moduleName} ${options.instanceName} (`);
+    } else {
+        return `${baseIndent}${options.moduleName} ${options.instanceName} ();`;
     }
 
-    const baseIndent = '';
-    const connectionIndent = `${baseIndent}    `;
-    return [
-        `${baseIndent}${options.moduleName} #(`,
-        ...formatConnections(options.parameters, connectionIndent, '))'),
-        `${baseIndent}${options.instanceName} (`,
-        ...formatConnections(options.ports, connectionIndent, '));'),
-    ].join('\n');
+    lines.push(...formatConnections(options.ports, connectionIndent, '));'));
+    return lines.join('\n');
 }
