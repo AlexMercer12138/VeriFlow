@@ -38,5 +38,6 @@ Thumbs.db
 
 # Agents
 .codegraph/
+.worktrees/
 .superpowers/
 superpowers/
