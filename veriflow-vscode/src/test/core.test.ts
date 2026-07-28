@@ -5,6 +5,7 @@ import * as path from 'path';
 
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
 import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
+import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
 import { PortParser } from '../core/portParser';
 import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
@@ -1242,6 +1243,51 @@ function testModuleInstantiationFormatterWithoutPorts(): void {
     ].join('\n'));
 }
 
+function testModuleInstantiationChoices(): void {
+    const root = path.join(os.tmpdir(), 'veriflow-choice-root');
+    const workspaceAlu = path.join(root, 'rtl', 'alu.sv');
+    const libraryAlu = path.join(os.tmpdir(), 'veriflow-lib', 'alu.sv');
+    const fifo = path.join(root, 'rtl', 'fifo.sv');
+
+    const choices = buildModuleInstantiationChoices({
+        root,
+        libDirs: [path.dirname(libraryAlu)],
+        totalModules: 2,
+        modules: ['alu', 'fifo'],
+        workspaceModules: ['alu', 'fifo'],
+        modulesByDir: {},
+        moduleFiles: { alu: workspaceAlu, fifo },
+        duplicates: { alu: [workspaceAlu, libraryAlu] },
+        duplicatesWithLines: {
+            alu: [
+                { file: workspaceAlu, line: 1 },
+                { file: libraryAlu, line: 5 },
+            ],
+        },
+    });
+
+    assert.deepStrictEqual(choices, [
+        {
+            label: 'alu',
+            description: path.join('rtl', 'alu.sv'),
+            moduleName: 'alu',
+            filepath: workspaceAlu,
+        },
+        {
+            label: 'alu',
+            description: libraryAlu,
+            moduleName: 'alu',
+            filepath: libraryAlu,
+        },
+        {
+            label: 'fifo',
+            description: path.join('rtl', 'fifo.sv'),
+            moduleName: 'fifo',
+            filepath: fifo,
+        },
+    ]);
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -1271,6 +1317,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['module instantiation formatter alignment', testModuleInstantiationFormatterAlignment],
     ['module instantiation formatter without parameters', testModuleInstantiationFormatterWithoutParameters],
     ['module instantiation formatter without ports', testModuleInstantiationFormatterWithoutPorts],
+    ['module instantiation choices', testModuleInstantiationChoices],
 ];
 
 async function runTests(): Promise<void> {

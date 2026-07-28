@@ -10,6 +10,8 @@ export { SimulationRunner } from './simulationRunner';
 export { PortParser } from './portParser';
 export { formatModuleInstantiation } from './moduleInstantiationFormatter';
 export type { NamedConnection, ModuleInstantiationOptions } from './moduleInstantiationFormatter';
+export { buildModuleInstantiationChoices } from './moduleInstantiationChoices';
+export type { ModuleInstantiationChoice } from './moduleInstantiationChoices';
 export { TestbenchGenerator } from './testbenchGenerator';
 export type { TbConfig, TbModuleConfig } from './testbenchGenerator';
 export { VcdParser } from './vcdParser';
