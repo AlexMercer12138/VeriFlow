@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
+import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
 import { PortParser } from '../core/portParser';
 import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
@@ -1145,6 +1146,30 @@ async function testWaveformLayoutStore(): Promise<void> {
     assert.strictEqual(store.load('file:///missing.vcd'), null);
 }
 
+function testModuleInstantiationFormatterAlignment(): void {
+    const actual = formatModuleInstantiation({
+        moduleName: 'module_name',
+        instanceName: 'u_module_name',
+        parameters: [
+            { name: 'DEPTH', value: '8' },
+            { name: 'DATA_WIDTH', value: 'DATA_WIDTH' },
+        ],
+        ports: [
+            { name: 'clk', value: 'clk_i' },
+            { name: 'reset_n', value: 'reset_signal' },
+        ],
+    });
+
+    assert.strictEqual(actual, [
+        'module_name #(',
+        '    .DEPTH      ( 8          ),',
+        '    .DATA_WIDTH ( DATA_WIDTH ))',
+        'u_module_name (',
+        '    .clk     ( clk_i        ),',
+        '    .reset_n ( reset_signal ));',
+    ].join('\n'));
+}
+
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
@@ -1170,6 +1195,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['recoverable waveform request errors', testRecoverableWaveformRequestErrors],
     ['waveform transport adapters', testWaveformTransportAdapters],
     ['waveform layout store', testWaveformLayoutStore],
+    ['module instantiation formatter alignment', testModuleInstantiationFormatterAlignment],
 ];
 
 async function runTests(): Promise<void> {
