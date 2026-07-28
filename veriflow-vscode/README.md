@@ -56,6 +56,10 @@ Install `VeriFlow` from the VS Code Marketplace, or install a local `.vsix` pack
 
 You can also open `.vcd` files directly in VS Code with **VeriFlow Waveform Viewer**.
 
+## Module Instantiation
+
+Run **VeriFlow: Instantiate Module** from the Command Palette, or choose **Instantiate Module** from a Verilog/SystemVerilog editor's context menu. Select a scanned workspace or library module, then insert the aligned instantiation at the cursor or copy it to the clipboard. Modules with the same name are listed separately by source path.
+
 ---
 
 ## Testbench Generator

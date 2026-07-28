@@ -56,6 +56,10 @@ VeriFlow 是一个面向 Verilog/SystemVerilog 项目的 VS Code 扩展。它将
 
 也可以在 VS Code 中直接打开 `.vcd` 文件，并选择 **VeriFlow Waveform Viewer** 进行预览。
 
+## 一键例化模块
+
+从命令面板运行 **VeriFlow: Instantiate Module**，或在 Verilog/SystemVerilog 编辑器右键菜单中选择 **Instantiate Module**。选择工作区或库目录中已扫描的模块后，可将对齐后的例化代码插入光标处或复制到剪贴板。同名模块会按源文件路径分别列出。
+
 ---
 
 ## Testbench 生成器
