@@ -1,23 +1,188 @@
 import * as assert from 'assert';
+import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 const extensionRoot = path.resolve(__dirname, '..', '..');
+const supportUrl = pathToFileURL(
+    path.join(extensionRoot, 'scripts', 'build-support.mjs')
+).href;
 const manifest = JSON.parse(
     fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')
 ) as {
     main: string;
     scripts: { watch: string };
 };
-const buildScript = fs.readFileSync(
-    path.join(extensionRoot, 'scripts', 'build.mjs'),
-    'utf8'
+const timeoutMs = 15_000;
+
+const delay = (milliseconds: number): Promise<void> => new Promise(
+    resolve => setTimeout(resolve, milliseconds)
 );
 
-assert.strictEqual(manifest.main, './dist/extension.js');
-assert.strictEqual(manifest.scripts.watch, 'node ./scripts/build.mjs --watch');
-assert.match(buildScript, /context\(options\)/);
-assert.match(buildScript, /spawn\(process\.execPath/);
-assert.match(buildScript, /['"]--watch['"],\s*['"]-p['"],\s*['"]\.\/['"]/);
+async function waitUntil(
+    predicate: () => boolean,
+    description: string,
+    timeout = timeoutMs
+): Promise<void> {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if (predicate()) return;
+        await delay(50);
+    }
+    throw new Error(`Timed out waiting for ${description}`);
+}
 
-console.log('build watch tests passed');
+function processExists(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+}
+
+async function waitForExit(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+            () => reject(new Error(`Timed out waiting for process ${child.pid} to exit`)),
+            timeoutMs
+        );
+        child.once('exit', () => {
+            clearTimeout(timer);
+            resolve();
+        });
+    });
+}
+
+async function stopProcess(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (child.connected) {
+        child.send('stop');
+    } else {
+        child.kill();
+    }
+    try {
+        await waitForExit(child);
+    } catch {
+        child.kill();
+        await waitForExit(child);
+    }
+}
+
+async function testBuildWatch(): Promise<void> {
+    assert.strictEqual(manifest.main, './dist/extension.js');
+    assert.strictEqual(manifest.scripts.watch, 'node ./scripts/build.mjs --watch');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-build-watch-'));
+    const sourceRoot = path.join(root, 'src');
+    const distRoot = path.join(root, 'dist');
+    const childPidFile = path.join(root, 'typecheck.pid');
+    const typecheckScript = path.join(root, 'typecheck-child.mjs');
+    const sourceFiles = ['extension.js', 'hdl-worker.js', 'waveform-worker.js']
+        .map(name => path.join(sourceRoot, name));
+    const outputFiles = ['extension.js', 'workers/hdlParserWorker.js', 'workers/waveformWorker.js']
+        .map(name => path.join(distRoot, name));
+    let parent: ChildProcess | undefined;
+    let childPid: number | undefined;
+    let output = '';
+
+    try {
+        fs.mkdirSync(sourceRoot, { recursive: true });
+        sourceFiles.forEach((file, index) => {
+            fs.writeFileSync(file, `export const marker = 'initial-${index}';\n`);
+        });
+        fs.writeFileSync(typecheckScript, [
+            "import { writeFileSync } from 'node:fs';",
+            'writeFileSync(process.argv[2], String(process.pid));',
+            'setInterval(() => undefined, 1_000);',
+        ].join('\n'));
+
+        const runner = `
+const { runWatch } = await import(process.env.VERIFLOW_BUILD_SUPPORT);
+const fixture = JSON.parse(process.env.VERIFLOW_WATCH_FIXTURE);
+const common = { bundle: true, platform: 'node', format: 'cjs', target: 'node18' };
+const stopRequested = new Promise(resolve => process.once('message', resolve));
+await runWatch({
+    bundleOptions: fixture.sourceFiles.map((entry, index) => ({
+        ...common,
+        entryPoints: [entry],
+        outfile: fixture.outputFiles[index],
+    })),
+    cwd: fixture.root,
+    typecheck: {
+        command: process.execPath,
+        args: [fixture.typecheckScript, fixture.childPidFile],
+        stdio: 'ignore',
+    },
+    stopRequested,
+});
+`;
+        parent = spawn(process.execPath, ['--input-type=module', '--eval', runner], {
+            env: {
+                ...process.env,
+                VERIFLOW_BUILD_SUPPORT: supportUrl,
+                VERIFLOW_WATCH_FIXTURE: JSON.stringify({
+                    root,
+                    sourceFiles,
+                    outputFiles,
+                    typecheckScript,
+                    childPidFile,
+                }),
+            },
+            stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        });
+        parent.stdout?.on('data', data => { output += data.toString(); });
+        parent.stderr?.on('data', data => { output += data.toString(); });
+
+        await waitUntil(() => {
+            if (parent?.exitCode !== null || parent?.signalCode !== null) {
+                throw new Error(`Watcher exited before initial build:\n${output}`);
+            }
+            return outputFiles.every(file => fs.existsSync(file))
+                && fs.existsSync(childPidFile);
+        }, 'three initial bundles and the typecheck child');
+
+        outputFiles.forEach((file, index) => {
+            assert.match(fs.readFileSync(file, 'utf8'), new RegExp(`initial-${index}`));
+        });
+        childPid = Number(fs.readFileSync(childPidFile, 'utf8'));
+        assert.ok(Number.isInteger(childPid) && processExists(childPid));
+
+        const changedOutput = outputFiles[1];
+        const previousMtime = fs.statSync(changedOutput).mtimeMs;
+        fs.writeFileSync(sourceFiles[1], "export const marker = 'updated-worker';\n");
+        await waitUntil(() => {
+            if (!fs.existsSync(changedOutput)) return false;
+            return fs.statSync(changedOutput).mtimeMs > previousMtime
+                && fs.readFileSync(changedOutput, 'utf8').includes('updated-worker');
+        }, 'incremental worker bundle update');
+
+        parent.send?.('stop');
+        await waitForExit(parent);
+        assert.strictEqual(parent.exitCode, 0, output);
+        await waitUntil(
+            () => !processExists(parent!.pid!) && !processExists(childPid!),
+            'watch parent and typecheck child termination'
+        );
+    } finally {
+        if (parent) await stopProcess(parent);
+        if (childPid && processExists(childPid)) {
+            try {
+                process.kill(childPid);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+            }
+        }
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+}
+
+testBuildWatch()
+    .then(() => console.log('build watch tests passed'))
+    .catch(error => {
+        console.error(error);
+        process.exitCode = 1;
+    });
