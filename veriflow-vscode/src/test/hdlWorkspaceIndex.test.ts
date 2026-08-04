@@ -145,7 +145,7 @@ async function testStoreWaitsForMementoUpdates(): Promise<void> {
     await clear;
 }
 
-async function testDefinitionsExposeZeroBasedDeclarationLines(): Promise<void> {
+async function testDefinitionsExposeOneBasedDeclarationLines(): Promise<void> {
     const document = await parseWithRealWorker('memory:/declaration-lines.sv', [
         '// leading comment',
         'module top;',
@@ -158,9 +158,9 @@ async function testDefinitionsExposeZeroBasedDeclarationLines(): Promise<void> {
         'endpackage',
     ].join('\n'));
 
-    assert.strictEqual(document.modules[0].declarationLine, 1);
-    assert.strictEqual(document.interfaces[0].declarationLine, 4);
-    assert.strictEqual(document.packages[0].declarationLine, 7);
+    assert.strictEqual(document.modules[0].declarationLine, 2);
+    assert.strictEqual(document.interfaces[0].declarationLine, 5);
+    assert.strictEqual(document.packages[0].declarationLine, 8);
 }
 
 async function main(): Promise<void> {
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     await testLoadRejectsSchemaMismatch();
     await testClearRemovesPersistedIndex();
     await testStoreWaitsForMementoUpdates();
-    await testDefinitionsExposeZeroBasedDeclarationLines();
+    await testDefinitionsExposeOneBasedDeclarationLines();
 
     console.log('HDL workspace index tests passed');
 }

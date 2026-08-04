@@ -109,7 +109,7 @@ export type ModuleModel = {
     id: string;
     name: string;
     nameSpan: SourceSpan;
-    /** Zero-based line containing the declaration in its source file. */
+    /** One-based line containing the declaration in its source file. */
     declarationLine: number;
     endLabel?: string;
     declarationStyle: 'ansi' | 'non-ansi';
@@ -169,7 +169,7 @@ export type NamedUnitModel = {
     kind: 'interface' | 'package';
     name: string;
     nameSpan: SourceSpan;
-    /** Zero-based line containing the declaration in its source file. */
+    /** One-based line containing the declaration in its source file. */
     declarationLine: number;
     declarationSpan: SourceSpan;
 };

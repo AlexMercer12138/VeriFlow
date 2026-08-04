@@ -128,7 +128,7 @@ function declarationLine(range: ByteRange, context: AdaptContext): number {
             line++;
         }
     }
-    return line;
+    return line + 1;
 }
 
 function offsetSpan(startIndex: number, endIndex: number): ByteRange {
