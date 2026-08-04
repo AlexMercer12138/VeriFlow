@@ -1,48 +1,97 @@
 import { SourceSpan } from './model';
 
+type PositionCheckpoint = {
+    utf16Start: number;
+    utf16End: number;
+    byteStart: number;
+    byteEnd: number;
+};
+
 export class PositionMap {
-    private readonly utf16ToByteOffsets: number[];
-    private readonly byteBoundaryToUtf16 = new Map<number, number>();
+    private readonly checkpoints: PositionCheckpoint[] = [];
+    private readonly totalBytes: number;
 
     constructor(private readonly text: string) {
-        this.utf16ToByteOffsets = new Array(text.length + 1);
         let byteOffset = 0;
 
         for (let offset = 0; offset < text.length;) {
-            this.utf16ToByteOffsets[offset] = byteOffset;
-            this.byteBoundaryToUtf16.set(byteOffset, offset);
-
             const codePoint = text.codePointAt(offset)!;
             const char = String.fromCodePoint(codePoint);
             const units = char.length;
-            for (let i = 1; i < units; i++) {
-                this.utf16ToByteOffsets[offset + i] = byteOffset;
+            const bytes = Buffer.byteLength(char, 'utf8');
+
+            if (bytes !== units) {
+                this.checkpoints.push({
+                    utf16Start: offset,
+                    utf16End: offset + units,
+                    byteStart: byteOffset,
+                    byteEnd: byteOffset + bytes,
+                });
             }
 
-            byteOffset += Buffer.byteLength(char, 'utf8');
+            byteOffset += bytes;
             offset += units;
         }
 
-        this.utf16ToByteOffsets[text.length] = byteOffset;
-        this.byteBoundaryToUtf16.set(byteOffset, text.length);
+        this.totalBytes = byteOffset;
     }
 
     utf16ToByte(offset: number): number {
-        if (offset < 0 || offset > this.text.length) {
+        if (!Number.isInteger(offset) || offset < 0 || offset > this.text.length) {
             throw new RangeError('UTF-16 offset out of range');
         }
-        return this.utf16ToByteOffsets[offset];
+
+        const checkpoint = this.findCheckpoint(offset, 'utf16Start');
+        if (!checkpoint) {
+            return offset;
+        }
+        if (offset < checkpoint.utf16End) {
+            return checkpoint.byteStart;
+        }
+        return checkpoint.byteEnd + offset - checkpoint.utf16End;
     }
 
     byteToUtf16(byteOffset: number): number {
-        const offset = this.byteBoundaryToUtf16.get(byteOffset);
-        if (offset === undefined) {
+        if (!Number.isInteger(byteOffset) || byteOffset < 0 || byteOffset > this.totalBytes) {
             throw new RangeError('byte offset is not a UTF-8 boundary');
         }
-        return offset;
+
+        const checkpoint = this.findCheckpoint(byteOffset, 'byteStart');
+        if (!checkpoint) {
+            return byteOffset;
+        }
+        if (byteOffset < checkpoint.byteEnd) {
+            if (byteOffset === checkpoint.byteStart) {
+                return checkpoint.utf16Start;
+            }
+            throw new RangeError('byte offset is not a UTF-8 boundary');
+        }
+        return checkpoint.utf16End + byteOffset - checkpoint.byteEnd;
     }
 
     byteRangeToSourceRange(start: number, end: number): SourceSpan {
         return { start: this.byteToUtf16(start), end: this.byteToUtf16(end) };
+    }
+
+    private findCheckpoint(
+        offset: number,
+        startKey: 'utf16Start' | 'byteStart'
+    ): PositionCheckpoint | undefined {
+        let low = 0;
+        let high = this.checkpoints.length - 1;
+        let result: PositionCheckpoint | undefined;
+
+        while (low <= high) {
+            const middle = Math.floor((low + high) / 2);
+            const checkpoint = this.checkpoints[middle];
+            if (checkpoint[startKey] <= offset) {
+                result = checkpoint;
+                low = middle + 1;
+            } else {
+                high = middle - 1;
+            }
+        }
+
+        return result;
     }
 }
