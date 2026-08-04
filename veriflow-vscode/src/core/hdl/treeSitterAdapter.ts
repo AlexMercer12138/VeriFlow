@@ -45,17 +45,26 @@ function adaptModule(
     }
 
     const nameNode = header.childForFieldName('name');
-    if (!nameNode) {
+    if (!nameNode || nameNode.isMissing || nameNode.text.length === 0) {
         return undefined;
     }
 
-    const endmoduleNode = node.children.find(child => child.type === 'endmodule');
+    const children = node.children;
+    const endmoduleIndex = children.findIndex(child => child.type === 'endmodule');
+    const endmoduleNode = children[endmoduleIndex];
     const bodyStart = header.endIndex;
     const bodyEnd = endmoduleNode?.startIndex ?? node.endIndex;
     const endmoduleRange = endmoduleNode
         ?? offsetSpan(node.endIndex, node.endIndex);
-    const endLabelNode = endmoduleNode
-        ? node.namedChildren.find(child => child.startIndex >= endmoduleNode.endIndex)
+    const labelSeparatorIndex = endmoduleIndex >= 0
+        ? children.findIndex(
+            (child, index) => index > endmoduleIndex && child.type === ':'
+        )
+        : -1;
+    const endLabelNode = labelSeparatorIndex >= 0
+        ? children.slice(labelSeparatorIndex + 1).find(child =>
+            child.type === 'simple_identifier' || child.type === 'escaped_identifier'
+        )
         : undefined;
 
     return {
@@ -96,7 +105,14 @@ export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
                 modules.push(module);
             }
         }
-        if (node.isError) {
+        if (node.isMissing) {
+            diagnostics.push({
+                severity: 'error',
+                code: 'systemverilog.missing-syntax',
+                message: `Missing SystemVerilog syntax: ${node.type}`,
+                span: sourceSpan(node, map, request.uri),
+            });
+        } else if (node.isError) {
             diagnostics.push({
                 severity: 'error',
                 code: 'systemverilog.syntax-error',
@@ -105,8 +121,9 @@ export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
             });
         }
 
-        for (let index = node.children.length - 1; index >= 0; index--) {
-            pending.push(node.children[index]);
+        const children = node.children;
+        for (let index = children.length - 1; index >= 0; index--) {
+            pending.push(children[index]);
         }
     }
 

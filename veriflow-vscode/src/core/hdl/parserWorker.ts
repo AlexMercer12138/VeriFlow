@@ -42,6 +42,10 @@ function post(response: ParserWorkerResponse): void {
     port.postMessage(response);
 }
 
+function canRespond(requestId: string): boolean {
+    return !disposed && !cancelled.has(requestId);
+}
+
 async function pump(): Promise<void> {
     if (disposed || running) {
         return;
@@ -56,25 +60,29 @@ async function pump(): Promise<void> {
     runningRequestId = request.requestId;
     try {
         const parser = await getParser();
+        if (disposed) {
+            return;
+        }
         const tree = parser.parse(request.text);
         if (!tree) {
             throw new Error('SystemVerilog parser returned no tree');
         }
 
+        let document: ReturnType<typeof adaptTree>;
         try {
-            const document = adaptTree(tree, request);
-            if (!cancelled.has(request.requestId)) {
-                post({
-                    type: 'parsed',
-                    requestId: request.requestId,
-                    document,
-                });
-            }
+            document = adaptTree(tree, request);
         } finally {
             tree.delete();
         }
+        if (canRespond(request.requestId)) {
+            post({
+                type: 'parsed',
+                requestId: request.requestId,
+                document,
+            });
+        }
     } catch (error) {
-        if (!cancelled.has(request.requestId)) {
+        if (canRespond(request.requestId)) {
             post({
                 type: 'failed',
                 requestId: request.requestId,

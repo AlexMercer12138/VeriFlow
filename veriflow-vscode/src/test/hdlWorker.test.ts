@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import { performance } from 'perf_hooks';
 import { Worker } from 'worker_threads';
 
 import { ParserRequestQueue } from '../core/hdl/parserQueue';
@@ -59,6 +60,34 @@ async function parseInWorker(
     }
 }
 
+async function expectNoWorkerMessages(
+    label: string,
+    send: (worker: Worker) => void,
+    waitMilliseconds: number
+): Promise<void> {
+    const worker = new Worker(workerPath, { workerData });
+    let timeout: NodeJS.Timeout | undefined;
+
+    try {
+        await new Promise<void>((resolve, reject) => {
+            timeout = setTimeout(resolve, waitMilliseconds);
+            worker.once('message', message => {
+                reject(new Error(`${label} unexpectedly received ${JSON.stringify(message)}`));
+            });
+            worker.once('error', reject);
+            worker.once('exit', code => {
+                reject(new Error(`${label} worker exited unexpectedly with code ${code}`));
+            });
+            send(worker);
+        });
+    } finally {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+        await worker.terminate();
+    }
+}
+
 function sliceSpan(text: string, span: SourceSpan): string {
     return text.slice(span.start, span.end);
 }
@@ -100,6 +129,41 @@ function testQueueScheduling(): void {
     queue.enqueue(backgroundThree);
     assert.deepStrictEqual(queue.clear(), [interactiveTwo, interactiveThree, backgroundThree]);
     assert.strictEqual(queue.size, 0);
+
+    const remainingQueue = new ParserRequestQueue<QueuedRequest>();
+    const backgroundFour: QueuedRequest = { requestId: 'b4', priority: 'background' };
+    const backgroundFive: QueuedRequest = { requestId: 'b5', priority: 'background' };
+    const backgroundSix: QueuedRequest = { requestId: 'b6', priority: 'background' };
+    const interactiveFour: QueuedRequest = { requestId: 'i4', priority: 'interactive' };
+    remainingQueue.enqueue(backgroundFour);
+    remainingQueue.enqueue(backgroundFive);
+    remainingQueue.enqueue(backgroundSix);
+    assert.strictEqual(remainingQueue.takeNext(), backgroundFour);
+    assert.strictEqual(remainingQueue.cancel('b5'), true);
+    remainingQueue.enqueue(interactiveFour);
+    assert.deepStrictEqual(remainingQueue.clear(), [interactiveFour, backgroundSix]);
+    assert.strictEqual(remainingQueue.size, 0);
+}
+
+function testQueueLargeDrain(): void {
+    const requestCount = 100_000;
+    const queue = new ParserRequestQueue<{
+        requestId: string;
+        priority: 'background';
+    }>();
+    for (let index = 0; index < requestCount; index++) {
+        queue.enqueue({ requestId: String(index), priority: 'background' });
+    }
+
+    const started = performance.now();
+    for (let index = 0; index < requestCount; index++) {
+        assert.strictEqual(queue.takeNext()?.requestId, String(index));
+    }
+    const elapsed = performance.now() - started;
+
+    assert.strictEqual(queue.takeNext(), undefined);
+    assert.strictEqual(queue.size, 0);
+    assert.ok(elapsed < 4_000, `draining ${requestCount} requests took ${elapsed}ms`);
 }
 
 async function testRealWasmParse(): Promise<void> {
@@ -165,6 +229,7 @@ async function testErrorDiagnosticUsesUtf16Span(): Promise<void> {
         item => item.code === 'systemverilog.syntax-error'
     );
     assert.ok(diagnostic, 'expected an ERROR-node diagnostic');
+    assert.strictEqual(document.diagnostics.length, 1);
     assert.strictEqual(diagnostic.severity, 'error');
     assert.ok(diagnostic.span);
     assert.strictEqual(diagnostic.span.uri, uri);
@@ -172,10 +237,95 @@ async function testErrorDiagnosticUsesUtf16Span(): Promise<void> {
     assert.ok(sliceSpan(source, diagnostic.span).includes('@'));
 }
 
+async function testMissingSyntaxDiagnostics(): Promise<void> {
+    const cases = [
+        {
+            requestId: 'missing-name',
+            source: '// \u4fe1\u53f7\ud83d\ude00\nmodule ; endmodule',
+            missingType: 'simple_identifier',
+            moduleNames: [],
+            expectedOffset: '// \u4fe1\u53f7\ud83d\ude00\nmodule'.length,
+        },
+        {
+            requestId: 'missing-semicolon',
+            source: 'module missing_semicolon(input logic clk) endmodule',
+            missingType: ';',
+            moduleNames: ['missing_semicolon'],
+            expectedOffset: 'module missing_semicolon(input logic clk)'.length,
+        },
+    ];
+
+    for (const fixture of cases) {
+        const uri = `memory:/${fixture.requestId}.sv`;
+        const document = parsedDocument(
+            await parseInWorker(fixture.requestId, uri, 1, fixture.source)
+        );
+        const missing = document.diagnostics.filter(
+            diagnostic => diagnostic.code === 'systemverilog.missing-syntax'
+        );
+
+        assert.strictEqual(missing.length, 1);
+        assert.strictEqual(document.diagnostics.length, 1);
+        assert.strictEqual(
+            missing[0].message,
+            `Missing SystemVerilog syntax: ${fixture.missingType}`
+        );
+        assert.ok(missing[0].span);
+        assert.strictEqual(missing[0].span.start, missing[0].span.end);
+        assert.strictEqual(missing[0].span.start, fixture.expectedOffset);
+        assert.strictEqual(missing[0].span.uri, uri);
+        assert.deepStrictEqual(
+            document.modules.map(module => module.name),
+            fixture.moduleNames
+        );
+        assert.ok(document.modules.every(module => module.name.length > 0));
+    }
+}
+
+async function testEndLabelSkipsComments(): Promise<void> {
+    const source = 'module top; endmodule /* comment */ : labeled';
+    const document = parsedDocument(
+        await parseInWorker('end-label', 'memory:/end-label.sv', 1, source)
+    );
+
+    assert.strictEqual(document.modules.length, 1);
+    assert.strictEqual(document.modules[0].endLabel, 'labeled');
+}
+
+async function testDisposeSuppressesResponses(): Promise<void> {
+    await expectNoWorkerMessages('dispose during initialization', worker => {
+        worker.postMessage({
+            type: 'parse',
+            requestId: 'dispose-running',
+            uri: 'memory:/dispose-running.sv',
+            version: 1,
+            text: 'module dispose_running; endmodule',
+            priority: 'interactive',
+        });
+        worker.postMessage({ type: 'dispose' });
+    }, 1_200);
+
+    await expectNoWorkerMessages('parse after dispose', worker => {
+        worker.postMessage({ type: 'dispose' });
+        worker.postMessage({
+            type: 'parse',
+            requestId: 'after-dispose',
+            uri: 'memory:/after-dispose.sv',
+            version: 1,
+            text: 'module after_dispose; endmodule',
+            priority: 'interactive',
+        });
+    }, 300);
+}
+
 async function main(): Promise<void> {
     testQueueScheduling();
+    testQueueLargeDrain();
     await testRealWasmParse();
     await testErrorDiagnosticUsesUtf16Span();
+    await testMissingSyntaxDiagnostics();
+    await testEndLabelSkipsComments();
+    await testDisposeSuppressesResponses();
     console.log('HDL worker tests passed');
 }
 
