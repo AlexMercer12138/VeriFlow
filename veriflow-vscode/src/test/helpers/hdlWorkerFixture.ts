@@ -2,9 +2,13 @@ import * as path from 'path';
 import { Worker } from 'worker_threads';
 
 import type { HdlDocument } from '../../core/hdl/model';
-import type { ParserWorkerResponse } from '../../core/hdl/protocol';
+import type { HdlParseOptions, ParserWorkerResponse } from '../../core/hdl/protocol';
 
-export async function parseWithRealWorker(uri: string, text: string): Promise<HdlDocument> {
+export async function parseWithRealWorker(
+    uri: string,
+    text: string,
+    options: HdlParseOptions = { defines: {} }
+): Promise<HdlDocument> {
     const extensionRoot = path.resolve(__dirname, '..', '..', '..');
     const worker = new Worker(
         path.join(extensionRoot, 'dist', 'workers', 'hdlParserWorker.js'),
@@ -56,6 +60,7 @@ export async function parseWithRealWorker(uri: string, text: string): Promise<Hd
                 version: 1,
                 text,
                 priority: 'interactive',
+                options,
             });
         });
 

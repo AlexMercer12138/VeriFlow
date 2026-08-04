@@ -178,7 +178,7 @@ async function testRealWasmParse(): Promise<void> {
     assert.strictEqual(document.languageId, 'systemverilog');
     assert.strictEqual(document.lineEnding, '\r\n');
     assert.match(document.textHash, /^[0-9a-f]{64}$/);
-    assert.strictEqual(document.preprocessingFingerprint, 'none');
+    assert.match(document.preprocessingFingerprint, /^[0-9a-f]{64}$/);
     assert.strictEqual(document.modules.length, 1);
     assert.deepStrictEqual(document.interfaces, []);
     assert.deepStrictEqual(document.packages, []);

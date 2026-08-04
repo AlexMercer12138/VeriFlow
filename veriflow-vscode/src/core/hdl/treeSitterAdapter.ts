@@ -24,6 +24,7 @@ import type {
     WidthValue,
 } from './model';
 import { PositionMap } from './positionMap';
+import { CompositeSourceMap } from './preprocessor';
 import type { ParseRequest } from './protocol';
 
 type ByteRange = {
@@ -34,6 +35,15 @@ type ByteRange = {
 type AdaptContext = {
     map: PositionMap;
     request: ParseRequest;
+    sourceMap: CompositeSourceMap;
+    sourceTexts: Readonly<Record<string, string>>;
+    transformedText: string;
+};
+
+export type AdapterSourceContext = {
+    text: string;
+    sourceMap: CompositeSourceMap;
+    sourceTexts: Readonly<Record<string, string>>;
 };
 
 type PendingReference = Omit<SymbolReferenceModel, 'symbolId'> & {
@@ -59,10 +69,8 @@ function sourceSpan(range: ByteRange, context: AdaptContext): SourceSpan {
     // them to UTF-8 bytes so PositionMap remains the single byte-to-source boundary.
     const byteStart = context.map.utf16ToByte(range.startIndex);
     const byteEnd = context.map.utf16ToByte(range.endIndex);
-    return {
-        ...context.map.byteRangeToSourceRange(byteStart, byteEnd),
-        uri: context.request.uri,
-    };
+    const compositeRange = context.map.byteRangeToSourceRange(byteStart, byteEnd);
+    return context.sourceMap.mapSpan(compositeRange.start, compositeRange.end);
 }
 
 function offsetSpan(startIndex: number, endIndex: number): ByteRange {
@@ -144,11 +152,21 @@ function typeNode(node: Node): Node | undefined {
     );
 }
 
-function packedRangeText(dimensions: Node[], request: ParseRequest): string | undefined {
+function sourceText(range: ByteRange, context: AdaptContext): string {
+    const span = sourceSpan(range, context);
+    const owningText = span.uri === undefined || span.compositeParts
+        ? undefined
+        : context.sourceTexts[span.uri];
+    return owningText === undefined
+        ? context.transformedText.slice(range.startIndex, range.endIndex)
+        : owningText.slice(span.start, span.end);
+}
+
+function packedRangeText(dimensions: Node[], context: AdaptContext): string | undefined {
     const first = dimensions[0];
     const last = dimensions[dimensions.length - 1];
     return first && last
-        ? request.text.slice(first.startIndex, last.endIndex)
+        ? sourceText(offsetSpan(first.startIndex, last.endIndex), context)
         : undefined;
 }
 
@@ -160,7 +178,7 @@ function packedRangeSpan(dimensions: Node[], context: AdaptContext): SourceSpan 
         : undefined;
 }
 
-function textWithoutRanges(node: Node | undefined, ranges: Node[], request: ParseRequest): string {
+function textWithoutRanges(node: Node | undefined, ranges: Node[], context: AdaptContext): string {
     if (!node) {
         return '';
     }
@@ -173,10 +191,10 @@ function textWithoutRanges(node: Node | undefined, ranges: Node[], request: Pars
     let text = '';
     let offset = node.startIndex;
     for (const range of contained) {
-        text += request.text.slice(offset, range.startIndex);
+        text += sourceText(offsetSpan(offset, range.startIndex), context);
         offset = range.endIndex;
     }
-    text += request.text.slice(offset, node.endIndex);
+    text += sourceText(offsetSpan(offset, node.endIndex), context);
     return text.trim();
 }
 
@@ -550,7 +568,7 @@ function adaptParameterDeclaration(
         return [];
     }
     const dimensions = packedDimensions(declaration, list.startIndex);
-    const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context.request);
+    const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context);
     return list.namedChildren
         .filter(child => child.type === 'param_assignment')
         .flatMap(assignment => {
@@ -660,6 +678,7 @@ function adaptAnsiPorts(
     let inherited: PortPrefix | undefined;
     let inheritsUnsupportedInterface = false;
     let currentGroup: PortDeclarationGroupModel | undefined;
+    let currentGroupStartIndex: number | undefined;
     const reportUnsupportedInterface = (declaration: Node): void => {
         diagnostics.push({
             severity: 'warning',
@@ -688,22 +707,24 @@ function adaptAnsiPorts(
             inherited = undefined;
             inheritsUnsupportedInterface = true;
             currentGroup = undefined;
+            currentGroupStartIndex = undefined;
             continue;
         }
         if (!explicitHeader && inheritsUnsupportedInterface) {
             reportUnsupportedInterface(declaration);
             currentGroup = undefined;
+            currentGroupStartIndex = undefined;
             continue;
         }
         inheritsUnsupportedInterface = false;
         const dimensions = explicitHeader
             ? packedDimensions(explicitHeader, nameNode.startIndex)
             : [];
-        const rangeText = packedRangeText(dimensions, context.request);
+        const rangeText = packedRangeText(dimensions, context);
         const prefix: PortPrefix = explicitHeader
             ? {
                 direction: explicitDirection ?? inherited?.direction ?? 'input',
-                typeText: textWithoutRanges(typeNode(explicitHeader), dimensions, context.request),
+                typeText: textWithoutRanges(typeNode(explicitHeader), dimensions, context),
                 packedRange: rangeText,
                 width: widthFromDimensions(explicitHeader, dimensions, rangeText),
             }
@@ -725,6 +746,7 @@ function adaptAnsiPorts(
                 items: [],
             };
             groups.push(currentGroup);
+            currentGroupStartIndex = declaration.startIndex;
         }
 
         const portId = stableId('port', nameNode.text, nameNode.startIndex, context.request.uri);
@@ -746,7 +768,7 @@ function adaptAnsiPorts(
                 : undefined,
         });
         currentGroup.declarationSpan = sourceSpan(
-            offsetSpan(currentGroup.declarationSpan.start, declaration.endIndex),
+            offsetSpan(currentGroupStartIndex!, declaration.endIndex),
             context
         );
 
@@ -849,7 +871,7 @@ function adaptNonAnsiPorts(
             continue;
         }
         const dimensions = packedDimensions(declaration, names[0].startIndex);
-        const rangeText = packedRangeText(dimensions, context.request);
+        const rangeText = packedRangeText(dimensions, context);
         const groupId = stableId('port-group', names[0].text, declaration.startIndex, context.request.uri);
         const group: PortDeclarationGroupModel = {
             id: groupId,
@@ -868,7 +890,7 @@ function adaptNonAnsiPorts(
         };
         groups.push(group);
 
-        const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context.request);
+        const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context);
         names.forEach((nameNode, index) => {
             const port = portByName.get(nameNode.text);
             if (!port) {
@@ -1174,14 +1196,14 @@ function adaptNetDeclaration(node: Node, context: AdaptContext): NetDeclarationM
         return undefined;
     }
     const dimensions = packedDimensions(node, list.startIndex);
-    const rangeText = packedRangeText(dimensions, context.request);
+    const rangeText = packedRangeText(dimensions, context);
     const vectorType = firstDescendant(node, new Set(['integer_vector_type']))?.text;
     const netType = directChild(node, 'net_type')?.text;
     const kind: NetDeclarationModel['kind'] = isNet
         ? netType === 'wire' || netType === undefined ? 'wire' : 'other'
         : vectorType === 'logic' ? 'logic' : vectorType === 'reg' ? 'reg' : 'other';
     const dataType = firstDescendant(node, new Set(['data_type', 'implicit_data_type']));
-    const baseType = textWithoutRanges(dataType, dimensions, context.request);
+    const baseType = textWithoutRanges(dataType, dimensions, context);
     const typeParts = [...new Set([netType, baseType].filter(
         (part): part is string => part !== undefined && part.length > 0
     ))];
@@ -1700,8 +1722,26 @@ function collectDeclaredPrimitiveNames(root: Node): Set<string> {
     return names;
 }
 
-export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
-    const context: AdaptContext = { map: new PositionMap(request.text), request };
+export function adaptTree(
+    tree: Tree,
+    request: ParseRequest,
+    sourceContext?: AdapterSourceContext
+): HdlDocument {
+    const transformedText = sourceContext?.text ?? request.text;
+    const sourceMap = sourceContext?.sourceMap ?? new CompositeSourceMap([{
+        generatedStart: 0,
+        generatedEnd: transformedText.length,
+        sourceUri: request.uri,
+        sourceStart: 0,
+        sourceEnd: transformedText.length,
+    }]);
+    const context: AdaptContext = {
+        map: new PositionMap(transformedText),
+        request,
+        sourceMap,
+        sourceTexts: sourceContext?.sourceTexts ?? { [request.uri]: request.text },
+        transformedText,
+    };
     const modules: ModuleModel[] = [];
     const interfaces: NamedUnitModel[] = [];
     const packages: NamedUnitModel[] = [];

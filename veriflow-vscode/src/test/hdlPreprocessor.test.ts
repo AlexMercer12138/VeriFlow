@@ -1,0 +1,406 @@
+import * as assert from 'assert';
+
+import { PositionMap } from '../core/hdl/positionMap';
+import {
+    CompositeSourceMap,
+    preprocessForParsing,
+} from '../core/hdl/preprocessor';
+import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
+
+function assertNewlinesPreserved(source: string, transformed: string): void {
+    for (let index = 0; index < source.length; index++) {
+        if (source[index] === '\r' || source[index] === '\n') {
+            assert.strictEqual(transformed[index], source[index]);
+        }
+    }
+}
+
+function testActiveBranchesAndDefineSideEffects(): void {
+    const source = [
+        '`define LOCAL',
+        '`ifdef OUTER',
+        'module inactive; endmodule',
+        '`elsif LOCAL',
+        'module active; child u_child(); endmodule',
+        '`else',
+        'module fallback; endmodule',
+        '`endif',
+        '`undef LOCAL',
+    ].join('\r\n');
+    const result = preprocessForParsing('file:///workspace/top.sv', source, { defines: {} });
+
+    assert.strictEqual(result.text.length, source.length);
+    assertNewlinesPreserved(source, result.text);
+    assert.ok(result.text.includes('module active; child u_child(); endmodule'));
+    assert.ok(!result.text.includes('module inactive'));
+    assert.ok(!result.text.includes('module fallback'));
+    assert.strictEqual(result.activeDefines.LOCAL, undefined);
+    assert.deepStrictEqual(result.diagnostics, []);
+}
+
+function testTextualIncludesAndSourceMapping(): void {
+    const includeResult = preprocessForParsing('file:///workspace/top.sv', [
+        '`include "defs.svh"',
+        '`ifdef FROM_INCLUDE',
+        'module included_branch; endmodule',
+        '`endif',
+    ].join('\n'), {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: 'file:///workspace/top.sv',
+            rawPath: 'defs.svh',
+            resolvedUri: 'file:///workspace/include/defs.svh',
+            text: '`define FROM_INCLUDE 1\n',
+        }],
+    });
+    assert.ok(includeResult.text.includes('module included_branch'));
+    assert.strictEqual(includeResult.activeDefines.FROM_INCLUDE, '1');
+
+    const parentUri = 'file:///workspace/with_ports.sv';
+    const portsUri = 'file:///workspace/ports.svh';
+    const bodyUri = 'file:///workspace/body.svh';
+    const parent = [
+        'module with_ports (',
+        '`include "ports.svh"',
+        ');',
+        '`include "body.svh"',
+        'endmodule',
+        '',
+    ].join('\n');
+    const ports = 'input logic clk, output logic done';
+    const body = 'child u_child(.clk(clk), .done(done));';
+    const result = preprocessForParsing(parentUri, parent, {
+        defines: {},
+        resolvedIncludes: [
+            { fromUri: parentUri, rawPath: 'ports.svh', resolvedUri: portsUri, text: ports },
+            { fromUri: parentUri, rawPath: 'body.svh', resolvedUri: bodyUri, text: body },
+        ],
+    });
+
+    assert.ok(result.text.includes(ports));
+    assert.ok(result.text.includes(body));
+    const includedPortOffset = result.text.indexOf('clk');
+    assert.deepStrictEqual(
+        result.sourceMap.mapSpan(includedPortOffset, includedPortOffset + 3),
+        { start: 12, end: 15, uri: portsUri }
+    );
+    assert.strictEqual(result.sourceTexts[parentUri], parent);
+    assert.strictEqual(result.sourceTexts[portsUri], ports);
+    assert.strictEqual(result.sourceTexts[bodyUri], body);
+
+    const declarationStart = result.text.indexOf('module');
+    const declarationEnd = result.text.indexOf('endmodule') + 'endmodule'.length;
+    const declarationSpan = result.sourceMap.mapSpan(declarationStart, declarationEnd);
+    assert.strictEqual(declarationSpan.uri, parentUri);
+    assert.ok(declarationSpan.compositeParts);
+    assert.deepStrictEqual(
+        declarationSpan.compositeParts!.map(part => part.uri),
+        [parentUri, portsUri, parentUri, bodyUri, parentUri]
+    );
+}
+
+function testUnicodeMaskingKeepsUtf16AndBytePositionsStable(): void {
+    const source = '`ifdef OFF\n// \u4fe1\u53f7 \ud83d\ude00\n`endif\nmodule after_unicode; endmodule\n';
+    const result = preprocessForParsing('file:///workspace/unicode.sv', source, { defines: {} });
+    const transformedMap = new PositionMap(result.text);
+    const originalOffset = source.indexOf('module after_unicode');
+    const transformedByte = Buffer.byteLength(result.text.slice(0, originalOffset), 'utf8');
+
+    assert.strictEqual(result.text.length, source.length);
+    assertNewlinesPreserved(source, result.text);
+    assert.strictEqual(transformedMap.byteToUtf16(transformedByte), originalOffset);
+    assert.strictEqual(result.sourceMap.mapOffset(originalOffset, 'start').start, originalOffset);
+}
+
+function testInactiveCommentsDoNotHideConditionalDirectives(): void {
+    const source = [
+        '`ifdef OFF',
+        '/* inactive and intentionally unterminated',
+        '`endif',
+        'module visible_after_comment; endmodule',
+    ].join('\n');
+    const result = preprocessForParsing('file:///workspace/inactive-comment.sv', source, {
+        defines: {},
+    });
+
+    assert.ok(result.text.includes('module visible_after_comment; endmodule'));
+    assert.ok(!result.diagnostics.some(
+        diagnostic => diagnostic.code === 'HDL_PP_UNTERMINATED_CONDITIONAL'
+    ));
+}
+
+function testCompositeSourceMapBoundariesAndValidation(): void {
+    const map = new CompositeSourceMap([
+        { generatedStart: 0, generatedEnd: 3, sourceUri: 'file:///a.sv', sourceStart: 5, sourceEnd: 8 },
+        { generatedStart: 3, generatedEnd: 5, sourceUri: 'file:///b.svh', sourceStart: 10, sourceEnd: 12 },
+        { generatedStart: 5, generatedEnd: 7, sourceUri: 'file:///a.sv', sourceStart: 20, sourceEnd: 22 },
+    ]);
+
+    assert.deepStrictEqual(map.mapOffset(3, 'end'), { uri: 'file:///a.sv', start: 8, end: 8 });
+    assert.deepStrictEqual(map.mapOffset(3, 'start'), { uri: 'file:///b.svh', start: 10, end: 10 });
+    assert.deepStrictEqual(map.mapSpan(1, 6), {
+        uri: 'file:///a.sv',
+        start: 6,
+        end: 8,
+        compositeParts: [
+            { uri: 'file:///a.sv', start: 6, end: 8 },
+            { uri: 'file:///b.svh', start: 10, end: 12 },
+            { uri: 'file:///a.sv', start: 20, end: 21 },
+        ],
+    });
+    assert.deepStrictEqual(map.mapSpan(3, 3), {
+        uri: 'file:///b.svh', start: 10, end: 10,
+    });
+    assert.throws(() => map.mapOffset(-1, 'start'), RangeError);
+    assert.throws(() => map.mapOffset(8, 'end'), RangeError);
+    assert.throws(() => map.mapSpan(4, 3), RangeError);
+    assert.throws(() => new CompositeSourceMap([
+        { generatedStart: 1, generatedEnd: 2, sourceUri: 'file:///a.sv', sourceStart: 0, sourceEnd: 1 },
+    ]), /start at generated offset 0/);
+    assert.throws(() => new CompositeSourceMap([
+        { generatedStart: 0, generatedEnd: 1, sourceUri: 'file:///a.sv', sourceStart: 0, sourceEnd: 1 },
+        { generatedStart: 2, generatedEnd: 3, sourceUri: 'file:///a.sv', sourceStart: 2, sourceEnd: 3 },
+    ]), /gap/);
+}
+
+function testPreprocessorDiagnosticsAndRecursionGuards(): void {
+    const topUri = 'file:///WORKSPACE/top.sv';
+    const childUri = 'file:///workspace/child.svh';
+    const source = [
+        '`include "missing.svh"',
+        '`include "child.svh"',
+        '`else',
+        '`ifdef NEVER',
+        '`else',
+        '`else',
+        '`elsif NEVER',
+        '`endif',
+        '`endif',
+    ].join('\n');
+    const result = preprocessForParsing(topUri, source, {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: 'file:///workspace/TOP.sv',
+            rawPath: 'child.svh',
+            resolvedUri: childUri,
+            text: '`include "top.sv"\n',
+        }, {
+            fromUri: childUri,
+            rawPath: 'top.sv',
+            resolvedUri: 'file:///workspace/top.sv',
+            text: source,
+        }],
+    });
+    const codes = result.diagnostics.map(diagnostic => diagnostic.code);
+    assert.ok(codes.includes('HDL_INCLUDE_UNRESOLVED'));
+    assert.ok(codes.includes('HDL_INCLUDE_CYCLE'));
+    assert.ok(codes.includes('HDL_PP_UNMATCHED_ELSE'));
+    assert.ok(codes.includes('HDL_PP_DUPLICATE_ELSE'));
+    assert.ok(codes.includes('HDL_PP_ELSIF_AFTER_ELSE'));
+    assert.ok(codes.includes('HDL_PP_UNMATCHED_ENDIF'));
+    assert.ok(result.diagnostics.every(diagnostic => diagnostic.span?.uri));
+
+    const depthResult = preprocessForParsing(topUri, '`include "child.svh"', {
+        defines: {},
+        maxIncludeDepth: 0,
+        resolvedIncludes: [{
+            fromUri: topUri,
+            rawPath: 'child.svh',
+            resolvedUri: childUri,
+            text: 'module hidden_by_depth; endmodule',
+        }],
+    });
+    assert.ok(depthResult.diagnostics.some(diagnostic => diagnostic.code === 'HDL_INCLUDE_DEPTH'));
+    assert.ok(!depthResult.text.includes('hidden_by_depth'));
+}
+
+function testUnterminatedConditionalAndUnexpandedMacroWarnings(): void {
+    const uri = 'file:///workspace/macro.sv';
+    const source = [
+        '`timescale 1ns/1ps',
+        '`define DECLARE(name) module name; endmodule',
+        '`DECLARE(generated)',
+        '`ifdef OPEN',
+    ].join('\n');
+    const result = preprocessForParsing(uri, source, { defines: {} });
+    const macroWarnings = result.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    );
+
+    assert.strictEqual(macroWarnings.length, 1);
+    assert.ok(result.diagnostics.some(
+        diagnostic => diagnostic.code === 'HDL_PP_UNTERMINATED_CONDITIONAL'
+    ));
+    assert.ok(!result.text.includes('timescale'));
+    assert.ok(result.text.includes('`DECLARE(generated)'));
+}
+
+async function testWorkerParsesTextualPortAndBodyIncludes(): Promise<void> {
+    const parentUri = 'file:///workspace/parent.sv';
+    const portsUri = 'file:///workspace/ports.svh';
+    const bodyUri = 'file:///workspace/body.svh';
+    const ports = 'clk, output logic done';
+    const body = 'child u_child(.clk(clk), .done(done));';
+    const source = [
+        'module parent (input logic base_port,',
+        '`include "ports.svh"',
+        ');',
+        '`include "body.svh"',
+        'endmodule',
+        '',
+    ].join('\n');
+    const document = await parseWithRealWorker(parentUri, source, {
+        defines: {},
+        resolvedIncludes: [
+            { fromUri: parentUri, rawPath: 'ports.svh', resolvedUri: portsUri, text: ports },
+            { fromUri: parentUri, rawPath: 'body.svh', resolvedUri: bodyUri, text: body },
+        ],
+    });
+
+    assert.deepStrictEqual(document.modules.map(module => module.name), ['parent']);
+    const module = document.modules[0];
+    assert.deepStrictEqual(module.ports.map(port => port.name), ['base_port', 'clk', 'done']);
+    assert.strictEqual(module.ports[0].nameSpan.uri, parentUri);
+    for (const port of module.ports.slice(1)) {
+        assert.strictEqual(port.nameSpan.uri, portsUri);
+        assert.strictEqual(ports.slice(port.nameSpan.start, port.nameSpan.end), port.name);
+        assert.strictEqual(port.nameSpan.compositeParts, undefined);
+    }
+    assert.strictEqual(module.instances.length, 1);
+    const instance = module.instances[0];
+    assert.strictEqual(instance.moduleName, 'child');
+    assert.strictEqual(instance.instanceName, 'u_child');
+    for (const span of [
+        instance.declarationSpan,
+        instance.itemSpan,
+        instance.moduleNameSpan,
+        instance.nameSpan,
+        ...instance.portConnections.flatMap(connection => [
+            connection.connectionSpan,
+            connection.nameSpan!,
+            connection.expressionSpan,
+        ]),
+    ]) {
+        assert.strictEqual(span.uri, bodyUri);
+        assert.strictEqual(span.compositeParts, undefined);
+        assert.ok(body.slice(span.start, span.end).length > 0);
+    }
+    assert.strictEqual(body.slice(instance.nameSpan.start, instance.nameSpan.end), 'u_child');
+    assert.ok(module.declarationSpan.compositeParts);
+    assert.ok(module.headerSpan.compositeParts);
+    assert.deepStrictEqual(
+        module.portDeclarationGroups[0].declarationSpan.compositeParts!.map(part => part.uri),
+        [parentUri, portsUri]
+    );
+    assert.deepStrictEqual(
+        module.declarationSpan.compositeParts!.map(part => part.uri),
+        [parentUri, portsUri, parentUri, bodyUri, parentUri]
+    );
+}
+
+async function testWorkerKeepsIncludedUnitsAndActiveBranches(): Promise<void> {
+    const includeOnlyUri = 'file:///workspace/include-only.sv';
+    const unitUri = 'file:///workspace/unit.svh';
+    const unit = 'module included_unit(input logic clk); endmodule';
+    const includeOnly = await parseWithRealWorker(
+        includeOnlyUri,
+        '`include "unit.svh"\n',
+        { defines: {}, resolvedIncludes: [{
+            fromUri: includeOnlyUri,
+            rawPath: 'unit.svh',
+            resolvedUri: unitUri,
+            text: unit,
+        }] }
+    );
+    assert.deepStrictEqual(includeOnly.modules.map(module => module.name), ['included_unit']);
+    assert.strictEqual(includeOnly.modules[0].nameSpan.uri, unitUri);
+    assert.strictEqual(
+        unit.slice(includeOnly.modules[0].nameSpan.start, includeOnly.modules[0].nameSpan.end),
+        'included_unit'
+    );
+
+    const branchUri = 'file:///workspace/branches.sv';
+    const definesUri = 'file:///workspace/defines.svh';
+    const branchSource = [
+        '`include "defines.svh"',
+        '`ifdef FROM_INCLUDE',
+        'module include_effect; endmodule',
+        '`endif',
+        '`ifdef SELECTED',
+        'module selected; endmodule',
+        '`else',
+        'module rejected; endmodule',
+        '`endif',
+    ].join('\n');
+    const branches = await parseWithRealWorker(branchUri, branchSource, {
+        defines: { SELECTED: true },
+        resolvedIncludes: [{
+            fromUri: branchUri,
+            rawPath: 'defines.svh',
+            resolvedUri: definesUri,
+            text: '`define FROM_INCLUDE 1\n',
+        }],
+    });
+    assert.deepStrictEqual(
+        branches.modules.map(module => module.name),
+        ['include_effect', 'selected']
+    );
+}
+
+async function testWorkerDiagnosticsAndFingerprint(): Promise<void> {
+    const uri = 'file:///workspace/fingerprint.sv';
+    const firstUri = 'file:///workspace/first.svh';
+    const secondUri = 'file:///workspace/second.svh';
+    const source = [
+        '`include "first.svh"',
+        '`include "second.svh"',
+        '`include "missing.svh"',
+        'module fingerprint; endmodule',
+    ].join('\n');
+    const includes = [
+        { fromUri: uri, rawPath: 'first.svh', resolvedUri: firstUri, text: '// first\n' },
+        { fromUri: uri, rawPath: 'second.svh', resolvedUri: secondUri, text: '// second\n' },
+    ];
+    const base = await parseWithRealWorker(uri, source, { defines: { B: '2', A: true }, resolvedIncludes: includes });
+    const reversed = await parseWithRealWorker(uri, source, {
+        defines: { A: true, B: '2' },
+        resolvedIncludes: [...includes].reverse(),
+    });
+    const changedDefine = await parseWithRealWorker(uri, source, {
+        defines: { A: true, B: '3' }, resolvedIncludes: includes,
+    });
+    const changedInclude = await parseWithRealWorker(uri, source, {
+        defines: { A: true, B: '2' },
+        resolvedIncludes: [includes[0], { ...includes[1], text: '// changed\n' }],
+    });
+
+    assert.match(base.preprocessingFingerprint, /^[0-9a-f]{64}$/);
+    assert.strictEqual(base.preprocessingFingerprint, reversed.preprocessingFingerprint);
+    assert.notStrictEqual(base.preprocessingFingerprint, changedDefine.preprocessingFingerprint);
+    assert.notStrictEqual(base.preprocessingFingerprint, changedInclude.preprocessingFingerprint);
+    const unresolved = base.diagnostics.find(
+        diagnostic => diagnostic.code === 'HDL_INCLUDE_UNRESOLVED'
+    );
+    assert.ok(unresolved);
+    assert.strictEqual(unresolved.span?.uri, uri);
+    assert.strictEqual(source.slice(unresolved.span!.start, unresolved.span!.end), '`include "missing.svh"');
+}
+
+async function main(): Promise<void> {
+    testActiveBranchesAndDefineSideEffects();
+    testTextualIncludesAndSourceMapping();
+    testUnicodeMaskingKeepsUtf16AndBytePositionsStable();
+    testInactiveCommentsDoNotHideConditionalDirectives();
+    testCompositeSourceMapBoundariesAndValidation();
+    testPreprocessorDiagnosticsAndRecursionGuards();
+    testUnterminatedConditionalAndUnexpandedMacroWarnings();
+    await testWorkerParsesTextualPortAndBodyIncludes();
+    await testWorkerKeepsIncludedUnitsAndActiveBranches();
+    await testWorkerDiagnosticsAndFingerprint();
+    console.log('HDL preprocessor tests passed');
+}
+
+void main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});

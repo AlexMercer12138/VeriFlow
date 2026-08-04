@@ -1,4 +1,9 @@
 import type { HdlDocument } from './model';
+import type { PreprocessOptions } from './preprocessor';
+
+export type HdlParseOptions = PreprocessOptions & {
+    cacheMode?: 'document' | 'ephemeral';
+};
 
 export type ParseRequest = {
     type: 'parse';
@@ -7,6 +12,7 @@ export type ParseRequest = {
     version: number;
     text: string;
     priority: 'interactive' | 'background';
+    options: HdlParseOptions;
 };
 
 export type CancelRequest = {
