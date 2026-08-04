@@ -16,6 +16,7 @@ src/presentation/gui/__pycache__/
 # VS Code extension
 veriflow-vscode/node_modules/
 veriflow-vscode/out/
+veriflow-vscode/dist/
 veriflow-vscode/*.vsix
 
 # Simulation outputs

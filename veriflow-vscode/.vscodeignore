@@ -2,7 +2,10 @@
 .vscode-test/**
 node_modules/**
 src/**
+out/**
+scripts/**
 tsconfig.json
+.nvmrc
 .gitignore
 **/*.ts
 **/*.map

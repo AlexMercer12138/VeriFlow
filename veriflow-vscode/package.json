@@ -7,7 +7,7 @@
   "publisher": "Vikai-mercer",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages",
@@ -35,7 +35,7 @@
     "workspaceContains:**/*.sv",
     "onCustomEditor:veriflow.waveformEditor"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "customEditors": [
       {
@@ -224,8 +224,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "test": "npm run compile && node ./out/test/core.test.js && node ./out/test/waveformIndex.test.js",
+    "compile:ts": "tsc -p ./",
+    "bundle": "node ./scripts/build.mjs",
+    "compile": "npm run compile:ts && npm run bundle",
+    "test": "npm run compile && node ./scripts/run-tests.mjs",
     "benchmark:waveform": "python ../scripts/generate_waveform_benchmark.py --target-bytes 10485760 --signals 64 --seed 1 --output ../.tmp-waveform-benchmark.vcd && python ../scripts/benchmark_waveform_index.py ../.tmp-waveform-benchmark.vcd --queries 32 --output ../.tmp-waveform-report.json",
     "benchmark:waveform:full": "python ../scripts/generate_waveform_benchmark.py --target-bytes 524288000 --changes 10000000 --signals 256 --seed 1 --output ../.tmp-waveform-benchmark-full.vcd && python ../scripts/benchmark_waveform_index.py ../.tmp-waveform-benchmark-full.vcd --queries 64 --output ../.tmp-waveform-report-full.json",
     "watch": "tsc -watch -p ./",
@@ -233,10 +235,15 @@
     "package": "vsce package",
     "publish": "vsce publish"
   },
+  "dependencies": {
+    "web-tree-sitter": "0.26.11"
+  },
   "devDependencies": {
     "@types/node": "^18.0.0",
-    "@types/vscode": "^1.80.0",
+    "@types/vscode": "^1.82.0",
     "@vscode/vsce": "^3.9.1",
+    "esbuild": "0.28.1",
+    "tree-sitter-systemverilog": "0.4.0",
     "typescript": "^5.0.0"
   }
 }

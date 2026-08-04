@@ -32,7 +32,14 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
             localResourceRoots: [this._context.extensionUri],
         };
         webviewPanel.webview.html = this._getHtml(webviewPanel.webview);
-        const worker = new WaveformWorkerClient();
+        const worker = new WaveformWorkerClient({
+            workerPath: path.join(
+                this._context.extensionPath,
+                'dist',
+                'workers',
+                'waveformWorker.js'
+            ),
+        });
         const stableReloader = new StableFileReloader(document.uri.fsPath, {
             delayMs: 750,
             confirmationMs: 100,
