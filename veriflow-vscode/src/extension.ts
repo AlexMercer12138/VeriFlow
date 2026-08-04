@@ -18,6 +18,7 @@ import {
     listVerilogFiles, readText, preprocessVerilog, removeComments,
     ModuleScanResult, DependencyResult, SimulationResult,
     SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE,
+    HdlParserClient, createHdlParserClient,
 } from './core';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -56,6 +57,8 @@ let statusBarItem: vscode.StatusBarItem;
 let simulateProcess: child_process.ChildProcess | null = null;
 let depAnalyzer = new DependencyAnalyzer();
 let simRunner = new SimulationRunner();
+let hdlParser: HdlParserClient | undefined;
+let hdlParserExtensionPath: string | undefined;
 
 // 状态管理
 let _analyzeStatus: string = 'idle';
@@ -66,6 +69,11 @@ let _pendingWaveAfterSimulate = false;
 let _pendingWaveAfterAnalyze = false;
 
 export function activate(context: vscode.ExtensionContext): void {
+    if (hdlParser && hdlParserExtensionPath !== context.extensionPath) {
+        throw new Error(
+            'HDL parser belongs to a different extension path; call deactivate() before reactivating'
+        );
+    }
     treeProvider = new ModuleTreeProvider();
     tbPanelProvider = new TestbenchPanelProvider(context);
 
@@ -125,6 +133,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration('veriflow.defines')) {
+                hdlParser?.clearCache();
+            }
             if (e.affectsConfiguration('veriflow')) { cmdScanModules(context); }
         })
     );
@@ -159,12 +170,33 @@ export function activate(context: vscode.ExtensionContext): void {
     cmdScanModules(context);
 }
 
-export function deactivate(): void {
+export function getHdlParser(context: vscode.ExtensionContext): HdlParserClient {
+    if (hdlParser) {
+        if (hdlParserExtensionPath !== context.extensionPath) {
+            throw new Error(
+                'HDL parser belongs to a different extension path; call deactivate() before reuse'
+            );
+        }
+        return hdlParser;
+    }
+    hdlParser = createHdlParserClient(context);
+    hdlParserExtensionPath = context.extensionPath;
+    return hdlParser;
+}
+
+export async function deactivate(): Promise<void> {
     if (simulateProcess) {
         simulateProcess.kill();
         simulateProcess = null;
     }
-    output.dispose();
+    const parser = hdlParser;
+    hdlParser = undefined;
+    hdlParserExtensionPath = undefined;
+    try {
+        await parser?.dispose();
+    } finally {
+        output.dispose();
+    }
 }
 
 function _restoreState(context: vscode.ExtensionContext): void {

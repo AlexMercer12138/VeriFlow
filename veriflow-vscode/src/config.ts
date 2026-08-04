@@ -46,6 +46,7 @@ export async function setDependencyResult(context: vscode.ExtensionContext, resu
 
 export interface ExtensionSettings {
     libDirs: string[];
+    defines: Record<string, string | boolean>;
     simulator: string;
     waveViewer: string;
     simulatorCompileCmd: string;
@@ -55,10 +56,28 @@ export interface ExtensionSettings {
     testbenchOutputDir: string;
 }
 
+function normalizeDefines(value: unknown): Record<string, string | boolean> {
+    const defines: Record<string, string | boolean> = {};
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return defines;
+    }
+    for (const key of Object.keys(value)) {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+            continue;
+        }
+        const defineValue = (value as Record<string, unknown>)[key];
+        if (typeof defineValue === 'string' || typeof defineValue === 'boolean') {
+            defines[key] = defineValue;
+        }
+    }
+    return defines;
+}
+
 export function getSettings(): ExtensionSettings {
     const config = vscode.workspace.getConfiguration('veriflow');
     return {
         libDirs: config.get<string[]>('libDirs', []),
+        defines: normalizeDefines(config.get<unknown>('defines', {})),
         simulator: config.get<string>('simulator', 'iverilog'),
         waveViewer: config.get<string>('waveViewer', 'builtin'),
         simulatorCompileCmd: config.get<string>('simulatorCompileCmd', ''),

@@ -172,6 +172,17 @@
           "default": [],
           "description": "Library directories for VeriFlow module search and dependency resolution"
         },
+        "veriflow.defines": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": [
+              "string",
+              "boolean"
+            ]
+          },
+          "description": "SystemVerilog preprocessor defines used by VeriFlow structural parsing"
+        },
         "veriflow.simulator": {
           "type": "string",
           "enum": [
