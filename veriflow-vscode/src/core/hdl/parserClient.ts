@@ -116,7 +116,14 @@ export class HdlParserClient {
             }
         }
 
-        const worker = this.ensureWorker();
+        let worker: WorkerLike;
+        try {
+            worker = this.ensureWorker();
+        } catch (error) {
+            return Promise.reject(
+                error instanceof Error ? error : new Error(String(error))
+            );
+        }
         const requestId = `hdl-${this.nextRequestNumber++}`;
         let resolvePromise!: (document: HdlDocument) => void;
         let rejectPromise!: (error: Error) => void;
@@ -196,7 +203,7 @@ export class HdlParserClient {
             runtimeWasmPath: this.options.runtimeWasmPath,
             languageWasmPath: this.options.languageWasmPath,
         });
-        const generation = ++this.workerGeneration;
+        const generation = this.workerGeneration + 1;
         const listeners: WorkerListeners = {
             message: message => {
                 if (this.worker === worker && this.workerGeneration === generation) {
@@ -221,9 +228,35 @@ export class HdlParserClient {
                 }
             },
         };
-        worker.on('message', listeners.message);
-        worker.on('error', listeners.error);
-        worker.on('exit', listeners.exit);
+        const rollback: Array<() => void> = [];
+        try {
+            worker.on('message', listeners.message);
+            rollback.push(() => {
+                const remove = worker.off?.bind(worker) ?? worker.removeListener?.bind(worker);
+                remove?.('message', listeners.message);
+            });
+            worker.on('error', listeners.error);
+            rollback.push(() => {
+                const remove = worker.off?.bind(worker) ?? worker.removeListener?.bind(worker);
+                remove?.('error', listeners.error);
+            });
+            worker.on('exit', listeners.exit);
+            rollback.push(() => {
+                const remove = worker.off?.bind(worker) ?? worker.removeListener?.bind(worker);
+                remove?.('exit', listeners.exit);
+            });
+        } catch (error) {
+            for (let index = rollback.length - 1; index >= 0; index--) {
+                try {
+                    rollback[index]();
+                } catch {
+                    // Continue rolling back the remaining successful registrations.
+                }
+            }
+            this.terminateWorker(worker);
+            throw error;
+        }
+        this.workerGeneration = generation;
         this.worker = worker;
         this.workerListeners = listeners;
         return worker;
@@ -284,11 +317,7 @@ export class HdlParserClient {
             pending.reject(error);
         }
         this.pending.clear();
-        try {
-            void Promise.resolve(worker.terminate()).catch(() => undefined);
-        } catch {
-            // The worker has already failed; termination is a best-effort cleanup.
-        }
+        this.terminateWorker(worker);
     }
 
     private detachWorker(worker: WorkerLike): void {
@@ -302,7 +331,15 @@ export class HdlParserClient {
         remove?.('exit', listeners.exit);
     }
 
-    private async disposeWorkerAndState(): Promise<void> {
+    private terminateWorker(worker: WorkerLike): void {
+        try {
+            void Promise.resolve(worker.terminate()).catch(() => undefined);
+        } catch {
+            // Worker termination is always best-effort.
+        }
+    }
+
+    private disposeWorkerAndState(): Promise<void> {
         this.cache.clear();
         for (const pending of this.pending.values()) {
             pending.reject(new HdlParserDisposedError());
@@ -310,7 +347,7 @@ export class HdlParserClient {
         this.pending.clear();
         const worker = this.worker;
         if (!worker) {
-            return;
+            return Promise.resolve();
         }
         try {
             worker.postMessage({ type: 'dispose' });
@@ -325,10 +362,7 @@ export class HdlParserClient {
             this.worker = undefined;
             this.workerListeners = undefined;
         }
-        try {
-            await Promise.resolve(worker.terminate());
-        } catch {
-            // The client remains disposed even when worker termination fails.
-        }
+        this.terminateWorker(worker);
+        return Promise.resolve();
     }
 }

@@ -26,8 +26,11 @@ class FakeWorker implements WorkerLike {
     throwOnCancel = false;
     throwOnDispose = false;
     failParseAt: number | undefined;
-    terminateFailure: 'none' | 'sync' | 'async' = 'none';
+    failOnListenerRegistration: number | undefined;
+    terminateFailure: 'none' | 'sync' | 'async' | 'never' = 'none';
+    readonly removedListenerEvents: WorkerEvent[] = [];
     private parseAttempts = 0;
+    private listenerRegistrationAttempts = 0;
     private readonly listeners = new Map<WorkerEvent, Set<WorkerListener>>();
 
     postMessage(message: ParserWorkerRequest): void {
@@ -48,6 +51,10 @@ class FakeWorker implements WorkerLike {
     }
 
     on(event: WorkerEvent, listener: WorkerListener): this {
+        this.listenerRegistrationAttempts++;
+        if (this.listenerRegistrationAttempts === this.failOnListenerRegistration) {
+            throw new Error(`listener registration ${this.listenerRegistrationAttempts} failed`);
+        }
         const listeners = this.listeners.get(event) ?? new Set<WorkerListener>();
         listeners.add(listener);
         this.listeners.set(event, listeners);
@@ -55,6 +62,7 @@ class FakeWorker implements WorkerLike {
     }
 
     off(event: WorkerEvent, listener: WorkerListener): this {
+        this.removedListenerEvents.push(event);
         this.listeners.get(event)?.delete(listener);
         return this;
     }
@@ -67,6 +75,9 @@ class FakeWorker implements WorkerLike {
         if (this.terminateFailure === 'async') {
             return Promise.reject(new Error('terminate rejected'));
         }
+        if (this.terminateFailure === 'never') {
+            return new Promise<number>(() => undefined);
+        }
         return Promise.resolve(0);
     }
 
@@ -78,6 +89,10 @@ class FakeWorker implements WorkerLike {
 
     respond(response: ParserWorkerResponse): void {
         this.emit('message', response);
+    }
+
+    listenerCount(event: WorkerEvent): number {
+        return this.listeners.get(event)?.size ?? 0;
     }
 }
 
@@ -139,7 +154,11 @@ async function assertDisposed(promise: Promise<unknown>): Promise<void> {
     );
 }
 
-async function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+async function withTimeout<T>(
+    label: string,
+    promise: Promise<T>,
+    timeoutMilliseconds = 15_000
+): Promise<T> {
     let timeout: NodeJS.Timeout | undefined;
     try {
         return await Promise.race([
@@ -147,7 +166,7 @@ async function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
             new Promise<T>((_resolve, reject) => {
                 timeout = setTimeout(
                     () => reject(new Error(`${label} timed out`)),
-                    15_000
+                    timeoutMilliseconds
                 );
             }),
         ]);
@@ -451,6 +470,93 @@ async function testParseTransportFailureRejectsGenerationAndRetries(): Promise<v
     await generationClient.dispose();
 }
 
+async function testWorkerStartupFailuresAreAtomicAndRetryable(): Promise<void> {
+    let createAttempts = 0;
+    const createdWorkers: FakeWorker[] = [];
+    const createFailureClient = new HdlParserClient({
+        workerPath: 'fake-worker.js',
+        runtimeWasmPath: 'runtime.wasm',
+        languageWasmPath: 'language.wasm',
+        createWorker: () => {
+            createAttempts++;
+            if (createAttempts === 1) {
+                throw new Error('worker creation failed');
+            }
+            const worker = new FakeWorker();
+            createdWorkers.push(worker);
+            return worker;
+        },
+    });
+    let creationFailure!: Promise<HdlDocument>;
+    assert.doesNotThrow(() => {
+        creationFailure = createFailureClient.parse(
+            'file:///workspace/create-failure.sv',
+            1,
+            'module create_failure; endmodule',
+            { defines: {} }
+        );
+    });
+    await assert.rejects(creationFailure, /worker creation failed/);
+    assert.strictEqual(createdWorkers.length, 0);
+    const creationRetry = createFailureClient.parse(
+        'file:///workspace/create-failure.sv',
+        1,
+        'module create_failure; endmodule',
+        { defines: {} }
+    );
+    assert.strictEqual(createdWorkers.length, 1);
+    resolveParse(createdWorkers[0], 0, 'file:///workspace/create-failure.sv', 1);
+    await creationRetry;
+    await createFailureClient.dispose();
+
+    for (const failAt of [2, 3]) {
+        const workers: FakeWorker[] = [];
+        const client = makeClient(workers, (worker, index) => {
+            if (index === 0) {
+                worker.failOnListenerRegistration = failAt;
+                worker.terminateFailure = failAt === 2 ? 'sync' : 'async';
+            }
+        });
+        let startupFailure!: Promise<HdlDocument>;
+        assert.doesNotThrow(() => {
+            startupFailure = client.parse(
+                `file:///workspace/listener-${failAt}.sv`,
+                1,
+                `module listener_${failAt}; endmodule`,
+                { defines: {} }
+            );
+        });
+        await assert.rejects(startupFailure, new RegExp(`registration ${failAt} failed`));
+        assert.strictEqual(workers[0].terminateCalls, 1);
+        assert.deepStrictEqual(
+            workers[0].removedListenerEvents,
+            failAt === 2 ? ['message'] : ['error', 'message']
+        );
+        assert.strictEqual(workers[0].listenerCount('message'), 0);
+        assert.strictEqual(workers[0].listenerCount('error'), 0);
+        assert.strictEqual(workers[0].listenerCount('exit'), 0);
+
+        const retry = client.parse(
+            `file:///workspace/listener-${failAt}.sv`,
+            1,
+            `module listener_${failAt}; endmodule`,
+            { defines: {} }
+        );
+        assert.strictEqual(workers.length, 2);
+        const retryId = requestIdAt(workers[1], 0);
+        workers[0].respond({
+            type: 'parsed',
+            requestId: retryId,
+            document: fakeDocument(`file:///workspace/listener-${failAt}.sv`, 99, 'stale'),
+        });
+        workers[0].emit('error', new Error('stale worker error'));
+        workers[0].emit('exit', 1);
+        resolveParse(workers[1], 0, `file:///workspace/listener-${failAt}.sv`, 1, 'retry');
+        assert.strictEqual((await retry).textHash, 'retry');
+        await client.dispose();
+    }
+}
+
 async function testDisposeIgnoresTransportAndTerminationFailures(): Promise<void> {
     const cases: Array<{
         label: string;
@@ -490,6 +596,33 @@ async function testDisposeIgnoresTransportAndTerminationFailures(): Promise<void
             { defines: {} }
         ));
     }
+}
+
+async function testDisposeDoesNotAwaitNeverSettlingTermination(): Promise<void> {
+    const workers: FakeWorker[] = [];
+    const client = makeClient(workers, worker => {
+        worker.terminateFailure = 'never';
+    });
+    const pending = client.parse(
+        'file:///workspace/never-terminates.sv',
+        1,
+        'module never_terminates; endmodule',
+        { defines: {} }
+    );
+    const pendingRejected = assertDisposed(pending);
+    const firstDispose = client.dispose();
+    assert.strictEqual(client.dispose(), firstDispose);
+    await Promise.all([
+        pendingRejected,
+        withTimeout('dispose with never-settling terminate', firstDispose, 100),
+    ]);
+    assert.strictEqual(workers[0].terminateCalls, 1);
+    await assertDisposed(client.parse(
+        'file:///workspace/after-never-terminate.sv',
+        1,
+        'module after_never_terminate; endmodule',
+        { defines: {} }
+    ));
 }
 
 async function testCancelTransportFailureStillRejectsAndRestarts(): Promise<void> {
@@ -850,7 +983,9 @@ async function main(): Promise<void> {
     await testStaleResponsesFailuresAndWorkerReplacement();
     await testInvalidationClearAndDispose();
     await testParseTransportFailureRejectsGenerationAndRetries();
+    await testWorkerStartupFailuresAreAtomicAndRetryable();
     await testDisposeIgnoresTransportAndTerminationFailures();
+    await testDisposeDoesNotAwaitNeverSettlingTermination();
     await testCancelTransportFailureStillRejectsAndRestarts();
     await testRealWorkerIncrementalEquivalenceAndLru();
     await testRealWorkerDisposeExitsNaturally();
