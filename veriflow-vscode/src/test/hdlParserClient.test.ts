@@ -6,6 +6,7 @@ import type { HdlDocument } from '../core/hdl/model';
 import {
     HdlParserCancelledError,
     HdlParserClient,
+    HdlParserDisposedError,
     WorkerLike,
 } from '../core/hdl/parserClient';
 import type {
@@ -20,13 +21,28 @@ type WorkerListener = (...values: any[]) => void;
 
 class FakeWorker implements WorkerLike {
     readonly messages: ParserWorkerRequest[] = [];
+    readonly attemptedMessages: ParserWorkerRequest[] = [];
     terminateCalls = 0;
     throwOnCancel = false;
+    throwOnDispose = false;
+    failParseAt: number | undefined;
+    terminateFailure: 'none' | 'sync' | 'async' = 'none';
+    private parseAttempts = 0;
     private readonly listeners = new Map<WorkerEvent, Set<WorkerListener>>();
 
     postMessage(message: ParserWorkerRequest): void {
+        this.attemptedMessages.push(message);
         if (message.type === 'cancel' && this.throwOnCancel) {
             throw new Error('worker channel closed');
+        }
+        if (message.type === 'dispose' && this.throwOnDispose) {
+            throw new Error('dispose send failed');
+        }
+        if (message.type === 'parse') {
+            this.parseAttempts++;
+            if (this.parseAttempts === this.failParseAt) {
+                throw new Error('send failed');
+            }
         }
         this.messages.push(message);
     }
@@ -45,6 +61,12 @@ class FakeWorker implements WorkerLike {
 
     terminate(): Promise<number> {
         this.terminateCalls++;
+        if (this.terminateFailure === 'sync') {
+            throw new Error('terminate threw');
+        }
+        if (this.terminateFailure === 'async') {
+            return Promise.reject(new Error('terminate rejected'));
+        }
         return Promise.resolve(0);
     }
 
@@ -109,13 +131,44 @@ async function assertCancelled(promise: Promise<unknown>): Promise<void> {
     );
 }
 
-function makeClient(workers: FakeWorker[]): HdlParserClient {
+async function assertDisposed(promise: Promise<unknown>): Promise<void> {
+    await assert.rejects(promise, error =>
+        error instanceof HdlParserDisposedError
+        && error.name === 'HdlParserDisposedError'
+        && error.message === 'HDL parser client is disposed'
+    );
+}
+
+async function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<T>((_resolve, reject) => {
+                timeout = setTimeout(
+                    () => reject(new Error(`${label} timed out`)),
+                    15_000
+                );
+            }),
+        ]);
+    } finally {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+    }
+}
+
+function makeClient(
+    workers: FakeWorker[],
+    configureWorker?: (worker: FakeWorker, index: number) => void
+): HdlParserClient {
     return new HdlParserClient({
         workerPath: 'fake-worker.js',
         runtimeWasmPath: 'runtime.wasm',
         languageWasmPath: 'language.wasm',
         createWorker: () => {
             const worker = new FakeWorker();
+            configureWorker?.(worker, workers.length);
             workers.push(worker);
             return worker;
         },
@@ -317,7 +370,7 @@ async function testInvalidationClearAndDispose(): Promise<void> {
     const disposeA = client.dispose();
     const disposeB = client.dispose();
     assert.strictEqual(disposeA, disposeB);
-    await assertCancelled(afterClear);
+    await assertDisposed(afterClear);
     await disposeA;
     assert.strictEqual(workers[0].messages[beforeDisposeMessages].type, 'dispose');
     assert.strictEqual(workers[0].terminateCalls, 1);
@@ -329,6 +382,114 @@ async function testInvalidationClearAndDispose(): Promise<void> {
         /disposed/
     );
     assert.strictEqual(workers.length, 1);
+}
+
+async function testParseTransportFailureRejectsGenerationAndRetries(): Promise<void> {
+    const workers: FakeWorker[] = [];
+    const client = makeClient(workers, (worker, index) => {
+        if (index === 0) {
+            worker.failParseAt = 1;
+        }
+    });
+    let failed!: Promise<HdlDocument>;
+    assert.doesNotThrow(() => {
+        failed = client.parse(
+            'file:///workspace/send-failed.sv',
+            1,
+            'module send_failed; endmodule',
+            { defines: {} }
+        );
+    });
+    await assert.rejects(failed, /send failed/);
+    assert.strictEqual(workers[0].terminateCalls, 1);
+
+    const retry = client.parse(
+        'file:///workspace/send-failed.sv',
+        1,
+        'module send_failed; endmodule',
+        { defines: {} }
+    );
+    assert.strictEqual(workers.length, 2);
+    const staleParse = workers[0].attemptedMessages.find(
+        (message): message is Extract<ParserWorkerRequest, { type: 'parse' }> =>
+            message.type === 'parse'
+    )!;
+    workers[0].respond({
+        type: 'parsed',
+        requestId: staleParse.requestId,
+        document: fakeDocument('file:///workspace/send-failed.sv', 1, 'stale'),
+    });
+    resolveParse(workers[1], 0, 'file:///workspace/send-failed.sv', 1, 'retry');
+    assert.strictEqual((await retry).textHash, 'retry');
+    await client.dispose();
+
+    const generationWorkers: FakeWorker[] = [];
+    const generationClient = makeClient(generationWorkers, worker => {
+        worker.failParseAt = 2;
+    });
+    const firstPending = generationClient.parse(
+        'file:///workspace/generation-a.sv',
+        1,
+        'module generation_a; endmodule',
+        { defines: {} }
+    );
+    const firstRejected = assert.rejects(firstPending, /send failed/);
+    let secondPending!: Promise<HdlDocument>;
+    assert.doesNotThrow(() => {
+        secondPending = generationClient.parse(
+            'file:///workspace/generation-b.sv',
+            1,
+            'module generation_b; endmodule',
+            { defines: {} }
+        );
+    });
+    await Promise.all([
+        firstRejected,
+        assert.rejects(secondPending, /send failed/),
+    ]);
+    assert.strictEqual(generationWorkers[0].terminateCalls, 1);
+    await generationClient.dispose();
+}
+
+async function testDisposeIgnoresTransportAndTerminationFailures(): Promise<void> {
+    const cases: Array<{
+        label: string;
+        configure: (worker: FakeWorker) => void;
+    }> = [
+        {
+            label: 'dispose post failure',
+            configure: worker => { worker.throwOnDispose = true; },
+        },
+        {
+            label: 'synchronous terminate failure',
+            configure: worker => { worker.terminateFailure = 'sync'; },
+        },
+        {
+            label: 'asynchronous terminate failure',
+            configure: worker => { worker.terminateFailure = 'async'; },
+        },
+    ];
+    for (const testCase of cases) {
+        const workers: FakeWorker[] = [];
+        const client = makeClient(workers, worker => testCase.configure(worker));
+        const pending = client.parse(
+            `file:///workspace/${testCase.label.replace(/ /g, '-')}.sv`,
+            1,
+            'module pending_dispose; endmodule',
+            { defines: {} }
+        );
+        const pendingRejected = assertDisposed(pending);
+        const firstDispose = client.dispose();
+        assert.strictEqual(client.dispose(), firstDispose);
+        await Promise.all([pendingRejected, firstDispose]);
+        assert.strictEqual(workers[0].terminateCalls, 1);
+        await assertDisposed(client.parse(
+            'file:///workspace/after-best-effort-dispose.sv',
+            1,
+            'module after_dispose; endmodule',
+            { defines: {} }
+        ));
+    }
 }
 
 async function testCancelTransportFailureStillRejectsAndRestarts(): Promise<void> {
@@ -455,12 +616,18 @@ async function assertIncrementalEqualsFull(
     version2Text: string,
     version2Options: HdlParseOptions
 ): Promise<HdlDocument> {
-    await client.parse(uri, 1, version1Text, version1Options);
-    const incremental = await client.parse(uri, 2, version2Text, version2Options);
-    const full = await client.parse(uri, 2, version2Text, {
+    await withTimeout(
+        `${uri} version 1 document parse`,
+        client.parse(uri, 1, version1Text, version1Options)
+    );
+    const incremental = await withTimeout(
+        `${uri} version 2 incremental parse`,
+        client.parse(uri, 2, version2Text, version2Options)
+    );
+    const full = await withTimeout(`${uri} version 2 full parse`, client.parse(uri, 2, version2Text, {
         ...version2Options,
         cacheMode: 'ephemeral',
-    });
+    }));
     assert.deepStrictEqual(comparableDocument(incremental), comparableDocument(full));
     return incremental;
 }
@@ -594,21 +761,21 @@ async function testRealWorkerIncrementalEquivalenceAndLru(): Promise<void> {
 
         for (let index = 0; index < 9; index++) {
             const uri = `file:///workspace/lru-${index}.sv`;
-            const document = await client.parse(
+            const document = await withTimeout(`LRU document ${index}`, client.parse(
                 uri,
                 1,
                 `module lru_${index}(input logic p${index}); endmodule`,
                 { defines: {} },
                 'background'
-            );
+            ));
             assert.strictEqual(document.modules[0].name, `lru_${index}`);
         }
-        const reparsed = await client.parse(
+        const reparsed = await withTimeout('LRU evicted document reparse', client.parse(
             'file:///workspace/lru-0.sv',
             2,
             'module lru_zero(output logic done); endmodule',
             { defines: {} }
-        );
+        ));
         assert.strictEqual(reparsed.modules[0].name, 'lru_zero');
         assert.deepStrictEqual(reparsed.modules[0].ports.map(port => port.name), ['done']);
     } finally {
@@ -639,7 +806,7 @@ async function testRealWorkerDisposeExitsNaturally(): Promise<void> {
     );
     let timeout: NodeJS.Timeout | undefined;
     try {
-        await new Promise<void>((resolve, reject) => {
+        await withTimeout('dispose fixture first worker response', new Promise<void>((resolve, reject) => {
             worker.once('message', (response: ParserWorkerResponse) => {
                 if (response.type === 'failed') {
                     reject(new Error(response.message));
@@ -658,7 +825,7 @@ async function testRealWorkerDisposeExitsNaturally(): Promise<void> {
                 priority: 'interactive',
                 options: { defines: {} },
             } satisfies ParserWorkerRequest);
-        });
+        }));
         const exitCode = await new Promise<number>((resolve, reject) => {
             timeout = setTimeout(
                 () => reject(new Error('HDL parser worker did not exit after dispose')),
@@ -682,6 +849,8 @@ async function main(): Promise<void> {
     await testFingerprintCanonicalizationAndEphemeralIsolation();
     await testStaleResponsesFailuresAndWorkerReplacement();
     await testInvalidationClearAndDispose();
+    await testParseTransportFailureRejectsGenerationAndRetries();
+    await testDisposeIgnoresTransportAndTerminationFailures();
     await testCancelTransportFailureStillRejectsAndRestarts();
     await testRealWorkerIncrementalEquivalenceAndLru();
     await testRealWorkerDisposeExitsNaturally();

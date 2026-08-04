@@ -65,6 +65,13 @@ export class HdlParserCancelledError extends Error {
     }
 }
 
+export class HdlParserDisposedError extends Error {
+    constructor() {
+        super('HDL parser client is disposed');
+        this.name = 'HdlParserDisposedError';
+    }
+}
+
 export class HdlParserClient {
     private readonly cache = new Map<string, CacheEntry>();
     private readonly pending = new Map<string, PendingRequest>();
@@ -85,7 +92,7 @@ export class HdlParserClient {
         priority: ParsePriority = 'interactive'
     ): Promise<HdlDocument> {
         if (this.disposed) {
-            return Promise.reject(new Error('HDL parser client is disposed'));
+            return Promise.reject(new HdlParserDisposedError());
         }
 
         const cacheMode = options.cacheMode ?? 'document';
@@ -135,15 +142,22 @@ export class HdlParserClient {
             });
         }
 
-        worker.postMessage({
-            type: 'parse',
-            requestId,
-            uri,
-            version,
-            text,
-            priority,
-            options: { ...options, cacheMode },
-        });
+        try {
+            worker.postMessage({
+                type: 'parse',
+                requestId,
+                uri,
+                version,
+                text,
+                priority,
+                options: { ...options, cacheMode },
+            });
+        } catch (error) {
+            this.handleWorkerFailure(
+                worker,
+                error instanceof Error ? error : new Error(String(error))
+            );
+        }
         return promise;
     }
 
@@ -291,7 +305,7 @@ export class HdlParserClient {
     private async disposeWorkerAndState(): Promise<void> {
         this.cache.clear();
         for (const pending of this.pending.values()) {
-            pending.reject(new HdlParserCancelledError());
+            pending.reject(new HdlParserDisposedError());
         }
         this.pending.clear();
         const worker = this.worker;
@@ -300,11 +314,21 @@ export class HdlParserClient {
         }
         try {
             worker.postMessage({ type: 'dispose' });
-        } finally {
+        } catch {
+            // Disposal is best-effort after local state has become terminal.
+        }
+        try {
             this.detachWorker(worker);
+        } catch {
+            // A broken transport may also reject listener cleanup.
+        } finally {
             this.worker = undefined;
             this.workerListeners = undefined;
+        }
+        try {
             await Promise.resolve(worker.terminate());
+        } catch {
+            // The client remains disposed even when worker termination fails.
         }
     }
 }
