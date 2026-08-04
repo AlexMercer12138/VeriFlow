@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import {
     copyFile,
     mkdir,
@@ -8,7 +9,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { build, context } from 'esbuild';
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distRoot = path.join(extensionRoot, 'dist');
@@ -44,10 +45,6 @@ const parserAssets = [
     },
 ];
 
-await rm(distRoot, { recursive: true, force: true });
-await mkdir(workerRoot, { recursive: true });
-await mkdir(parserRoot, { recursive: true });
-
 const commonBuildOptions = {
     bundle: true,
     platform: 'node',
@@ -56,44 +53,161 @@ const commonBuildOptions = {
     sourcemap: true,
 };
 
-await Promise.all([
-    build({
+const bundleOptions = [
+    {
         ...commonBuildOptions,
         entryPoints: [path.join(extensionRoot, 'src', 'extension.ts')],
         outfile: path.join(distRoot, 'extension.js'),
         external: ['vscode'],
-    }),
-    build({
+    },
+    {
         ...commonBuildOptions,
         entryPoints: [path.join(extensionRoot, 'src', 'core', 'hdl', 'parserWorker.ts')],
         outfile: path.join(workerRoot, 'hdlParserWorker.js'),
-    }),
-    build({
+    },
+    {
         ...commonBuildOptions,
         entryPoints: [path.join(extensionRoot, 'src', 'core', 'waveformWorker.ts')],
         outfile: path.join(workerRoot, 'waveformWorker.js'),
-    }),
-]);
+    },
+];
 
-for (const asset of parserAssets) {
-    await copyFile(asset.source, asset.destination);
-    const digest = createHash('sha256')
-        .update(await readFile(asset.destination))
-        .digest('hex');
-    if (digest !== asset.sha256) {
-        throw new Error(
-            `${asset.name} WASM SHA256 mismatch: expected ${asset.sha256}, received ${digest}`
+async function verifyParserAssets(assets) {
+    await Promise.all(assets.map(async asset => {
+        const digest = createHash('sha256')
+            .update(await readFile(asset.source))
+            .digest('hex');
+        if (digest !== asset.sha256) {
+            throw new Error(
+                `${asset.name} WASM SHA256 mismatch: expected ${asset.sha256}, received ${digest}`
+            );
+        }
+    }));
+}
+
+async function copyParserAssets(assets) {
+    await mkdir(parserRoot, { recursive: true });
+    await Promise.all(assets.map(asset => copyFile(asset.source, asset.destination)));
+}
+
+async function writeThirdPartyNotices(assets) {
+    const notices = await Promise.all(assets.map(async asset => {
+        const license = await readFile(asset.license, 'utf8');
+        return `## ${asset.name} ${asset.version}\n\n${license.trim()}\n`;
+    }));
+    await writeFile(
+        path.join(extensionRoot, 'THIRD_PARTY_NOTICES.md'),
+        `# Third-Party Notices\n\n${notices.join('\n')}`,
+        'utf8'
+    );
+}
+
+async function prepareParserAssets() {
+    await verifyParserAssets(parserAssets);
+    await copyParserAssets(parserAssets);
+    await writeThirdPartyNotices(parserAssets);
+}
+
+async function prepareDist() {
+    await rm(distRoot, { recursive: true, force: true });
+    await mkdir(workerRoot, { recursive: true });
+}
+
+async function buildBundles() {
+    await Promise.all(bundleOptions.map(options => build(options)));
+}
+
+async function startBundleWatchers() {
+    const contexts = [];
+    try {
+        for (const options of bundleOptions) {
+            contexts.push(await context(options));
+        }
+        await Promise.all(contexts.map(bundleContext => bundleContext.watch()));
+        return contexts;
+    } catch (error) {
+        await Promise.allSettled(
+            contexts.map(bundleContext => bundleContext.dispose())
         );
+        throw error;
     }
 }
 
-const notices = await Promise.all(parserAssets.map(async asset => {
-    const license = await readFile(asset.license, 'utf8');
-    return `## ${asset.name} ${asset.version}\n\n${license.trim()}\n`;
-}));
+async function stopBundleWatchers(contexts) {
+    await Promise.allSettled(
+        contexts.map(bundleContext => bundleContext.dispose())
+    );
+}
 
-await writeFile(
-    path.join(extensionRoot, 'THIRD_PARTY_NOTICES.md'),
-    `# Third-Party Notices\n\n${notices.join('\n')}`,
-    'utf8'
-);
+function waitForWatchStop(typecheck) {
+    return new Promise((resolve, reject) => {
+        let stopped = false;
+
+        const cleanup = () => {
+            process.off('SIGINT', handleSignal);
+            process.off('SIGTERM', handleSignal);
+            typecheck.off('error', handleError);
+            typecheck.off('exit', handleExit);
+        };
+        const finish = (exitCode) => {
+            if (stopped) return;
+            stopped = true;
+            cleanup();
+            resolve(exitCode);
+        };
+        const handleSignal = () => {
+            if (typecheck.exitCode === null) {
+                typecheck.kill();
+            }
+            finish(0);
+        };
+        const handleError = error => {
+            if (stopped) return;
+            stopped = true;
+            cleanup();
+            reject(error);
+        };
+        const handleExit = (code, signal) => {
+            finish(code ?? (signal ? 1 : 0));
+        };
+
+        process.once('SIGINT', handleSignal);
+        process.once('SIGTERM', handleSignal);
+        typecheck.once('error', handleError);
+        typecheck.once('exit', handleExit);
+    });
+}
+
+async function runBuild() {
+    await prepareParserAssets();
+    await prepareDist();
+    await buildBundles();
+}
+
+async function runWatch() {
+    await prepareParserAssets();
+    await prepareDist();
+    const contexts = await startBundleWatchers();
+    const typecheck = spawn(process.execPath, [
+        path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
+        '--watch', '-p', './',
+    ], {
+        cwd: extensionRoot,
+        stdio: 'inherit',
+    });
+
+    try {
+        process.exitCode = await waitForWatchStop(typecheck);
+    } finally {
+        if (typecheck.exitCode === null) {
+            typecheck.kill();
+        }
+        await stopBundleWatchers(contexts);
+    }
+}
+
+if (process.argv.includes('--watch')) {
+    await runWatch();
+} else {
+    await runBuild();
+}

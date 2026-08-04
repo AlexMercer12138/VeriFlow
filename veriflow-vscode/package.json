@@ -230,7 +230,7 @@
     "test": "npm run compile && node ./scripts/run-tests.mjs",
     "benchmark:waveform": "python ../scripts/generate_waveform_benchmark.py --target-bytes 10485760 --signals 64 --seed 1 --output ../.tmp-waveform-benchmark.vcd && python ../scripts/benchmark_waveform_index.py ../.tmp-waveform-benchmark.vcd --queries 32 --output ../.tmp-waveform-report.json",
     "benchmark:waveform:full": "python ../scripts/generate_waveform_benchmark.py --target-bytes 524288000 --changes 10000000 --signals 256 --seed 1 --output ../.tmp-waveform-benchmark-full.vcd && python ../scripts/benchmark_waveform_index.py ../.tmp-waveform-benchmark-full.vcd --queries 64 --output ../.tmp-waveform-report-full.json",
-    "watch": "tsc -watch -p ./",
+    "watch": "node ./scripts/build.mjs --watch",
     "lint": "eslint src --ext ts",
     "package": "vsce package",
     "publish": "vsce publish"
