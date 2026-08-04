@@ -303,27 +303,90 @@ class CompositeEmitter {
     }
 }
 
-function canonicalizeUri(uri: string): string {
+function normalizePercentEncoding(value: string): string {
+    return value.replace(/%[0-9a-f]{2}/gi, escape => escape.toUpperCase());
+}
+
+export function canonicalizeSourceUri(
+    uri: string,
+    platform: NodeJS.Platform = process.platform
+): string {
     try {
         const parsed = new URL(uri);
         const protocol = parsed.protocol.toLowerCase();
         const host = parsed.host.toLowerCase();
         let pathname = path.posix.normalize(parsed.pathname.split('\\').join('/'));
-        if (protocol === 'file:') {
+        if (protocol === 'file:' && platform === 'win32') {
             pathname = pathname.toLowerCase();
         }
+        pathname = normalizePercentEncoding(pathname);
         return `${protocol}//${host}${pathname}${parsed.search}${parsed.hash}`;
     } catch {
-        return uri.split('\\').join('/');
+        const normalized = uri.split('\\').join('/');
+        return platform === 'win32' ? normalized.toLowerCase() : normalized;
     }
 }
 
 function includeKey(fromUri: string, rawPath: string): string {
-    return `${canonicalizeUri(fromUri)}\0${rawPath}`;
+    return `${canonicalizeSourceUri(fromUri)}\0${rawPath}`;
 }
 
 function mask(text: string): string {
     return ' '.repeat(text.length);
+}
+
+function maskPreservingNewlines(text: string): string {
+    return text.replace(/[^\r\n]/g, ' ');
+}
+
+type PhysicalLine = {
+    contentEnd: number;
+    newlineEnd: number;
+};
+
+function readPhysicalLine(text: string, start: number): PhysicalLine {
+    let contentEnd = start;
+    while (contentEnd < text.length
+        && text[contentEnd] !== '\r'
+        && text[contentEnd] !== '\n') {
+        contentEnd++;
+    }
+    let newlineEnd = contentEnd;
+    if (text[newlineEnd] === '\r') {
+        newlineEnd++;
+        if (text[newlineEnd] === '\n') {
+            newlineEnd++;
+        }
+    } else if (text[newlineEnd] === '\n') {
+        newlineEnd++;
+    }
+    return { contentEnd, newlineEnd };
+}
+
+function hasLineContinuation(text: string, start: number, contentEnd: number): boolean {
+    let backslashStart = contentEnd;
+    while (backslashStart > start && text[backslashStart - 1] === '\\') {
+        backslashStart--;
+    }
+    return (contentEnd - backslashStart) % 2 === 1;
+}
+
+type LogicalDirective = PhysicalLine & {
+    text: string;
+};
+
+function consumeLogicalDirective(text: string, start: number): LogicalDirective {
+    const pieces: string[] = [];
+    let lineStart = start;
+    let line = readPhysicalLine(text, lineStart);
+    while (hasLineContinuation(text, lineStart, line.contentEnd)
+        && line.newlineEnd > line.contentEnd) {
+        pieces.push(text.slice(lineStart, line.contentEnd - 1));
+        lineStart = line.newlineEnd;
+        line = readPhysicalLine(text, lineStart);
+    }
+    pieces.push(text.slice(lineStart, line.contentEnd));
+    return { ...line, text: pieces.join('') };
 }
 
 function directiveAtLineStart(line: string): Directive | undefined {
@@ -395,6 +458,12 @@ type ScannedMacroInvocation = {
     end: number;
 };
 
+type LexicalState = {
+    inBlockComment: boolean;
+    inString: boolean;
+    stringContinued: boolean;
+};
+
 function macroInvocationEnd(line: string, start: number): number {
     let offset = start + 1;
     while (offset < line.length && /[A-Za-z0-9_$]/.test(line[offset])) {
@@ -434,13 +503,18 @@ function macroInvocationEnd(line: string, start: number): number {
     return line.length;
 }
 
-function scanMacroInvocations(line: string, initiallyInBlockComment: boolean): {
+function scanLexicalLine(
+    line: string,
+    initialState: LexicalState,
+    hasNewline: boolean,
+    collectMacroInvocations: boolean
+): {
     invocations: ScannedMacroInvocation[];
-    inBlockComment: boolean;
+    state: LexicalState;
 } {
     const invocations: ScannedMacroInvocation[] = [];
-    let inBlockComment = initiallyInBlockComment;
-    let inString = false;
+    let inBlockComment = initialState.inBlockComment;
+    let inString = initialState.inString && initialState.stringContinued;
     let escaped = false;
     for (let index = 0; index < line.length; index++) {
         const char = line[index];
@@ -474,11 +548,37 @@ function scanMacroInvocations(line: string, initiallyInBlockComment: boolean): {
             inString = true;
             continue;
         }
-        if (char === '`' && /[A-Za-z_$]/.test(next ?? '')) {
+        if (collectMacroInvocations
+            && char === '`'
+            && /[A-Za-z_$]/.test(next ?? '')) {
             invocations.push({ start: index, end: macroInvocationEnd(line, index) });
         }
     }
-    return { invocations, inBlockComment };
+    const stringContinued = hasNewline && inString && escaped;
+    return {
+        invocations,
+        state: {
+            inBlockComment,
+            inString: stringContinued,
+            stringContinued,
+        },
+    };
+}
+
+function scanMacroInvocations(
+    line: string,
+    initialState: LexicalState,
+    hasNewline: boolean
+): ReturnType<typeof scanLexicalLine> {
+    return scanLexicalLine(line, initialState, hasNewline, true);
+}
+
+function advanceLexicalState(
+    line: string,
+    initialState: LexicalState,
+    hasNewline: boolean
+): LexicalState {
+    return scanLexicalLine(line, initialState, hasNewline, false).state;
 }
 
 export function preprocessForParsing(
@@ -501,7 +601,8 @@ export function preprocessForParsing(
     const includeIndex = new Map<string, ResolvedIncludeInput>();
     const sortedIncludes = [...(options.resolvedIncludes ?? [])].sort((left, right) =>
         includeKey(left.fromUri, left.rawPath).localeCompare(includeKey(right.fromUri, right.rawPath))
-        || canonicalizeUri(left.resolvedUri).localeCompare(canonicalizeUri(right.resolvedUri))
+        || canonicalizeSourceUri(left.resolvedUri)
+            .localeCompare(canonicalizeSourceUri(right.resolvedUri))
         || left.resolvedUri.localeCompare(right.resolvedUri)
         || left.text.localeCompare(right.text)
     );
@@ -530,30 +631,27 @@ export function preprocessForParsing(
         sourceTexts[uri] = text;
         const frames: ConditionalFrame[] = [];
         let offset = 0;
-        let inBlockComment = false;
+        let lexicalState: LexicalState = {
+            inBlockComment: false,
+            inString: false,
+            stringContinued: false,
+        };
         const isActive = (): boolean => frames.length === 0
             ? true
             : frames[frames.length - 1].branchActive;
 
         while (offset < text.length) {
-            let contentEnd = offset;
-            while (contentEnd < text.length
-                && text[contentEnd] !== '\r'
-                && text[contentEnd] !== '\n') {
-                contentEnd++;
+            const physicalLine = readPhysicalLine(text, offset);
+            let { contentEnd, newlineEnd } = physicalLine;
+            let line = text.slice(offset, contentEnd);
+            const directive = lexicalState.inBlockComment || lexicalState.stringContinued
+                ? undefined
+                : directiveAtLineStart(line);
+            if (directive) {
+                const logicalDirective = consumeLogicalDirective(text, offset);
+                ({ contentEnd, newlineEnd } = logicalDirective);
+                line = logicalDirective.text;
             }
-            let newlineEnd = contentEnd;
-            if (text[newlineEnd] === '\r') {
-                newlineEnd++;
-                if (text[newlineEnd] === '\n') {
-                    newlineEnd++;
-                }
-            } else if (text[newlineEnd] === '\n') {
-                newlineEnd++;
-            }
-
-            const line = text.slice(offset, contentEnd);
-            const directive = inBlockComment ? undefined : directiveAtLineStart(line);
             const span = lineSpan(uri, offset, contentEnd);
             let included = false;
 
@@ -719,7 +817,9 @@ export function preprocessForParsing(
                                 } else {
                                     includeModel!.resolvedUri = resolved.resolvedUri;
                                     sourceTexts[resolved.resolvedUri] = resolved.text;
-                                    const canonicalResolved = canonicalizeUri(resolved.resolvedUri);
+                                    const canonicalResolved = canonicalizeSourceUri(
+                                        resolved.resolvedUri
+                                    );
                                     if (canonicalStack.includes(canonicalResolved)) {
                                         addDiagnostic(
                                             'error', 'HDL_INCLUDE_CYCLE',
@@ -745,13 +845,29 @@ export function preprocessForParsing(
                         break;
                 }
                 if (!included) {
-                    emitter.emit(mask(line), uri, offset, contentEnd);
+                    emitter.emit(
+                        maskPreservingNewlines(text.slice(offset, contentEnd)),
+                        uri,
+                        offset,
+                        contentEnd
+                    );
+                }
+                if (active) {
+                    lexicalState = advanceLexicalState(
+                        line,
+                        lexicalState,
+                        newlineEnd > contentEnd
+                    );
                 }
             } else {
                 const active = isActive();
                 if (active) {
-                    const scan = scanMacroInvocations(line, inBlockComment);
-                    inBlockComment = scan.inBlockComment;
+                    const scan = scanMacroInvocations(
+                        line,
+                        lexicalState,
+                        newlineEnd > contentEnd
+                    );
+                    lexicalState = scan.state;
                     const generatedLineStart = emitter.generatedLength;
                     emitter.emit(line, uri, offset, contentEnd);
                     for (const invocation of scan.invocations) {
@@ -782,7 +898,7 @@ export function preprocessForParsing(
         }
     };
 
-    processFile(sourceUri, source, 0, [canonicalizeUri(sourceUri)]);
+    processFile(sourceUri, source, 0, [canonicalizeSourceUri(sourceUri)]);
     const text = emitter.pieces.join('');
     const segments = emitter.segments.length > 0
         ? emitter.segments

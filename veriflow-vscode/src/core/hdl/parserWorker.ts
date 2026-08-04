@@ -6,6 +6,7 @@ import TreeSitter = require('web-tree-sitter');
 import type { HdlDiagnostic, HdlDocument, SourceFileSpan, SourceSpan } from './model';
 import { ParserRequestQueue } from './parserQueue';
 import {
+    canonicalizeSourceUri,
     getPreprocessMetadataForWorker,
     preprocessForParsing,
 } from './preprocessor';
@@ -55,27 +56,13 @@ function canRespond(requestId: string): boolean {
     return !disposed && !cancelled.has(requestId);
 }
 
-function canonicalizeUri(uri: string): string {
-    try {
-        const parsed = new URL(uri);
-        const protocol = parsed.protocol.toLowerCase();
-        const host = parsed.host.toLowerCase();
-        const pathname = protocol === 'file:'
-            ? parsed.pathname.toLowerCase()
-            : parsed.pathname;
-        return `${protocol}//${host}${pathname}${parsed.search}${parsed.hash}`;
-    } catch {
-        return uri.split('\\').join('/');
-    }
-}
-
 function preprocessingFingerprint(options: HdlParseOptions): string {
     const defines = Object.entries(options.defines)
         .sort(([left], [right]) => left.localeCompare(right));
     const includes = (options.resolvedIncludes ?? []).map(include => ({
-        fromUri: canonicalizeUri(include.fromUri),
+        fromUri: canonicalizeSourceUri(include.fromUri),
         rawPath: include.rawPath,
-        resolvedUri: canonicalizeUri(include.resolvedUri),
+        resolvedUri: canonicalizeSourceUri(include.resolvedUri),
         contentHash: createHash('sha256').update(include.text).digest('hex'),
     })).sort((left, right) =>
         left.fromUri.localeCompare(right.fromUri)

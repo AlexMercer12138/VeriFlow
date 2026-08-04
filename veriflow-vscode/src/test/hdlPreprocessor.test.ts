@@ -2,7 +2,9 @@ import * as assert from 'assert';
 
 import { PositionMap } from '../core/hdl/positionMap';
 import {
+    canonicalizeSourceUri,
     CompositeSourceMap,
+    getPreprocessMetadataForWorker,
     preprocessForParsing,
 } from '../core/hdl/preprocessor';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
@@ -163,6 +165,31 @@ function testCompositeSourceMapBoundariesAndValidation(): void {
     ]), /gap/);
 }
 
+function testCanonicalSourceUrisRespectPlatformCaseSemantics(): void {
+    const upper = 'file:///workspace/A.sv';
+    const lower = 'file:///workspace/a.sv';
+    assert.notStrictEqual(
+        canonicalizeSourceUri(upper, 'linux'),
+        canonicalizeSourceUri(lower, 'linux')
+    );
+    assert.strictEqual(
+        canonicalizeSourceUri(upper, 'win32'),
+        canonicalizeSourceUri(lower, 'win32')
+    );
+    assert.strictEqual(
+        canonicalizeSourceUri('FILE://Example.COM/work/./rtl/../rtl/%7eunit.sv', 'linux'),
+        canonicalizeSourceUri('file://example.com/work/rtl/%7Eunit.sv', 'linux')
+    );
+    assert.strictEqual(
+        canonicalizeSourceUri('NOT A URI\\RTL\\A.sv', 'win32'),
+        'not a uri/rtl/a.sv'
+    );
+    assert.strictEqual(
+        canonicalizeSourceUri('NOT A URI\\RTL\\A.sv', 'linux'),
+        'NOT A URI/RTL/A.sv'
+    );
+}
+
 function testPreprocessorDiagnosticsAndRecursionGuards(): void {
     const topUri = 'file:///WORKSPACE/top.sv';
     const childUri = 'file:///workspace/child.svh';
@@ -240,6 +267,93 @@ function testUnterminatedConditionalAndUnexpandedMacroWarnings(): void {
         'sourceTexts',
         'text',
     ]);
+}
+
+async function testDirectiveContinuationsAreConsumedAsOneLogicalDirective(): Promise<void> {
+    const uri = 'file:///workspace/multiline-define.sv';
+    const firstLine = '`define DECLARE(name) \\';
+    const macroBody = 'module fake; endmodule';
+    const source = [
+        firstLine,
+        macroBody,
+        'module real_module; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(uri, source);
+
+    assert.deepStrictEqual(document.modules.map(module => module.name), ['real_module']);
+    assert.ok(!document.diagnostics.some(diagnostic =>
+        diagnostic.code === 'systemverilog.syntax-error'
+    ));
+    assert.strictEqual(document.directives.length, 1);
+    assert.strictEqual(document.directives[0].kind, 'text_macro_definition');
+    assert.strictEqual(document.directives[0].text, `${firstLine}\n${macroBody}\n`);
+    assert.strictEqual(document.directives[0].span.uri, uri);
+    assert.strictEqual(
+        source.slice(document.directives[0].span.start, document.directives[0].span.end),
+        `${firstLine}\n${macroBody}\n`
+    );
+
+    const objectSource = [
+        '`define WIDTH \\',
+        '8',
+        '`ifdef WIDTH',
+        'module width_defined; endmodule',
+        '`endif',
+    ].join('\n');
+    const preprocessed = preprocessForParsing(uri, objectSource, { defines: {} });
+    assert.strictEqual(preprocessed.activeDefines.WIDTH, '8');
+    assert.ok(preprocessed.text.includes('module width_defined; endmodule'));
+    assert.strictEqual(preprocessed.text.length, objectSource.length);
+    assertNewlinesPreserved(objectSource, preprocessed.text);
+}
+
+function testDirectiveTextAdvancesBlockCommentState(): void {
+    const uri = 'file:///workspace/directive-comment.sv';
+    const source = [
+        '`timescale 1ns/1ps /*',
+        '`ifdef HIDDEN_IN_COMMENT',
+        '*/',
+        'module visible_after_comment; endmodule',
+    ].join('\n');
+    const result = preprocessForParsing(uri, source, { defines: {} });
+    const metadata = getPreprocessMetadataForWorker(result);
+
+    assert.deepStrictEqual(metadata.directives.map(directive => directive.kind), [
+        'timescale_compiler_directive',
+    ]);
+    assert.ok(result.text.includes('module visible_after_comment; endmodule'));
+    assert.ok(!result.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_PP_UNTERMINATED_CONDITIONAL'
+    ));
+}
+
+function testContinuedStringsHideDirectivesAndLineStatesReset(): void {
+    const uri = 'file:///workspace/continued-string.sv';
+    const continuedSource = [
+        'module string_context;',
+        'string value = "escaped quote: \\" and slash: \\\\ then continue \\',
+        '`ifdef HIDDEN_IN_STRING',
+        'suffix";',
+        'module visible_after_string; endmodule',
+        'endmodule',
+    ].join('\n');
+    const continued = preprocessForParsing(uri, continuedSource, { defines: {} });
+
+    assert.strictEqual(continued.text, continuedSource);
+    assert.ok(!continued.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_PP_UNTERMINATED_CONDITIONAL'
+    ));
+    assert.deepStrictEqual(getPreprocessMetadataForWorker(continued).directives, []);
+
+    const resetSource = [
+        'string invalid = "not continued',
+        '`define AFTER_STRING 1',
+        '// comment does not continue',
+        '`define AFTER_LINE_COMMENT 1',
+    ].join('\n');
+    const reset = preprocessForParsing(uri, resetSource, { defines: {} });
+    assert.strictEqual(reset.activeDefines.AFTER_STRING, '1');
+    assert.strictEqual(reset.activeDefines.AFTER_LINE_COMMENT, '1');
 }
 
 function sourceForUri(
@@ -667,8 +781,12 @@ async function main(): Promise<void> {
     testUnicodeMaskingKeepsUtf16AndBytePositionsStable();
     testInactiveCommentsDoNotHideConditionalDirectives();
     testCompositeSourceMapBoundariesAndValidation();
+    testCanonicalSourceUrisRespectPlatformCaseSemantics();
     testPreprocessorDiagnosticsAndRecursionGuards();
     testUnterminatedConditionalAndUnexpandedMacroWarnings();
+    await testDirectiveContinuationsAreConsumedAsOneLogicalDirective();
+    testDirectiveTextAdvancesBlockCommentState();
+    testContinuedStringsHideDirectivesAndLineStatesReset();
     await testWorkerParsesTextualPortAndBodyIncludes();
     await testWorkerKeepsIncludedUnitsAndActiveBranches();
     await testWorkerWarnsForStandaloneStructuralMacros();
