@@ -323,15 +323,75 @@ async function testWorkerPreservesDirectiveAndIncludeMetadata(): Promise<void> {
             path: 'leaf.svh', uri: nestedUri, resolvedUri: leafUri,
             text: '`include "leaf.svh"',
         },
-        {
-            path: 'inactive.svh', uri: topUri, resolvedUri: undefined,
-            text: '`include "inactive.svh"',
-        },
     ]);
     assert.ok(!document.diagnostics.some(diagnostic =>
         diagnostic.code === 'HDL_INCLUDE_UNRESOLVED'
         && diagnostic.span?.start === top.indexOf('`include "inactive.svh"')
     ));
+}
+
+async function testWorkerWarnsForStandaloneStructuralMacros(): Promise<void> {
+    const topLevelUri = 'file:///workspace/top-level-macro.sv';
+    const topLevelSource = '`DECLARE(generated)\n';
+    const topLevel = await parseWithRealWorker(topLevelUri, topLevelSource);
+    const topLevelWarnings = topLevel.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    );
+    assert.strictEqual(topLevelWarnings.length, 1);
+    assert.strictEqual(topLevelWarnings[0].span?.uri, topLevelUri);
+    assert.strictEqual(
+        topLevelSource.slice(topLevelWarnings[0].span!.start, topLevelWarnings[0].span!.end),
+        '`DECLARE(generated)'
+    );
+
+    const moduleItemUri = 'file:///workspace/module-item-macro.sv';
+    const moduleItemSource = [
+        'module macro_host;',
+        '`INSTANCE(u_child)',
+        'endmodule',
+    ].join('\n');
+    const moduleItem = await parseWithRealWorker(moduleItemUri, moduleItemSource);
+    const moduleItemWarnings = moduleItem.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    );
+    assert.strictEqual(moduleItemWarnings.length, 1);
+    assert.strictEqual(moduleItemWarnings[0].span?.uri, moduleItemUri);
+    assert.strictEqual(
+        moduleItemSource.slice(
+            moduleItemWarnings[0].span!.start,
+            moduleItemWarnings[0].span!.end
+        ),
+        '`INSTANCE(u_child)'
+    );
+}
+
+async function testRepeatedIncludeMacroWarningsAreDeduplicatedByOwnerSpan(): Promise<void> {
+    const topUri = 'file:///workspace/repeated-include.sv';
+    const includeUri = 'file:///workspace/standalone-macro.svh';
+    const include = '`DECLARE(generated)\n';
+    const source = [
+        '`include "standalone-macro.svh"',
+        '`include "standalone-macro.svh"',
+    ].join('\n');
+    const document = await parseWithRealWorker(topUri, source, {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: topUri,
+            rawPath: 'standalone-macro.svh',
+            resolvedUri: includeUri,
+            text: include,
+        }],
+    });
+    const warnings = document.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    );
+
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(warnings[0].span?.uri, includeUri);
+    assert.strictEqual(
+        include.slice(warnings[0].span!.start, warnings[0].span!.end),
+        '`DECLARE(generated)'
+    );
 }
 
 async function testWorkerWarnsOnlyForStructuralMacros(): Promise<void> {
@@ -536,6 +596,8 @@ async function main(): Promise<void> {
     testUnterminatedConditionalAndUnexpandedMacroWarnings();
     await testWorkerParsesTextualPortAndBodyIncludes();
     await testWorkerKeepsIncludedUnitsAndActiveBranches();
+    await testWorkerWarnsForStandaloneStructuralMacros();
+    await testRepeatedIncludeMacroWarningsAreDeduplicatedByOwnerSpan();
     await testWorkerPreservesDirectiveAndIncludeMetadata();
     await testWorkerWarnsOnlyForStructuralMacros();
     await testWorkerDiagnosticsAndFingerprint();

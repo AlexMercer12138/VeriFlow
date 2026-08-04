@@ -64,6 +64,49 @@ const opaqueTypes = new Set([
     'function_declaration',
 ]);
 
+export type TreeMacroUsageContext = {
+    generatedStart: number;
+    generatedEnd: number;
+    structural: boolean;
+};
+
+const nonStructuralMacroAncestorTypes = new Set([
+    ...opaqueTypes,
+    'continuous_assign',
+    'statement',
+    'statement_item',
+    'seq_block',
+    'par_block',
+]);
+
+export function classifyTreeMacroUsages(tree: Tree): TreeMacroUsageContext[] {
+    const usages: TreeMacroUsageContext[] = [];
+    const pending: Array<{ node: Node; nonStructural: boolean }> = [{
+        node: tree.rootNode,
+        nonStructural: false,
+    }];
+    while (pending.length > 0) {
+        const current = pending.pop()!;
+        const nonStructural = current.nonStructural
+            || nonStructuralMacroAncestorTypes.has(current.node.type);
+        if (current.node.type === 'text_macro_usage') {
+            usages.push({
+                generatedStart: current.node.startIndex,
+                generatedEnd: current.node.endIndex,
+                structural: !nonStructural,
+            });
+        }
+        const children = current.node.namedChildren;
+        for (let index = children.length - 1; index >= 0; index--) {
+            pending.push({ node: children[index], nonStructural });
+        }
+    }
+    return usages.sort((left, right) =>
+        left.generatedStart - right.generatedStart
+        || left.generatedEnd - right.generatedEnd
+    );
+}
+
 function sourceSpan(range: ByteRange, context: AdaptContext): SourceSpan {
     // web-tree-sitter's JavaScript input callback exposes UTF-16 indexes. Normalize
     // them to UTF-8 bytes so PositionMap remains the single byte-to-source boundary.

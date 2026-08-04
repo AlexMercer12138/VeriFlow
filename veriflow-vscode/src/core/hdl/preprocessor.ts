@@ -582,7 +582,7 @@ export function preprocessForParsing(
                 const includeModel: IncludeModel | undefined = directive.name === 'include'
                     ? { path: includePath ?? '', span }
                     : undefined;
-                if (includeModel) {
+                if (includeModel && active) {
                     includes.push(includeModel);
                 }
                 const identifier = readIdentifier(line, directive.argumentStart);

@@ -16,7 +16,8 @@ import {
     ParserWorkerRequest,
     ParserWorkerResponse,
 } from './protocol';
-import { adaptTree } from './treeSitterAdapter';
+import { adaptTree, classifyTreeMacroUsages } from './treeSitterAdapter';
+import type { TreeMacroUsageContext } from './treeSitterAdapter';
 
 if (!parentPort) {
     throw new Error('HDL parser worker requires a parent port');
@@ -216,7 +217,8 @@ function nonStructuralSpans(document: HdlDocument): SourceSpan[] {
 
 function macroDiagnostics(
     document: HdlDocument,
-    candidates: readonly PreprocessMacroCandidate[]
+    candidates: readonly PreprocessMacroCandidate[],
+    treeUsages: readonly TreeMacroUsageContext[]
 ): HdlDiagnostic[] {
     const structural = structuralSpans(document);
     const nonStructural = nonStructuralSpans(document);
@@ -225,21 +227,43 @@ function macroDiagnostics(
         && (diagnostic.code === 'systemverilog.syntax-error'
             || diagnostic.code === 'systemverilog.missing-syntax')
     );
-    return candidates.flatMap(candidate => {
-        if (nonStructural.some(span => spanContainsCandidate(span, candidate))) {
-            return [];
+    const usageByRange = new Map(treeUsages.map(usage => [
+        `${usage.generatedStart}:${usage.generatedEnd}`,
+        usage,
+    ]));
+    const seenOwnerSpans = new Set<string>();
+    const diagnostics: HdlDiagnostic[] = [];
+    for (const candidate of candidates) {
+        const treeUsage = usageByRange.get(
+            `${candidate.generatedStart}:${candidate.generatedEnd}`
+        );
+        if (treeUsage && !treeUsage.structural) {
+            continue;
         }
-        const affectsStructure = structural.some(span => spanContainsCandidate(span, candidate))
+        if (nonStructural.some(span => spanContainsCandidate(span, candidate))) {
+            continue;
+        }
+        const affectsStructure = treeUsage?.structural
+            || structural.some(span => spanContainsCandidate(span, candidate))
             || syntaxDiagnostics.some(diagnostic =>
                 diagnostic.span && spanTouchesCandidate(diagnostic.span, candidate)
             );
-        return affectsStructure ? [{
+        if (!affectsStructure) {
+            continue;
+        }
+        const ownerKey = `${candidate.span.uri}:${candidate.span.start}:${candidate.span.end}`;
+        if (seenOwnerSpans.has(ownerKey)) {
+            continue;
+        }
+        seenOwnerSpans.add(ownerKey);
+        diagnostics.push({
             severity: 'warning' as const,
             code: 'HDL_MACRO_UNEXPANDED',
             message: 'Macro usage may affect normalized HDL structure and was not expanded',
             span: candidate.span,
-        }] : [];
-    });
+        });
+    }
+    return diagnostics;
 }
 
 async function pump(): Promise<void> {
@@ -267,12 +291,14 @@ async function pump(): Promise<void> {
         }
 
         let document: ReturnType<typeof adaptTree>;
+        let treeMacroUsages: TreeMacroUsageContext[];
         try {
             document = adaptTree(tree, request, {
                 text: preprocessed.text,
                 sourceMap: preprocessed.sourceMap,
                 sourceTexts: preprocessed.sourceTexts,
             });
+            treeMacroUsages = classifyTreeMacroUsages(tree);
         } finally {
             tree.delete();
         }
@@ -283,7 +309,7 @@ async function pump(): Promise<void> {
         document.diagnostics = [
             ...document.diagnostics,
             ...preprocessed.diagnostics,
-            ...macroDiagnostics(document, metadata.macroCandidates),
+            ...macroDiagnostics(document, metadata.macroCandidates, treeMacroUsages),
         ].sort(compareDiagnostics);
         if (canRespond(request.requestId)) {
             post({
