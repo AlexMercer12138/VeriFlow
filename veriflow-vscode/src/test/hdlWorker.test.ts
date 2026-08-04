@@ -60,23 +60,32 @@ async function parseInWorker(
     }
 }
 
-async function expectNoWorkerMessages(
+async function expectCleanWorkerExitWithoutMessages(
     label: string,
     send: (worker: Worker) => void,
     waitMilliseconds: number
 ): Promise<void> {
     const worker = new Worker(workerPath, { workerData });
     let timeout: NodeJS.Timeout | undefined;
+    let exited = false;
 
     try {
         await new Promise<void>((resolve, reject) => {
-            timeout = setTimeout(resolve, waitMilliseconds);
+            timeout = setTimeout(
+                () => reject(new Error(`${label} worker did not exit after dispose`)),
+                waitMilliseconds
+            );
             worker.once('message', message => {
                 reject(new Error(`${label} unexpectedly received ${JSON.stringify(message)}`));
             });
             worker.once('error', reject);
             worker.once('exit', code => {
-                reject(new Error(`${label} worker exited unexpectedly with code ${code}`));
+                exited = true;
+                if (code === 0) {
+                    resolve();
+                } else {
+                    reject(new Error(`${label} worker exited with code ${code}`));
+                }
             });
             send(worker);
         });
@@ -84,7 +93,9 @@ async function expectNoWorkerMessages(
         if (timeout) {
             clearTimeout(timeout);
         }
-        await worker.terminate();
+        if (!exited) {
+            await worker.terminate();
+        }
     }
 }
 
@@ -329,7 +340,7 @@ async function testEndLabelSkipsComments(): Promise<void> {
 }
 
 async function testDisposeSuppressesResponses(): Promise<void> {
-    await expectNoWorkerMessages('dispose during initialization', worker => {
+    await expectCleanWorkerExitWithoutMessages('dispose during initialization', worker => {
         worker.postMessage({
             type: 'parse',
             requestId: 'dispose-running',
@@ -339,9 +350,9 @@ async function testDisposeSuppressesResponses(): Promise<void> {
             priority: 'interactive',
         });
         worker.postMessage({ type: 'dispose' });
-    }, 1_200);
+    }, 15_000);
 
-    await expectNoWorkerMessages('parse after dispose', worker => {
+    await expectCleanWorkerExitWithoutMessages('parse after dispose', worker => {
         worker.postMessage({ type: 'dispose' });
         worker.postMessage({
             type: 'parse',
@@ -351,7 +362,7 @@ async function testDisposeSuppressesResponses(): Promise<void> {
             text: 'module after_dispose; endmodule',
             priority: 'interactive',
         });
-    }, 300);
+    }, 15_000);
 }
 
 async function main(): Promise<void> {

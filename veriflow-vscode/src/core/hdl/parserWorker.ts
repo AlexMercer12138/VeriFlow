@@ -5,12 +5,16 @@ import TreeSitter = require('web-tree-sitter');
 
 import type { HdlDiagnostic, HdlDocument, SourceFileSpan, SourceSpan } from './model';
 import { ParserRequestQueue } from './parserQueue';
+import { PositionMap } from './positionMap';
 import {
-    canonicalizeSourceUri,
     getPreprocessMetadataForWorker,
     preprocessForParsing,
+    preprocessingFingerprint,
 } from './preprocessor';
-import type { PreprocessMacroCandidate } from './preprocessor';
+import type {
+    CompositeSourceMap,
+    PreprocessMacroCandidate,
+} from './preprocessor';
 import {
     HdlParseOptions,
     ParseRequest,
@@ -19,20 +23,41 @@ import {
 } from './protocol';
 import { adaptTree, classifyTreeMacroUsages } from './treeSitterAdapter';
 import type { TreeMacroUsageContext } from './treeSitterAdapter';
+import { computeTreeEdit } from './treeEdit';
+import type { ParserTreeEdit } from './treeEdit';
 
 if (!parentPort) {
     throw new Error('HDL parser worker requires a parent port');
 }
 const port = parentPort;
 
-let parserPromise: Promise<TreeSitter.Parser> | undefined;
+type ParserResources = {
+    parser: TreeSitter.Parser;
+    language: TreeSitter.Language;
+};
+
+type RetainedTree = {
+    uri: string;
+    version: number;
+    preprocessingFingerprint: string;
+    textHash: string;
+    preprocessedText: string;
+    sourceMap: CompositeSourceMap;
+    tree: TreeSitter.Tree;
+};
+
+const MAX_RETAINED_TREES = 8;
+let parserPromise: Promise<ParserResources> | undefined;
+let parserResources: ParserResources | undefined;
 const queue = new ParserRequestQueue<ParseRequest>();
 const cancelled = new Set<string>();
+const retainedTrees = new Map<string, RetainedTree>();
 let running = false;
 let runningRequestId: string | undefined;
 let disposed = false;
+let cleanupPromise: Promise<void> | undefined;
 
-function getParser(): Promise<TreeSitter.Parser> {
+function getParser(): Promise<ParserResources> {
     if (!parserPromise) {
         parserPromise = (async () => {
             await TreeSitter.Parser.init({
@@ -42,7 +67,9 @@ function getParser(): Promise<TreeSitter.Parser> {
             if (language.abiVersion !== 15) {
                 throw new Error(`Unexpected SystemVerilog ABI ${language.abiVersion}`);
             }
-            return new TreeSitter.Parser().setLanguage(language);
+            const parser = new TreeSitter.Parser().setLanguage(language);
+            parserResources = { parser, language };
+            return parserResources;
         })();
     }
     return parserPromise;
@@ -56,27 +83,6 @@ function canRespond(requestId: string): boolean {
     return !disposed && !cancelled.has(requestId);
 }
 
-function preprocessingFingerprint(options: HdlParseOptions): string {
-    const defines = Object.entries(options.defines)
-        .sort(([left], [right]) => left.localeCompare(right));
-    const includes = (options.resolvedIncludes ?? []).map(include => ({
-        fromUri: canonicalizeSourceUri(include.fromUri),
-        rawPath: include.rawPath,
-        resolvedUri: canonicalizeSourceUri(include.resolvedUri),
-        contentHash: createHash('sha256').update(include.text).digest('hex'),
-    })).sort((left, right) =>
-        left.fromUri.localeCompare(right.fromUri)
-        || left.rawPath.localeCompare(right.rawPath)
-        || left.resolvedUri.localeCompare(right.resolvedUri)
-        || left.contentHash.localeCompare(right.contentHash)
-    );
-    return createHash('sha256').update(JSON.stringify({
-        defines,
-        includes,
-        maxIncludeDepth: options.maxIncludeDepth ?? 32,
-    })).digest('hex');
-}
-
 function compareDiagnostics(
     left: ReturnType<typeof preprocessForParsing>['diagnostics'][number],
     right: ReturnType<typeof preprocessForParsing>['diagnostics'][number]
@@ -88,6 +94,94 @@ function compareDiagnostics(
             - (right.span?.end ?? Number.MAX_SAFE_INTEGER)
         || left.code.localeCompare(right.code)
         || left.message.localeCompare(right.message);
+}
+
+function takeRetainedTree(uri: string): RetainedTree | undefined {
+    const retained = retainedTrees.get(uri);
+    if (retained) {
+        retainedTrees.delete(uri);
+    }
+    return retained;
+}
+
+function retainTree(entry: RetainedTree): void {
+    const replaced = retainedTrees.get(entry.uri);
+    if (replaced && replaced.tree !== entry.tree) {
+        replaced.tree.delete();
+    }
+    retainedTrees.delete(entry.uri);
+    retainedTrees.set(entry.uri, entry);
+    while (retainedTrees.size > MAX_RETAINED_TREES) {
+        const oldestUri = retainedTrees.keys().next().value as string | undefined;
+        if (oldestUri === undefined) {
+            break;
+        }
+        const oldest = retainedTrees.get(oldestUri);
+        retainedTrees.delete(oldestUri);
+        oldest?.tree.delete();
+    }
+}
+
+function deleteTree(tree: TreeSitter.Tree | undefined): void {
+    tree?.delete();
+}
+
+function utf16PointAt(text: string, offset: number): TreeSitter.Point {
+    let row = 0;
+    let lineStart = 0;
+    for (let index = 0; index < offset; index++) {
+        if (text.charCodeAt(index) === 0x0a) {
+            row++;
+            lineStart = index + 1;
+        }
+    }
+    return { row, column: offset - lineStart };
+}
+
+function runtimeEdit(
+    byteEdit: ParserTreeEdit,
+    oldText: string,
+    newText: string
+): TreeSitter.Edit {
+    // web-tree-sitter's string callback is UTF-16 encoded, so its runtime tree indices
+    // and columns use code units even though the public Edit documentation says bytes.
+    const oldMap = new PositionMap(oldText);
+    const newMap = new PositionMap(newText);
+    const startIndex = oldMap.byteToUtf16(byteEdit.startIndex);
+    const oldEndIndex = oldMap.byteToUtf16(byteEdit.oldEndIndex);
+    const newEndIndex = newMap.byteToUtf16(byteEdit.newEndIndex);
+    return new TreeSitter.Edit({
+        startIndex,
+        oldEndIndex,
+        newEndIndex,
+        startPosition: utf16PointAt(oldText, startIndex),
+        oldEndPosition: utf16PointAt(oldText, oldEndIndex),
+        newEndPosition: utf16PointAt(newText, newEndIndex),
+    });
+}
+
+function cleanupResources(): Promise<void> {
+    if (!cleanupPromise) {
+        cleanupPromise = (async () => {
+            try {
+                await parserPromise;
+            } catch {
+                // Initialization errors are already reported to pending parse requests.
+            }
+            for (const retained of retainedTrees.values()) {
+                retained.tree.delete();
+            }
+            retainedTrees.clear();
+            parserResources?.parser.delete();
+            const language = parserResources?.language as
+                | (TreeSitter.Language & { delete?: () => void })
+                | undefined;
+            language?.delete?.();
+            parserResources = undefined;
+            port.close();
+        })();
+    }
+    return cleanupPromise;
 }
 
 function sourceParts(span: SourceSpan): SourceFileSpan[] {
@@ -263,44 +357,84 @@ async function pump(): Promise<void> {
     running = true;
     runningRequestId = request.requestId;
     try {
-        const parser = await getParser();
+        const { parser } = await getParser();
         if (disposed) {
             return;
         }
         const options = request.options ?? { defines: {} };
         const preprocessed = preprocessForParsing(request.uri, request.text, options);
-        const tree = parser.parse(preprocessed.text);
-        if (!tree) {
-            throw new Error('SystemVerilog parser returned no tree');
-        }
+        const fingerprint = preprocessingFingerprint(options);
+        const cacheMode = options.cacheMode ?? 'document';
+        const previous = cacheMode === 'document'
+            ? takeRetainedTree(request.uri)
+            : undefined;
+        let tree: TreeSitter.Tree | undefined;
+        let retained = false;
 
-        let document: ReturnType<typeof adaptTree>;
-        let treeMacroUsages: TreeMacroUsageContext[];
         try {
+            if (previous) {
+                const treeEdit = computeTreeEdit(
+                    previous.preprocessedText,
+                    preprocessed.text
+                );
+                if (treeEdit) {
+                    previous.tree.edit(runtimeEdit(
+                        treeEdit,
+                        previous.preprocessedText,
+                        preprocessed.text
+                    ));
+                }
+            }
+            const parsedTree = parser.parse(preprocessed.text, previous?.tree);
+            if (!parsedTree) {
+                throw new Error('SystemVerilog parser returned no tree');
+            }
+            tree = parsedTree;
+
+            let document: ReturnType<typeof adaptTree>;
+            let treeMacroUsages: TreeMacroUsageContext[];
             document = adaptTree(tree, request, {
                 text: preprocessed.text,
                 sourceMap: preprocessed.sourceMap,
                 sourceTexts: preprocessed.sourceTexts,
             });
             treeMacroUsages = classifyTreeMacroUsages(tree);
+            document.preprocessingFingerprint = fingerprint;
+            const metadata = getPreprocessMetadataForWorker(preprocessed);
+            document.directives = [...metadata.directives, ...document.directives];
+            document.includes = [...metadata.includes, ...document.includes];
+            document.diagnostics = [
+                ...document.diagnostics,
+                ...preprocessed.diagnostics,
+                ...macroDiagnostics(document, metadata.macroCandidates, treeMacroUsages),
+            ].sort(compareDiagnostics);
+
+            if (cacheMode === 'document') {
+                retainTree({
+                    uri: request.uri,
+                    version: request.version,
+                    preprocessingFingerprint: fingerprint,
+                    textHash: createHash('sha256').update(request.text).digest('hex'),
+                    preprocessedText: preprocessed.text,
+                    sourceMap: preprocessed.sourceMap,
+                    tree,
+                });
+                retained = true;
+            }
+            if (canRespond(request.requestId)) {
+                post({
+                    type: 'parsed',
+                    requestId: request.requestId,
+                    document,
+                });
+            }
         } finally {
-            tree.delete();
-        }
-        document.preprocessingFingerprint = preprocessingFingerprint(options);
-        const metadata = getPreprocessMetadataForWorker(preprocessed);
-        document.directives = [...metadata.directives, ...document.directives];
-        document.includes = [...metadata.includes, ...document.includes];
-        document.diagnostics = [
-            ...document.diagnostics,
-            ...preprocessed.diagnostics,
-            ...macroDiagnostics(document, metadata.macroCandidates, treeMacroUsages),
-        ].sort(compareDiagnostics);
-        if (canRespond(request.requestId)) {
-            post({
-                type: 'parsed',
-                requestId: request.requestId,
-                document,
-            });
+            if (previous && previous.tree !== tree) {
+                deleteTree(previous.tree);
+            }
+            if (!retained) {
+                deleteTree(tree);
+            }
         }
     } catch (error) {
         if (canRespond(request.requestId)) {
@@ -314,7 +448,11 @@ async function pump(): Promise<void> {
         cancelled.delete(request.requestId);
         running = false;
         runningRequestId = undefined;
-        void pump();
+        if (disposed) {
+            void cleanupResources();
+        } else {
+            void pump();
+        }
     }
 }
 
@@ -331,6 +469,10 @@ port.on('message', (request: ParserWorkerRequest) => {
         case 'dispose':
             disposed = true;
             queue.clear();
+            cancelled.clear();
+            if (!running) {
+                void cleanupResources();
+            }
             return;
         case 'parse':
             if (!disposed) {

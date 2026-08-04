@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 import type {
     DirectiveModel,
@@ -20,6 +21,27 @@ export type PreprocessOptions = {
     resolvedIncludes?: ResolvedIncludeInput[];
     maxIncludeDepth?: number;
 };
+
+export function preprocessingFingerprint(options: PreprocessOptions): string {
+    const defines = Object.entries(options.defines)
+        .sort(([left], [right]) => left.localeCompare(right));
+    const includes = (options.resolvedIncludes ?? []).map(include => ({
+        fromUri: canonicalizeSourceUri(include.fromUri),
+        rawPath: include.rawPath,
+        resolvedUri: canonicalizeSourceUri(include.resolvedUri),
+        contentHash: createHash('sha256').update(include.text).digest('hex'),
+    })).sort((left, right) =>
+        left.fromUri.localeCompare(right.fromUri)
+        || left.rawPath.localeCompare(right.rawPath)
+        || left.resolvedUri.localeCompare(right.resolvedUri)
+        || left.contentHash.localeCompare(right.contentHash)
+    );
+    return createHash('sha256').update(JSON.stringify({
+        defines,
+        includes,
+        maxIncludeDepth: options.maxIncludeDepth ?? 32,
+    })).digest('hex');
+}
 
 export type CompositeSourceSegment = {
     generatedStart: number;

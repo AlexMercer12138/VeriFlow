@@ -1,5 +1,8 @@
 import type { HdlDocument } from './model';
+import type { ParsePriority } from './parserQueue';
 import type { PreprocessOptions } from './preprocessor';
+
+export type { ParsePriority } from './parserQueue';
 
 export type HdlParseOptions = PreprocessOptions & {
     cacheMode?: 'document' | 'ephemeral';
@@ -11,7 +14,7 @@ export type ParseRequest = {
     uri: string;
     version: number;
     text: string;
-    priority: 'interactive' | 'background';
+    priority: ParsePriority;
     options: HdlParseOptions;
 };
 
