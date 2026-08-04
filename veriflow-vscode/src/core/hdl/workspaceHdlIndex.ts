@@ -16,6 +16,7 @@ import type {
     HdlDefinitionKind,
     HdlDefinitionSummary,
     HdlFileSummary,
+    PersistedWorkspaceIndex,
 } from './workspaceIndexTypes';
 
 export type DuplicateDefinitionGroup = {
@@ -681,17 +682,19 @@ export class WorkspaceHdlIndex {
         nextDefines?: Record<string, string | true>
     ): Promise<void> {
         this.checkpoint(signal);
-        await this.options.store.save({
-            schemaVersion: 1,
-            parserFingerprint: workspaceCacheFingerprint(
-                this.options.parserFingerprint,
-                nextDefines ?? this.defines
-            ),
-            files: [...batch.files.values()].sort((left, right) =>
-                left.uri.localeCompare(right.uri)
-            ),
-        });
-        this.checkpoint(signal);
+        await this.options.store.save(this.persistedSnapshot(
+            batch.files,
+            nextDefines ?? this.defines
+        ));
+        try {
+            this.checkpoint(signal);
+        } catch (error) {
+            await this.options.store.save(this.persistedSnapshot(
+                previousFiles,
+                this.defines
+            ));
+            throw error;
+        }
         this.files = batch.files;
         this.documents = batch.documents;
         if (nextDefines) {
@@ -724,6 +727,22 @@ export class WorkspaceHdlIndex {
             || event.changedDefinitionKeys.length > 0) {
             this.emit(event);
         }
+    }
+
+    private persistedSnapshot(
+        files: Map<string, HdlFileSummary>,
+        defines: Record<string, string | true>
+    ): PersistedWorkspaceIndex {
+        return {
+            schemaVersion: 1,
+            parserFingerprint: workspaceCacheFingerprint(
+                this.options.parserFingerprint,
+                defines
+            ),
+            files: [...files.values()].sort((left, right) =>
+                left.uri.localeCompare(right.uri)
+            ),
+        };
     }
 
     private emit(event: WorkspaceIndexInvalidation): void {

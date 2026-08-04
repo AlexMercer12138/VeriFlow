@@ -588,6 +588,14 @@ async function testAbortDuringSaveDoesNotCommitMemoryOrInvalidate(): Promise<voi
         );
         assert.deepStrictEqual(harness.index.getAllDefinitions(), []);
         assert.deepStrictEqual(events, []);
+
+        const reloaded = harness.createIndex();
+        try {
+            await reloaded.load();
+            assert.deepStrictEqual(reloaded.getAllDefinitions(), []);
+        } finally {
+            reloaded.dispose();
+        }
     } finally {
         harness.index.dispose();
         await harness.dispose();
