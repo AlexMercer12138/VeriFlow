@@ -191,7 +191,7 @@ function testCanonicalSourceUrisRespectPlatformCaseSemantics(): void {
 }
 
 function testPreprocessorDiagnosticsAndRecursionGuards(): void {
-    const topUri = 'file:///WORKSPACE/top.sv';
+    const topUri = 'file:///workspace/top.sv';
     const childUri = 'file:///workspace/child.svh';
     const source = [
         '`include "missing.svh"',
@@ -207,14 +207,14 @@ function testPreprocessorDiagnosticsAndRecursionGuards(): void {
     const result = preprocessForParsing(topUri, source, {
         defines: {},
         resolvedIncludes: [{
-            fromUri: 'file:///workspace/TOP.sv',
+            fromUri: topUri,
             rawPath: 'child.svh',
             resolvedUri: childUri,
             text: '`include "top.sv"\n',
         }, {
             fromUri: childUri,
             rawPath: 'top.sv',
-            resolvedUri: 'file:///workspace/top.sv',
+            resolvedUri: topUri,
             text: source,
         }],
     });
