@@ -3,8 +3,13 @@ import { parentPort, workerData } from 'worker_threads';
 // The ESM export relies on import.meta.url, which is unavailable in this CJS worker bundle.
 import TreeSitter = require('web-tree-sitter');
 
+import type { HdlDiagnostic, HdlDocument, SourceFileSpan, SourceSpan } from './model';
 import { ParserRequestQueue } from './parserQueue';
-import { preprocessForParsing } from './preprocessor';
+import {
+    getPreprocessMetadataForWorker,
+    preprocessForParsing,
+} from './preprocessor';
+import type { PreprocessMacroCandidate } from './preprocessor';
 import {
     HdlParseOptions,
     ParseRequest,
@@ -97,6 +102,146 @@ function compareDiagnostics(
         || left.message.localeCompare(right.message);
 }
 
+function sourceParts(span: SourceSpan): SourceFileSpan[] {
+    if (span.compositeParts) {
+        return span.compositeParts;
+    }
+    return span.uri === undefined
+        ? []
+        : [{ uri: span.uri, start: span.start, end: span.end }];
+}
+
+function spanContainsCandidate(span: SourceSpan, candidate: PreprocessMacroCandidate): boolean {
+    return sourceParts(span).some(part =>
+        part.uri === candidate.span.uri
+        && candidate.span.start >= part.start
+        && candidate.span.end <= part.end
+    );
+}
+
+function spanTouchesCandidate(span: SourceSpan, candidate: PreprocessMacroCandidate): boolean {
+    return sourceParts(span).some(part =>
+        part.uri === candidate.span.uri
+        && candidate.span.start <= part.end + 1
+        && candidate.span.end + 1 >= part.start
+    );
+}
+
+function structuralSpans(document: HdlDocument): SourceSpan[] {
+    const spans: SourceSpan[] = [];
+    for (const module of document.modules) {
+        spans.push(module.headerSpan);
+        for (const parameter of [...module.parameters, ...module.localParameters]) {
+            spans.push(parameter.declarationSpan, parameter.nameSpan);
+            if (parameter.valueSpan) {
+                spans.push(parameter.valueSpan);
+            }
+        }
+        for (const port of module.ports) {
+            spans.push(
+                port.declarationSpan,
+                port.nameSpan,
+                port.headerItemSpan,
+                port.headerNameSpan
+            );
+            if (port.bodyDeclarationSpan) {
+                spans.push(port.bodyDeclarationSpan);
+            }
+            if (port.bodyNameSpan) {
+                spans.push(port.bodyNameSpan);
+            }
+            if (port.packedRangeSpan) {
+                spans.push(port.packedRangeSpan);
+            }
+        }
+        for (const group of module.portDeclarationGroups) {
+            spans.push(group.declarationSpan, group.sharedPrefixSpan);
+            for (const item of group.items) {
+                spans.push(item.itemSpan);
+                if (item.separatorSpan) {
+                    spans.push(item.separatorSpan);
+                }
+            }
+        }
+        for (const net of module.nets) {
+            spans.push(net.declarationSpan, ...net.names.map(name => name.nameSpan));
+        }
+        for (const instance of module.instances) {
+            spans.push(
+                instance.declarationSpan,
+                instance.itemSpan,
+                instance.moduleNameSpan,
+                instance.nameSpan
+            );
+            for (const connection of [
+                ...instance.parameterConnections,
+                ...instance.portConnections,
+            ]) {
+                spans.push(connection.connectionSpan, connection.expressionSpan);
+                if (connection.nameSpan) {
+                    spans.push(connection.nameSpan);
+                }
+            }
+        }
+        for (const group of module.instanceDeclarationGroups) {
+            spans.push(group.statementSpan, group.moduleNameSpan);
+            if (group.parameterBlockSpan) {
+                spans.push(group.parameterBlockSpan);
+            }
+            for (const item of group.items) {
+                spans.push(item.itemSpan);
+                if (item.separatorSpan) {
+                    spans.push(item.separatorSpan);
+                }
+            }
+        }
+    }
+    spans.push(
+        ...document.interfaces.flatMap(unit => [unit.nameSpan, unit.declarationSpan]),
+        ...document.packages.flatMap(unit => [unit.nameSpan, unit.declarationSpan])
+    );
+    return spans;
+}
+
+function nonStructuralSpans(document: HdlDocument): SourceSpan[] {
+    return document.modules.flatMap(module => [
+        ...module.continuousAssignments.flatMap(assignment => [
+            assignment.declarationSpan,
+            assignment.target.span,
+            assignment.value.span,
+        ]),
+        ...module.opaqueRegions.map(region => region.span),
+    ]);
+}
+
+function macroDiagnostics(
+    document: HdlDocument,
+    candidates: readonly PreprocessMacroCandidate[]
+): HdlDiagnostic[] {
+    const structural = structuralSpans(document);
+    const nonStructural = nonStructuralSpans(document);
+    const syntaxDiagnostics = document.diagnostics.filter(diagnostic =>
+        diagnostic.span
+        && (diagnostic.code === 'systemverilog.syntax-error'
+            || diagnostic.code === 'systemverilog.missing-syntax')
+    );
+    return candidates.flatMap(candidate => {
+        if (nonStructural.some(span => spanContainsCandidate(span, candidate))) {
+            return [];
+        }
+        const affectsStructure = structural.some(span => spanContainsCandidate(span, candidate))
+            || syntaxDiagnostics.some(diagnostic =>
+                diagnostic.span && spanTouchesCandidate(diagnostic.span, candidate)
+            );
+        return affectsStructure ? [{
+            severity: 'warning' as const,
+            code: 'HDL_MACRO_UNEXPANDED',
+            message: 'Macro usage may affect normalized HDL structure and was not expanded',
+            span: candidate.span,
+        }] : [];
+    });
+}
+
 async function pump(): Promise<void> {
     if (disposed || running) {
         return;
@@ -132,9 +277,13 @@ async function pump(): Promise<void> {
             tree.delete();
         }
         document.preprocessingFingerprint = preprocessingFingerprint(options);
+        const metadata = getPreprocessMetadataForWorker(preprocessed);
+        document.directives = [...metadata.directives, ...document.directives];
+        document.includes = [...metadata.includes, ...document.includes];
         document.diagnostics = [
             ...document.diagnostics,
             ...preprocessed.diagnostics,
+            ...macroDiagnostics(document, metadata.macroCandidates),
         ].sort(compareDiagnostics);
         if (canRespond(request.requestId)) {
             post({

@@ -1,6 +1,12 @@
 import * as path from 'path';
 
-import type { HdlDiagnostic, SourceFileSpan, SourceSpan } from './model';
+import type {
+    DirectiveModel,
+    HdlDiagnostic,
+    IncludeModel,
+    SourceFileSpan,
+    SourceSpan,
+} from './model';
 
 export type ResolvedIncludeInput = {
     fromUri: string;
@@ -168,6 +174,30 @@ export type PreprocessResult = {
     diagnostics: HdlDiagnostic[];
 };
 
+export type PreprocessMacroCandidate = {
+    text: string;
+    span: SourceFileSpan;
+    generatedStart: number;
+    generatedEnd: number;
+};
+
+export type PreprocessMetadata = {
+    directives: readonly DirectiveModel[];
+    includes: readonly IncludeModel[];
+    macroCandidates: readonly PreprocessMacroCandidate[];
+};
+
+const emptyMetadata: PreprocessMetadata = Object.freeze({
+    directives: Object.freeze([]),
+    includes: Object.freeze([]),
+    macroCandidates: Object.freeze([]),
+});
+const metadataByResult = new WeakMap<PreprocessResult, PreprocessMetadata>();
+
+export function getPreprocessMetadataForWorker(result: PreprocessResult): PreprocessMetadata {
+    return metadataByResult.get(result) ?? emptyMetadata;
+}
+
 type ConditionalFrame = {
     parentActive: boolean;
     branchActive: boolean;
@@ -207,6 +237,37 @@ const otherCompilerDirectives = new Set([
     'timescale',
     'unconnected_drive',
     'undefineall',
+]);
+
+const directiveKinds: Readonly<Record<string, string>> = {
+    begin_keywords: 'keywords_directive',
+    celldefine: 'celldefine_compiler_directive',
+    default_nettype: 'default_nettype_compiler_directive',
+    define: 'text_macro_definition',
+    else: 'conditional_compilation_directive',
+    elsif: 'conditional_compilation_directive',
+    end_keywords: 'endkeywords_directive',
+    endcelldefine: 'endcelldefine_compiler_directive',
+    endif: 'conditional_compilation_directive',
+    ifdef: 'conditional_compilation_directive',
+    ifndef: 'conditional_compilation_directive',
+    include: 'include_compiler_directive',
+    line: 'line_compiler_directive',
+    nounconnected_drive: 'unconnected_drive_compiler_directive',
+    pragma: 'pragma',
+    resetall: 'resetall_compiler_directive',
+    timescale: 'timescale_compiler_directive',
+    unconnected_drive: 'unconnected_drive_compiler_directive',
+    undef: 'undefine_compiler_directive',
+    undefineall: 'undefineall_compiler_directive',
+};
+
+const newlineTerminatedDirectiveKinds = new Set([
+    'default_nettype_compiler_directive',
+    'line_compiler_directive',
+    'text_macro_definition',
+    'timescale_compiler_directive',
+    'unconnected_drive_compiler_directive',
 ]);
 
 class CompositeEmitter {
@@ -329,11 +390,55 @@ function compareDiagnostics(left: HdlDiagnostic, right: HdlDiagnostic): number {
         || left.message.localeCompare(right.message);
 }
 
+type ScannedMacroInvocation = {
+    start: number;
+    end: number;
+};
+
+function macroInvocationEnd(line: string, start: number): number {
+    let offset = start + 1;
+    while (offset < line.length && /[A-Za-z0-9_$]/.test(line[offset])) {
+        offset++;
+    }
+    let argumentStart = offset;
+    while (argumentStart < line.length && /[ \t\f]/.test(line[argumentStart])) {
+        argumentStart++;
+    }
+    if (line[argumentStart] !== '(') {
+        return offset;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = argumentStart; index < line.length; index++) {
+        const char = line[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+        } else if (char === '(') {
+            depth++;
+        } else if (char === ')' && --depth === 0) {
+            return index + 1;
+        }
+    }
+    return line.length;
+}
+
 function scanMacroInvocations(line: string, initiallyInBlockComment: boolean): {
-    offsets: number[];
+    invocations: ScannedMacroInvocation[];
     inBlockComment: boolean;
 } {
-    const offsets: number[] = [];
+    const invocations: ScannedMacroInvocation[] = [];
     let inBlockComment = initiallyInBlockComment;
     let inString = false;
     let escaped = false;
@@ -370,10 +475,10 @@ function scanMacroInvocations(line: string, initiallyInBlockComment: boolean): {
             continue;
         }
         if (char === '`' && /[A-Za-z_$]/.test(next ?? '')) {
-            offsets.push(index);
+            invocations.push({ start: index, end: macroInvocationEnd(line, index) });
         }
     }
-    return { offsets, inBlockComment };
+    return { invocations, inBlockComment };
 }
 
 export function preprocessForParsing(
@@ -384,6 +489,9 @@ export function preprocessForParsing(
     const emitter = new CompositeEmitter();
     const defines: Record<string, string | true> = { ...options.defines };
     const diagnostics: HdlDiagnostic[] = [];
+    const directives: DirectiveModel[] = [];
+    const includes: IncludeModel[] = [];
+    const macroCandidates: PreprocessMacroCandidate[] = [];
     const sourceTexts: Record<string, string> = { [sourceUri]: source };
     const maximumDepth = options.maxIncludeDepth ?? 32;
     if (!Number.isInteger(maximumDepth) || maximumDepth < 0) {
@@ -450,6 +558,33 @@ export function preprocessForParsing(
             let included = false;
 
             if (directive) {
+                const activeBeforeDirective = isActive();
+                const enclosingFrame = frames[frames.length - 1];
+                const active = directive.name === 'elsif'
+                    || directive.name === 'else'
+                    || directive.name === 'endif'
+                    ? enclosingFrame?.parentActive ?? activeBeforeDirective
+                    : activeBeforeDirective;
+                const kind = directiveKinds[directive.name]
+                    ?? `${directive.name}_compiler_directive`;
+                const directiveEnd = newlineTerminatedDirectiveKinds.has(kind)
+                    ? newlineEnd
+                    : contentEnd;
+                directives.push({
+                    kind,
+                    text: text.slice(offset, directiveEnd),
+                    span: lineSpan(uri, offset, directiveEnd),
+                    active,
+                });
+                const includePath = directive.name === 'include'
+                    ? readIncludePath(line, directive.argumentStart)
+                    : undefined;
+                const includeModel: IncludeModel | undefined = directive.name === 'include'
+                    ? { path: includePath ?? '', span }
+                    : undefined;
+                if (includeModel) {
+                    includes.push(includeModel);
+                }
                 const identifier = readIdentifier(line, directive.argumentStart);
                 switch (directive.name) {
                     case 'ifdef':
@@ -568,7 +703,7 @@ export function preprocessForParsing(
                         break;
                     case 'include':
                         if (isActive()) {
-                            const rawPath = readIncludePath(line, directive.argumentStart);
+                            const rawPath = includePath;
                             if (!rawPath) {
                                 addDiagnostic(
                                     'error', 'HDL_INCLUDE_INVALID',
@@ -582,6 +717,7 @@ export function preprocessForParsing(
                                         `Unable to resolve include "${rawPath}" from ${uri}`, span
                                     );
                                 } else {
+                                    includeModel!.resolvedUri = resolved.resolvedUri;
                                     sourceTexts[resolved.resolvedUri] = resolved.text;
                                     const canonicalResolved = canonicalizeUri(resolved.resolvedUri);
                                     if (canonicalStack.includes(canonicalResolved)) {
@@ -616,13 +752,19 @@ export function preprocessForParsing(
                 if (active) {
                     const scan = scanMacroInvocations(line, inBlockComment);
                     inBlockComment = scan.inBlockComment;
+                    const generatedLineStart = emitter.generatedLength;
                     emitter.emit(line, uri, offset, contentEnd);
-                    for (const macroOffset of scan.offsets) {
-                        addDiagnostic(
-                            'warning', 'HDL_MACRO_UNEXPANDED',
-                            'Function-like and text macros are not expanded during structural parsing',
-                            lineSpan(uri, offset + macroOffset, contentEnd)
-                        );
+                    for (const invocation of scan.invocations) {
+                        macroCandidates.push({
+                            text: line.slice(invocation.start, invocation.end),
+                            span: lineSpan(
+                                uri,
+                                offset + invocation.start,
+                                offset + invocation.end
+                            ),
+                            generatedStart: generatedLineStart + invocation.start,
+                            generatedEnd: generatedLineStart + invocation.end,
+                        });
                     }
                 } else {
                     emitter.emit(mask(line), uri, offset, contentEnd);
@@ -652,11 +794,13 @@ export function preprocessForParsing(
             sourceEnd: 0,
         }];
     diagnostics.sort(compareDiagnostics);
-    return {
+    const result: PreprocessResult = {
         text,
         sourceMap: new CompositeSourceMap(segments),
         sourceTexts,
         activeDefines: defines,
         diagnostics,
     };
+    metadataByResult.set(result, { directives, includes, macroCandidates });
+    return result;
 }

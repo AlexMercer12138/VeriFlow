@@ -101,7 +101,9 @@ async function testStructuralFixture(): Promise<void> {
     ));
     assert.deepStrictEqual(top.opaqueRegions, []);
 
-    assert.deepStrictEqual(document.directives, []);
+    assert.strictEqual(document.directives.length, 1);
+    assert.strictEqual(document.directives[0].kind, 'timescale_compiler_directive');
+    assertSpan(source, uri, document.directives[0].span, '`timescale 1ns/1ps\n');
 
     for (const span of [
         child.parameters[0].nameSpan,
@@ -273,7 +275,10 @@ async function testAdvancedStructures(): Promise<void> {
     assert.strictEqual(grouped.ports[1].packedRangeSpan, undefined);
     assert.strictEqual(grouped.symbols.find(symbol => symbol.name === 'b')?.declarationSpans.length, 2);
 
-    assert.deepStrictEqual(document.includes, []);
+    assert.strictEqual(document.includes.length, 1);
+    assert.strictEqual(document.includes[0].path, 'defs.svh');
+    assert.strictEqual(document.includes[0].resolvedUri, undefined);
+    assertSpan(source, uri, document.includes[0].span, '`include "defs.svh"');
     const unresolvedInclude = document.diagnostics.find(
         diagnostic => diagnostic.code === 'HDL_INCLUDE_UNRESOLVED'
     );

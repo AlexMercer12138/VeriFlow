@@ -227,12 +227,147 @@ function testUnterminatedConditionalAndUnexpandedMacroWarnings(): void {
         diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
     );
 
-    assert.strictEqual(macroWarnings.length, 1);
+    assert.strictEqual(macroWarnings.length, 0);
     assert.ok(result.diagnostics.some(
         diagnostic => diagnostic.code === 'HDL_PP_UNTERMINATED_CONDITIONAL'
     ));
     assert.ok(!result.text.includes('timescale'));
     assert.ok(result.text.includes('`DECLARE(generated)'));
+    assert.deepStrictEqual(Object.keys(result).sort(), [
+        'activeDefines',
+        'diagnostics',
+        'sourceMap',
+        'sourceTexts',
+        'text',
+    ]);
+}
+
+function sourceForUri(
+    uri: string,
+    sources: Readonly<Record<string, string>>
+): string {
+    const source = sources[uri];
+    assert.notStrictEqual(source, undefined, `missing source text for ${uri}`);
+    return source;
+}
+
+async function testWorkerPreservesDirectiveAndIncludeMetadata(): Promise<void> {
+    const topUri = 'file:///workspace/metadata.sv';
+    const nestedUri = 'file:///workspace/nested.svh';
+    const leafUri = 'file:///workspace/leaf.svh';
+    const inactiveUri = 'file:///workspace/inactive.svh';
+    const top = [
+        '`timescale 1ns/1ps',
+        '`define ENABLE 1',
+        '`ifdef ENABLE',
+        '`include "nested.svh"',
+        '`else',
+        '`include "inactive.svh"',
+        '`endif',
+        'module metadata; endmodule',
+    ].join('\n');
+    const nested = [
+        '`define CHILD 1',
+        '`include "leaf.svh"',
+    ].join('\n');
+    const leaf = '// leaf\n';
+    const inactive = '`define SHOULD_NOT_EXIST 1\n';
+    const sources = { [topUri]: top, [nestedUri]: nested, [leafUri]: leaf, [inactiveUri]: inactive };
+    const document = await parseWithRealWorker(topUri, top, {
+        defines: {},
+        resolvedIncludes: [
+            { fromUri: topUri, rawPath: 'nested.svh', resolvedUri: nestedUri, text: nested },
+            { fromUri: nestedUri, rawPath: 'leaf.svh', resolvedUri: leafUri, text: leaf },
+            { fromUri: topUri, rawPath: 'inactive.svh', resolvedUri: inactiveUri, text: inactive },
+        ],
+    });
+
+    assert.deepStrictEqual(
+        document.directives.map(directive => [directive.kind, directive.active]),
+        [
+            ['timescale_compiler_directive', true],
+            ['text_macro_definition', true],
+            ['conditional_compilation_directive', true],
+            ['include_compiler_directive', true],
+            ['text_macro_definition', true],
+            ['include_compiler_directive', true],
+            ['conditional_compilation_directive', true],
+            ['include_compiler_directive', false],
+            ['conditional_compilation_directive', true],
+        ]
+    );
+    for (const directive of document.directives) {
+        assert.ok(directive.span.uri);
+        assert.strictEqual(
+            sourceForUri(directive.span.uri, sources).slice(
+                directive.span.start,
+                directive.span.end
+            ),
+            directive.text
+        );
+    }
+    assert.strictEqual(document.directives[0].text, '`timescale 1ns/1ps\n');
+    assert.strictEqual(document.directives[1].text, '`define ENABLE 1\n');
+    assert.strictEqual(document.directives[4].span.uri, nestedUri);
+    assert.deepStrictEqual(document.includes.map(include => ({
+        path: include.path,
+        uri: include.span.uri,
+        resolvedUri: include.resolvedUri,
+        text: sourceForUri(include.span.uri!, sources).slice(include.span.start, include.span.end),
+    })), [
+        {
+            path: 'nested.svh', uri: topUri, resolvedUri: nestedUri,
+            text: '`include "nested.svh"',
+        },
+        {
+            path: 'leaf.svh', uri: nestedUri, resolvedUri: leafUri,
+            text: '`include "leaf.svh"',
+        },
+        {
+            path: 'inactive.svh', uri: topUri, resolvedUri: undefined,
+            text: '`include "inactive.svh"',
+        },
+    ]);
+    assert.ok(!document.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_INCLUDE_UNRESOLVED'
+        && diagnostic.span?.start === top.indexOf('`include "inactive.svh"')
+    ));
+}
+
+async function testWorkerWarnsOnlyForStructuralMacros(): Promise<void> {
+    const topUri = 'file:///workspace/macro-context.sv';
+    const instanceUri = 'file:///workspace/macro-instance.svh';
+    const instance = 'child u_child(.a(`CONNECT(a)));';
+    const source = [
+        'module macro_context(input logic a, output logic y);',
+        '`include "macro-instance.svh"',
+        'assign y = `PASS(a);',
+        'always_comb begin',
+        '    y = `PROC(a);',
+        'end',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(topUri, source, {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: topUri,
+            rawPath: 'macro-instance.svh',
+            resolvedUri: instanceUri,
+            text: instance,
+        }],
+    });
+    const warnings = document.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    );
+
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(warnings[0].span?.uri, instanceUri);
+    assert.strictEqual(
+        instance.slice(warnings[0].span!.start, warnings[0].span!.end),
+        '`CONNECT(a)'
+    );
+    assert.strictEqual(document.modules[0].continuousAssignments.length, 1);
+    assert.strictEqual(document.modules[0].opaqueRegions.length, 1);
 }
 
 async function testWorkerParsesTextualPortAndBodyIncludes(): Promise<void> {
@@ -384,6 +519,11 @@ async function testWorkerDiagnosticsAndFingerprint(): Promise<void> {
     assert.ok(unresolved);
     assert.strictEqual(unresolved.span?.uri, uri);
     assert.strictEqual(source.slice(unresolved.span!.start, unresolved.span!.end), '`include "missing.svh"');
+    assert.deepStrictEqual(base.includes.map(include => [include.path, include.resolvedUri]), [
+        ['first.svh', firstUri],
+        ['second.svh', secondUri],
+        ['missing.svh', undefined],
+    ]);
 }
 
 async function main(): Promise<void> {
@@ -396,6 +536,8 @@ async function main(): Promise<void> {
     testUnterminatedConditionalAndUnexpandedMacroWarnings();
     await testWorkerParsesTextualPortAndBodyIncludes();
     await testWorkerKeepsIncludedUnitsAndActiveBranches();
+    await testWorkerPreservesDirectiveAndIncludeMetadata();
+    await testWorkerWarnsOnlyForStructuralMacros();
     await testWorkerDiagnosticsAndFingerprint();
     console.log('HDL preprocessor tests passed');
 }
