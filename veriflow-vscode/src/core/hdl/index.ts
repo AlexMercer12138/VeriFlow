@@ -10,6 +10,13 @@ export {
 } from './parserClient';
 export type { HdlParserClientOptions, WorkerLike } from './parserClient';
 export type { HdlParseOptions, ParsePriority } from './protocol';
+export { WorkspaceHdlIndex } from './workspaceHdlIndex';
+export type {
+    DuplicateDefinitionGroup,
+    WorkspaceHdlIndexOptions,
+    WorkspaceIndexInvalidation,
+} from './workspaceHdlIndex';
+export * from './workspaceIndexTypes';
 export { computeTreeEdit } from './treeEdit';
 export type { ParserTreeEdit } from './treeEdit';
 
