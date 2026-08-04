@@ -36,7 +36,14 @@ type AdaptContext = {
     request: ParseRequest;
 };
 
-type PendingReference = Omit<SymbolReferenceModel, 'symbolId'>;
+type PendingReference = Omit<SymbolReferenceModel, 'symbolId'> & {
+    bindingEligible: boolean;
+};
+
+type ReferenceCandidate = {
+    node: Node;
+    bindingEligible: boolean;
+};
 
 const identifierTypes = new Set(['simple_identifier', 'escaped_identifier']);
 const opaqueTypes = new Set([
@@ -211,12 +218,96 @@ function adaptExpression(node: Node, context: AdaptContext): ExpressionModel {
     };
 }
 
-function referenceNodes(node: Node): Node[] {
-    const nodes = descendants(node, candidate => identifierTypes.has(candidate.type));
-    if (identifierTypes.has(node.type)) {
-        nodes.unshift(node);
+function hasScopeQualifierBefore(node: Node, offset: number): boolean {
+    return descendants(node, child =>
+        (child.type === 'package_scope' || child.type === 'class_scope')
+        && child.endIndex <= offset
+    ).length > 0;
+}
+
+function isScopeResolutionPart(node: Node, ancestors: Node[]): boolean {
+    for (let index = 0; index < ancestors.length; index++) {
+        const methodCall = ancestors[index];
+        if (methodCall.type !== 'method_call'
+            || !methodCall.children.some(child => child.type === '::')) {
+            continue;
+        }
+        const branch = ancestors[index + 1];
+        if (branch?.type === 'primary') {
+            return true;
+        }
+        if (branch?.type === 'method_call_body') {
+            const name = branch.childForFieldName('name');
+            if (name
+                && name.startIndex === node.startIndex
+                && name.endIndex === node.endIndex) {
+                return true;
+            }
+        }
     }
-    return nodes;
+    return false;
+}
+
+function identifierCanBind(node: Node, ancestors: Node[]): boolean {
+    if (ancestors.some(ancestor => ancestor.type === 'text_macro_usage')) {
+        return false;
+    }
+    if (isScopeResolutionPart(node, ancestors)) {
+        return false;
+    }
+    for (let index = ancestors.length - 1; index >= 0; index--) {
+        const current = ancestors[index];
+        if (current.type === 'text_macro_usage'
+            || current.type === 'package_scope'
+            || current.type === 'class_scope') {
+            return false;
+        }
+        if (current.type === 'hierarchical_identifier') {
+            const directIdentifiers = current.namedChildren.filter(child =>
+                identifierTypes.has(child.type) || child.type === 'text_macro_usage'
+            );
+            const first = directIdentifiers[0];
+            let qualified = false;
+            for (let parentIndex = index - 1; parentIndex >= 0; parentIndex--) {
+                const container = ancestors[parentIndex];
+                if (container.type === 'primary'
+                    || container.type === 'constant_primary'
+                    || container.type === 'net_lvalue'
+                    || container.type === 'variable_lvalue') {
+                    qualified = hasScopeQualifierBefore(container, current.startIndex);
+                    break;
+                }
+            }
+            return first !== undefined
+                && first.startIndex === node.startIndex
+                && first.endIndex === node.endIndex
+                && !qualified;
+        }
+        if (current.type === 'primary'
+            || current.type === 'constant_primary'
+            || current.type === 'net_lvalue'
+            || current.type === 'variable_lvalue') {
+            return !hasScopeQualifierBefore(current, node.startIndex);
+        }
+    }
+    return true;
+}
+
+function referenceNodes(node: Node): ReferenceCandidate[] {
+    const references: ReferenceCandidate[] = [];
+    const visit = (candidate: Node, ancestors: Node[]): void => {
+        if (identifierTypes.has(candidate.type)) {
+            references.push({
+                node: candidate,
+                bindingEligible: identifierCanBind(candidate, ancestors),
+            });
+        }
+        for (const child of candidate.namedChildren) {
+            visit(child, [...ancestors, candidate]);
+        }
+    };
+    visit(node, []);
+    return references;
 }
 
 function adaptParameterDeclaration(
@@ -893,10 +984,101 @@ function bindReferences(
             byName.set(symbol.name, symbol);
         }
     }
-    return pending.map(reference => ({
-        ...reference,
-        symbolId: byName.get(reference.name)?.id,
-    }));
+    return pending.map(reference => {
+        const { bindingEligible, ...model } = reference;
+        return {
+            ...model,
+            symbolId: bindingEligible ? byName.get(reference.name)?.id : undefined,
+        };
+    });
+}
+
+type LexicalBinding = {
+    name: string;
+    scope: Node;
+};
+
+const lexicalScopeTypes = new Set([
+    'seq_block',
+    'par_block',
+    'function_body_declaration',
+    'task_body_declaration',
+    'loop_statement',
+]);
+
+function nearestLexicalScope(node: Node, opaque: Node): Node {
+    let current = node.parent;
+    while (current && current.startIndex >= opaque.startIndex && current.endIndex <= opaque.endIndex) {
+        if (lexicalScopeTypes.has(current.type)) {
+            return current;
+        }
+        current = current.parent;
+    }
+    return opaque;
+}
+
+function collectOpaqueBindings(opaque: Node): LexicalBinding[] {
+    const bindings: LexicalBinding[] = [];
+    const add = (name: Node, owner: Node): void => {
+        bindings.push({ name: name.text, scope: nearestLexicalScope(owner, opaque) });
+    };
+
+    for (const declaration of descendants(opaque, candidate => candidate.type === 'data_declaration')) {
+        const list = directChild(declaration, 'list_of_variable_decl_assignments');
+        for (const assignment of list?.namedChildren ?? []) {
+            const name = assignment.childForFieldName('name');
+            if (name) {
+                add(name, declaration);
+            }
+        }
+    }
+    for (const port of descendants(opaque, candidate => candidate.type === 'tf_port_item')) {
+        const name = port.childForFieldName('name');
+        if (name) {
+            add(name, port);
+        }
+    }
+    for (const portList of descendants(
+        opaque,
+        candidate => candidate.type === 'list_of_tf_variable_identifiers'
+    )) {
+        for (const name of identifierChildren(portList)) {
+            add(name, portList);
+        }
+    }
+    for (const declaration of descendants(
+        opaque,
+        candidate => candidate.type === 'for_variable_declaration'
+    )) {
+        for (const name of identifierChildren(declaration)) {
+            add(name, declaration);
+        }
+    }
+    for (const loopVariables of descendants(
+        opaque,
+        candidate => candidate.type === 'loop_variables'
+    )) {
+        for (const name of identifierChildren(loopVariables)) {
+            add(name, loopVariables);
+        }
+    }
+    const body = firstDescendant(
+        opaque,
+        new Set(['function_body_declaration', 'task_body_declaration'])
+    );
+    const bodyName = body?.childForFieldName('name');
+    if (body && bodyName) {
+        add(bodyName, body);
+    }
+    return bindings;
+}
+
+function isShadowedAt(node: Node, bindings: LexicalBinding[]): boolean {
+    return bindings.some(binding =>
+        binding.name === node.text
+        && node.startIndex >= binding.scope.startIndex
+        && node.endIndex <= binding.scope.endIndex
+    );
 }
 
 function adaptOpaqueRegions(
@@ -914,41 +1096,13 @@ function adaptOpaqueRegions(
         if (!opaque) {
             continue;
         }
-        const shadowed = new Set<string>();
-        for (const declaration of descendants(opaque, candidate => candidate.type === 'data_declaration')) {
-            const list = directChild(declaration, 'list_of_variable_decl_assignments');
-            for (const assignment of list?.namedChildren ?? []) {
-                const name = assignment.childForFieldName('name');
-                if (name) {
-                    shadowed.add(name.text);
-                }
-            }
-        }
-        for (const port of descendants(opaque, candidate => candidate.type === 'tf_port_item')) {
-            const name = port.childForFieldName('name');
-            if (name) {
-                shadowed.add(name.text);
-            }
-        }
-        for (const portList of descendants(
-            opaque,
-            candidate => candidate.type === 'list_of_tf_variable_identifiers'
-        )) {
-            for (const name of identifierChildren(portList)) {
-                shadowed.add(name.text);
-            }
-        }
-        const body = firstDescendant(
-            opaque,
-            new Set(['function_body_declaration', 'task_body_declaration'])
-        );
-        const bodyName = body?.childForFieldName('name');
-        if (bodyName) {
-            shadowed.add(bodyName.text);
-        }
+        const bindings = collectOpaqueBindings(opaque);
         const boundaryNames: string[] = [];
-        for (const identifier of descendants(opaque, candidate => identifierTypes.has(candidate.type))) {
-            if (!symbolNames.has(identifier.text) || shadowed.has(identifier.text)) {
+        for (const candidate of referenceNodes(opaque)) {
+            const identifier = candidate.node;
+            if (!symbolNames.has(identifier.text)
+                || isShadowedAt(identifier, bindings)
+                || !candidate.bindingEligible) {
                 continue;
             }
             if (!boundaryNames.includes(identifier.text)) {
@@ -958,6 +1112,7 @@ function adaptOpaqueRegions(
                 name: identifier.text,
                 span: sourceSpan(identifier, context),
                 context: 'unknown',
+                bindingEligible: true,
             });
         }
         regions.push({
@@ -978,7 +1133,11 @@ function scopeItems(module: Node, header: Node): Node[] {
     );
 }
 
-function adaptModule(node: Node, context: AdaptContext): ModuleModel | undefined {
+function adaptModule(
+    node: Node,
+    declaredPrimitiveNames: ReadonlySet<string>,
+    context: AdaptContext
+): ModuleModel | undefined {
     const header = node.namedChildren.find(child =>
         child.type === 'module_ansi_header' || child.type === 'module_nonansi_header'
     );
@@ -1019,6 +1178,12 @@ function adaptModule(node: Node, context: AdaptContext): ModuleModel | undefined
         const structural = item.type === 'module_item' && item.namedChildren.length === 1
             ? item.namedChildren[0]
             : item;
+        if ((structural.type === 'module_instantiation' || structural.type === 'udp_instantiation')
+            && declaredPrimitiveNames.has(
+                structural.childForFieldName('instance_type')?.text ?? ''
+            )) {
+            continue;
+        }
         if (structural.type === 'module_instantiation' || structural.type === 'udp_instantiation') {
             const adapted = adaptInstance(structural, context);
             instances.push(...adapted.instances);
@@ -1038,22 +1203,24 @@ function adaptModule(node: Node, context: AdaptContext): ModuleModel | undefined
             const adapted = adaptContinuousAssign(structural, context);
             continuousAssignments.push(...adapted.assignments);
             for (const reference of adapted.references) {
-                for (const identifier of referenceNodes(reference.node)) {
+                for (const candidate of referenceNodes(reference.node)) {
                     pendingReferences.push({
-                        name: identifier.text,
-                        span: sourceSpan(identifier, context),
+                        name: candidate.node.text,
+                        span: sourceSpan(candidate.node, context),
                         context: reference.context,
+                        bindingEligible: candidate.bindingEligible,
                     });
                 }
             }
         }
     }
     for (const expressionNode of connectionReferenceNodes) {
-        for (const identifier of referenceNodes(expressionNode)) {
+        for (const candidate of referenceNodes(expressionNode)) {
             pendingReferences.push({
-                name: identifier.text,
-                span: sourceSpan(identifier, context),
+                name: candidate.node.text,
+                span: sourceSpan(candidate.node, context),
                 context: 'connection',
+                bindingEligible: candidate.bindingEligible,
             });
         }
     }
@@ -1160,6 +1327,24 @@ function collectTopLevelUnits(root: Node): Node[] {
     return result.sort((left, right) => left.startIndex - right.startIndex);
 }
 
+function collectDeclaredPrimitiveNames(root: Node): Set<string> {
+    const names = new Set<string>();
+    for (const declaration of descendants(root, candidate => candidate.type === 'udp_declaration')) {
+        const header = directChild(
+            declaration,
+            'udp_ansi_declaration',
+            'udp_nonansi_declaration'
+        );
+        const name = header
+            ? identifierChildren(header)[0]
+            : identifierChildren(declaration)[0];
+        if (name) {
+            names.add(name.text);
+        }
+    }
+    return names;
+}
+
 export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
     const context: AdaptContext = { map: new PositionMap(request.text), request };
     const modules: ModuleModel[] = [];
@@ -1168,10 +1353,11 @@ export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
     const directives: DirectiveModel[] = [];
     const includes: IncludeModel[] = [];
     const diagnostics: HdlDiagnostic[] = [];
+    const declaredPrimitiveNames = collectDeclaredPrimitiveNames(tree.rootNode);
 
     for (const unit of collectTopLevelUnits(tree.rootNode)) {
         if (unit.type === 'module_declaration') {
-            const module = adaptModule(unit, context);
+            const module = adaptModule(unit, declaredPrimitiveNames, context);
             if (module) {
                 modules.push(module);
             }

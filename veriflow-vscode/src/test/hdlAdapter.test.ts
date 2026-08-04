@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { readFile } from 'fs/promises';
 import { pathToFileURL } from 'url';
 
-import type { SourceSpan } from '../core/hdl/model';
+import type { SourceSpan, SymbolReferenceModel } from '../core/hdl/model';
 import { fixturePath } from './helpers/fixturePath';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
 
@@ -13,6 +13,22 @@ function sliceSpan(source: string, span: SourceSpan): string {
 function assertSpan(source: string, uri: string, span: SourceSpan, expected: string): void {
     assert.strictEqual(span.uri, uri);
     assert.strictEqual(sliceSpan(source, span), expected);
+}
+
+function referencesWithin(
+    source: string,
+    references: SymbolReferenceModel[],
+    fragment: string
+): SymbolReferenceModel[] {
+    const start = source.indexOf(fragment);
+    assert.notStrictEqual(start, -1, `missing source fragment: ${fragment}`);
+    return references.filter(reference =>
+        reference.span.start >= start && reference.span.end <= start + fragment.length
+    );
+}
+
+function bindingSummary(references: SymbolReferenceModel[]): Array<[string, boolean]> {
+    return references.map(reference => [reference.name, reference.symbolId !== undefined]);
 }
 
 async function testStructuralFixture(): Promise<void> {
@@ -271,9 +287,178 @@ async function testAdvancedStructures(): Promise<void> {
     );
 }
 
+async function testReferenceBindingEligibility(): Promise<void> {
+    const source = [
+        'module reference_case(input logic sig, input logic index, output logic y);',
+        '    child u_ref (',
+        '        .plain(sig),',
+        '        .macro(`PASS(sig)),',
+        '        .member(u_ref.sig),',
+        '        .member_call(u_ref.sig(index)),',
+        '        .scoped(pkg::sig),',
+        '        .scope_call(pkg::consume(sig)),',
+        '        .selected(sig[index])',
+        '    );',
+        '    assign y = sig;',
+        '    assign y = `PASS(sig);',
+        '    assign y = u_ref.sig;',
+        '    assign y = u_ref.sig(index);',
+        '    assign y = pkg::sig;',
+        '    assign y = pkg::consume(sig);',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/reference-case.sv', source);
+    const references = document.modules[0].references;
+
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.plain(sig)')),
+        [['sig', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.macro(`PASS(sig))')),
+        [['PASS', false], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.member(u_ref.sig)')),
+        [['u_ref', true], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.member_call(u_ref.sig(index))')),
+        [['u_ref', true], ['sig', false], ['index', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.scoped(pkg::sig)')),
+        [['pkg', false], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.scope_call(pkg::consume(sig))')),
+        [['pkg', false], ['consume', false], ['sig', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, '.selected(sig[index])')),
+        [['sig', true], ['index', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = sig;')),
+        [['y', true], ['sig', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = `PASS(sig);')),
+        [['y', true], ['PASS', false], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = u_ref.sig;')),
+        [['y', true], ['u_ref', true], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = u_ref.sig(index);')),
+        [['y', true], ['u_ref', true], ['sig', false], ['index', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = pkg::sig;')),
+        [['y', true], ['pkg', false], ['sig', false]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, references, 'assign y = pkg::consume(sig);')),
+        [['y', true], ['pkg', false], ['consume', false], ['sig', true]]
+    );
+}
+
+async function testOpaqueLexicalShadowing(): Promise<void> {
+    const source = [
+        'module opaque_case(input logic x, input logic a, output logic y);',
+        '    always_comb begin',
+        '        y = x;',
+        '        begin',
+        '            logic x;',
+        '            x = a;',
+        '        end',
+        '        y = x;',
+        '    end',
+        '    function automatic logic helper(input logic x);',
+        '        helper = x;',
+        '    endfunction',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/opaque-case.sv', source);
+    const module = document.modules[0];
+
+    assert.deepStrictEqual(module.opaqueRegions.map(region => region.boundaryNames), [
+        ['y', 'x', 'a'],
+        [],
+    ]);
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'y = x;\n        begin')),
+        [['y', true], ['x', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'x = a;')),
+        [['a', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'y = x;\n    end')),
+        [['y', true], ['x', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'helper = x;')),
+        []
+    );
+}
+
+async function testDeclaredUdpIsNotModuleInstance(): Promise<void> {
+    const source = [
+        'primitive myudp(out, a, b);',
+        '    output out;',
+        '    input a, b;',
+        '    table',
+        '        00 : 0;',
+        '        01 : 1;',
+        '        10 : 1;',
+        '        11 : 0;',
+        '    endtable',
+        'endprimitive',
+        '',
+        'module positional_child(input logic a, input logic b, output logic y);',
+        'endmodule',
+        '',
+        'module udp_top(input logic a, input logic b, output logic y);',
+        '    myudp u_udp(y, a, b);',
+        '    positional_child u_child(a, b, y);',
+        '    and g_and(y, a, b);',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/udp-case.sv', source);
+    const top = document.modules.find(module => module.name === 'udp_top');
+    assert.ok(top);
+    assert.deepStrictEqual(
+        top.instances.map(instance => [instance.moduleName, instance.instanceName]),
+        [['positional_child', 'u_child']]
+    );
+}
+
+async function testReviewRegressions(): Promise<void> {
+    const tests: Array<[string, () => Promise<void>]> = [
+        ['reference binding eligibility', testReferenceBindingEligibility],
+        ['opaque lexical shadowing', testOpaqueLexicalShadowing],
+        ['declared UDP filtering', testDeclaredUdpIsNotModuleInstance],
+    ];
+    const failures: string[] = [];
+    for (const [name, test] of tests) {
+        try {
+            await test();
+        } catch (error) {
+            failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    if (failures.length > 0) {
+        assert.fail(failures.join('\n'));
+    }
+}
+
 async function main(): Promise<void> {
     await testStructuralFixture();
     await testAdvancedStructures();
+    await testReviewRegressions();
 
     console.log('HDL adapter tests passed');
 }
