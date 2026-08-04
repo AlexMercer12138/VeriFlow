@@ -12,6 +12,51 @@ export type WidthValue =
     | { kind: 'symbolic'; expression: string }
     | { kind: 'unknown' };
 
+export type ExpressionModel = {
+    kind: 'identifier' | 'select' | 'constant' | 'concat' | 'operation' | 'unknown';
+    text: string;
+    span: SourceSpan;
+    width: WidthValue;
+};
+
+export type NetDeclarationModel = {
+    id: string;
+    kind: 'wire' | 'logic' | 'reg' | 'other';
+    typeText: string;
+    names: Array<{ name: string; nameSpan: SourceSpan }>;
+    declarationSpan: SourceSpan;
+    packedRange?: string;
+    width: WidthValue;
+};
+
+export type ContinuousAssignModel = {
+    id: string;
+    target: ExpressionModel;
+    value: ExpressionModel;
+    declarationSpan: SourceSpan;
+};
+
+export type SymbolReferenceModel = {
+    name: string;
+    span: SourceSpan;
+    symbolId?: string;
+    context: 'declaration' | 'connection' | 'assignmentTarget' | 'assignmentValue' | 'unknown';
+};
+
+export type ModuleSymbolModel = {
+    id: string;
+    name: string;
+    kind: 'parameter' | 'port' | 'net' | 'variable' | 'instance';
+    declarationSpans: SourceSpan[];
+};
+
+export type OpaqueLogicModel = {
+    id: string;
+    reason: string;
+    span: SourceSpan;
+    boundaryNames: string[];
+};
+
 export type HdlDiagnostic = {
     severity: 'error' | 'warning' | 'info';
     code: string;
@@ -25,6 +70,7 @@ export type ParameterModel = {
     kind: 'parameter' | 'localparam';
     typeText: string;
     defaultExpression?: string;
+    defaultValue?: ExpressionModel;
     declarationSpan: SourceSpan;
     nameSpan: SourceSpan;
     valueSpan?: SourceSpan;
@@ -76,6 +122,11 @@ export type ModuleModel = {
     portDeclarationGroups: PortDeclarationGroupModel[];
     instances: InstanceModel[];
     instanceDeclarationGroups: InstanceDeclarationGroupModel[];
+    nets: NetDeclarationModel[];
+    continuousAssignments: ContinuousAssignModel[];
+    symbols: ModuleSymbolModel[];
+    references: SymbolReferenceModel[];
+    opaqueRegions: OpaqueLogicModel[];
 };
 
 export type InstanceConnectionModel = {
@@ -85,6 +136,7 @@ export type InstanceConnectionModel = {
     connectionSpan: SourceSpan;
     nameSpan?: SourceSpan;
     syntax: 'named' | 'implicit' | 'positional' | 'wildcard';
+    expressionModel?: ExpressionModel;
 };
 
 export type InstanceModel = {

@@ -212,10 +212,46 @@ async function testRealWasmParse(): Promise<void> {
     assert.strictEqual(sliceSpan(source, module.endmoduleSpan), 'endmodule');
     assert.deepStrictEqual(module.parameters, []);
     assert.deepStrictEqual(module.localParameters, []);
-    assert.deepStrictEqual(module.ports, []);
-    assert.deepStrictEqual(module.portDeclarationGroups, []);
+    assert.strictEqual(module.ports.length, 1);
+    const port = module.ports[0];
+    assert.strictEqual(port.name, 'clk');
+    assert.strictEqual(port.direction, 'input');
+    assert.strictEqual(port.typeText, 'logic');
+    assert.deepStrictEqual(port.width, { kind: 'known', bits: 1 });
+    assert.strictEqual(port.inheritsDirection, false);
+    assert.strictEqual(port.inheritsType, false);
+    assert.strictEqual(port.inheritsPackedRange, false);
+    assert.strictEqual(sliceSpan(source, port.declarationSpan), 'input logic clk');
+    assert.strictEqual(sliceSpan(source, port.directionSpan!), 'input');
+    assert.strictEqual(sliceSpan(source, port.nameSpan), 'clk');
+    assert.strictEqual(sliceSpan(source, port.headerItemSpan), 'input logic clk');
+    assert.strictEqual(sliceSpan(source, port.headerNameSpan), 'clk');
+    assert.strictEqual(port.packedRange, undefined);
+    assert.strictEqual(port.packedRangeSpan, undefined);
+    assert.strictEqual(port.directionSpan!.uri, uri);
+
+    assert.strictEqual(module.portDeclarationGroups.length, 1);
+    const portGroup = module.portDeclarationGroups[0];
+    assert.strictEqual(portGroup.style, 'ansi');
+    assert.strictEqual(sliceSpan(source, portGroup.declarationSpan), 'input logic clk');
+    assert.strictEqual(sliceSpan(source, portGroup.sharedPrefixSpan), 'input logic');
+    assert.deepStrictEqual(portGroup.items, [{
+        portId: port.id,
+        itemSpan: port.headerItemSpan,
+        separatorSpan: undefined,
+    }]);
     assert.deepStrictEqual(module.instances, []);
     assert.deepStrictEqual(module.instanceDeclarationGroups, []);
+    assert.deepStrictEqual(module.nets, []);
+    assert.deepStrictEqual(module.continuousAssignments, []);
+    assert.deepStrictEqual(module.references, []);
+    assert.deepStrictEqual(module.opaqueRegions, []);
+    assert.deepStrictEqual(module.symbols, [{
+        id: module.symbols[0].id,
+        name: 'clk',
+        kind: 'port',
+        declarationSpans: [port.headerItemSpan],
+    }]);
 }
 
 async function testErrorDiagnosticUsesUtf16Span(): Promise<void> {
