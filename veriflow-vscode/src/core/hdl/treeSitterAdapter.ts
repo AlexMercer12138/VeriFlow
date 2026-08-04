@@ -117,8 +117,24 @@ function separatorSpan(current: Node, next: Node | undefined, context: AdaptCont
         : undefined;
 }
 
-function packedRange(node: Node): Node | undefined {
-    return firstDescendant(node, new Set(['packed_dimension']));
+function packedDimensions(node: Node, beforeIndex = node.endIndex): Node[] {
+    const type = firstDescendant(node, new Set(['data_type', 'implicit_data_type']));
+    if (!type) {
+        return [];
+    }
+    return descendants(type, candidate => {
+        if (candidate.type !== 'packed_dimension' || candidate.endIndex > beforeIndex) {
+            return false;
+        }
+        let owner = candidate.parent;
+        while (owner && owner.startIndex >= type.startIndex && owner.endIndex <= type.endIndex) {
+            if (owner.type === 'data_type' || owner.type === 'implicit_data_type') {
+                return owner.startIndex === type.startIndex && owner.endIndex === type.endIndex;
+            }
+            owner = owner.parent;
+        }
+        return false;
+    }).sort((left, right) => left.startIndex - right.startIndex);
 }
 
 function typeNode(node: Node): Node | undefined {
@@ -128,17 +144,40 @@ function typeNode(node: Node): Node | undefined {
     );
 }
 
-function textWithoutRange(node: Node | undefined, range: Node | undefined, request: ParseRequest): string {
+function packedRangeText(dimensions: Node[], request: ParseRequest): string | undefined {
+    const first = dimensions[0];
+    const last = dimensions[dimensions.length - 1];
+    return first && last
+        ? request.text.slice(first.startIndex, last.endIndex)
+        : undefined;
+}
+
+function packedRangeSpan(dimensions: Node[], context: AdaptContext): SourceSpan | undefined {
+    const first = dimensions[0];
+    const last = dimensions[dimensions.length - 1];
+    return first && last
+        ? sourceSpan(offsetSpan(first.startIndex, last.endIndex), context)
+        : undefined;
+}
+
+function textWithoutRanges(node: Node | undefined, ranges: Node[], request: ParseRequest): string {
     if (!node) {
         return '';
     }
-    if (!range || range.startIndex < node.startIndex || range.endIndex > node.endIndex) {
+    const contained = ranges.filter(range =>
+        range.startIndex >= node.startIndex && range.endIndex <= node.endIndex
+    );
+    if (contained.length === 0) {
         return node.text.trim();
     }
-    return (
-        request.text.slice(node.startIndex, range.startIndex)
-        + request.text.slice(range.endIndex, node.endIndex)
-    ).trim();
+    let text = '';
+    let offset = node.startIndex;
+    for (const range of contained) {
+        text += request.text.slice(offset, range.startIndex);
+        offset = range.endIndex;
+    }
+    text += request.text.slice(offset, node.endIndex);
+    return text.trim();
 }
 
 function simpleInteger(text: string): number | undefined {
@@ -146,20 +185,35 @@ function simpleInteger(text: string): number | undefined {
     return /^[0-9]+$/.test(normalized) ? Number(normalized) : undefined;
 }
 
-function widthFromRange(range: Node | undefined): WidthValue {
-    if (!range) {
+function widthFromDimensions(dimensions: Node[], rangeText: string | undefined): WidthValue {
+    if (dimensions.length === 0) {
         return { kind: 'known', bits: 1 };
     }
-    const constantRange = firstDescendant(range, new Set(['constant_range']));
-    const bounds = constantRange?.namedChildren.filter(child => child.type === 'constant_expression') ?? [];
-    if (bounds.length === 2) {
+    let bits = 1;
+    for (const dimension of dimensions) {
+        const constantRange = firstDescendant(dimension, new Set(['constant_range']));
+        const bounds = constantRange?.namedChildren.filter(
+            child => child.type === 'constant_expression'
+        ) ?? [];
+        if (bounds.length !== 2) {
+            return rangeText
+                ? { kind: 'symbolic', expression: rangeText }
+                : { kind: 'unknown' };
+        }
         const left = simpleInteger(bounds[0].text);
         const right = simpleInteger(bounds[1].text);
         if (left !== undefined && right !== undefined) {
-            return { kind: 'known', bits: Math.abs(left - right) + 1 };
+            bits *= Math.abs(left - right) + 1;
+            if (!Number.isSafeInteger(bits)) {
+                return { kind: 'unknown' };
+            }
+        } else {
+            return rangeText
+                ? { kind: 'symbolic', expression: rangeText }
+                : { kind: 'unknown' };
         }
     }
-    return { kind: 'symbolic', expression: range.text };
+    return { kind: 'known', bits };
 }
 
 function hasDescendant(node: Node, predicate: (candidate: Node) => boolean): boolean {
@@ -180,12 +234,64 @@ function expressionWidth(node: Node, kind: ExpressionModel['kind']): WidthValue 
     return { kind: 'unknown' };
 }
 
+const operationNodeTypes = new Set([
+    'binary_expression',
+    'unary_expression',
+    'conditional_expression',
+    'operator',
+]);
+
+const transparentExpressionTypes = new Set([
+    'expression',
+    'constant_expression',
+    'constant_param_expression',
+    'mintypmax_expression',
+    'constant_mintypmax_expression',
+    'primary',
+    'constant_primary',
+    'net_lvalue',
+    'variable_lvalue',
+]);
+
+function isOperationNode(node: Node): boolean {
+    return operationNodeTypes.has(node.type)
+        || node.type.endsWith('_operator')
+        || (node.childForFieldName('left') !== null
+            && node.childForFieldName('right') !== null)
+        || node.childForFieldName('operator') !== null;
+}
+
+function outerExpressionKind(node: Node): ExpressionModel['kind'] | undefined {
+    let current: Node | undefined = node;
+    while (current) {
+        if (isOperationNode(current)) {
+            return 'operation';
+        }
+        if (current.type.includes('concatenation')) {
+            return 'concat';
+        }
+        if (current.type.includes('select') || current.type.includes('part_select')) {
+            return 'select';
+        }
+        const directSelect = current.namedChildren.some(child =>
+            child.type.includes('select') || child.type.includes('part_select')
+        );
+        if (directSelect) {
+            return 'select';
+        }
+        if (current.namedChildren.some(child => child.type.includes('concatenation'))) {
+            return 'concat';
+        }
+        if (!transparentExpressionTypes.has(current.type)
+            || current.namedChildren.length !== 1) {
+            return undefined;
+        }
+        current = current.namedChildren[0];
+    }
+    return undefined;
+}
+
 function adaptExpression(node: Node, context: AdaptContext): ExpressionModel {
-    const hasSelect = hasDescendant(node, candidate =>
-        candidate.type.includes('select') || candidate.type.includes('part_select')
-    );
-    const hasConcat = hasDescendant(node, candidate => candidate.type.includes('concatenation'));
-    const hasOperator = hasDescendant(node, candidate => candidate.type.endsWith('_operator'));
     const hasConstant = hasDescendant(node, candidate =>
         candidate.type.includes('number')
         || candidate.type === 'unbased_unsized_literal'
@@ -198,12 +304,9 @@ function adaptExpression(node: Node, context: AdaptContext): ExpressionModel {
     }
 
     let kind: ExpressionModel['kind'] = 'unknown';
-    if (hasConcat) {
-        kind = 'concat';
-    } else if (hasSelect) {
-        kind = 'select';
-    } else if (hasOperator) {
-        kind = 'operation';
+    const outerKind = outerExpressionKind(node);
+    if (outerKind) {
+        kind = outerKind;
     } else if (hasConstant && identifiers.length === 0) {
         kind = 'constant';
     } else if (identifiers.length === 1 && !hasConstant) {
@@ -248,12 +351,59 @@ function isScopeResolutionPart(node: Node, ancestors: Node[]): boolean {
     return false;
 }
 
+function sameSyntaxNode(left: Node | null, right: Node): boolean {
+    return left !== null
+        && left.startIndex === right.startIndex
+        && left.endIndex === right.endIndex
+        && left.type === right.type;
+}
+
 function identifierCanBind(node: Node, ancestors: Node[]): boolean {
     if (ancestors.some(ancestor => ancestor.type === 'text_macro_usage')) {
         return false;
     }
     if (isScopeResolutionPart(node, ancestors)) {
         return false;
+    }
+    const namedDeclarationTypes = new Set([
+        'variable_decl_assignment',
+        'type_assignment',
+        'tf_port_item',
+    ]);
+    const directDeclarationTypes = new Set([
+        'param_assignment',
+        'for_variable_declaration',
+        'loop_variables',
+        'list_of_tf_variable_identifiers',
+        'enum_name_declaration',
+        'list_of_arguments',
+    ]);
+    for (let index = ancestors.length - 1; index >= 0; index--) {
+        const current = ancestors[index];
+        if (namedDeclarationTypes.has(current.type)
+            && sameSyntaxNode(current.childForFieldName('name'), node)) {
+            return false;
+        }
+        if (directDeclarationTypes.has(current.type)
+            && identifierChildren(current).some(identifier => sameSyntaxNode(identifier, node))) {
+            return false;
+        }
+        if ((current.type === 'seq_block' || current.type === 'par_block')
+            && identifierChildren(current).some(identifier => sameSyntaxNode(identifier, node))) {
+            return false;
+        }
+        if (current.type === 'statement'
+            && sameSyntaxNode(current.childForFieldName('block_name'), node)) {
+            return false;
+        }
+        if (current.type === 'type_declaration'
+            && sameSyntaxNode(current.childForFieldName('type_name'), node)) {
+            return false;
+        }
+        if ((current.type === 'data_type' || current.type === 'class_type')
+            && identifierChildren(current).some(identifier => sameSyntaxNode(identifier, node))) {
+            return false;
+        }
     }
     for (let index = ancestors.length - 1; index >= 0; index--) {
         const current = ancestors[index];
@@ -315,14 +465,48 @@ function adaptParameterDeclaration(
     kind: ParameterModel['kind'],
     context: AdaptContext
 ): ParameterModel[] {
+    const typeDeclaration = declaration.type === 'type_parameter_declaration'
+        ? declaration
+        : firstDescendant(declaration, new Set(['type_parameter_declaration']));
+    const typeAssignments = typeDeclaration
+        ? directChild(typeDeclaration, 'list_of_type_assignments')
+        : undefined;
+    if (typeAssignments) {
+        return typeAssignments.namedChildren
+            .filter(child => child.type === 'type_assignment')
+            .flatMap(assignment => {
+                const nameNode = assignment.childForFieldName('name')
+                    ?? identifierChildren(assignment)[0];
+                if (!nameNode) {
+                    return [];
+                }
+                const valueNode = assignment.childForFieldName('value');
+                return [{
+                    id: stableId(kind, nameNode.text, nameNode.startIndex, context.request.uri),
+                    name: nameNode.text,
+                    kind,
+                    typeText: 'type',
+                    defaultExpression: valueNode?.text,
+                    defaultValue: valueNode ? {
+                        kind: 'unknown' as const,
+                        text: valueNode.text,
+                        span: sourceSpan(valueNode, context),
+                        width: { kind: 'unknown' as const },
+                    } : undefined,
+                    declarationSpan: sourceSpan(declaration, context),
+                    nameSpan: sourceSpan(nameNode, context),
+                    valueSpan: valueNode ? sourceSpan(valueNode, context) : undefined,
+                }];
+            });
+    }
     const list = declaration.type === 'list_of_param_assignments'
         ? declaration
         : directChild(declaration, 'list_of_param_assignments');
     if (!list) {
         return [];
     }
-    const range = packedRange(declaration);
-    const declarationType = textWithoutRange(typeNode(declaration), range, context.request);
+    const dimensions = packedDimensions(declaration, list.startIndex);
+    const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context.request);
     return list.namedChildren
         .filter(child => child.type === 'param_assignment')
         .flatMap(assignment => {
@@ -419,7 +603,8 @@ function directionFromNode(node: Node | undefined): PortModel['direction'] | und
 
 function adaptAnsiPorts(
     header: Node,
-    context: AdaptContext
+    context: AdaptContext,
+    diagnostics: HdlDiagnostic[]
 ): { ports: PortModel[]; groups: PortDeclarationGroupModel[] } {
     const list = directChild(header, 'list_of_port_declarations');
     if (!list) {
@@ -429,7 +614,16 @@ function adaptAnsiPorts(
     const ports: PortModel[] = [];
     const groups: PortDeclarationGroupModel[] = [];
     let inherited: PortPrefix | undefined;
+    let inheritsUnsupportedInterface = false;
     let currentGroup: PortDeclarationGroupModel | undefined;
+    const reportUnsupportedInterface = (declaration: Node): void => {
+        diagnostics.push({
+            severity: 'warning',
+            code: 'systemverilog.unsupported-interface-port',
+            message: 'Interface and modport ports are not supported in the structural model',
+            span: sourceSpan(declaration, context),
+        });
+    };
 
     for (let index = 0; index < declarations.length; index++) {
         const declaration = declarations[index];
@@ -444,14 +638,30 @@ function adaptAnsiPorts(
             'interface_port_header',
             'port_direction'
         );
-        const rangeNode = explicitHeader ? packedRange(explicitHeader) : undefined;
         const explicitDirection = directionFromNode(explicitHeader);
+        if (explicitHeader?.type === 'interface_port_header' && !explicitDirection) {
+            reportUnsupportedInterface(declaration);
+            inherited = undefined;
+            inheritsUnsupportedInterface = true;
+            currentGroup = undefined;
+            continue;
+        }
+        if (!explicitHeader && inheritsUnsupportedInterface) {
+            reportUnsupportedInterface(declaration);
+            currentGroup = undefined;
+            continue;
+        }
+        inheritsUnsupportedInterface = false;
+        const dimensions = explicitHeader
+            ? packedDimensions(explicitHeader, nameNode.startIndex)
+            : [];
+        const rangeText = packedRangeText(dimensions, context.request);
         const prefix: PortPrefix = explicitHeader
             ? {
                 direction: explicitDirection ?? inherited?.direction ?? 'input',
-                typeText: textWithoutRange(typeNode(explicitHeader), rangeNode, context.request),
-                packedRange: rangeNode?.text,
-                width: widthFromRange(rangeNode),
+                typeText: textWithoutRanges(typeNode(explicitHeader), dimensions, context.request),
+                packedRange: rangeText,
+                width: widthFromDimensions(dimensions, rangeText),
             }
             : inherited ?? {
                 direction: 'input',
@@ -512,7 +722,7 @@ function adaptAnsiPorts(
             nameSpan: sourceSpan(nameNode, context),
             headerItemSpan: sourceSpan(declaration, context),
             headerNameSpan: sourceSpan(nameNode, context),
-            packedRangeSpan: rangeNode ? sourceSpan(rangeNode, context) : undefined,
+            packedRangeSpan: packedRangeSpan(dimensions, context),
             declarationGroupId: currentGroup.id,
             inheritsDirection: !explicitHeader && inherited !== undefined,
             inheritsType: !explicitHeader && inherited !== undefined,
@@ -585,7 +795,6 @@ function adaptNonAnsiPorts(
         }
         const { wrapper, declaration } = unwrapped;
         const direction = directionFromNode(declaration) ?? 'input';
-        const rangeNode = packedRange(declaration);
         const listNode = directChild(
             declaration,
             'list_of_port_identifiers',
@@ -595,6 +804,8 @@ function adaptNonAnsiPorts(
         if (names.length === 0) {
             continue;
         }
+        const dimensions = packedDimensions(declaration, names[0].startIndex);
+        const rangeText = packedRangeText(dimensions, context.request);
         const groupId = stableId('port-group', names[0].text, declaration.startIndex, context.request.uri);
         const group: PortDeclarationGroupModel = {
             id: groupId,
@@ -613,7 +824,7 @@ function adaptNonAnsiPorts(
         };
         groups.push(group);
 
-        const declarationType = textWithoutRange(typeNode(declaration), rangeNode, context.request);
+        const declarationType = textWithoutRanges(typeNode(declaration), dimensions, context.request);
         names.forEach((nameNode, index) => {
             const port = portByName.get(nameNode.text);
             if (!port) {
@@ -621,8 +832,8 @@ function adaptNonAnsiPorts(
             }
             port.direction = direction;
             port.typeText = declarationType;
-            port.packedRange = rangeNode?.text;
-            port.width = widthFromRange(rangeNode);
+            port.packedRange = rangeText;
+            port.width = widthFromDimensions(dimensions, rangeText);
             port.declarationSpan = sourceSpan(wrapper, context);
             const directionNode = declaration.children.find(child => child.type === direction);
             port.directionSpan = index === 0 && directionNode
@@ -631,13 +842,13 @@ function adaptNonAnsiPorts(
             port.nameSpan = sourceSpan(nameNode, context);
             port.bodyDeclarationSpan = sourceSpan(wrapper, context);
             port.bodyNameSpan = sourceSpan(nameNode, context);
-            port.packedRangeSpan = index === 0 && rangeNode
-                ? sourceSpan(rangeNode, context)
+            port.packedRangeSpan = index === 0
+                ? packedRangeSpan(dimensions, context)
                 : undefined;
             port.declarationGroupId = groupId;
             port.inheritsDirection = index > 0;
             port.inheritsType = index > 0;
-            port.inheritsPackedRange = index > 0 && rangeNode !== undefined;
+            port.inheritsPackedRange = index > 0 && dimensions.length > 0;
         });
     }
     return { ports, groups };
@@ -712,7 +923,60 @@ function adaptConnectionList(
     }
     const models: InstanceConnectionModel[] = [];
     const expressionNodes: Node[] = [];
-    for (const connection of list.namedChildren) {
+    const parent = list.parent;
+    const leftParen = parent?.children
+        .filter(child => child.type === '(' && child.endIndex <= list.startIndex)
+        .at(-1);
+    const rightParen = parent?.children.find(child =>
+        child.type === ')' && child.startIndex >= list.endIndex
+    );
+    const interiorStart = leftParen?.endIndex ?? list.startIndex;
+    const interiorEnd = rightParen?.startIndex ?? list.endIndex;
+    const commas = list.children.filter(child => child.type === ',');
+    const connectionTypes = new Set([
+        'named_port_connection',
+        'named_parameter_assignment',
+        'ordered_port_connection',
+        'ordered_parameter_assignment',
+    ]);
+    const connections = [
+        ...list.namedChildren.filter(child => connectionTypes.has(child.type)),
+        ...(parent?.namedChildren.filter(child =>
+            child.type === 'ERROR'
+            && child.startIndex >= interiorStart
+            && child.endIndex <= interiorEnd
+        ) ?? []),
+    ].sort((left, right) => left.startIndex - right.startIndex);
+    const segments = commas.length > 0
+        ? commas.map((comma, index) => ({
+            start: index === 0 ? interiorStart : commas[index - 1].endIndex,
+            end: comma.startIndex,
+            insertion: index === 0 ? interiorStart : commas[index - 1].endIndex,
+        })).concat([{
+            start: commas[commas.length - 1].endIndex,
+            end: interiorEnd,
+            insertion: commas[commas.length - 1].endIndex,
+        }])
+        : connections.map(connection => ({
+            start: connection.startIndex,
+            end: connection.endIndex,
+            insertion: connection.startIndex,
+        }));
+
+    for (const segment of segments) {
+        const connection = connections.find(candidate =>
+            candidate.startIndex >= segment.start && candidate.endIndex <= segment.end
+        );
+        if (!connection) {
+            const span = sourceSpan(offsetSpan(segment.insertion, segment.insertion), context);
+            models.push({
+                expression: '',
+                expressionSpan: span,
+                connectionSpan: span,
+                syntax: 'positional',
+            });
+            continue;
+        }
         if (connection.type === 'named_port_connection'
             || connection.type === 'named_parameter_assignment') {
             const adapted = adaptNamedConnection(connection, context);
@@ -720,9 +984,10 @@ function adaptConnectionList(
             if (adapted.expressionNode) {
                 expressionNodes.push(adapted.expressionNode);
             }
-        } else if (connection.type === 'ordered_port_connection'
-            || connection.type === 'ordered_parameter_assignment') {
-            const expressionNode = connection.namedChildren[0];
+        } else {
+            const expressionNode = connection.type === 'ERROR'
+                ? connection
+                : connection.namedChildren[0];
             if (expressionNode) {
                 models.push({
                     expression: expressionNode.text,
@@ -864,21 +1129,26 @@ function adaptNetDeclaration(node: Node, context: AdaptContext): NetDeclarationM
     if (names.length === 0) {
         return undefined;
     }
-    const rangeNode = packedRange(node);
+    const dimensions = packedDimensions(node, list.startIndex);
+    const rangeText = packedRangeText(dimensions, context.request);
     const vectorType = firstDescendant(node, new Set(['integer_vector_type']))?.text;
     const netType = directChild(node, 'net_type')?.text;
     const kind: NetDeclarationModel['kind'] = isNet
         ? netType === 'wire' || netType === undefined ? 'wire' : 'other'
         : vectorType === 'logic' ? 'logic' : vectorType === 'reg' ? 'reg' : 'other';
-    const baseType = textWithoutRange(typeNode(node), rangeNode, context.request);
+    const dataType = firstDescendant(node, new Set(['data_type', 'implicit_data_type']));
+    const baseType = textWithoutRanges(dataType, dimensions, context.request);
+    const typeParts = [...new Set([netType, baseType].filter(
+        (part): part is string => part !== undefined && part.length > 0
+    ))];
     return {
         id: stableId('declaration', names[0].name, node.startIndex, context.request.uri),
         kind,
-        typeText: [netType, baseType].filter(Boolean).join(' '),
+        typeText: typeParts.join(' '),
         names,
         declarationSpan: sourceSpan(node, context),
-        packedRange: rangeNode?.text,
-        width: widthFromRange(rangeNode),
+        packedRange: rangeText,
+        width: widthFromDimensions(dimensions, rangeText),
     };
 }
 
@@ -923,7 +1193,7 @@ function uniqueSpans(spans: SourceSpan[]): SourceSpan[] {
         }
         seen.add(key);
         return true;
-    });
+    }).sort((left, right) => left.start - right.start);
 }
 
 function buildSymbols(
@@ -953,6 +1223,16 @@ function buildSymbols(
     }
     for (const net of module.nets) {
         for (const name of net.names) {
+            const portSymbol = symbols.find(symbol =>
+                symbol.kind === 'port' && symbol.name === name.name
+            );
+            if (portSymbol) {
+                portSymbol.declarationSpans = uniqueSpans([
+                    ...portSymbol.declarationSpans,
+                    net.declarationSpan,
+                ]);
+                continue;
+            }
             symbols.push({
                 id: stableId(`symbol-${net.kind}`, name.name, name.nameSpan.start, context.request.uri),
                 name: name.name,
@@ -1030,6 +1310,36 @@ function collectOpaqueBindings(opaque: Node): LexicalBinding[] {
             if (name) {
                 add(name, declaration);
             }
+        }
+    }
+    for (const declaration of descendants(opaque, candidate =>
+        candidate.type === 'parameter_declaration'
+        || candidate.type === 'local_parameter_declaration'
+    )) {
+        for (const assignment of descendants(declaration, candidate =>
+            candidate.type === 'param_assignment' || candidate.type === 'type_assignment'
+        )) {
+            const name = assignment.childForFieldName('name')
+                ?? identifierChildren(assignment)[0];
+            if (name) {
+                add(name, declaration);
+            }
+        }
+    }
+    for (const declaration of descendants(opaque, candidate =>
+        candidate.type === 'enum_name_declaration'
+    )) {
+        const name = identifierChildren(declaration)[0];
+        if (name) {
+            add(name, declaration);
+        }
+    }
+    for (const declaration of descendants(opaque, candidate =>
+        candidate.type === 'type_declaration'
+    )) {
+        const name = declaration.childForFieldName('type_name');
+        if (name) {
+            add(name, declaration);
         }
     }
     for (const port of descendants(opaque, candidate => candidate.type === 'tf_port_item')) {
@@ -1136,7 +1446,8 @@ function scopeItems(module: Node, header: Node): Node[] {
 function adaptModule(
     node: Node,
     declaredPrimitiveNames: ReadonlySet<string>,
-    context: AdaptContext
+    context: AdaptContext,
+    diagnostics: HdlDiagnostic[]
 ): ModuleModel | undefined {
     const header = node.namedChildren.find(child =>
         child.type === 'module_ansi_header' || child.type === 'module_nonansi_header'
@@ -1164,7 +1475,7 @@ function adaptModule(
     const items = scopeItems(node, header);
     const parameterResult = adaptParameters(header, items, context);
     const portResult = header.type === 'module_ansi_header'
-        ? adaptAnsiPorts(header, context)
+        ? adaptAnsiPorts(header, context, diagnostics)
         : adaptNonAnsiPorts(header, items, context);
     const instances: InstanceModel[] = [];
     const instanceDeclarationGroups: InstanceDeclarationGroupModel[] = [];
@@ -1357,7 +1668,7 @@ export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
 
     for (const unit of collectTopLevelUnits(tree.rootNode)) {
         if (unit.type === 'module_declaration') {
-            const module = adaptModule(unit, declaredPrimitiveNames, context);
+            const module = adaptModule(unit, declaredPrimitiveNames, context, diagnostics);
             if (module) {
                 modules.push(module);
             }
@@ -1401,6 +1712,10 @@ export function adaptTree(tree: Tree, request: ParseRequest): HdlDocument {
     }
     directives.sort((left, right) => left.span.start - right.span.start);
     includes.sort((left, right) => left.span.start - right.span.start);
+    diagnostics.sort((left, right) =>
+        (left.span?.start ?? Number.MAX_SAFE_INTEGER)
+        - (right.span?.start ?? Number.MAX_SAFE_INTEGER)
+    );
 
     return {
         uri: request.uri,

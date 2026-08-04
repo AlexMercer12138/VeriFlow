@@ -436,6 +436,325 @@ async function testDeclaredUdpIsNotModuleInstance(): Promise<void> {
     );
 }
 
+async function testMultiplePackedDimensions(): Promise<void> {
+    const source = [
+        'module packed_dims #(',
+        '    parameter WIDTH = 4',
+        ') (',
+        '    input logic [1:0] [3:0] p, q,',
+        '    input logic [WIDTH-1:0] [1:0] symbolic_p,',
+        '    output struct packed { logic [3:0] member; } [1:0] packed_struct_p',
+        ');',
+        '    wire [1:0] [3:0] n;',
+        '    logic [WIDTH-1:0] [1:0] symbolic_n;',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/packed-dims.sv', source);
+    const module = document.modules[0];
+    const p = module.ports.find(port => port.name === 'p');
+    const q = module.ports.find(port => port.name === 'q');
+    const symbolicPort = module.ports.find(port => port.name === 'symbolic_p');
+    const packedStructPort = module.ports.find(port => port.name === 'packed_struct_p');
+    assert.ok(p && q && symbolicPort && packedStructPort);
+
+    assert.strictEqual(p.typeText, 'logic');
+    assert.strictEqual(p.packedRange, '[1:0] [3:0]');
+    assert.deepStrictEqual(p.width, { kind: 'known', bits: 8 });
+    assertSpan(source, document.uri, p.packedRangeSpan!, '[1:0] [3:0]');
+    assert.strictEqual(q.packedRange, '[1:0] [3:0]');
+    assert.deepStrictEqual(q.width, { kind: 'known', bits: 8 });
+    assert.strictEqual(q.packedRangeSpan, undefined);
+    assert.strictEqual(q.inheritsPackedRange, true);
+    assert.strictEqual(symbolicPort.typeText, 'logic');
+    assert.strictEqual(symbolicPort.packedRange, '[WIDTH-1:0] [1:0]');
+    assert.deepStrictEqual(symbolicPort.width, {
+        kind: 'symbolic',
+        expression: '[WIDTH-1:0] [1:0]',
+    });
+    assert.strictEqual(packedStructPort.typeText,
+        'struct packed { logic [3:0] member; }');
+    assert.strictEqual(packedStructPort.packedRange, '[1:0]');
+    assert.deepStrictEqual(packedStructPort.width, { kind: 'known', bits: 2 });
+
+    const n = module.nets.find(net => net.names[0].name === 'n');
+    const symbolicNet = module.nets.find(net => net.names[0].name === 'symbolic_n');
+    assert.ok(n && symbolicNet);
+    assert.strictEqual(n.typeText, 'wire');
+    assert.strictEqual(n.packedRange, '[1:0] [3:0]');
+    assert.deepStrictEqual(n.width, { kind: 'known', bits: 8 });
+    assert.strictEqual(symbolicNet.typeText, 'logic');
+    assert.deepStrictEqual(symbolicNet.width, {
+        kind: 'symbolic',
+        expression: '[WIDTH-1:0] [1:0]',
+    });
+}
+
+async function testEmptyPositionalConnections(): Promise<void> {
+    const source = [
+        'module positional_empty(input logic a, input logic b, input logic c);',
+        '    child u_middle(a, /* intentionally empty */ , c);',
+        '    child u_first(, b);',
+        '    child u_last(a,);',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/positional-empty.sv', source);
+    const module = document.modules[0];
+    const middle = module.instances.find(instance => instance.instanceName === 'u_middle');
+    const first = module.instances.find(instance => instance.instanceName === 'u_first');
+    const last = module.instances.find(instance => instance.instanceName === 'u_last');
+    assert.ok(middle && first && last);
+
+    assert.deepStrictEqual(
+        middle.portConnections.map(connection => connection.expression),
+        ['a', '', 'c']
+    );
+    assert.strictEqual(middle.portConnections[1].syntax, 'positional');
+    assert.strictEqual(middle.portConnections[1].expressionSpan.start,
+        middle.portConnections[1].expressionSpan.end);
+    assert.deepStrictEqual(
+        middle.portConnections[1].connectionSpan,
+        middle.portConnections[1].expressionSpan
+    );
+    const middleFirstComma = source.indexOf(',', source.indexOf('u_middle'));
+    assert.strictEqual(middle.portConnections[1].expressionSpan.start, middleFirstComma + 1);
+
+    assert.deepStrictEqual(first.portConnections.map(connection => connection.expression), ['', 'b']);
+    assert.strictEqual(
+        first.portConnections[0].expressionSpan.start,
+        source.indexOf('(', source.indexOf('u_first')) + 1
+    );
+    assert.deepStrictEqual(last.portConnections.map(connection => connection.expression), ['a', '']);
+    const lastComma = source.indexOf(',', source.indexOf('u_last'));
+    assert.strictEqual(last.portConnections[1].expressionSpan.start, lastComma + 1);
+}
+
+async function testTypeParameters(): Promise<void> {
+    const source = [
+        'module type_parameters #(',
+        '    parameter type T = logic [3:0],',
+        '    parameter A = 1, B = 2',
+        ') (output logic y);',
+        '    parameter type U = bit;',
+        '    assign y = A;',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/type-parameters.sv', source);
+    const module = document.modules[0];
+    assert.deepStrictEqual(module.parameters.map(parameter => parameter.name), ['T', 'A', 'B', 'U']);
+
+    const t = module.parameters[0];
+    assert.strictEqual(t.kind, 'parameter');
+    assert.strictEqual(t.typeText, 'type');
+    assert.strictEqual(t.defaultExpression, 'logic [3:0]');
+    assert.strictEqual(t.defaultValue?.kind, 'unknown');
+    assert.strictEqual(t.defaultValue?.text, 'logic [3:0]');
+    assertSpan(source, document.uri, t.nameSpan, 'T');
+    assertSpan(source, document.uri, t.valueSpan!, 'logic [3:0]');
+
+    const u = module.parameters[3];
+    assert.strictEqual(u.typeText, 'type');
+    assert.strictEqual(u.defaultExpression, 'bit');
+    assert.ok(module.symbols.some(symbol => symbol.kind === 'parameter' && symbol.name === 'T'));
+    assert.ok(module.symbols.some(symbol => symbol.kind === 'parameter' && symbol.name === 'U'));
+    assert.ok(module.references.some(reference =>
+        reference.name === 'A'
+        && reference.context === 'assignmentValue'
+        && reference.symbolId === module.symbols.find(symbol => symbol.name === 'A')?.id
+    ));
+}
+
+async function testNonAnsiSupplementalDeclarations(): Promise<void> {
+    const source = [
+        'module supplemental(q);',
+        '    output q;',
+        '    reg q;',
+        '    wire other_net;',
+        '    logic other_var;',
+        '    assign q = other_net;',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/supplemental.sv', source);
+    const module = document.modules[0];
+    assert.strictEqual(module.ports.find(port => port.name === 'q')?.direction, 'output');
+    assert.ok(module.nets.some(net =>
+        net.kind === 'reg' && net.names.some(name => name.name === 'q')
+    ));
+
+    const qSymbols = module.symbols.filter(symbol => symbol.name === 'q');
+    assert.strictEqual(qSymbols.length, 1);
+    assert.strictEqual(qSymbols[0].kind, 'port');
+    assert.deepStrictEqual(
+        qSymbols[0].declarationSpans.map(span => sliceSpan(source, span)),
+        ['q', 'output q;', 'reg q;']
+    );
+    assert.strictEqual(
+        module.references.find(reference =>
+            reference.name === 'q' && reference.context === 'assignmentTarget'
+        )?.symbolId,
+        qSymbols[0].id
+    );
+    assert.strictEqual(module.symbols.find(symbol => symbol.name === 'other_net')?.kind, 'net');
+    assert.strictEqual(module.symbols.find(symbol => symbol.name === 'other_var')?.kind, 'variable');
+}
+
+async function testOpaqueNonReferenceIdentifiers(): Promise<void> {
+    const source = [
+        'module opaque_names #(',
+        '    parameter W = 9',
+        ') (input logic blk, input logic x, input logic my_t, output logic y);',
+        '    always_comb begin',
+        '        y = W;',
+        '        begin : blk',
+        '            localparam int W = 2;',
+        '            logic x;',
+        '            my_t local_value;',
+        '            y = (W);',
+        '            x = x;',
+        '        end',
+        '        y = f(.x(x));',
+        '        begin : enum_scope',
+        '            typedef enum {W} e_t;',
+        '            y = W;',
+        '        end',
+        '        y = W + 1;',
+        '    end',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/opaque-names.sv', source);
+    const module = document.modules[0];
+    assert.deepStrictEqual(module.opaqueRegions[0].boundaryNames, ['y', 'W', 'x']);
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'begin : blk')),
+        []
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'localparam int W = 2;')),
+        []
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'my_t local_value;')),
+        []
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'y = (W);')),
+        [['y', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'x = x;')),
+        []
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'y = f(.x(x));')),
+        [['y', true], ['x', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'typedef enum {W} e_t;')),
+        []
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, '            y = W;')),
+        [['y', true]]
+    );
+    assert.deepStrictEqual(
+        bindingSummary(referencesWithin(source, module.references, 'y = W + 1;')),
+        [['y', true], ['W', true]]
+    );
+}
+
+async function testUnsupportedInterfacePortDiagnostic(): Promise<void> {
+    const source = [
+        'interface bus_if;',
+        '    logic data;',
+        '    modport master(input data);',
+        'endinterface',
+        '',
+        'module interface_user(bus_if.master bus, bus2, input logic clk);',
+        'endmodule',
+    ].join('\n');
+    const uri = 'memory:/interface-port.sv';
+    const document = await parseWithRealWorker(uri, source);
+    const module = document.modules[0];
+    assert.deepStrictEqual(module.ports.map(port => port.name), ['clk']);
+    const diagnostics = document.diagnostics.filter(item =>
+        item.code === 'systemverilog.unsupported-interface-port'
+    );
+    assert.deepStrictEqual(
+        diagnostics.map(item => item.span && sliceSpan(source, item.span)),
+        ['bus_if.master bus', 'bus2']
+    );
+    assert.ok(diagnostics.every(item => item.severity === 'warning'));
+    assert.ok(diagnostics.every(item => item.span?.uri === uri));
+    assert.doesNotThrow(() => JSON.parse(JSON.stringify(document)));
+}
+
+async function testOperationExpressionClassification(): Promise<void> {
+    const source = [
+        'module operation_kinds(',
+        '    input logic [3:0] a, b, c,',
+        '    output logic [3:0] y',
+        ');',
+        '    assign y = a + b;',
+        '    assign y = -a;',
+        '    assign y = a ? b : c;',
+        '    assign y = a;',
+        '    assign y = a[0];',
+        '    assign y = {a, b};',
+        "    assign y = 4'hf;",
+        '    assign y = a[b + 1];',
+        '    assign y = {a + b, c};',
+        '    assign y = a + {b, c};',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/operation-kinds.sv', source);
+    assert.deepStrictEqual(
+        document.modules[0].continuousAssignments.map(assignment => assignment.value.kind),
+        [
+            'operation', 'operation', 'operation', 'identifier', 'select', 'concat', 'constant',
+            'select', 'concat', 'operation',
+        ]
+    );
+}
+
+async function testNetTypeText(): Promise<void> {
+    const source = [
+        'module net_types;',
+        '    wire [7:0] n;',
+        '    logic [3:0] l;',
+        '    reg [1:0] r;',
+        '    tri [0:0] t;',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/net-types.sv', source);
+    assert.deepStrictEqual(
+        document.modules[0].nets.map(net => [net.kind, net.typeText]),
+        [['wire', 'wire'], ['logic', 'logic'], ['reg', 'reg'], ['other', 'tri']]
+    );
+}
+
+async function testQualityReviewRegressions(): Promise<void> {
+    const tests: Array<[string, () => Promise<void>]> = [
+        ['multiple packed dimensions', testMultiplePackedDimensions],
+        ['empty positional connections', testEmptyPositionalConnections],
+        ['type parameters', testTypeParameters],
+        ['non-ANSI supplemental declarations', testNonAnsiSupplementalDeclarations],
+        ['opaque non-reference identifiers', testOpaqueNonReferenceIdentifiers],
+        ['unsupported interface port diagnostic', testUnsupportedInterfacePortDiagnostic],
+        ['operation expression classification', testOperationExpressionClassification],
+        ['net declaration type text', testNetTypeText],
+    ];
+    const failures: string[] = [];
+    for (const [name, test] of tests) {
+        try {
+            await test();
+        } catch (error) {
+            failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    if (failures.length > 0) {
+        assert.fail(failures.join('\n'));
+    }
+}
+
 async function testReviewRegressions(): Promise<void> {
     const tests: Array<[string, () => Promise<void>]> = [
         ['reference binding eligibility', testReferenceBindingEligibility],
@@ -459,6 +778,7 @@ async function main(): Promise<void> {
     await testStructuralFixture();
     await testAdvancedStructures();
     await testReviewRegressions();
+    await testQualityReviewRegressions();
 
     console.log('HDL adapter tests passed');
 }
