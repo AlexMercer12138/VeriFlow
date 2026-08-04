@@ -394,6 +394,81 @@ async function testRepeatedIncludeMacroWarningsAreDeduplicatedByOwnerSpan(): Pro
     );
 }
 
+async function testRepeatedIncludeUsesGeneratedMacroContext(): Promise<void> {
+    const includeUri = 'file:///workspace/mixed-context-macro.svh';
+    const include = '`DECLARE(generated)\n';
+    const includeLine = '`include "mixed-context-macro.svh"';
+    const cases = [
+        {
+            uri: 'file:///workspace/structural-first.sv',
+            lines: [
+                includeLine,
+                'module structural_first;',
+                'always_comb begin',
+                includeLine,
+                'end',
+                'endmodule',
+            ],
+        },
+        {
+            uri: 'file:///workspace/opaque-first.sv',
+            lines: [
+                'module opaque_first;',
+                'always_comb begin',
+                includeLine,
+                'end',
+                includeLine,
+                'endmodule',
+            ],
+        },
+    ];
+    for (const fixture of cases) {
+        const source = fixture.lines.join('\n');
+        const document = await parseWithRealWorker(fixture.uri, source, {
+            defines: {},
+            resolvedIncludes: [{
+                fromUri: fixture.uri,
+                rawPath: 'mixed-context-macro.svh',
+                resolvedUri: includeUri,
+                text: include,
+            }],
+        });
+        const warnings = document.diagnostics.filter(
+            diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+        );
+        assert.strictEqual(warnings.length, 1, fixture.uri);
+        assert.strictEqual(warnings[0].span?.uri, includeUri);
+        assert.strictEqual(
+            include.slice(warnings[0].span!.start, warnings[0].span!.end),
+            '`DECLARE(generated)'
+        );
+    }
+
+    const opaqueUri = 'file:///workspace/opaque-only.sv';
+    const opaqueSource = [
+        'module opaque_only;',
+        'always_comb begin',
+        includeLine,
+        'end',
+        'initial begin',
+        includeLine,
+        'end',
+        'endmodule',
+    ].join('\n');
+    const opaqueDocument = await parseWithRealWorker(opaqueUri, opaqueSource, {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: opaqueUri,
+            rawPath: 'mixed-context-macro.svh',
+            resolvedUri: includeUri,
+            text: include,
+        }],
+    });
+    assert.strictEqual(opaqueDocument.diagnostics.filter(
+        diagnostic => diagnostic.code === 'HDL_MACRO_UNEXPANDED'
+    ).length, 0);
+}
+
 async function testWorkerWarnsOnlyForStructuralMacros(): Promise<void> {
     const topUri = 'file:///workspace/macro-context.sv';
     const instanceUri = 'file:///workspace/macro-instance.svh';
@@ -598,6 +673,7 @@ async function main(): Promise<void> {
     await testWorkerKeepsIncludedUnitsAndActiveBranches();
     await testWorkerWarnsForStandaloneStructuralMacros();
     await testRepeatedIncludeMacroWarningsAreDeduplicatedByOwnerSpan();
+    await testRepeatedIncludeUsesGeneratedMacroContext();
     await testWorkerPreservesDirectiveAndIncludeMetadata();
     await testWorkerWarnsOnlyForStructuralMacros();
     await testWorkerDiagnosticsAndFingerprint();

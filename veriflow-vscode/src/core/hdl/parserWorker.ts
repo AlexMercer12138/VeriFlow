@@ -231,39 +231,36 @@ function macroDiagnostics(
         `${usage.generatedStart}:${usage.generatedEnd}`,
         usage,
     ]));
-    const seenOwnerSpans = new Set<string>();
-    const diagnostics: HdlDiagnostic[] = [];
+    const byOwner = new Map<string, {
+        candidate: PreprocessMacroCandidate;
+        structural: boolean;
+    }>();
     for (const candidate of candidates) {
         const treeUsage = usageByRange.get(
             `${candidate.generatedStart}:${candidate.generatedEnd}`
         );
-        if (treeUsage && !treeUsage.structural) {
-            continue;
-        }
-        if (nonStructural.some(span => spanContainsCandidate(span, candidate))) {
-            continue;
-        }
         const affectsStructure = treeUsage?.structural
-            || structural.some(span => spanContainsCandidate(span, candidate))
-            || syntaxDiagnostics.some(diagnostic =>
-                diagnostic.span && spanTouchesCandidate(diagnostic.span, candidate)
-            );
-        if (!affectsStructure) {
-            continue;
-        }
+            ?? (!nonStructural.some(span => spanContainsCandidate(span, candidate))
+                && (structural.some(span => spanContainsCandidate(span, candidate))
+                    || syntaxDiagnostics.some(diagnostic =>
+                        diagnostic.span && spanTouchesCandidate(diagnostic.span, candidate)
+                    )));
         const ownerKey = `${candidate.span.uri}:${candidate.span.start}:${candidate.span.end}`;
-        if (seenOwnerSpans.has(ownerKey)) {
-            continue;
+        const existing = byOwner.get(ownerKey);
+        if (existing) {
+            existing.structural ||= affectsStructure;
+        } else {
+            byOwner.set(ownerKey, { candidate, structural: affectsStructure });
         }
-        seenOwnerSpans.add(ownerKey);
-        diagnostics.push({
+    }
+    return [...byOwner.values()].flatMap(({ candidate, structural: affectsStructure }) =>
+        affectsStructure ? [{
             severity: 'warning' as const,
             code: 'HDL_MACRO_UNEXPANDED',
             message: 'Macro usage may affect normalized HDL structure and was not expanded',
             span: candidate.span,
-        });
-    }
-    return diagnostics;
+        }] : []
+    );
 }
 
 async function pump(): Promise<void> {
