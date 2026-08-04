@@ -31,24 +31,65 @@ export async function buildBundles(bundleOptions) {
     await Promise.all(bundleOptions.map(options => build(options)));
 }
 
-async function startBundleWatchers(bundleOptions) {
-    const contexts = [];
-    try {
-        for (const options of bundleOptions) {
-            contexts.push(await context(options));
-        }
-        await Promise.all(contexts.map(bundleContext => bundleContext.watch()));
-        return contexts;
-    } catch (error) {
-        await stopBundleWatchers(contexts);
-        throw error;
+function contextualError(label, reason) {
+    const detail = reason instanceof Error ? reason.message : String(reason);
+    return new Error(`${label}: ${detail}`, { cause: reason });
+}
+
+async function runCleanupActions(actions, message) {
+    const results = await Promise.allSettled(
+        actions.map(action => Promise.resolve().then(action.run))
+    );
+    const errors = results.flatMap((result, index) => (
+        result.status === 'rejected'
+            ? [contextualError(actions[index].label, result.reason)]
+            : []
+    ));
+    if (errors.length > 0) {
+        throw new AggregateError(errors, message);
     }
 }
 
-async function stopBundleWatchers(contexts) {
-    await Promise.allSettled(
-        contexts.map(bundleContext => bundleContext.dispose())
+function mergeOperationAndCleanupErrors(operationError, cleanupError, message) {
+    const cleanupErrors = cleanupError instanceof AggregateError
+        ? cleanupError.errors
+        : [contextualError('cleanup', cleanupError)];
+    return new AggregateError([
+        contextualError('operation', operationError),
+        ...cleanupErrors,
+    ], message);
+}
+
+export async function cleanupBundleContexts(contexts) {
+    await runCleanupActions(
+        contexts.map((bundleContext, index) => ({
+            label: `bundle context ${index}`,
+            run: () => bundleContext.dispose(),
+        })),
+        'Failed to dispose bundle contexts'
     );
+}
+
+export async function startBundleWatchers(bundleOptions, createContext = context) {
+    const contexts = [];
+    try {
+        for (const options of bundleOptions) {
+            contexts.push(await createContext(options));
+        }
+        await Promise.all(contexts.map(bundleContext => bundleContext.watch()));
+        return contexts;
+    } catch (operationError) {
+        try {
+            await cleanupBundleContexts(contexts);
+        } catch (cleanupError) {
+            throw mergeOperationAndCleanupErrors(
+                operationError,
+                cleanupError,
+                'Bundle watcher startup and cleanup failed'
+            );
+        }
+        throw operationError;
+    }
 }
 
 function waitForWatchStop(typecheck, stopRequested) {
@@ -105,27 +146,68 @@ async function stopChild(child) {
     }
 }
 
+export async function cleanupWatchResources(
+    typecheckProcess,
+    contexts,
+    stopTypecheck = stopChild
+) {
+    const actions = contexts.map((bundleContext, index) => ({
+        label: `bundle context ${index}`,
+        run: () => bundleContext.dispose(),
+    }));
+    if (typecheckProcess) {
+        actions.unshift({
+            label: 'typecheck process',
+            run: () => stopTypecheck(typecheckProcess),
+        });
+    }
+    await runCleanupActions(actions, 'Failed to clean up watch resources');
+}
+
 export async function runWatch({
     bundleOptions,
     cwd,
     typecheck,
     stopRequested,
+    createContext = context,
+    spawnProcess = spawn,
+    stopTypecheck = stopChild,
 }) {
-    const contexts = await startBundleWatchers(bundleOptions);
+    const contexts = await startBundleWatchers(bundleOptions, createContext);
     let typecheckProcess;
+    let result;
+    let operationFailed = false;
+    let operationError;
 
     try {
-        typecheckProcess = spawn(typecheck.command, typecheck.args, {
+        typecheckProcess = spawnProcess(typecheck.command, typecheck.args, {
             cwd,
             env: typecheck.env,
             stdio: typecheck.stdio ?? 'inherit',
         });
-        return await waitForWatchStop(typecheckProcess, stopRequested);
-    } finally {
-        try {
-            if (typecheckProcess) await stopChild(typecheckProcess);
-        } finally {
-            await stopBundleWatchers(contexts);
-        }
+        result = await waitForWatchStop(typecheckProcess, stopRequested);
+    } catch (error) {
+        operationFailed = true;
+        operationError = error;
     }
+
+    let cleanupFailed = false;
+    let cleanupError;
+    try {
+        await cleanupWatchResources(typecheckProcess, contexts, stopTypecheck);
+    } catch (error) {
+        cleanupFailed = true;
+        cleanupError = error;
+    }
+
+    if (operationFailed && cleanupFailed) {
+        throw mergeOperationAndCleanupErrors(
+            operationError,
+            cleanupError,
+            'Watch operation and cleanup failed'
+        );
+    }
+    if (operationFailed) throw operationError;
+    if (cleanupFailed) throw cleanupError;
+    return result;
 }
