@@ -443,7 +443,11 @@ async function testMultiplePackedDimensions(): Promise<void> {
         ') (',
         '    input logic [1:0] [3:0] p, q,',
         '    input logic [WIDTH-1:0] [1:0] symbolic_p,',
-        '    output struct packed { logic [3:0] member; } [1:0] packed_struct_p',
+        '    output struct packed { logic [3:0] member; } [1:0] packed_struct_p,',
+        '    output union packed { logic [3:0] member; logic flag; } packed_union_p,',
+        '    input int int_p,',
+        '    input byte byte_p,',
+        '    input bit [1:0] bit_vector_p',
         ');',
         '    wire [1:0] [3:0] n;',
         '    logic [WIDTH-1:0] [1:0] symbolic_n;',
@@ -455,7 +459,12 @@ async function testMultiplePackedDimensions(): Promise<void> {
     const q = module.ports.find(port => port.name === 'q');
     const symbolicPort = module.ports.find(port => port.name === 'symbolic_p');
     const packedStructPort = module.ports.find(port => port.name === 'packed_struct_p');
-    assert.ok(p && q && symbolicPort && packedStructPort);
+    const packedUnionPort = module.ports.find(port => port.name === 'packed_union_p');
+    const intPort = module.ports.find(port => port.name === 'int_p');
+    const bytePort = module.ports.find(port => port.name === 'byte_p');
+    const bitVectorPort = module.ports.find(port => port.name === 'bit_vector_p');
+    assert.ok(p && q && symbolicPort && packedStructPort && packedUnionPort
+        && intPort && bytePort && bitVectorPort);
 
     assert.strictEqual(p.typeText, 'logic');
     assert.strictEqual(p.packedRange, '[1:0] [3:0]');
@@ -474,7 +483,16 @@ async function testMultiplePackedDimensions(): Promise<void> {
     assert.strictEqual(packedStructPort.typeText,
         'struct packed { logic [3:0] member; }');
     assert.strictEqual(packedStructPort.packedRange, '[1:0]');
-    assert.deepStrictEqual(packedStructPort.width, { kind: 'known', bits: 2 });
+    assert.deepStrictEqual(packedStructPort.width, { kind: 'unknown' });
+    assert.strictEqual(packedUnionPort.typeText,
+        'union packed { logic [3:0] member; logic flag; }');
+    assert.strictEqual(packedUnionPort.packedRange, undefined);
+    assert.deepStrictEqual(packedUnionPort.width, { kind: 'unknown' });
+    assert.deepStrictEqual(intPort.width, { kind: 'known', bits: 32 });
+    assert.deepStrictEqual(bytePort.width, { kind: 'known', bits: 8 });
+    assert.strictEqual(bitVectorPort.typeText, 'bit');
+    assert.strictEqual(bitVectorPort.packedRange, '[1:0]');
+    assert.deepStrictEqual(bitVectorPort.width, { kind: 'known', bits: 2 });
 
     const n = module.nets.find(net => net.names[0].name === 'n');
     const symbolicNet = module.nets.find(net => net.names[0].name === 'symbolic_n');

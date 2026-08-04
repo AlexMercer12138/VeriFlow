@@ -185,11 +185,55 @@ function simpleInteger(text: string): number | undefined {
     return /^[0-9]+$/.test(normalized) ? Number(normalized) : undefined;
 }
 
-function widthFromDimensions(dimensions: Node[], rangeText: string | undefined): WidthValue {
-    if (dimensions.length === 0) {
-        return { kind: 'known', bits: 1 };
+function baseTypeWidth(node: Node): number | undefined {
+    const type = firstDescendant(node, new Set(['data_type', 'implicit_data_type']));
+    if (!type || type.type === 'implicit_data_type') {
+        return 1;
     }
-    let bits = 1;
+    const vectorType = directChild(type, 'integer_vector_type');
+    if (vectorType) {
+        switch (vectorType.text.trim()) {
+            case 'bit':
+            case 'logic':
+            case 'reg':
+                return 1;
+            default:
+                return undefined;
+        }
+    }
+    const atomType = directChild(type, 'integer_atom_type');
+    if (atomType) {
+        switch (atomType.text.trim()) {
+            case 'byte':
+                return 8;
+            case 'shortint':
+                return 16;
+            case 'int':
+            case 'integer':
+                return 32;
+            case 'longint':
+            case 'time':
+                return 64;
+            default:
+                return undefined;
+        }
+    }
+    return undefined;
+}
+
+function widthFromDimensions(
+    node: Node,
+    dimensions: Node[],
+    rangeText: string | undefined
+): WidthValue {
+    const baseBits = baseTypeWidth(node);
+    if (baseBits === undefined) {
+        return { kind: 'unknown' };
+    }
+    if (dimensions.length === 0) {
+        return { kind: 'known', bits: baseBits };
+    }
+    let bits = baseBits;
     for (const dimension of dimensions) {
         const constantRange = firstDescendant(dimension, new Set(['constant_range']));
         const bounds = constantRange?.namedChildren.filter(
@@ -661,7 +705,7 @@ function adaptAnsiPorts(
                 direction: explicitDirection ?? inherited?.direction ?? 'input',
                 typeText: textWithoutRanges(typeNode(explicitHeader), dimensions, context.request),
                 packedRange: rangeText,
-                width: widthFromDimensions(dimensions, rangeText),
+                width: widthFromDimensions(explicitHeader, dimensions, rangeText),
             }
             : inherited ?? {
                 direction: 'input',
@@ -833,7 +877,7 @@ function adaptNonAnsiPorts(
             port.direction = direction;
             port.typeText = declarationType;
             port.packedRange = rangeText;
-            port.width = widthFromDimensions(dimensions, rangeText);
+            port.width = widthFromDimensions(declaration, dimensions, rangeText);
             port.declarationSpan = sourceSpan(wrapper, context);
             const directionNode = declaration.children.find(child => child.type === direction);
             port.directionSpan = index === 0 && directionNode
@@ -1148,7 +1192,7 @@ function adaptNetDeclaration(node: Node, context: AdaptContext): NetDeclarationM
         names,
         declarationSpan: sourceSpan(node, context),
         packedRange: rangeText,
-        width: widthFromDimensions(dimensions, rangeText),
+        width: widthFromDimensions(node, dimensions, rangeText),
     };
 }
 
