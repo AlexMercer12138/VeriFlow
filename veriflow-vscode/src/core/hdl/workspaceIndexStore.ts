@@ -7,12 +7,116 @@ type MementoLike = {
 
 const KEY = 'veriflow.hdlWorkspaceIndex.v1';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+function isSourceFileSpan(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.uri === 'string'
+        && isNumber(value.start)
+        && isNumber(value.end);
+}
+
+function isSourceSpan(value: unknown): boolean {
+    if (!isRecord(value) || !isNumber(value.start) || !isNumber(value.end)) {
+        return false;
+    }
+    return (value.uri === undefined || typeof value.uri === 'string')
+        && (value.compositeParts === undefined
+            || (Array.isArray(value.compositeParts)
+                && value.compositeParts.every(isSourceFileSpan)));
+}
+
+function isWidthValue(value: unknown): boolean {
+    if (!isRecord(value) || typeof value.kind !== 'string') {
+        return false;
+    }
+    switch (value.kind) {
+        case 'known':
+            return isNumber(value.bits);
+        case 'symbolic':
+            return typeof value.expression === 'string';
+        case 'unknown':
+            return true;
+        default:
+            return false;
+    }
+}
+
+function isParameterSummary(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.name === 'string'
+        && (value.defaultExpression === undefined || typeof value.defaultExpression === 'string');
+}
+
+function isPortSummary(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.name === 'string'
+        && (value.direction === 'input' || value.direction === 'output' || value.direction === 'inout')
+        && (value.packedRange === undefined || typeof value.packedRange === 'string')
+        && isWidthValue(value.width);
+}
+
+function isDefinitionSummary(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.key === 'string'
+        && (value.kind === 'module' || value.kind === 'interface' || value.kind === 'package')
+        && typeof value.name === 'string'
+        && typeof value.uri === 'string'
+        && isNumber(value.declarationStart)
+        && isNumber(value.declarationLine)
+        && Array.isArray(value.parameters)
+        && value.parameters.every(isParameterSummary)
+        && Array.isArray(value.ports)
+        && value.ports.every(isPortSummary)
+        && isStringArray(value.dependencies)
+        && typeof value.modelFingerprint === 'string';
+}
+
+function isDiagnostic(value: unknown): boolean {
+    return isRecord(value)
+        && (value.severity === 'error' || value.severity === 'warning' || value.severity === 'info')
+        && typeof value.code === 'string'
+        && typeof value.message === 'string'
+        && (value.span === undefined || isSourceSpan(value.span));
+}
+
+function isFileSummary(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.uri === 'string'
+        && isNumber(value.mtimeMs)
+        && isNumber(value.size)
+        && typeof value.contentHash === 'string'
+        && isStringArray(value.includeUris)
+        && Array.isArray(value.definitions)
+        && value.definitions.every(isDefinitionSummary)
+        && Array.isArray(value.diagnostics)
+        && value.diagnostics.every(isDiagnostic);
+}
+
+function isPersistedWorkspaceIndex(value: unknown): value is PersistedWorkspaceIndex {
+    return isRecord(value)
+        && value.schemaVersion === 1
+        && typeof value.parserFingerprint === 'string'
+        && Array.isArray(value.files)
+        && value.files.every(isFileSummary);
+}
+
 export class WorkspaceIndexStore {
     constructor(private readonly state: MementoLike) {}
 
     load(parserFingerprint: string): PersistedWorkspaceIndex | undefined {
-        const value = this.state.get<PersistedWorkspaceIndex>(KEY);
-        return value?.schemaVersion === 1 && value.parserFingerprint === parserFingerprint
+        const value = this.state.get<unknown>(KEY);
+        return isPersistedWorkspaceIndex(value) && value.parserFingerprint === parserFingerprint
             ? value
             : undefined;
     }

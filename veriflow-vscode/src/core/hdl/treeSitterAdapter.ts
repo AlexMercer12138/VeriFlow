@@ -38,6 +38,7 @@ type AdaptContext = {
     sourceMap: CompositeSourceMap;
     sourceTexts: Readonly<Record<string, string>>;
     transformedText: string;
+    lineStartsByUri: Map<string, readonly number[]>;
 };
 
 export type AdapterSourceContext = {
@@ -117,18 +118,31 @@ function sourceSpan(range: ByteRange, context: AdaptContext): SourceSpan {
 }
 
 function declarationLine(range: ByteRange, context: AdaptContext): number {
-    const span = sourceSpan(range, context);
-    const text = span.uri === undefined || span.compositeParts
-        ? context.transformedText
-        : context.sourceTexts[span.uri] ?? context.transformedText;
-    const offset = text === context.transformedText ? range.startIndex : span.start;
-    let line = 0;
-    for (let index = 0; index < offset; index++) {
-        if (text.charCodeAt(index) === 10) {
-            line++;
+    const start = context.sourceMap.mapOffset(range.startIndex, 'start');
+    const text = context.sourceTexts[start.uri] ?? context.transformedText;
+    const offset = context.sourceTexts[start.uri] === undefined ? range.startIndex : start.start;
+    let lineStarts = context.lineStartsByUri.get(start.uri);
+    if (!lineStarts) {
+        const starts = [0];
+        for (let index = 0; index < text.length; index++) {
+            if (text.charCodeAt(index) === 10) {
+                starts.push(index + 1);
+            }
+        }
+        lineStarts = starts;
+        context.lineStartsByUri.set(start.uri, lineStarts);
+    }
+    let lineIndex = 0;
+    let upperBound = lineStarts.length;
+    while (lineIndex + 1 < upperBound) {
+        const middle = Math.floor((lineIndex + upperBound) / 2);
+        if (lineStarts[middle] <= offset) {
+            lineIndex = middle;
+        } else {
+            upperBound = middle;
         }
     }
-    return line + 1;
+    return lineIndex + 1;
 }
 
 function offsetSpan(startIndex: number, endIndex: number): ByteRange {
@@ -1801,6 +1815,7 @@ export function adaptTree(
         sourceMap,
         sourceTexts: sourceContext?.sourceTexts ?? { [request.uri]: request.text },
         transformedText,
+        lineStartsByUri: new Map(),
     };
     const modules: ModuleModel[] = [];
     const interfaces: NamedUnitModel[] = [];
