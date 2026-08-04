@@ -116,6 +116,21 @@ function sourceSpan(range: ByteRange, context: AdaptContext): SourceSpan {
     return context.sourceMap.mapSpan(compositeRange.start, compositeRange.end);
 }
 
+function declarationLine(range: ByteRange, context: AdaptContext): number {
+    const span = sourceSpan(range, context);
+    const text = span.uri === undefined || span.compositeParts
+        ? context.transformedText
+        : context.sourceTexts[span.uri] ?? context.transformedText;
+    const offset = text === context.transformedText ? range.startIndex : span.start;
+    let line = 0;
+    for (let index = 0; index < offset; index++) {
+        if (text.charCodeAt(index) === 10) {
+            line++;
+        }
+    }
+    return line;
+}
+
 function offsetSpan(startIndex: number, endIndex: number): ByteRange {
     return { startIndex, endIndex };
 }
@@ -1649,6 +1664,7 @@ function adaptModule(
         id: stableId('module', nameNode.text, nameNode.startIndex, context.request.uri),
         name: nameNode.text,
         nameSpan: sourceSpan(nameNode, context),
+        declarationLine: declarationLine(node, context),
         endLabel: endLabelNode?.text,
         declarationStyle: header.type === 'module_ansi_header' ? 'ansi' : 'non-ansi',
         declarationSpan: sourceSpan(node, context),
@@ -1697,6 +1713,7 @@ function adaptNamedUnit(
         kind,
         name: nameNode.text,
         nameSpan: sourceSpan(nameNode, context),
+        declarationLine: declarationLine(node, context),
         declarationSpan: sourceSpan(node, context),
     };
 }
