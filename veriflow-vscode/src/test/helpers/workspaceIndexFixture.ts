@@ -1,5 +1,6 @@
 import * as path from 'path';
 
+import type { HdlDocument } from '../../core/hdl/model';
 import { HdlParserClient } from '../../core/hdl/parserClient';
 import type { HdlParseOptions, ParsePriority } from '../../core/hdl/protocol';
 import { canonicalizeSourceUri } from '../../core/hdl/preprocessor';
@@ -12,18 +13,23 @@ type ParserCall = {
 };
 
 type ParserHooks = {
+    onDispatch?: (call: ParserCall) => void;
     afterParse?: (call: ParserCall) => void | Promise<void>;
+    beforePersist?: () => void | Promise<void>;
 };
 
 class MemoryMemento {
     readonly writes: unknown[] = [];
     private readonly values = new Map<string, unknown>();
 
+    constructor(private readonly hooks: ParserHooks) {}
+
     get<T>(key: string): T | undefined {
         return this.values.get(key) as T | undefined;
     }
 
     async update(key: string, value: unknown): Promise<void> {
+        await this.hooks.beforePersist?.();
         const clone = value === undefined
             ? undefined
             : JSON.parse(JSON.stringify(value)) as unknown;
@@ -65,9 +71,18 @@ class InstrumentedParser extends HdlParserClient {
         const call = { uri, priority };
         this.calls.push(call);
         this.parseOptions.push(options);
-        const document = await super.parse(uri, version, text, options, priority);
+        const parse = super.parse(uri, version, text, options, priority);
+        this.hooks.onDispatch?.(call);
+        const document = await parse;
         await this.hooks.afterParse?.(call);
         return document;
+    }
+
+    async parseInteractive(uri: string, text: string): Promise<HdlDocument> {
+        const call: ParserCall = { uri, priority: 'interactive' };
+        const parse = super.parse(uri, 1, text, { defines: {} }, 'interactive');
+        this.hooks.onDispatch?.(call);
+        return parse;
     }
 }
 
@@ -78,6 +93,7 @@ export type WorkspaceIndexHarness = {
     parserOptions: HdlParseOptions[];
     persistedWrites: unknown[];
     hooks: ParserHooks;
+    parseInteractive(uri: string, text: string): Promise<HdlDocument>;
     createIndex(defines?: Record<string, string | true>): WorkspaceHdlIndex;
     dispose(): Promise<void>;
 };
@@ -92,7 +108,7 @@ export function createWorkspaceIndexHarness(
     const parserCalls: ParserCall[] = [];
     const parserOptions: HdlParseOptions[] = [];
     const hooks: ParserHooks = {};
-    const memento = new MemoryMemento();
+    const memento = new MemoryMemento(hooks);
     const store = new WorkspaceIndexStore(memento);
     const extensionRoot = path.resolve(__dirname, '..', '..', '..');
     const parser = new InstrumentedParser(
@@ -143,6 +159,7 @@ export function createWorkspaceIndexHarness(
         parserOptions,
         persistedWrites: memento.writes,
         hooks,
+        parseInteractive: (uri, text) => parser.parseInteractive(uri, text),
         createIndex,
         dispose: () => parser.dispose(),
     };

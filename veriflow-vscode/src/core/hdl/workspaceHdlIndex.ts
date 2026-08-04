@@ -53,6 +53,16 @@ function contentHash(text: string): string {
     return `sha256:${createHash('sha256').update(text).digest('hex')}`;
 }
 
+function workspaceCacheFingerprint(
+    parserFingerprint: string,
+    defines: Record<string, string | true>
+): string {
+    return hash({
+        parserFingerprint,
+        defines: Object.entries(defines).sort(([left], [right]) => left.localeCompare(right)),
+    });
+}
+
 function compareDefinitions(
     left: HdlDefinitionSummary,
     right: HdlDefinitionSummary
@@ -128,6 +138,10 @@ function isHdlUri(uri: string): boolean {
     return ['.v', '.sv', '.vh', '.svh'].includes(path.posix.extname(pathname).toLowerCase());
 }
 
+function isUriWithinRoot(uri: string, root: string): boolean {
+    return uri === root || uri.startsWith(root.endsWith('/') ? root : `${root}/`);
+}
+
 type FileInput = {
     text: string;
     version: number;
@@ -150,6 +164,7 @@ type BatchState = {
     reads: Map<string, FileInput>;
     changedUris: Set<string>;
     affectedDocumentUris: Set<string>;
+    visitedUris: Set<string>;
 };
 
 type PreparedDocument = {
@@ -173,7 +188,10 @@ export class WorkspaceHdlIndex {
 
     async load(): Promise<void> {
         return this.runExclusive(async () => {
-            const persisted = this.options.store.load(this.options.parserFingerprint);
+            const persisted = this.options.store.load(workspaceCacheFingerprint(
+                this.options.parserFingerprint,
+                this.defines
+            ));
             if (!persisted) {
                 return;
             }
@@ -194,9 +212,19 @@ export class WorkspaceHdlIndex {
             const uris = [...new Set(found
                 .map(uri => canonicalizeSourceUri(uri))
                 .filter(isHdlUri))].sort();
+            const canonicalRoots = roots.map(root => canonicalizeSourceUri(root));
             const previousFiles = this.files;
             const batch = this.createBatch();
             await this.processUris(uris, batch, this.defines, signal, true);
+            for (const uri of [...batch.files.keys()]) {
+                if (canonicalRoots.some(root => isUriWithinRoot(uri, root))
+                    && !batch.visitedUris.has(uri)) {
+                    batch.files.delete(uri);
+                    batch.documents.delete(uri);
+                    batch.changedUris.add(uri);
+                    batch.affectedDocumentUris.add(uri);
+                }
+            }
             await this.commitBatch(previousFiles, batch, signal);
         });
     }
@@ -231,8 +259,20 @@ export class WorkspaceHdlIndex {
             batch.documents.delete(canonicalUri);
             batch.changedUris.add(canonicalUri);
             batch.affectedDocumentUris.add(canonicalUri);
+            const readableDependents: string[] = [];
+            for (const dependent of dependents) {
+                try {
+                    await this.readFile(dependent, batch);
+                    readableDependents.push(dependent);
+                } catch {
+                    batch.files.delete(dependent);
+                    batch.documents.delete(dependent);
+                    batch.changedUris.add(dependent);
+                    batch.affectedDocumentUris.add(dependent);
+                }
+            }
             await this.processUris(
-                dependents,
+                readableDependents,
                 batch,
                 this.defines,
                 undefined,
@@ -379,6 +419,7 @@ export class WorkspaceHdlIndex {
             reads: new Map(),
             changedUris: new Set(),
             affectedDocumentUris: new Set(),
+            visitedUris: new Set(),
         };
     }
 
@@ -411,6 +452,7 @@ export class WorkspaceHdlIndex {
                 excludedUris
             );
             processed.add(uri);
+            batch.visitedUris.add(uri);
             for (const includeUri of includes) {
                 if (isHdlUri(includeUri)
                     && !excludedUris.has(includeUri)
@@ -641,11 +683,15 @@ export class WorkspaceHdlIndex {
         this.checkpoint(signal);
         await this.options.store.save({
             schemaVersion: 1,
-            parserFingerprint: this.options.parserFingerprint,
+            parserFingerprint: workspaceCacheFingerprint(
+                this.options.parserFingerprint,
+                nextDefines ?? this.defines
+            ),
             files: [...batch.files.values()].sort((left, right) =>
                 left.uri.localeCompare(right.uri)
             ),
         });
+        this.checkpoint(signal);
         this.files = batch.files;
         this.documents = batch.documents;
         if (nextDefines) {

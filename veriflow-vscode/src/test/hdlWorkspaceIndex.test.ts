@@ -1,6 +1,5 @@
 import * as assert from 'assert';
 
-import { ParserRequestQueue } from '../core/hdl/parserQueue';
 import type { WorkspaceIndexInvalidation } from '../core/hdl/workspaceHdlIndex';
 import { WorkspaceIndexStore } from '../core/hdl/workspaceIndexStore';
 import type { PersistedWorkspaceIndex } from '../core/hdl/workspaceIndexTypes';
@@ -375,6 +374,70 @@ async function testWorkspacePersistenceAndUnchangedCache(): Promise<void> {
     }
 }
 
+async function testPersistenceIdentityIncludesDefines(): Promise<void> {
+    const uri = 'file:///ws/persisted-defines.sv';
+    const harness = createWorkspaceIndexHarness({
+        [uri]: [
+            '`ifdef USE_A',
+            'module active_a; endmodule',
+            '`else',
+            'module active_b; endmodule',
+            '`endif',
+        ].join('\n'),
+    });
+    const configured = harness.createIndex({ USE_A: true });
+    try {
+        await harness.index.scan(['file:///ws']);
+        assert.strictEqual(harness.index.findDefinitions('active_b').length, 1);
+
+        await configured.load();
+        assert.strictEqual(configured.findDefinitions('active_b').length, 0);
+        await configured.updateConfiguration({ USE_A: true });
+        assert.strictEqual(configured.findDefinitions('active_b').length, 0);
+    } finally {
+        harness.index.dispose();
+        configured.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testFullScanRemovesMissingFilesOnlyWithinRoots(): Promise<void> {
+    const aUri = 'file:///ws/a.sv';
+    const bUri = 'file:///ws/b.sv';
+    const libraryUri = 'file:///lib/library.sv';
+    const harness = createWorkspaceIndexHarness({
+        [aUri]: 'module a; endmodule',
+        [bUri]: 'module b; endmodule',
+        [libraryUri]: 'module external_lib; endmodule',
+    });
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws', 'file:///lib']);
+        const removedKey = harness.index.findDefinitions('b')[0].key;
+        harness.files.delete(bUri);
+
+        await reloaded.load();
+        const writesBeforeScan = harness.persistedWrites.length;
+        const events: WorkspaceIndexInvalidation[] = [];
+        reloaded.onDidInvalidate(event => events.push(event));
+        await reloaded.scan(['file:///ws']);
+
+        assert.strictEqual(reloaded.getFile(bUri), undefined);
+        assert.strictEqual(reloaded.findDefinitions('b').length, 0);
+        assert.strictEqual(reloaded.findDefinitions('a').length, 1);
+        assert.strictEqual(reloaded.findDefinitions('external_lib').length, 1);
+        assert.strictEqual(harness.persistedWrites.length, writesBeforeScan + 1);
+        assert.strictEqual(events.length, 1);
+        assert.deepStrictEqual(events[0].changedUris, [bUri]);
+        assert.deepStrictEqual(events[0].affectedDocumentUris, [bUri]);
+        assert.deepStrictEqual(events[0].changedDefinitionKeys, [removedKey]);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testIncludeGraphTransitiveRefreshAndStructuralFingerprints(): Promise<void> {
     const topUri = 'file:///ws/top.sv';
     const defsUri = 'file:///ws/inc/defs.svh';
@@ -498,6 +561,39 @@ async function testAbortIsAtomicAndDoesNotPersistOrInvalidate(): Promise<void> {
     }
 }
 
+async function testAbortDuringSaveDoesNotCommitMemoryOrInvalidate(): Promise<void> {
+    const harness = createWorkspaceIndexHarness({
+        'file:///ws/save-abort.sv': 'module save_abort; endmodule',
+    });
+    const controller = new AbortController();
+    const events: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => events.push(event));
+    let notifySaveStarted!: () => void;
+    const saveStarted = new Promise<void>(resolve => { notifySaveStarted = resolve; });
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>(resolve => { releaseSave = resolve; });
+    harness.hooks.beforePersist = async () => {
+        notifySaveStarted();
+        await saveGate;
+    };
+    try {
+        const scan = harness.index.scan(['file:///ws'], controller.signal);
+        await saveStarted;
+        controller.abort();
+        releaseSave();
+
+        await assert.rejects(
+            scan,
+            error => error instanceof Error && error.name === 'AbortError'
+        );
+        assert.deepStrictEqual(harness.index.getAllDefinitions(), []);
+        assert.deepStrictEqual(events, []);
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testInvalidationRemoveAndConfigurationBatches(): Promise<void> {
     const topUri = 'file:///ws/top.sv';
     const portsUri = 'file:///ws/ports.svh';
@@ -592,6 +688,49 @@ async function testInvalidationRemoveAndConfigurationBatches(): Promise<void> {
     }
 }
 
+async function testRemoveContinuesPastUnreadableDependents(): Promise<void> {
+    const targetUri = 'file:///ws/target.svh';
+    const readableUri = 'file:///ws/readable.sv';
+    const unreadableUri = 'file:///ws/unreadable.sv';
+    const harness = createWorkspaceIndexHarness({
+        [targetUri]: 'module shared_target; endmodule',
+        [readableUri]: [
+            '`include "target.svh"',
+            'module readable_parent; endmodule',
+        ].join('\n'),
+        [unreadableUri]: [
+            '`include "target.svh"',
+            'module unreadable_parent; endmodule',
+        ].join('\n'),
+    });
+    try {
+        await harness.index.scan(['file:///ws']);
+        harness.files.delete(targetUri);
+        harness.files.delete(unreadableUri);
+        const writesBeforeRemove = harness.persistedWrites.length;
+        const events: WorkspaceIndexInvalidation[] = [];
+        harness.index.onDidInvalidate(event => events.push(event));
+
+        await harness.index.removeUri(targetUri);
+
+        assert.strictEqual(harness.index.getFile(targetUri), undefined);
+        assert.strictEqual(harness.index.getFile(unreadableUri), undefined);
+        assert.strictEqual(harness.index.findDefinitions('shared_target').length, 0);
+        assert.strictEqual(harness.index.findDefinitions('unreadable_parent').length, 0);
+        assert.strictEqual(harness.index.findDefinitions('readable_parent').length, 1);
+        assert.strictEqual(harness.persistedWrites.length, writesBeforeRemove + 1);
+        assert.strictEqual(events.length, 1);
+        assert.deepStrictEqual(events[0].changedUris, [targetUri, unreadableUri]);
+        assert.deepStrictEqual(
+            events[0].affectedDocumentUris,
+            [readableUri, targetUri, unreadableUri]
+        );
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testPersistedResolveUsesTheExactDefinitionKey(): Promise<void> {
     const uri = 'file:///ws/exact.sv';
     const harness = createWorkspaceIndexHarness({
@@ -622,22 +761,32 @@ async function testPersistedResolveUsesTheExactDefinitionKey(): Promise<void> {
 
 async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void> {
     const harness = createWorkspaceIndexHarness({
-        'file:///ws/priority.sv': 'module priority; endmodule',
+        'file:///ws/a.sv': 'module background_a; endmodule',
+        'file:///ws/b.sv': 'module background_b; endmodule',
+        'file:///ws/c.sv': 'module background_c; endmodule',
     });
+    const completionOrder: string[] = [];
+    let interactive: Promise<void> | undefined;
+    harness.hooks.onDispatch = call => {
+        if (call.uri === 'file:///ws/a.sv' && interactive === undefined) {
+            interactive = harness.parseInteractive(
+                'file:///ws/interactive.sv',
+                'module interactive; endmodule'
+            ).then(() => { completionOrder.push('interactive'); });
+        }
+    };
+    harness.hooks.afterParse = call => { completionOrder.push(call.uri); };
     try {
         await harness.index.scan(['file:///ws']);
+        await interactive;
         assert.ok(harness.parserCalls.length > 0);
         assert.ok(harness.parserCalls.every(call => call.priority === 'background'));
-
-        const queue = new ParserRequestQueue<{
-            requestId: string;
-            priority: 'interactive' | 'background';
-        }>();
-        queue.enqueue({ requestId: 'background-1', priority: 'background' });
-        queue.enqueue({ requestId: 'background-2', priority: 'background' });
-        queue.enqueue({ requestId: 'interactive', priority: 'interactive' });
-        assert.strictEqual(queue.takeNext()?.requestId, 'interactive');
-        assert.strictEqual(queue.takeNext()?.requestId, 'background-1');
+        assert.ok(completionOrder.indexOf('interactive') > completionOrder.indexOf(
+            'file:///ws/a.sv'
+        ));
+        assert.ok(completionOrder.indexOf('interactive') < completionOrder.indexOf(
+            'file:///ws/b.sv'
+        ));
     } finally {
         harness.index.dispose();
         await harness.dispose();
@@ -655,9 +804,13 @@ async function main(): Promise<void> {
     await testCompositeDefinitionsUseTheirOriginalDeclarationLines();
     await testInitialScanDuplicatesAndRefresh();
     await testWorkspacePersistenceAndUnchangedCache();
+    await testPersistenceIdentityIncludesDefines();
+    await testFullScanRemovesMissingFilesOnlyWithinRoots();
     await testIncludeGraphTransitiveRefreshAndStructuralFingerprints();
     await testAbortIsAtomicAndDoesNotPersistOrInvalidate();
+    await testAbortDuringSaveDoesNotCommitMemoryOrInvalidate();
     await testInvalidationRemoveAndConfigurationBatches();
+    await testRemoveContinuesPastUnreadableDependents();
     await testPersistedResolveUsesTheExactDefinitionKey();
     await testIndexPrioritiesAndInteractiveQueuePrecedence();
 
