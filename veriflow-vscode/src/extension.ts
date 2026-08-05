@@ -14,6 +14,10 @@ import { ModuleTreeProvider } from './moduleTreeProvider';
 import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
+import {
+    SchematicEditorProvider,
+    SchematicNavigationRegistry,
+} from './schematic';
 import * as output from './output';
 import {
     DependencyAnalyzer, SimulationRunner, LogParser,
@@ -211,6 +215,31 @@ export function activate(context: vscode.ExtensionContext): void {
             }
         )
     );
+    const schematicNavigationRegistry = new SchematicNavigationRegistry();
+    const schematicEditorProvider = new SchematicEditorProvider(
+        context,
+        schematicNavigationRegistry,
+        {
+            parseDocument: document => getHdlParser(context).parse(
+                document.uri.toString(),
+                document.version,
+                document.getText(),
+                { defines: _filterHdlDefines(getSettings().defines) },
+                'interactive'
+            ),
+            getIndex: () => _getSchematicIndex(context),
+        }
+    );
+    context.subscriptions.push(
+        vscode.window.registerCustomEditorProvider(
+            SchematicEditorProvider.viewType,
+            schematicEditorProvider,
+            {
+                webviewOptions: { retainContextWhenHidden: true },
+                supportsMultipleEditorsPerDocument: true,
+            }
+        )
+    );
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(circuit-board) VeriFlow';
@@ -226,6 +255,8 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.simulate', () => cmdSimulate(context)],
         ['veriflow.openWave', () => cmdOpenWave(context)],
         ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
+        ['veriflow.openSchematic', (uri?: vscode.Uri) => cmdOpenSchematic(uri)],
+        ['veriflow.openSchematicFromExplorer', (uri?: vscode.Uri) => cmdOpenSchematic(uri)],
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
         ['veriflow.showOutput', () => { if (!hdlStopping) { output.show(); } }],
@@ -582,6 +613,25 @@ async function _getDependencyAnalyzer(
         }
         throw error;
     }
+}
+
+async function _getSchematicIndex(
+    context: vscode.ExtensionContext
+): Promise<WorkspaceHdlIndex | undefined> {
+    if (hdlIndex && !hdlPreparationInFlight) return hdlIndex;
+    const root = getWorkspaceRoot();
+    if (!root) return hdlIndex;
+    const settings = getSettings();
+    try {
+        await _prepareDependencyAnalyzer(
+            context,
+            _dependencyRootUris(root, settings.libDirs),
+            _filterHdlDefines(settings.defines)
+        );
+    } catch {
+        return hdlIndex;
+    }
+    return hdlIndex;
 }
 
 function _resetDependencyIndex(): void {
@@ -2359,6 +2409,20 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
         'vscode.openWith',
         target,
         WaveformEditorProvider.viewType
+    );
+}
+
+async function cmdOpenSchematic(uri?: vscode.Uri): Promise<void> {
+    if (hdlStopping) { return; }
+    const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+    if (!target) {
+        vscode.window.showWarningMessage('Open a Verilog or SystemVerilog file first.');
+        return;
+    }
+    await vscode.commands.executeCommand(
+        'vscode.openWith',
+        target,
+        SchematicEditorProvider.viewType
     );
 }
 

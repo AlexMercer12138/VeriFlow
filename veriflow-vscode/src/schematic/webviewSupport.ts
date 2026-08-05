@@ -2,6 +2,68 @@ import type { SourceSpan } from '../core/hdl/model';
 import type { SchematicLayout } from './layoutStore';
 import type { WebviewCommand } from './protocol';
 
+export type SchematicWebviewResources = {
+    cspSource: string;
+    styleUri: string;
+    scriptUri: string;
+    nonce: string;
+};
+
+function escapeHtmlAttribute(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function replaceRequired(
+    source: string,
+    pattern: RegExp,
+    replacement: string,
+    description: string
+): string {
+    if (!pattern.test(source)) {
+        throw new Error(`Schematic HTML is missing the ${description} placeholder`);
+    }
+    return source.replace(pattern, replacement);
+}
+
+export function buildSchematicWebviewHtml(
+    shell: string,
+    resources: SchematicWebviewResources
+): string {
+    if (!/^[A-Za-z0-9+/_=-]+$/.test(resources.nonce)) {
+        throw new Error('Schematic webview nonce contains invalid characters');
+    }
+    const csp = [
+        "default-src 'none'",
+        `img-src ${resources.cspSource}`,
+        `style-src ${resources.cspSource} 'unsafe-inline'`,
+        `script-src 'nonce-${resources.nonce}'`,
+    ].join('; ') + ';';
+    let html = replaceRequired(
+        shell,
+        /<meta\s+http-equiv="Content-Security-Policy"\s+content="[^"]*">/i,
+        `<meta http-equiv="Content-Security-Policy" content="${escapeHtmlAttribute(csp)}">`,
+        'Content-Security-Policy'
+    );
+    html = replaceRequired(
+        html,
+        /href="\.\/styles\.css"/,
+        `href="${escapeHtmlAttribute(resources.styleUri)}"`,
+        'stylesheet'
+    );
+    return replaceRequired(
+        html,
+        /<script\s+src="\.\/index\.js"><\/script>/,
+        `<script nonce="${escapeHtmlAttribute(resources.nonce)}" src="${
+            escapeHtmlAttribute(resources.scriptUri)
+        }"></script>`,
+        'script'
+    );
+}
+
 export type TimerAdapter<Handle> = {
     set(callback: () => void, delayMs: number): Handle;
     clear(handle: Handle): void;

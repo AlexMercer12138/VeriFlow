@@ -2,6 +2,7 @@ import * as assert from 'assert';
 
 import type { SchematicLayout } from '../schematic/layoutStore';
 import {
+    buildSchematicWebviewHtml,
     DebouncedLayoutSaveScheduler,
     navigationCommandForCell,
     placeSchematicNetworkLabel,
@@ -10,6 +11,44 @@ import {
     type SchematicRect,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
+
+function testSecureSchematicWebviewHtml(): void {
+    const shell = [
+        '<!doctype html>',
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\' \'unsafe-inline\'; script-src \'self\';">',
+        '<link rel="stylesheet" href="./styles.css">',
+        '<main>schematic shell</main>',
+        '<script src="./index.js"></script>',
+    ].join('\n');
+    const html = buildSchematicWebviewHtml(shell, {
+        cspSource: 'vscode-webview://schematic',
+        styleUri: 'vscode-webview://schematic/styles.css',
+        scriptUri: 'vscode-webview://schematic/index.js',
+        nonce: 'nonceValue123',
+    });
+
+    assert.match(
+        html,
+        /default-src 'none'; img-src vscode-webview:\/\/schematic; style-src vscode-webview:\/\/schematic 'unsafe-inline'; script-src 'nonce-nonceValue123';/
+    );
+    assert.ok(html.includes('href="vscode-webview://schematic/styles.css"'));
+    assert.ok(html.includes(
+        '<script nonce="nonceValue123" src="vscode-webview://schematic/index.js"></script>'
+    ));
+    assert.doesNotMatch(html, /script-src 'self'/);
+    assert.doesNotMatch(html, /<script(?![^>]*\bnonce=)/);
+    assert.ok(html.includes('<main>schematic shell</main>'));
+
+    assert.throws(
+        () => buildSchematicWebviewHtml('<main>incomplete</main>', {
+            cspSource: 'vscode-webview://schematic',
+            styleUri: 'vscode-webview://schematic/styles.css',
+            scriptUri: 'vscode-webview://schematic/index.js',
+            nonce: 'nonceValue123',
+        }),
+        /Content-Security-Policy placeholder/
+    );
+}
 
 function layout(x: number): SchematicLayout {
     return {
@@ -178,6 +217,7 @@ function testNetworkLabelPlacementAvoidsNodes(): void {
 }
 
 void Promise.resolve()
+    .then(testSecureSchematicWebviewHtml)
     .then(testNonLabelSegmentSkipsPlacementScan)
     .then(testNetworkLabelPlacementAvoidsNodes)
     .then(testSelectionStatusSummary)

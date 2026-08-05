@@ -33,7 +33,8 @@
   "activationEvents": [
     "workspaceContains:**/*.v",
     "workspaceContains:**/*.sv",
-    "onCustomEditor:veriflow.waveformEditor"
+    "onCustomEditor:veriflow.waveformEditor",
+    "onCustomEditor:veriflow.schematicEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -47,6 +48,19 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "veriflow.schematicEditor",
+        "displayName": "VeriFlow Schematic Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.v"
+          },
+          {
+            "filenamePattern": "*.sv"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "views": {
@@ -102,6 +116,18 @@
         "icon": "$(pulse)"
       },
       {
+        "command": "veriflow.openSchematic",
+        "title": "Open as VeriFlow Schematic",
+        "category": "VeriFlow",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "veriflow.openSchematicFromExplorer",
+        "title": "Open as VeriFlow Schematic",
+        "category": "VeriFlow",
+        "icon": "$(circuit-board)"
+      },
+      {
         "command": "veriflow.scanModules",
         "title": "Scan Modules",
         "icon": "$(refresh)"
@@ -128,8 +154,20 @@
       ],
       "explorer/context": [
         {
+          "command": "veriflow.openSchematicFromExplorer",
+          "when": "resourceExtname == .v || resourceExtname == .sv",
+          "group": "navigation@9"
+        },
+        {
           "command": "veriflow.openVcdViewer",
           "when": "resourceExtname == .vcd",
+          "group": "navigation@10"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "veriflow.openSchematic",
+          "when": "editorLangId == verilog || editorLangId == systemverilog",
           "group": "navigation@10"
         }
       ],
