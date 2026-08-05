@@ -1238,8 +1238,9 @@ async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void>
     let interactive: Promise<void> | undefined;
     harness.hooks.onDispatch = call => {
         if (call.uri === 'file:///ws/a.sv' && interactive === undefined) {
-            interactive = harness.parseInteractive(
+            interactive = harness.index.parseOpenDocument(
                 'file:///ws/interactive.sv',
+                1,
                 'module interactive; endmodule'
             ).then(() => { completionOrder.push('interactive'); });
         }
@@ -1249,7 +1250,10 @@ async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void>
         await harness.index.scan(['file:///ws']);
         await interactive;
         assert.ok(harness.parserCalls.length > 0);
-        assert.ok(harness.parserCalls.every(call => call.priority === 'background'));
+        assert.strictEqual(
+            harness.parserCalls.find(call => call.uri === 'file:///ws/interactive.sv')?.priority,
+            'interactive'
+        );
         assert.ok(completionOrder.indexOf('interactive') > completionOrder.indexOf(
             'file:///ws/a.sv'
         ));

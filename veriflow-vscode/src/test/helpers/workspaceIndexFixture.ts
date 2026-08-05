@@ -78,12 +78,13 @@ class InstrumentedParser extends HdlParserClient {
         version: number,
         text: string,
         options: HdlParseOptions,
-        priority: ParsePriority = 'interactive'
+        priority: ParsePriority = 'interactive',
+        signal?: AbortSignal
     ) {
         const call = { uri, priority };
         this.calls.push(call);
         this.parseOptions.push(options);
-        const parse = super.parse(uri, version, text, options, priority);
+        const parse = super.parse(uri, version, text, options, priority, signal);
         this.hooks.onDispatch?.(call);
         const document = await parse;
         await this.hooks.afterParse?.(call);

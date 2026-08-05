@@ -335,27 +335,27 @@ export class WorkspaceHdlIndex {
         signal?: AbortSignal
     ): Promise<HdlDocument> {
         const canonicalUri = canonicalizeSourceUri(uri);
-        return this.runExclusive(async () => {
-            this.checkpoint(signal);
-            const batch = this.createBatch();
-            const resolvedIncludes = await this.resolveIncludes(
-                canonicalUri,
-                text,
-                batch,
-                this.defines,
-                signal
-            );
-            this.checkpoint(signal);
-            const document = await this.options.parser.parse(
-                canonicalUri,
-                version,
-                text,
-                { defines: this.defines, resolvedIncludes },
-                'interactive'
-            );
-            this.checkpoint(signal);
-            return document;
-        });
+        this.checkpoint(signal);
+        const batch = this.createBatch();
+        const defines = { ...this.defines };
+        const resolvedIncludes = await this.resolveIncludes(
+            canonicalUri,
+            text,
+            batch,
+            defines,
+            signal
+        );
+        this.checkpoint(signal);
+        const document = await this.options.parser.parse(
+            canonicalUri,
+            version,
+            text,
+            { defines, resolvedIncludes },
+            'interactive',
+            signal
+        );
+        this.checkpoint(signal);
+        return document;
     }
 
     getDefinition(key: HdlDefinitionKey): HdlDefinitionSummary | undefined {

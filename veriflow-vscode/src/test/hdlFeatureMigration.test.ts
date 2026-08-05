@@ -491,6 +491,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let instantiationPickerCalls = 0;
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
+    let schematicGetIndex: ((document: { uri: FakeUri }) => Promise<FakeIndex | undefined>)
+        | undefined;
+    const settingsResourceScopes: Array<string | undefined> = [];
     type WatchEventKind = 'change' | 'create' | 'delete';
     type WatcherRecord = {
         pattern: string | FakeRelativePattern;
@@ -526,6 +529,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let statusText = '';
     let derivedDefinesKey = '';
     let presentedDefinesKey = '';
+    let activeTextEditor: { document: { uri: FakeUri } } | undefined;
     const status = {
         get text(): string { return statusText; },
         set text(value: string) { statusText = value; statusWriteCount++; },
@@ -820,6 +824,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         FileType: { File: 1, Directory: 2 },
         StatusBarAlignment: { Left: 1 },
         window: {
+            get activeTextEditor() { return activeTextEditor; },
             createTreeView: () => ({ ...disposable, onDidChangeVisibility(): void {} }),
             registerWebviewViewProvider: () => disposable,
             registerCustomEditorProvider: () => disposable,
@@ -865,6 +870,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         },
         workspace: {
             workspaceFolders,
+            getWorkspaceFolder(resource: FakeUri) {
+                return workspaceFolders.find(workspaceFolder =>
+                    resource.path === workspaceFolder.uri.path
+                    || resource.path.startsWith(`${workspaceFolder.uri.path}/`)
+                );
+            },
             fs: {
                 async readDirectory(): Promise<[string, number][]> { return []; },
                 async readFile(): Promise<Uint8Array> { return new Uint8Array(); },
@@ -947,7 +958,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 ? { definitionKey: matches[0].key, name: matches[0].name }
                 : undefined;
         },
-        getSettings: () => ({ ...settings, libDirs: [...settings.libDirs], defines: { ...settings.defines } }),
+        getSettings: (resource?: FakeUri) => {
+            settingsResourceScopes.push(resource?.toString());
+            return {
+                ...settings,
+                libDirs: [...settings.libDirs],
+                defines: { ...settings.defines },
+            };
+        },
         getAnalyzeStatus: () => analyzeStatus,
         setAnalyzeStatus: async (_context: unknown, value: string) => { analyzeStatus = value; },
         getSimulateStatus: () => simulateStatus,
@@ -1029,6 +1047,21 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         './testbenchPanel': { TestbenchPanelProvider: FakeTestbenchPanel },
         './waveformEditorProvider': {
             WaveformEditorProvider: class { static readonly viewType = 'veriflow.waveformEditor'; },
+        },
+        './schematic': {
+            SchematicNavigationRegistry: class {},
+            SchematicEditorProvider: class {
+                static readonly viewType = 'veriflow.schematicEditor';
+                constructor(
+                    _context: unknown,
+                    _navigation: unknown,
+                    services: {
+                        getIndex(document: { uri: FakeUri }): Promise<FakeIndex | undefined>;
+                    }
+                ) {
+                    schematicGetIndex = services.getIndex;
+                }
+            },
         },
         './output': {
             appendError(): void {}, appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
@@ -1138,6 +1171,72 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(warnings[0].includes(libraryDefinition.uri));
         assert.strictEqual(status.text, '$(warning) VeriFlow: 1 duplicate module name');
         assert.deepStrictEqual(popupWarnings, []);
+
+        assert.ok(schematicGetIndex);
+        const workspaceBResource = FakeUri.parse('file:///B-workspace/rtl/top.sv');
+        const workspaceBIndex = await schematicGetIndex!({ uri: workspaceBResource });
+        assert.ok(workspaceBIndex);
+        assert.deepStrictEqual(workspaceBIndex!.scannedRoots.at(-1), [
+            'file:///B-workspace',
+            'file:///A-library',
+        ]);
+        assert.ok(settingsResourceScopes.includes(workspaceBResource.toString()));
+
+        const workspaceAResource = FakeUri.parse(`${workspaceRootUri}/rtl/top.sv`);
+        const restoredWorkspaceAIndex = await schematicGetIndex!({ uri: workspaceAResource });
+        assert.ok(restoredWorkspaceAIndex);
+        assert.deepStrictEqual(restoredWorkspaceAIndex!.scannedRoots.at(-1), [
+            workspaceRootUri,
+            'file:///A-library',
+        ]);
+
+        workspaceFolders.splice(0, workspaceFolders.length);
+        const looseA = FakeUri.parse('file:///loose-a/top.sv');
+        const looseB = FakeUri.parse('file:///loose-b/top.sv');
+        const [looseAIndex, looseBIndex] = await Promise.all([
+            schematicGetIndex!({ uri: looseA }),
+            schematicGetIndex!({ uri: looseB }),
+        ]);
+        assert.ok(looseAIndex);
+        assert.ok(looseBIndex);
+        assert.notStrictEqual(looseAIndex, looseBIndex);
+        assert.deepStrictEqual(looseAIndex!.scannedRoots.at(-1), [
+            'file:///loose-a',
+            'file:///A-library',
+        ]);
+        assert.deepStrictEqual(looseBIndex!.scannedRoots.at(-1), [
+            'file:///loose-b',
+            'file:///A-library',
+        ]);
+
+        workspaceFolders.push(folder, { uri: FakeUri.parse('file:///B-workspace') });
+        await schematicGetIndex!({ uri: workspaceAResource });
+
+        const schematicOpensBeforeInvalidActiveFile = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        const warningsBeforeInvalidActiveFile = popupWarnings.length;
+        activeTextEditor = {
+            document: { uri: FakeUri.parse('file:///workspace/notes.txt') },
+        };
+        await Promise.resolve(commands.get('veriflow.openSchematic')!());
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            schematicOpensBeforeInvalidActiveFile
+        );
+        assert.deepStrictEqual(
+            popupWarnings.slice(warningsBeforeInvalidActiveFile),
+            ['Open a Verilog or SystemVerilog file first.']
+        );
+
+        const uppercaseSystemVerilog = FakeUri.parse('file:///workspace/rtl/TOP.SV');
+        activeTextEditor = { document: { uri: uppercaseSystemVerilog } };
+        await Promise.resolve(commands.get('veriflow.openSchematic')!());
+        assert.deepStrictEqual(executedCommands.at(-1), {
+            name: 'vscode.openWith',
+            args: [uppercaseSystemVerilog, 'veriflow.schematicEditor'],
+        });
+        activeTextEditor = undefined;
 
         const olderInstantiationGate = createScanGate();
         queuedInstantiationPickers.push({ gate: olderInstantiationGate, cancel: false });

@@ -84,9 +84,15 @@ let hdlTopPersistenceTail: Promise<void> = Promise.resolve();
 let hdlTopPersistencePending = 0;
 let hdlTopSelectionPersistenceChain: HdlTopSelectionPersistenceChain | undefined;
 let hdlDependencyPersistenceTail: Promise<void> = Promise.resolve();
+type HdlIndexPreparation = {
+    analyzer: DependencyAnalyzer;
+    index: WorkspaceHdlIndex;
+    indexGeneration: number;
+    rootIdentity: string;
+};
 let hdlPreparationInFlight: {
     identity: string;
-    promise: Promise<DependencyAnalyzer>;
+    promise: Promise<HdlIndexPreparation>;
 } | undefined;
 type HdlScanOwnership = {
     lifecycleGeneration: number;
@@ -617,32 +623,35 @@ async function _getSchematicIndex(
     context: vscode.ExtensionContext,
     resource: vscode.Uri
 ): Promise<WorkspaceHdlIndex | undefined> {
-    const root = getWorkspaceRoot();
-    const settings = getSettings();
-    const resourceRoot = resource.with({
-        path: path.posix.dirname(resource.path),
-        query: '',
-        fragment: '',
-    });
-    const rootUris = root
-        ? _dependencyRootUris(root, settings.libDirs)
-        : _dependencyRootUris(resourceRoot.fsPath, settings.libDirs, resourceRoot);
+    const settings = getSettings(resource);
+    const resourceRoot = vscode.workspace.getWorkspaceFolder(resource)?.uri
+        ?? resource.with({
+            path: path.posix.dirname(resource.path),
+            query: '',
+            fragment: '',
+        });
+    const rootUris = _dependencyRootUris(
+        resourceRoot.fsPath,
+        settings.libDirs,
+        resourceRoot
+    );
     const rootIdentity = JSON.stringify(rootUris);
-    if (hdlIndex
-        && hdlIndexIdentity === rootIdentity
-        && !hdlPreparationInFlight) {
-        return hdlIndex;
-    }
+    const minimumIndexGeneration = hdlIndexGeneration;
+    const current = hdlIndexIdentity === rootIdentity ? hdlIndex : undefined;
+    if (current && !hdlPreparationInFlight) return current;
     try {
-        await _prepareDependencyAnalyzer(
+        const prepared = await _prepareDependencyAnalyzer(
             context,
             rootUris,
             _filterHdlDefines(settings.defines)
         );
+        return prepared.rootIdentity === rootIdentity
+            && prepared.indexGeneration >= minimumIndexGeneration
+            ? prepared.index
+            : undefined;
     } catch {
-        return hdlIndex;
+        return undefined;
     }
-    return hdlIndex;
 }
 
 function _resetDependencyIndex(): void {
@@ -778,7 +787,7 @@ function _prepareDependencyAnalyzer(
     context: vscode.ExtensionContext,
     rootUris: string[],
     defines: Record<string, string | true>
-): Promise<DependencyAnalyzer> {
+): Promise<HdlIndexPreparation> {
     if (hdlStopping) {
         return Promise.reject(new HdlStoppingError());
     }
@@ -791,9 +800,16 @@ function _prepareDependencyAnalyzer(
     }
     const preparation = {
         identity,
-        promise: _runDependencyOperation(() =>
-            _getDependencyAnalyzer(context, rootUris, defines)
-        ),
+        promise: _runDependencyOperation(async () => {
+            const analyzer = await _getDependencyAnalyzer(context, rootUris, defines);
+            const index = hdlIndex;
+            const rootIdentity = JSON.stringify(rootUris);
+            const indexGeneration = hdlIndexGeneration;
+            if (!index || hdlIndexIdentity !== rootIdentity) {
+                throw new HdlIndexPreparationInvalidatedError();
+            }
+            return { analyzer, index, indexGeneration, rootIdentity };
+        }),
     };
     hdlPreparationInFlight = preparation;
     const clearPreparation = (): void => {
@@ -818,7 +834,7 @@ function _resolveDependencies(
     const defines = _filterHdlDefines(settings.defines);
     const preparation = _prepareDependencyAnalyzer(context, rootUris, defines);
     return _runDependencyOperation(async () => {
-        const analyzer = await preparation;
+        const { analyzer } = await preparation;
         if (hdlStopping) {
             throw new HdlStoppingError();
         }
@@ -1663,12 +1679,11 @@ async function _scanModulesFromIndex(
     );
     return _runDependencyOperation(async () => {
         try {
-            await preparation;
-            const index = hdlIndex;
-            if (!index || hdlStopping) {
+            const prepared = await preparation;
+            const { index, indexGeneration } = prepared;
+            if (hdlStopping) {
                 return null;
             }
-            const indexGeneration = hdlIndexGeneration;
             if (!_isCurrentHdlScanOwnership(ownership)) {
                 return null;
             }
@@ -2426,7 +2441,8 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
 async function cmdOpenSchematic(uri?: vscode.Uri): Promise<void> {
     if (hdlStopping) { return; }
     const target = uri ?? vscode.window.activeTextEditor?.document.uri;
-    if (!target) {
+    const extension = target ? path.posix.extname(target.path).toLowerCase() : '';
+    if (!target || (extension !== '.v' && extension !== '.sv')) {
         vscode.window.showWarningMessage('Open a Verilog or SystemVerilog file first.');
         return;
     }

@@ -239,6 +239,64 @@ async function testCacheIdentityCancellationAndPriorities(): Promise<void> {
     await client.dispose();
 }
 
+async function testAbortSignalCancelsStartedParse(): Promise<void> {
+    const workers: FakeWorker[] = [];
+    const client = makeClient(workers);
+    const controller = new AbortController();
+    const parse = client.parse(
+        'file:///workspace/live.sv',
+        1,
+        'module live; endmodule',
+        { defines: {} },
+        'interactive',
+        controller.signal
+    );
+    const requestId = requestIdAt(workers[0], 0);
+
+    controller.abort();
+    resolveParse(workers[0], 0, 'file:///workspace/live.sv', 1);
+
+    await assertCancelled(parse);
+    assert.deepStrictEqual(workers[0].messages.at(-1), {
+        type: 'cancel',
+        requestId,
+    });
+    await client.dispose();
+}
+
+async function testSignalBoundConsumersDoNotShareCancellation(): Promise<void> {
+    const workers: FakeWorker[] = [];
+    const client = makeClient(workers);
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const uri = 'file:///workspace/shared-live.sv';
+    const text = 'module shared_live; endmodule';
+    const first = client.parse(
+        uri,
+        1,
+        text,
+        { defines: {} },
+        'interactive',
+        firstController.signal
+    );
+    const second = client.parse(
+        uri,
+        1,
+        text,
+        { defines: {} },
+        'interactive',
+        secondController.signal
+    );
+
+    assert.notStrictEqual(first, second);
+    assert.strictEqual(parseMessages(workers[0]).length, 2);
+    firstController.abort();
+    await assertCancelled(first);
+    resolveParse(workers[0], 1, uri, 1, 'second consumer');
+    assert.strictEqual((await second).textHash, 'second consumer');
+    await client.dispose();
+}
+
 async function testFingerprintCanonicalizationAndEphemeralIsolation(): Promise<void> {
     const workers: FakeWorker[] = [];
     const client = makeClient(workers);
@@ -979,6 +1037,8 @@ async function testRealWorkerDisposeExitsNaturally(): Promise<void> {
 async function main(): Promise<void> {
     testComputeTreeEdit();
     await testCacheIdentityCancellationAndPriorities();
+    await testAbortSignalCancelsStartedParse();
+    await testSignalBoundConsumersDoNotShareCancellation();
     await testFingerprintCanonicalizationAndEphemeralIsolation();
     await testStaleResponsesFailuresAndWorkerReplacement();
     await testInvalidationClearAndDispose();

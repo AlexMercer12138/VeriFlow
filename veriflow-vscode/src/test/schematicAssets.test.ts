@@ -181,6 +181,26 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(webviewSource, /function nodeDimensions\(/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
     assert.doesNotMatch(webviewSource, /\bsaveTimer\b/);
+    assert.match(webviewSource, /function clearSchematicState\(\): void/);
+    for (const resetOperation of [
+        'graph.clearCells()',
+        'currentGraph = undefined',
+        'currentLayout = undefined',
+        'selection.clean()',
+        "dom.searchInput.value = ''",
+        'searchMatches = []',
+        'minimapAvailable = false',
+        'setGraphControls(false)',
+    ]) {
+        assert.ok(
+            webviewSource.includes(resetOperation),
+            `empty schematic reset is missing ${resetOperation}`
+        );
+    }
+    assert.match(
+        webviewSource,
+        /if \(event\.modules\.length === 0\) \{\s*clearSchematicState\(\);/s
+    );
     const accessibleRoots = webviewSource.match(
         /root:\s*{\s*tabindex:\s*0,\s*role:\s*'link',\s*'aria-label':\s*[^,]+,\s*'aria-keyshortcuts':\s*[^,}]+,?\s*}/g
     ) ?? [];

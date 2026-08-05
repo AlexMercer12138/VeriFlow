@@ -616,6 +616,7 @@ function setGraphControls(enabled: boolean): void {
     dom.fitButton.disabled = !enabled;
     dom.zoomResetButton.disabled = !enabled;
     dom.relayoutButton.disabled = !enabled;
+    dom.searchButton.disabled = !enabled;
 }
 
 function updateDiagnostics(nextErrors: number, nextWarnings: number): void {
@@ -838,6 +839,38 @@ function runSearch(query: string, notifyHost: boolean): void {
     showSearchMatch(0);
 }
 
+function clearSchematicState(): void {
+    layoutSaveScheduler.dispose();
+    applyingLayout = true;
+    selection.clean();
+    graph.clearCells();
+    graph.zoomTo(1);
+    graph.translate(0, 0);
+    applyingLayout = false;
+    currentGraph = undefined;
+    currentLayout = undefined;
+    selectedModuleKey = '';
+    searchMatches = [];
+    searchIndex = -1;
+    dom.searchInput.value = '';
+    dom.searchControls.hidden = true;
+    dom.searchButton.setAttribute('aria-expanded', 'false');
+    dom.searchPreviousButton.disabled = true;
+    dom.searchNextButton.disabled = true;
+    dom.selectionStatus.textContent = 'No selection';
+    minimapAvailable = false;
+    if (minimapPlugin) {
+        graph.disposePlugins('minimap');
+        minimapPlugin = undefined;
+    }
+    dom.minimap.replaceChildren();
+    dom.minimap.hidden = true;
+    dom.minimapButton.disabled = true;
+    dom.minimapButton.setAttribute('aria-pressed', 'false');
+    setGraphControls(false);
+    updateDiagnostics(0, 0);
+}
+
 function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
     dom.moduleSelector.replaceChildren();
     for (const module of event.modules) {
@@ -849,7 +882,12 @@ function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
     selectedModuleKey = event.selectedModuleKey;
     dom.moduleSelector.value = event.selectedModuleKey;
     dom.moduleSelector.disabled = event.modules.length === 0;
-    setCanvasState(event.modules.length === 0 ? 'No modules' : 'Loading schematic');
+    if (event.modules.length === 0) {
+        clearSchematicState();
+        setCanvasState('No modules');
+        return;
+    }
+    setCanvasState('Loading schematic');
 }
 
 function handleHostEvent(event: HostEvent): void {

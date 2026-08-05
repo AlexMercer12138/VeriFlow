@@ -46,6 +46,13 @@ type PanelState = {
     errorMessage?: string;
 };
 
+type SchematicPublishSnapshot = {
+    generation: number;
+    initialize: Extract<HostEvent, { type: 'initialize' }>;
+    graph?: ReturnType<typeof buildSchematicGraph>;
+    layout?: SchematicLayout;
+};
+
 function instanceBindings(
     module: ModuleModel,
     index: WorkspaceHdlIndex | undefined
@@ -104,24 +111,37 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let registration: { dispose(): void } | undefined;
         let ensureRegistered = (): void => undefined;
         let refreshAbortController: AbortController | undefined;
+        let publishGeneration = 0;
+        let currentPublishSnapshot: SchematicPublishSnapshot | undefined;
 
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) {
                 await panel.webview.postMessage(event);
             }
         };
-        const initializeEvent = (): Extract<HostEvent, { type: 'initialize' }> => ({
-            type: 'initialize',
-            fileUri: uri,
-            modules: state.modules.map(module => ({
-                key: module.key,
-                name: module.name,
-            })),
-            selectedModuleKey: state.selectedModuleKey ?? '',
+        const isCurrentPublish = (generation: number): boolean =>
+            generation === publishGeneration
+            && !state.disposed
+            && !token.isCancellationRequested;
+        const capturePublishSnapshot = (generation: number): SchematicPublishSnapshot => ({
+            generation,
+            initialize: {
+                type: 'initialize',
+                fileUri: uri,
+                modules: state.modules.map(module => ({
+                    key: module.key,
+                    name: module.name,
+                })),
+                selectedModuleKey: state.selectedModuleKey ?? '',
+            },
+            ...(state.graph && state.layout
+                ? { graph: state.graph, layout: state.layout }
+                : {}),
         });
         const buildSelectedGraph = async (
+            generation: number,
             preparedIndex?: WorkspaceHdlIndex
-        ): Promise<void> => {
+        ): Promise<SchematicPublishSnapshot | undefined> => {
             const selected = state.modules.find(module =>
                 module.key === state.selectedModuleKey
             );
@@ -129,17 +149,20 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 graphBuilds.invalidate();
                 state.graph = undefined;
                 state.layout = undefined;
-                return;
+                if (!isCurrentPublish(generation)) return undefined;
+                const snapshot = capturePublishSnapshot(generation);
+                currentPublishSnapshot = snapshot;
+                return snapshot;
             }
             const parsedDocument = state.parsedDocument;
             const build = graphBuilds.begin(parsedDocument, selected.key);
             const index = preparedIndex ?? await this.services.getIndex(document);
-            if (state.disposed || !graphBuilds.isCurrent(
+            if (!isCurrentPublish(generation) || !graphBuilds.isCurrent(
                 build,
                 state.parsedDocument,
                 state.selectedModuleKey
             )) {
-                return;
+                return undefined;
             }
             const graph = {
                 ...buildSchematicGraph(
@@ -149,16 +172,30 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 ),
                 moduleKey: selected.key,
             };
-            state.graph = graph;
-            state.layout = mergeLayout(
+            const layout = mergeLayout(
                 graph,
                 this.layoutStore.load(uri, selected.key)
             );
+            if (!isCurrentPublish(generation)) return undefined;
+            state.graph = graph;
+            state.layout = layout;
+            const snapshot = capturePublishSnapshot(generation);
+            currentPublishSnapshot = snapshot;
+            return snapshot;
         };
-        const sendCurrentState = async (): Promise<void> => {
-            await post(initializeEvent());
-            if (state.graph && state.layout) {
-                await post({ type: 'graph', graph: state.graph, layout: state.layout });
+        const publishSnapshot = async (
+            snapshot: SchematicPublishSnapshot
+        ): Promise<void> => {
+            if (!isCurrentPublish(snapshot.generation)) return;
+            await panel.webview.postMessage(snapshot.initialize);
+            if (!isCurrentPublish(snapshot.generation)) return;
+            if (snapshot.graph && snapshot.layout) {
+                await panel.webview.postMessage({
+                    type: 'graph',
+                    graph: snapshot.graph,
+                    layout: snapshot.layout,
+                });
+                if (!isCurrentPublish(snapshot.generation)) return;
             }
         };
         const reportError = async (error: unknown): Promise<void> => {
@@ -169,6 +206,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const refreshDocument = async (): Promise<void> => {
             const generation = ++state.refreshGeneration;
+            const invocationGeneration = ++publishGeneration;
             refreshAbortController?.abort();
             const refreshController = new AbortController();
             refreshAbortController = refreshController;
@@ -218,7 +256,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     pending,
                     state.selectedModuleKey
                 );
-                await buildSelectedGraph(index);
+                const snapshot = await buildSelectedGraph(invocationGeneration, index);
                 if (!isCurrentSchematicRefresh(
                     generation,
                     state.refreshGeneration,
@@ -228,8 +266,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     return;
                 }
                 ensureRegistered();
-                if (state.ready) {
-                    await sendCurrentState();
+                if (state.ready && snapshot) {
+                    await publishSnapshot(snapshot);
                 }
             } catch (error) {
                 if (!state.disposed
@@ -254,10 +292,11 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 || !state.modules.some(module => module.key === definitionKey)) {
                 return;
             }
+            const invocationGeneration = ++publishGeneration;
             state.selectedModuleKey = definitionKey;
-            await buildSelectedGraph();
-            if (state.ready) {
-                await sendCurrentState();
+            const snapshot = await buildSelectedGraph(invocationGeneration);
+            if (state.ready && snapshot) {
+                await publishSnapshot(snapshot);
             }
         };
         const handle: SchematicPanelHandle = {
@@ -289,8 +328,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         state.ready = true;
                         if (state.errorMessage) {
                             await reportError(state.errorMessage);
-                        } else if (state.parsedDocument) {
-                            await sendCurrentState();
+                        } else if (currentPublishSnapshot) {
+                            await publishSnapshot(currentPublishSnapshot);
                         }
                         return;
                     case 'selectModule':
@@ -306,9 +345,17 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             || !state.graph) {
                             return;
                         }
-                        state.layout = relayoutAll(state.graph, state.layout);
-                        await this.layoutStore.save(uri, command.moduleKey, state.layout);
-                        await post({ type: 'graph', graph: state.graph, layout: state.layout });
+                        const invocationGeneration = ++publishGeneration;
+                        const graph = state.graph;
+                        const layout = relayoutAll(graph, state.layout);
+                        state.layout = layout;
+                        currentPublishSnapshot = capturePublishSnapshot(
+                            invocationGeneration
+                        );
+                        await this.layoutStore.save(uri, command.moduleKey, layout);
+                        if (!isCurrentPublish(invocationGeneration)) return;
+                        await panel.webview.postMessage({ type: 'graph', graph, layout });
+                        if (!isCurrentPublish(invocationGeneration)) return;
                         return;
                     case 'revealSource':
                     case 'openDefinition':
@@ -330,6 +377,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         const panelSubscription = panel.onDidDispose(() => {
             state.disposed = true;
             state.refreshGeneration++;
+            publishGeneration++;
             refreshAbortController?.abort();
             graphBuilds.invalidate();
             registration?.dispose();

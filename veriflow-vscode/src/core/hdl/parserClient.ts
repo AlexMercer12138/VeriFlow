@@ -38,8 +38,11 @@ export type HdlParserClientOptions = {
 type PendingRequest = {
     requestId: string;
     uri: string;
+    cacheMode: 'document' | 'ephemeral';
     resolve: (document: HdlDocument) => void;
     reject: (error: Error) => void;
+    signal?: AbortSignal;
+    abortListener?: () => void;
 };
 
 type CacheEntry = {
@@ -50,6 +53,7 @@ type CacheEntry = {
     text: string;
     promise: Promise<HdlDocument>;
     requestId: string;
+    signalBound: boolean;
 };
 
 type WorkerListeners = {
@@ -89,10 +93,14 @@ export class HdlParserClient {
         version: number,
         text: string,
         options: HdlParseOptions,
-        priority: ParsePriority = 'interactive'
+        priority: ParsePriority = 'interactive',
+        signal?: AbortSignal
     ): Promise<HdlDocument> {
         if (this.disposed) {
             return Promise.reject(new HdlParserDisposedError());
+        }
+        if (signal?.aborted) {
+            return Promise.reject(new HdlParserCancelledError());
         }
 
         const cacheMode = options.cacheMode ?? 'document';
@@ -108,10 +116,21 @@ export class HdlParserClient {
                 && cached.cacheMode === cacheMode
                 && cached.text === text
             ) {
-                return cached.promise;
+                if (!this.pending.has(cached.requestId)
+                    || (!signal && !cached.signalBound)) {
+                    return cached.promise;
+                }
             }
-            if (cached) {
-                this.cancelRequest(cached.requestId);
+            if (cached
+                && (cached.version !== version
+                    || cached.preprocessingFingerprint !== fingerprint
+                    || cached.textHash !== textHash
+                    || cached.text !== text)) {
+                for (const pending of [...this.pending.values()]) {
+                    if (pending.uri === uri && pending.cacheMode === 'document') {
+                        this.cancelRequest(pending.requestId);
+                    }
+                }
                 this.cache.delete(uri);
             }
         }
@@ -134,6 +153,7 @@ export class HdlParserClient {
         this.pending.set(requestId, {
             requestId,
             uri,
+            cacheMode,
             resolve: resolvePromise,
             reject: rejectPromise,
         });
@@ -146,6 +166,7 @@ export class HdlParserClient {
                 text,
                 promise,
                 requestId,
+                signalBound: signal !== undefined,
             });
         }
 
@@ -164,6 +185,16 @@ export class HdlParserClient {
                 worker,
                 error instanceof Error ? error : new Error(String(error))
             );
+        }
+        const pending = this.pending.get(requestId);
+        if (signal && pending) {
+            const abortListener = (): void => this.cancelRequest(requestId);
+            pending.signal = signal;
+            pending.abortListener = abortListener;
+            signal.addEventListener('abort', abortListener, { once: true });
+            if (signal.aborted) {
+                this.cancelRequest(requestId);
+            }
         }
         return promise;
     }
@@ -268,7 +299,12 @@ export class HdlParserClient {
             return;
         }
         this.pending.delete(response.requestId);
+        this.detachAbortListener(pending);
         if (response.type === 'parsed') {
+            const cached = this.cache.get(pending.uri);
+            if (cached?.requestId === response.requestId) {
+                cached.signalBound = false;
+            }
             pending.resolve(response.document);
             return;
         }
@@ -282,6 +318,7 @@ export class HdlParserClient {
             return;
         }
         this.pending.delete(requestId);
+        this.detachAbortListener(pending);
         this.dropCacheRequest(requestId);
         pending.reject(new HdlParserCancelledError());
         const worker = this.worker;
@@ -314,6 +351,7 @@ export class HdlParserClient {
         this.workerListeners = undefined;
         this.cache.clear();
         for (const pending of this.pending.values()) {
+            this.detachAbortListener(pending);
             pending.reject(error);
         }
         this.pending.clear();
@@ -339,9 +377,16 @@ export class HdlParserClient {
         }
     }
 
+    private detachAbortListener(pending: PendingRequest): void {
+        if (pending.signal && pending.abortListener) {
+            pending.signal.removeEventListener('abort', pending.abortListener);
+        }
+    }
+
     private disposeWorkerAndState(): Promise<void> {
         this.cache.clear();
         for (const pending of this.pending.values()) {
+            this.detachAbortListener(pending);
             pending.reject(new HdlParserDisposedError());
         }
         this.pending.clear();

@@ -115,8 +115,8 @@ function normalizeDefines(value: unknown): Record<string, string | boolean> {
     return defines;
 }
 
-export function getSettings(): ExtensionSettings {
-    const config = vscode.workspace.getConfiguration('veriflow');
+export function getSettings(resource?: vscode.Uri): ExtensionSettings {
+    const config = vscode.workspace.getConfiguration('veriflow', resource);
     return {
         libDirs: config.get<string[]>('libDirs', []),
         defines: normalizeDefines(config.get<unknown>('defines', {})),
