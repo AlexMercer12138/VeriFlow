@@ -441,6 +441,49 @@ async function testDeclaredUdpIsNotModuleInstance(): Promise<void> {
     );
 }
 
+async function testGenerateInstances(): Promise<void> {
+    const source = [
+        'module generate_top;',
+        '    direct_child u_direct();',
+        '    genvar i;',
+        '    generate',
+        '        for (i = 0; i < 2; i = i + 1) begin : g_for',
+        '            for_child u_for();',
+        '        end',
+        '        if (USE_TRUE) begin : g_true',
+        '            if_true_child u_true();',
+        '        end else begin : g_false',
+        '            if_false_child u_false();',
+        '        end',
+        '    endgenerate',
+        '    always_comb begin',
+        '        procedural_call();',
+        '    end',
+        '    function automatic void helper;',
+        '        function_call();',
+        '    endfunction',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('memory:/generate-instances.sv', source);
+    const module = document.modules[0];
+
+    assert.deepStrictEqual(
+        module.instances.map(instance => [instance.moduleName, instance.instanceName]),
+        [
+            ['direct_child', 'u_direct'],
+            ['for_child', 'u_for'],
+            ['if_true_child', 'u_true'],
+            ['if_false_child', 'u_false'],
+        ]
+    );
+    assert.deepStrictEqual(
+        module.instanceDeclarationGroups.map(group =>
+            sliceSpan(source, group.moduleNameSpan)
+        ),
+        ['direct_child', 'for_child', 'if_true_child', 'if_false_child']
+    );
+}
+
 async function testMultiplePackedDimensions(): Promise<void> {
     const source = [
         'module packed_dims #(',
@@ -783,6 +826,7 @@ async function testReviewRegressions(): Promise<void> {
         ['reference binding eligibility', testReferenceBindingEligibility],
         ['opaque lexical shadowing', testOpaqueLexicalShadowing],
         ['declared UDP filtering', testDeclaredUdpIsNotModuleInstance],
+        ['generate instances', testGenerateInstances],
     ];
     const failures: string[] = [];
     for (const [name, test] of tests) {

@@ -18,8 +18,9 @@ import {
     listVerilogFiles, readText, preprocessVerilog, removeComments,
     ModuleScanResult, DependencyResult, SimulationResult,
     SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE,
-    HdlParserClient, createHdlParserClient,
+    HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
+import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
     iverilog: {
@@ -55,10 +56,14 @@ let treeProvider: ModuleTreeProvider;
 let tbPanelProvider: TestbenchPanelProvider;
 let statusBarItem: vscode.StatusBarItem;
 let simulateProcess: child_process.ChildProcess | null = null;
-let depAnalyzer = new DependencyAnalyzer();
+let depAnalyzer: DependencyAnalyzer | undefined;
 let simRunner = new SimulationRunner();
 let hdlParser: HdlParserClient | undefined;
 let hdlParserExtensionPath: string | undefined;
+let hdlIndex: WorkspaceHdlIndex | undefined;
+let hdlIndexLoad: Promise<void> | undefined;
+
+const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 
 // 状态管理
 let _analyzeStatus: string = 'idle';
@@ -184,11 +189,177 @@ export function getHdlParser(context: vscode.ExtensionContext): HdlParserClient 
     return hdlParser;
 }
 
+function _filterHdlDefines(
+    defines: Record<string, string | boolean>
+): Record<string, string | true> {
+    return Object.fromEntries(
+        Object.entries(defines).filter(
+            (entry): entry is [string, string | true] => entry[1] !== false
+        )
+    );
+}
+
+function _isHdlUri(uri: vscode.Uri): boolean {
+    return ['.v', '.sv', '.vh', '.svh'].includes(path.posix.extname(uri.path).toLowerCase());
+}
+
+async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
+    let entries: [string, vscode.FileType][];
+    try {
+        entries = await vscode.workspace.fs.readDirectory(root);
+    } catch {
+        return;
+    }
+    entries.sort(([left], [right]) => left.localeCompare(right));
+    for (const [name, fileType] of entries) {
+        const uri = vscode.Uri.joinPath(root, name);
+        if ((fileType & vscode.FileType.Directory) !== 0) {
+            if (!name.startsWith('.')) {
+                await _findHdlFiles(uri, files);
+            }
+        } else if ((fileType & vscode.FileType.File) !== 0 && _isHdlUri(uri)) {
+            files.push(uri.toString());
+        }
+    }
+}
+
+function _joinIncludeUri(base: vscode.Uri, includePath: string): vscode.Uri {
+    const segments = includePath.replace(/\\/g, '/').split('/').filter(Boolean);
+    return vscode.Uri.joinPath(base, ...segments);
+}
+
+async function _isFile(uri: vscode.Uri): Promise<boolean> {
+    try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        return (stat.type & vscode.FileType.File) !== 0;
+    } catch {
+        return false;
+    }
+}
+
+function _createWorkspaceHdlIndex(
+    context: vscode.ExtensionContext,
+    defines: Record<string, string | true>
+): WorkspaceHdlIndex {
+    const knownHdlUris = new Set<string>();
+    const rootUris: vscode.Uri[] = [];
+    const store = new WorkspaceIndexStore(context.workspaceState);
+    return new WorkspaceHdlIndex({
+        parser: getHdlParser(context),
+        store,
+        parserFingerprint: HDL_PARSER_FINGERPRINT,
+        defines,
+        async findFiles(roots: string[]): Promise<string[]> {
+            knownHdlUris.clear();
+            rootUris.splice(0, rootUris.length, ...roots.map(root => vscode.Uri.parse(root)));
+            const files: string[] = [];
+            for (const root of rootUris) {
+                await _findHdlFiles(root, files);
+            }
+            for (const uri of files) {
+                knownHdlUris.add(uri);
+            }
+            return [...knownHdlUris].sort();
+        },
+        async readFile(uri: string) {
+            const resource = vscode.Uri.parse(uri);
+            const [bytes, stat] = await Promise.all([
+                vscode.workspace.fs.readFile(resource),
+                vscode.workspace.fs.stat(resource),
+            ]);
+            return {
+                text: Buffer.from(bytes).toString('utf8'),
+                version: stat.mtime,
+                mtimeMs: stat.mtime,
+                size: stat.size,
+            };
+        },
+        async resolveInclude(fromUri: string, includePath: string) {
+            const source = vscode.Uri.parse(fromUri);
+            const candidates = [
+                _joinIncludeUri(vscode.Uri.joinPath(source, '..'), includePath),
+                ...rootUris.map(root => _joinIncludeUri(root, includePath)),
+            ];
+            const normalizedSuffix = `/${includePath.replace(/\\/g, '/').replace(/^\/+/, '')}`;
+            for (const knownUri of [...knownHdlUris].sort()) {
+                const candidate = vscode.Uri.parse(knownUri);
+                if (candidate.path.endsWith(normalizedSuffix)) {
+                    candidates.push(candidate);
+                }
+            }
+            const seen = new Set<string>();
+            for (const candidate of candidates) {
+                const key = candidate.toString();
+                if (!seen.has(key) && await _isFile(candidate)) {
+                    return key;
+                }
+                seen.add(key);
+            }
+            return undefined;
+        },
+    });
+}
+
+async function _getDependencyAnalyzer(
+    context: vscode.ExtensionContext,
+    root: string,
+    settings: ExtensionSettings
+): Promise<DependencyAnalyzer> {
+    const defines = _filterHdlDefines(settings.defines);
+    let index = hdlIndex;
+    if (!index) {
+        index = _createWorkspaceHdlIndex(context, defines);
+        hdlIndex = index;
+        depAnalyzer = new DependencyAnalyzer(index);
+        hdlIndexLoad = index.load();
+    }
+    return _finishDependencyIndexPreparation(
+        index,
+        depAnalyzer!,
+        hdlIndexLoad!,
+        root,
+        settings.libDirs,
+        defines
+    );
+}
+
+async function _finishDependencyIndexPreparation(
+    index: WorkspaceHdlIndex,
+    analyzer: DependencyAnalyzer,
+    load: Promise<void>,
+    root: string,
+    libDirs: string[],
+    defines: Record<string, string | true>
+): Promise<DependencyAnalyzer> {
+    await load;
+    await index.updateConfiguration(defines);
+    const rootUris = _collectSearchDirs(root, libDirs).map(directory =>
+        vscode.Uri.file(path.isAbsolute(directory) ? directory : path.resolve(root, directory))
+            .toString()
+    );
+    await index.scan(rootUris);
+    return analyzer;
+}
+
+function _definitionKeyOrName(index: WorkspaceHdlIndex, value: string): string {
+    const exact = index.getDefinition(value);
+    if (exact?.kind === 'module') {
+        return exact.key;
+    }
+    const definitions = index.findDefinitions(value, 'module');
+    return definitions.length === 1 ? definitions[0].key : value;
+}
+
 export async function deactivate(): Promise<void> {
     if (simulateProcess) {
         simulateProcess.kill();
         simulateProcess = null;
     }
+    const index = hdlIndex;
+    hdlIndex = undefined;
+    hdlIndexLoad = undefined;
+    depAnalyzer = undefined;
+    index?.dispose();
     const parser = hdlParser;
     hdlParser = undefined;
     hdlParserExtensionPath = undefined;
@@ -495,40 +666,48 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     _checkDepFilesChanged(context);
 
     const settings = getSettings();
-    const searchDirs = _collectSearchDirs(root, settings.libDirs);
 
     output.clear();
     output.show();
     output.appendInfo(`Analyzing: top=${topModule}, root=${root}`);
     statusBarItem.text = '$(search) VeriFlow: analyzing...';
 
-    const result = depAnalyzer.resolve(topModule, searchDirs);
+    const analyzer = await _getDependencyAnalyzer(context, root, settings);
+    const result = analyzer.resolve(_definitionKeyOrName(hdlIndex!, topModule));
     treeProvider.setAnalyzeResult(result);
 
     // 保存结果和状态
     await setDependencyResult(context, result);
     _saveDepFileHashes(context, result);
 
-    if (result.missingModules.length === 0) {
+    const ambiguousNames = Object.keys(result.ambiguousModules);
+    if (result.missingModules.length === 0 && ambiguousNames.length === 0) {
         output.appendSuccess(`Analysis complete: ${result.files.length} file(s).`);
         result.files.forEach(f => output.appendLine(`  ${f}`));
         _setAnalyzeStatus(context, 'completed');
     } else {
-        output.appendError(`Missing modules: ${result.missingModules.join(', ')}`);
+        if (result.missingModules.length > 0) {
+            output.appendError(`Missing modules: ${result.missingModules.join(', ')}`);
+        }
+        for (const name of ambiguousNames) {
+            output.appendError(
+                `Ambiguous module ${name}: ${result.ambiguousModules[name].join(', ')}`
+            );
+        }
         _setAnalyzeStatus(context, 'error');
     }
 
     // 如果有挂起的仿真/波形请求，继续执行
     if (_pendingSimulateAfterAnalyze) {
         _pendingSimulateAfterAnalyze = false;
-        if (result.missingModules.length === 0) {
+        if (result.missingModules.length === 0 && ambiguousNames.length === 0) {
             await cmdSimulate(context);
         }
         return;
     }
     if (_pendingWaveAfterAnalyze) {
         _pendingWaveAfterAnalyze = false;
-        if (result.missingModules.length === 0) {
+        if (result.missingModules.length === 0 && ambiguousNames.length === 0) {
             _pendingWaveAfterSimulate = true;
             await cmdSimulate(context);
         }
@@ -559,7 +738,6 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
 
     const settings = getSettings();
-    const searchDirs = _collectSearchDirs(root, settings.libDirs);
     const simulator = _resolveSimulator(settings);
     if (!_isSimulatorReady(simulator)) {
         output.show(true);
@@ -578,9 +756,18 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo('========================================');
     statusBarItem.text = '$(run) VeriFlow: simulating...';
 
-    const depResult = depAnalyzer.resolve(topModule, searchDirs);
-    if (depResult.missingModules.length > 0) {
-        output.appendError(`Missing modules: ${depResult.missingModules.join(', ')}`);
+    const analyzer = await _getDependencyAnalyzer(context, root, settings);
+    const depResult = analyzer.resolve(_definitionKeyOrName(hdlIndex!, topModule));
+    const ambiguousNames = Object.keys(depResult.ambiguousModules);
+    if (depResult.missingModules.length > 0 || ambiguousNames.length > 0) {
+        if (depResult.missingModules.length > 0) {
+            output.appendError(`Missing modules: ${depResult.missingModules.join(', ')}`);
+        }
+        for (const name of ambiguousNames) {
+            output.appendError(
+                `Ambiguous module ${name}: ${depResult.ambiguousModules[name].join(', ')}`
+            );
+        }
         _setAnalyzeStatus(context, 'error');
         return;
     }

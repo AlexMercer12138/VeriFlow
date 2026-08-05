@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
 import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
@@ -12,6 +13,10 @@ import { LogParser } from '../core/logParser';
 import { SimulationRunner } from '../core/simulationRunner';
 import { VcdParser } from '../core/vcdParser';
 import { WaveformLayoutStore } from '../core/waveformLayoutStore';
+import {
+    createWorkspaceIndexHarness,
+    WorkspaceIndexHarness,
+} from './helpers/workspaceIndexFixture';
 
 type WaveCore = {
     WindowCache: new (capacity?: number) => {
@@ -140,26 +145,76 @@ function basenames(files: string[]): string[] {
     return files.map(f => path.basename(f));
 }
 
-function testDependencyAnalyzer(): void {
-    const projectDir = copyFixture();
-    const result = new DependencyAnalyzer().resolve(golden.top_module, [projectDir]);
-
-    assert.deepStrictEqual(result.missingModules, []);
-    assert.deepStrictEqual(result.depGraph, golden.dependency_graph);
-    assert.deepStrictEqual(basenames(result.files), golden.compile_order);
-    assert.deepStrictEqual(Object.keys(result.moduleMap).sort(), golden.modules);
+async function createDependencyHarness(
+    projectDir: string,
+    sources: Record<string, string>
+): Promise<WorkspaceIndexHarness> {
+    const harness = createWorkspaceIndexHarness(Object.fromEntries(
+        Object.entries(sources).map(([relativePath, text]) => [
+            pathToFileURL(path.join(projectDir, relativePath)).toString(),
+            text,
+        ])
+    ));
+    await harness.index.scan([pathToFileURL(projectDir).toString()]);
+    return harness;
 }
 
-function testDependencyAnalyzerConditionalCompilation(): void {
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-cond-'));
-    for (const moduleName of ['active_child', 'inactive_child', 'fallback_child']) {
-        fs.writeFileSync(
-            path.join(projectDir, `${moduleName}.v`),
-            `module ${moduleName}; endmodule\n`,
-            'utf-8'
-        );
+async function testDependencyAnalyzer(): Promise<void> {
+    const projectDir = copyFixture();
+    const sources = Object.fromEntries(
+        ['uart_rx.v', 'uart_tx.v', 'uart_tb.v'].map(name => [
+            name,
+            fs.readFileSync(path.join(projectDir, name), 'utf8'),
+        ])
+    );
+    const harness = await createDependencyHarness(projectDir, sources);
+    try {
+        const topKey = harness.index.findDefinitions(golden.top_module, 'module')[0].key;
+        const result = new DependencyAnalyzer(harness.index).resolve(topKey);
+
+        assert.strictEqual(result.topModule, golden.top_module);
+        assert.strictEqual(result.topDefinitionKey, topKey);
+        assert.deepStrictEqual(result.missingModules, []);
+        assert.deepStrictEqual(result.ambiguousModules, {});
+        assert.deepStrictEqual(result.depGraph, golden.dependency_graph);
+        assert.deepStrictEqual(basenames(result.files), golden.compile_order);
+        assert.deepStrictEqual(Object.keys(result.moduleMap).sort(), golden.modules);
+    } finally {
+        await harness.dispose();
     }
-    fs.writeFileSync(path.join(projectDir, 'top.v'), [
+}
+
+async function testDependencyAnalyzerIndexedTopologicalOrder(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-index-'));
+    const harness = await createDependencyHarness(projectDir, {
+        'top.v': 'module top; child u_child(); endmodule\n',
+        'child.v': 'module child; leaf u_leaf(); endmodule\n',
+        'leaf.v': 'module leaf; endmodule\n',
+    });
+    try {
+        const topKey = harness.index.findDefinitions('top', 'module')[0].key;
+        const result = new DependencyAnalyzer(harness.index).resolve(topKey);
+
+        assert.strictEqual(result.topModule, 'top');
+        assert.strictEqual(result.topDefinitionKey, topKey);
+        assert.deepStrictEqual(
+            result.files.map(filePath => path.basename(filePath)),
+            ['leaf.v', 'child.v', 'top.v']
+        );
+        assert.deepStrictEqual(result.depGraph.top, ['child']);
+        assert.deepStrictEqual(result.missingModules, []);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDependencyAnalyzerConditionalCompilation(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-cond-'));
+    const sources: Record<string, string> = {};
+    for (const moduleName of ['active_child', 'inactive_child', 'fallback_child']) {
+        sources[`${moduleName}.v`] = `module ${moduleName}; endmodule\n`;
+    }
+    sources['top.v'] = [
         'module top;',
         '`define USE_ACTIVE',
         '`ifdef USE_ACTIVE',
@@ -172,24 +227,25 @@ function testDependencyAnalyzerConditionalCompilation(): void {
         '`endif',
         'endmodule',
         '',
-    ].join('\n'), 'utf-8');
+    ].join('\n');
+    const harness = await createDependencyHarness(projectDir, sources);
+    try {
+        const result = new DependencyAnalyzer(harness.index).resolve('top');
 
-    const result = new DependencyAnalyzer().resolve('top', [projectDir]);
-
-    assert.deepStrictEqual(result.missingModules, []);
-    assert.deepStrictEqual(result.depGraph.top, ['active_child', 'fallback_child']);
+        assert.deepStrictEqual(result.missingModules, []);
+        assert.deepStrictEqual(result.depGraph.top, ['active_child', 'fallback_child']);
+    } finally {
+        await harness.dispose();
+    }
 }
 
-function testDependencyAnalyzerGenerateForIf(): void {
+async function testDependencyAnalyzerGenerateForIf(): Promise<void> {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-generate-'));
+    const sources: Record<string, string> = {};
     for (const moduleName of ['for_child', 'if_false_child', 'if_true_child', 'foo_generate_child']) {
-        fs.writeFileSync(
-            path.join(projectDir, `${moduleName}.v`),
-            `module ${moduleName}; endmodule\n`,
-            'utf-8'
-        );
+        sources[`${moduleName}.v`] = `module ${moduleName}; endmodule\n`;
     }
-    fs.writeFileSync(path.join(projectDir, 'top.v'), [
+    sources['top.v'] = [
         'module top;',
         'genvar i;',
         'foo_generate_child u_name_contains_generate();',
@@ -206,27 +262,28 @@ function testDependencyAnalyzerGenerateForIf(): void {
         'endgenerate',
         'endmodule',
         '',
-    ].join('\n'), 'utf-8');
+    ].join('\n');
+    const harness = await createDependencyHarness(projectDir, sources);
+    try {
+        const result = new DependencyAnalyzer(harness.index).resolve('top');
 
-    const result = new DependencyAnalyzer().resolve('top', [projectDir]);
-
-    assert.deepStrictEqual(result.missingModules, []);
-    assert.deepStrictEqual(
-        result.depGraph.top,
-        ['foo_generate_child', 'for_child', 'if_false_child', 'if_true_child']
-    );
+        assert.deepStrictEqual(result.missingModules, []);
+        assert.deepStrictEqual(
+            result.depGraph.top,
+            ['foo_generate_child', 'for_child', 'if_false_child', 'if_true_child']
+        );
+    } finally {
+        await harness.dispose();
+    }
 }
 
-function testDependencyAnalyzerProceduralStatements(): void {
+async function testDependencyAnalyzerProceduralStatements(): Promise<void> {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-proc-'));
+    const sources: Record<string, string> = {};
     for (const moduleName of ['child_after', 'child_before']) {
-        fs.writeFileSync(
-            path.join(projectDir, `${moduleName}.v`),
-            `module ${moduleName}; endmodule\n`,
-            'utf-8'
-        );
+        sources[`${moduleName}.v`] = `module ${moduleName}; endmodule\n`;
     }
-    fs.writeFileSync(path.join(projectDir, 'top.v'), [
+    sources['top.v'] = [
         'module top;',
         '  reg x;',
         '  reg begin_count;',
@@ -248,12 +305,156 @@ function testDependencyAnalyzerProceduralStatements(): void {
         '  child_after u_after();',
         'endmodule',
         '',
-    ].join('\n'), 'utf-8');
+    ].join('\n');
+    const harness = await createDependencyHarness(projectDir, sources);
+    try {
+        const result = new DependencyAnalyzer(harness.index).resolve('top');
 
-    const result = new DependencyAnalyzer().resolve('top', [projectDir]);
+        assert.deepStrictEqual(result.missingModules, []);
+        assert.deepStrictEqual(result.depGraph.top, ['child_after', 'child_before']);
+    } finally {
+        await harness.dispose();
+    }
+}
 
-    assert.deepStrictEqual(result.missingModules, []);
-    assert.deepStrictEqual(result.depGraph.top, ['child_after', 'child_before']);
+async function testDependencyAnalyzerMissingAndAmbiguousModules(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-ambiguous-'));
+    const harness = await createDependencyHarness(projectDir, {
+        'top.v': [
+            'module top;',
+            '  child u_child();',
+            '  z_missing u_z();',
+            '  a_missing u_a();',
+            'endmodule',
+        ].join('\n'),
+        'lib-a/child.v': 'module child; endmodule\n',
+        'lib-b/child.v': 'module child; endmodule\n',
+    });
+    try {
+        const analyzer = new DependencyAnalyzer(harness.index);
+        const topKey = harness.index.findDefinitions('top', 'module')[0].key;
+        const candidates = harness.index.findDefinitions('child', 'module');
+        const candidateKeys = candidates.map(definition => definition.key).sort();
+
+        const unresolved = analyzer.resolve(topKey);
+        assert.deepStrictEqual(unresolved.missingModules, ['a_missing', 'z_missing']);
+        assert.deepStrictEqual(unresolved.ambiguousModules, { child: candidateKeys });
+        assert.deepStrictEqual(
+            unresolved.files.map(filePath => path.basename(filePath)),
+            ['top.v']
+        );
+        assert.strictEqual(unresolved.moduleMap.child, undefined);
+
+        const selected = candidates[1];
+        const resolved = analyzer.resolve(topKey, { child: selected.key });
+        assert.deepStrictEqual(resolved.ambiguousModules, {});
+        assert.strictEqual(resolved.moduleMap.child, fileURLToPath(selected.uri));
+        assert.deepStrictEqual(resolved.files, [fileURLToPath(selected.uri), fileURLToPath(
+            harness.index.findDefinitions('top', 'module')[0].uri
+        )]);
+
+        const invalid = analyzer.resolve(topKey, { child: 'module:file:///not-a-candidate.v:0' });
+        assert.deepStrictEqual(invalid.ambiguousModules, { child: candidateKeys });
+        assert.strictEqual(invalid.moduleMap.child, undefined);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDependencyAnalyzerTopIdentity(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-top-'));
+    const harness = await createDependencyHarness(projectDir, {
+        'a/top.sv': 'module top; endmodule\n',
+        'b/top.sv': 'module top; endmodule\n',
+    });
+    try {
+        const analyzer = new DependencyAnalyzer(harness.index);
+        const definitions = harness.index.findDefinitions('top', 'module');
+        const exact = analyzer.resolve(definitions[1].key);
+        assert.strictEqual(exact.topModule, 'top');
+        assert.strictEqual(exact.topDefinitionKey, definitions[1].key);
+        assert.deepStrictEqual(exact.files, [fileURLToPath(definitions[1].uri)]);
+
+        const duplicateName = analyzer.resolve('top');
+        assert.strictEqual(duplicateName.topModule, 'top');
+        assert.strictEqual(duplicateName.topDefinitionKey, '');
+        assert.deepStrictEqual(duplicateName.files, []);
+        assert.deepStrictEqual(duplicateName.ambiguousModules, {
+            top: definitions.map(definition => definition.key).sort(),
+        });
+
+        const missing = analyzer.resolve('absent_top');
+        assert.strictEqual(missing.topModule, 'absent_top');
+        assert.strictEqual(missing.topDefinitionKey, '');
+        assert.deepStrictEqual(missing.missingModules, ['absent_top']);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDependencyAnalyzerIncludeOrderAndCycles(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-order-'));
+    const harness = await createDependencyHarness(projectDir, {
+        'top.v': '`include "top_defs.svh"\nmodule top; child u_child(); endmodule\n',
+        'top_defs.svh': '`define TOP_WIDTH 8\n',
+        'child.v': '`include "child_defs.svh"\nmodule child; top u_top(); endmodule\n',
+        'child_defs.svh': '`define CHILD_WIDTH 4\n',
+    });
+    try {
+        const topKey = harness.index.findDefinitions('top', 'module')[0].key;
+        const result = new DependencyAnalyzer(harness.index).resolve(topKey);
+
+        assert.deepStrictEqual(result.files.map(filePath => path.basename(filePath)), [
+            'child_defs.svh',
+            'child.v',
+            'top_defs.svh',
+            'top.v',
+        ]);
+        assert.deepStrictEqual(result.depGraph, {
+            top: ['child'],
+            child: ['top'],
+        });
+        assert.deepStrictEqual(result.missingModules, []);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDependencyAnalyzerNonFileUriFallback(): Promise<void> {
+    const harness = createWorkspaceIndexHarness({
+        'memory:///workspace/top.sv': 'module top; endmodule\n',
+    });
+    try {
+        await harness.index.scan(['memory:///workspace']);
+        const result = new DependencyAnalyzer(harness.index).resolve('top');
+        assert.deepStrictEqual(result.files, ['memory:///workspace/top.sv']);
+        assert.strictEqual(result.moduleMap.top, 'memory:///workspace/top.sv');
+    } finally {
+        await harness.dispose();
+    }
+}
+
+function testDependencyAnalyzerProductionWiring(): void {
+    const analyzerSource = fs.readFileSync(
+        path.join(repoRoot, 'veriflow-vscode', 'src', 'core', 'dependencyAnalyzer.ts'),
+        'utf8'
+    );
+    const extensionSource = fs.readFileSync(
+        path.join(repoRoot, 'veriflow-vscode', 'src', 'extension.ts'),
+        'utf8'
+    );
+
+    assert.match(analyzerSource, /constructor\(private readonly index: WorkspaceHdlIndex\)/);
+    assert.doesNotMatch(analyzerSource, /MODULE_DECL_RE|INST_RE|INCLUDE_RE|readText|listVerilogFiles/);
+    assert.match(extensionSource, /new DependencyAnalyzer\(index\)/);
+    assert.doesNotMatch(extensionSource, /depAnalyzer\.resolve\([^\n]+,\s*searchDirs\)/);
+    assert.match(extensionSource, /entry\[1\] !== false/);
+    assert.match(extensionSource, /await index\.load\(\)|hdlIndexLoad = index\.load\(\)/);
+    assert.match(extensionSource, /await index\.scan\(rootUris\)/);
+    assert.ok(
+        extensionSource.indexOf('index?.dispose();')
+        < extensionSource.indexOf('await parser?.dispose();')
+    );
 }
 
 function testPortParser(): void {
@@ -1315,9 +1516,15 @@ function testModuleInstantiationManifestContribution(): void {
 
 const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer', testDependencyAnalyzer],
+    ['dependency analyzer indexed topological order', testDependencyAnalyzerIndexedTopologicalOrder],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],
     ['dependency analyzer generate for/if', testDependencyAnalyzerGenerateForIf],
     ['dependency analyzer procedural statements', testDependencyAnalyzerProceduralStatements],
+    ['dependency analyzer missing and ambiguous modules', testDependencyAnalyzerMissingAndAmbiguousModules],
+    ['dependency analyzer top identity', testDependencyAnalyzerTopIdentity],
+    ['dependency analyzer include order and cycles', testDependencyAnalyzerIncludeOrderAndCycles],
+    ['dependency analyzer non-file URI fallback', testDependencyAnalyzerNonFileUriFallback],
+    ['dependency analyzer production wiring', testDependencyAnalyzerProductionWiring],
     ['port parser', testPortParser],
     ['port parser selects named module', testPortParserSelectsNamedModule],
     ['port parser conditional compilation', testPortParserConditionalCompilation],

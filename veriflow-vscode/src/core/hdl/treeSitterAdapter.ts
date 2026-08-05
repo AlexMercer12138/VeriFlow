@@ -1581,6 +1581,44 @@ function scopeItems(module: Node, header: Node): Node[] {
     );
 }
 
+const nestedDesignUnitTypes = new Set([
+    'module_declaration',
+    'interface_declaration',
+    'package_declaration',
+    'program_declaration',
+    'class_declaration',
+]);
+
+function moduleInstanceStatements(items: Node[]): Node[] {
+    const statements: Node[] = [];
+    const seen = new Set<string>();
+    const visit = (node: Node): void => {
+        if (node.type === 'module_instantiation' || node.type === 'udp_instantiation') {
+            const key = `${node.startIndex}:${node.endIndex}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                statements.push(node);
+            }
+            return;
+        }
+        if (opaqueTypes.has(node.type) || nestedDesignUnitTypes.has(node.type)) {
+            return;
+        }
+        if (node.type !== 'module_item' && !node.type.includes('generate')) {
+            return;
+        }
+        for (const child of node.namedChildren) {
+            visit(child);
+        }
+    };
+    for (const item of items) {
+        visit(item);
+    }
+    return statements.sort((left, right) =>
+        left.startIndex - right.startIndex || left.endIndex - right.endIndex
+    );
+}
+
 function adaptModule(
     node: Node,
     declaredPrimitiveNames: ReadonlySet<string>,
@@ -1623,24 +1661,25 @@ function adaptModule(
     const continuousAssignments: ContinuousAssignModel[] = [];
     const pendingReferences: PendingReference[] = [];
 
+    for (const structural of moduleInstanceStatements(items)) {
+        if (declaredPrimitiveNames.has(
+            structural.childForFieldName('instance_type')?.text ?? ''
+        )) {
+            continue;
+        }
+        const adapted = adaptInstance(structural, context);
+        instances.push(...adapted.instances);
+        if (adapted.group) {
+            instanceDeclarationGroups.push(adapted.group);
+        }
+        connectionReferenceNodes.push(...adapted.referenceNodes);
+    }
+
     for (const item of items) {
         const structural = item.type === 'module_item' && item.namedChildren.length === 1
             ? item.namedChildren[0]
             : item;
-        if ((structural.type === 'module_instantiation' || structural.type === 'udp_instantiation')
-            && declaredPrimitiveNames.has(
-                structural.childForFieldName('instance_type')?.text ?? ''
-            )) {
-            continue;
-        }
-        if (structural.type === 'module_instantiation' || structural.type === 'udp_instantiation') {
-            const adapted = adaptInstance(structural, context);
-            instances.push(...adapted.instances);
-            if (adapted.group) {
-                instanceDeclarationGroups.push(adapted.group);
-            }
-            connectionReferenceNodes.push(...adapted.referenceNodes);
-        } else if (structural.type === 'net_declaration' || structural.type === 'data_declaration') {
+        if (structural.type === 'net_declaration' || structural.type === 'data_declaration') {
             const net = adaptNetDeclaration(structural, context);
             if (net) {
                 nets.push(net);

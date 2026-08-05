@@ -1,7 +1,9 @@
 export interface DependencyResult {
     topModule: string;
+    topDefinitionKey: string;
     files: string[];
     missingModules: string[];
+    ambiguousModules: Record<string, string[]>;
     moduleMap: Record<string, string>;
     depGraph: Record<string, string[]>;
 }
