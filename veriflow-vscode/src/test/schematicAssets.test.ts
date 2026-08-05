@@ -167,6 +167,11 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(css, /prefers-reduced-motion/);
     assert.match(css, /forced-colors/);
     assert.doesNotMatch(css, /gradient\s*\(/i);
+    assert.doesNotMatch(
+        css,
+        /\.x6-widget-minimap\s+\.x6-graph\s*{[^}]*\b(?:width|height):\s*100%\s*!important/s,
+        'the minimap graph must retain X6 runtime pixel dimensions'
+    );
 
     const webviewSource = fs.readFileSync(
         path.join(extensionRoot, 'webview', 'schematic', 'index.ts'),

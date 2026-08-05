@@ -4,6 +4,10 @@ import type { SchematicLayout } from '../schematic/layoutStore';
 import {
     DebouncedLayoutSaveScheduler,
     navigationCommandForCell,
+    placeSchematicNetworkLabel,
+    summarizeSchematicSelection,
+    type SchematicPoint,
+    type SchematicRect,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
 
@@ -96,7 +100,67 @@ function testExactCellNavigationCommands(): void {
     );
 }
 
+function testSelectionStatusSummary(): void {
+    assert.deepStrictEqual(
+        summarizeSchematicSelection([]),
+        { statusText: 'No selection' }
+    );
+    assert.deepStrictEqual(summarizeSchematicSelection([{
+        objectId: 'instance:new',
+        description: 'instance: new',
+    }]), {
+        selectedObjectId: 'instance:new',
+        statusText: 'instance: new',
+    });
+    assert.deepStrictEqual(summarizeSchematicSelection([
+        { objectId: 'port:a', description: 'port: a' },
+        { objectId: 'instance:new', description: 'instance: new' },
+    ]), {
+        selectedObjectId: 'instance:new',
+        statusText: '2 objects selected',
+    });
+}
+
+function rectanglesOverlap(left: SchematicRect, right: SchematicRect): boolean {
+    return left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y;
+}
+
+function testNetworkLabelPlacementAvoidsNodes(): void {
+    const route = [
+        { x: 20, y: 100 },
+        { x: 160, y: 100 },
+        { x: 160, y: 220 },
+        { x: 300, y: 220 },
+    ];
+    const nodeBounds = [
+        { x: 0, y: 76, width: 40, height: 48 },
+        { x: 105, y: 130, width: 110, height: 60 },
+        { x: 280, y: 196, width: 40, height: 48 },
+    ];
+    const placement = placeSchematicNetworkLabel(
+        route,
+        nodeBounds,
+        'long_fanout_control_bus'
+    );
+
+    assert.notStrictEqual(placement.position.distance, 0.5);
+    assert.ok(
+        nodeBounds.every(node => !rectanglesOverlap(placement.bounds, node)),
+        'the complete label rectangle must avoid every node rectangle'
+    );
+    assert.deepStrictEqual(
+        placeSchematicNetworkLabel(route, nodeBounds, 'long_fanout_control_bus'),
+        placement,
+        'identical graph geometry must produce identical label placement'
+    );
+}
+
 void Promise.resolve()
+    .then(testNetworkLabelPlacementAvoidsNodes)
+    .then(testSelectionStatusSummary)
     .then(testExactCellNavigationCommands)
     .then(testModuleSafeLayoutSaveDebounce)
     .then(() => console.log('schematic webview support tests passed'))

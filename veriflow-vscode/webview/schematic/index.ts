@@ -38,6 +38,8 @@ import {
     cloneSchematicLayout,
     DebouncedLayoutSaveScheduler,
     navigationCommandForCell,
+    placeSchematicNetworkLabel,
+    summarizeSchematicSelection,
 } from '../../src/schematic/webviewSupport';
 
 type PersistedWebviewState = { layouts?: Record<string, SchematicLayout> };
@@ -415,6 +417,15 @@ function renderNetworks(
     const feedbackRoutes = new Map(
         deriveFeedbackRoutes(model, layout).map(route => [route.networkId, route])
     );
+    const nodeBounds = [...renderedNodes.values()].map(rendered => {
+        const center = positionFor(layout, rendered.model.id);
+        return {
+            x: center.x - rendered.width / 2,
+            y: center.y - rendered.height / 2,
+            width: rendered.width,
+            height: rendered.height,
+        };
+    });
     const edges: Edge[] = [];
     for (const network of model.networks) {
         const pairs = networkPairs(network);
@@ -444,6 +455,12 @@ function renderNetworks(
             const label = network.adapterLabel
                 ? `${network.name} ${network.adapterLabel}`
                 : network.name;
+            const labelText = truncate(label, 28);
+            const labelPlacement = placeSchematicNetworkLabel(
+                [sourcePosition, ...vertices, targetPosition],
+                nodeBounds,
+                labelText
+            );
             const edge = graph.addEdge({
                 id: `${network.id}:segment:${index}`,
                 shape: 'veriflow-network',
@@ -472,7 +489,7 @@ function renderNetworks(
                 labels: index === 0 ? [{
                     attrs: {
                         text: {
-                            text: truncate(label, 28),
+                            text: labelText,
                             fill: 'var(--vscode-editor-foreground, #202124)',
                             fontFamily: 'var(--vscode-font-family, sans-serif)',
                             fontSize: 10,
@@ -485,7 +502,7 @@ function renderNetworks(
                             ry: 2,
                         },
                     },
-                    position: { distance: 0.5 },
+                    position: labelPlacement.position,
                 }] : [],
                 zIndex: 1,
             });
@@ -625,23 +642,22 @@ function descriptionFor(data: CellData): string {
     return data.objectId;
 }
 
-function updateSelectionStatus(cells: Cell[]): void {
+function updateSelectionStatus(cells: Cell[], persist = true): void {
     if (!currentLayout) return;
-    if (cells.length === 0) {
+    const summary = summarizeSchematicSelection(cells.flatMap(cell => {
+        const data = cellData(cell);
+        return data ? [{
+            objectId: data.objectId,
+            description: descriptionFor(data),
+        }] : [];
+    }));
+    if (summary.selectedObjectId === undefined) {
         delete currentLayout.selectedObjectId;
-        dom.selectionStatus.textContent = 'No selection';
-    } else if (cells.length === 1) {
-        const data = cellData(cells[0]);
-        if (data) {
-            currentLayout.selectedObjectId = data.objectId;
-            dom.selectionStatus.textContent = descriptionFor(data);
-        }
     } else {
-        const data = cellData(cells.at(-1)!);
-        if (data) currentLayout.selectedObjectId = data.objectId;
-        dom.selectionStatus.textContent = `${cells.length} objects selected`;
+        currentLayout.selectedObjectId = summary.selectedObjectId;
     }
-    scheduleLayoutSave();
+    dom.selectionStatus.textContent = summary.statusText;
+    if (persist) scheduleLayoutSave();
 }
 
 function navigationTargetForCell(cell: Cell): {
@@ -707,11 +723,13 @@ function applyViewport(layout: SchematicLayout): void {
 
 function restoreSelection(layout: SchematicLayout): void {
     selection.clean();
-    if (!layout.selectedObjectId) return;
-    const matchingCell = graph.getCells().find(cell =>
-        cellData(cell)?.objectId === layout.selectedObjectId
-    );
+    const matchingCell = layout.selectedObjectId
+        ? graph.getCells().find(cell =>
+            cellData(cell)?.objectId === layout.selectedObjectId
+        )
+        : undefined;
     if (matchingCell) selection.select(matchingCell);
+    updateSelectionStatus(selection.getSelectedCells(), false);
 }
 
 function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {

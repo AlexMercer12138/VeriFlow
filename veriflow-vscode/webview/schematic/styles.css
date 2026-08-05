@@ -275,8 +275,6 @@ select {
 
 .x6-widget-minimap,
 .x6-widget-minimap .x6-graph {
-    width: 100% !important;
-    height: 100% !important;
     background: var(--vscode-editor-background, #ffffff) !important;
     box-shadow: none !important;
 }
