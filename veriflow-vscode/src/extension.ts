@@ -4,10 +4,12 @@ import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import {
-    getWorkspaceRoot, getTopModule, setTopModule, getSettings, ExtensionSettings,
+    getWorkspaceRoot, getTopModule, setTopModule, resolveTopModuleSelection,
+    getSettings, ExtensionSettings,
     getAnalyzeStatus, setAnalyzeStatus, getSimulateStatus, setSimulateStatus,
     getDependencyResult, setDependencyResult,
 } from './config';
+import type { TopModuleSelection } from './config';
 import { ModuleTreeProvider } from './moduleTreeProvider';
 import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
@@ -15,11 +17,11 @@ import { WaveformEditorProvider } from './waveformEditorProvider';
 import * as output from './output';
 import {
     DependencyAnalyzer, SimulationRunner, LogParser,
-    listVerilogFiles, readText, preprocessVerilog, removeComments,
-    ModuleScanResult, DependencyResult, SimulationResult,
-    SimulatorConfig, WaveViewerConfig, MODULE_DECL_RE,
+    ModuleScanResult, ModuleDefinitionEntry, DependencyResult, SimulationResult,
+    SimulatorConfig, WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
+import type { HdlDefinitionSummary } from './core';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -68,6 +70,11 @@ let hdlPreparationInFlight: {
     identity: string;
     promise: Promise<DependencyAnalyzer>;
 } | undefined;
+let hdlScanInFlight: {
+    identity: string;
+    promise: Promise<ModuleScanResult | null>;
+} | undefined;
+let hdlPresentationGeneration = 0;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 
@@ -143,22 +150,27 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration((e) => {
+        vscode.workspace.onDidChangeConfiguration(async (e) => {
             if (e.affectsConfiguration('veriflow.defines')) {
                 hdlParser?.clearCache();
             }
-            if (e.affectsConfiguration('veriflow')) { cmdScanModules(context); }
+            if (e.affectsConfiguration('veriflow.defines')
+                || e.affectsConfiguration('veriflow.libDirs')) {
+                await _scanModulesWithErrorReporting(context);
+            }
         })
     );
     context.subscriptions.push(
-        vscode.workspace.onDidChangeWorkspaceFolders(() => { cmdScanModules(context); })
+        vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+            await _scanModulesWithErrorReporting(context);
+        })
     );
 
     // 文件系统监视器：检测工作区文件变动
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{v,sv,vh,svh}');
-    watcher.onDidChange(() => _markOutdatedIfCompleted(context));
-    watcher.onDidCreate(() => _markOutdatedIfCompleted(context));
-    watcher.onDidDelete(() => _markOutdatedIfCompleted(context));
+    watcher.onDidChange(uri => _refreshIndexedUriWithErrorReporting(context, uri, false));
+    watcher.onDidCreate(uri => _refreshIndexedUriWithErrorReporting(context, uri, false));
+    watcher.onDidDelete(uri => _refreshIndexedUriWithErrorReporting(context, uri, true));
     context.subscriptions.push(watcher);
 
     // 窗口焦点变化检测
@@ -172,13 +184,13 @@ export function activate(context: vscode.ExtensionContext): void {
         })
     );
 
-    const savedTop = getTopModule(context);
-    if (savedTop) { treeProvider.topModule = savedTop; }
+    const savedTop = _coerceTopSelection(getTopModule(context));
+    if (savedTop?.definitionKey) { treeProvider.topModule = savedTop; }
 
     // 恢复状态
     _restoreState(context);
 
-    cmdScanModules(context);
+    void _scanModulesWithErrorReporting(context);
 }
 
 export function getHdlParser(context: vscode.ExtensionContext): HdlParserClient {
@@ -247,6 +259,17 @@ function _dependencyRootUris(root: string, libDirs: string[]): string[] {
             ?? _joinRelativeUri(workspaceRoot, libDir));
     }
     return [...new Set(roots.map(uri => uri.toString()))];
+}
+
+function _isUriWithinRoot(uriValue: string, rootValue: string): boolean {
+    const uri = vscode.Uri.parse(uriValue);
+    const root = vscode.Uri.parse(rootValue);
+    if (uri.scheme !== root.scheme || uri.authority !== root.authority) {
+        return false;
+    }
+    const rootPath = root.path.replace(/\/+$/, '') || '/';
+    return uri.path === rootPath
+        || uri.path.startsWith(rootPath === '/' ? '/' : `${rootPath}/`);
 }
 
 async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
@@ -435,9 +458,7 @@ function _resolveDependencies(
     return _runDependencyOperation(async () => {
         const analyzer = await preparation;
         try {
-            return analyzer.resolve(
-                _definitionKeyOrName(hdlIndex!, topDefinitionKeyOrName)
-            );
+            return analyzer.resolve(topDefinitionKeyOrName);
         } catch (error) {
             _resetDependencyIndex();
             throw error;
@@ -458,15 +479,6 @@ async function _finishDependencyIndexPreparation(
     return analyzer;
 }
 
-function _definitionKeyOrName(index: WorkspaceHdlIndex, value: string): string {
-    const exact = index.getDefinition(value);
-    if (exact?.kind === 'module') {
-        return exact.key;
-    }
-    const definitions = index.findDefinitions(value, 'module');
-    return definitions.length === 1 ? definitions[0].key : value;
-}
-
 export async function deactivate(): Promise<void> {
     if (simulateProcess) {
         simulateProcess.kill();
@@ -475,6 +487,8 @@ export async function deactivate(): Promise<void> {
     await hdlOperationTail;
     hdlOperationTail = Promise.resolve();
     hdlPreparationInFlight = undefined;
+    hdlScanInFlight = undefined;
+    hdlPresentationGeneration = 0;
     _resetDependencyIndex();
     const parser = hdlParser;
     hdlParser = undefined;
@@ -610,109 +624,274 @@ function _isSimulatorReady(simulator: SimulatorConfig): boolean {
     return Boolean(simulator.compileCmd?.trim() && simulator.runCmd?.trim());
 }
 
-function _collectSearchDirs(root: string, libDirs: string[]): string[] {
-    const dirs = [root];
-    for (const d of libDirs) {
-        if (d && !dirs.includes(d)) { dirs.push(d); }
+function _duplicateModuleGroups(
+    definitions: HdlDefinitionSummary[]
+): Array<{ name: string; definitions: HdlDefinitionSummary[] }> {
+    const byName = new Map<string, HdlDefinitionSummary[]>();
+    for (const definition of definitions) {
+        const matches = byName.get(definition.name) ?? [];
+        matches.push(definition);
+        byName.set(definition.name, matches);
     }
-    return dirs;
+    return [...byName.entries()]
+        .filter(([, matches]) => matches.length > 1)
+        .map(([name, matches]) => ({ name, definitions: matches }))
+        .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function _scanModulesInternal(root: string, libDirs: string[]): ModuleScanResult {
-    const searchDirs = _collectSearchDirs(root, libDirs);
+function _definitionEntry(
+    definition: HdlDefinitionSummary,
+    workspaceRootUri: string
+): ModuleDefinitionEntry {
+    const resource = vscode.Uri.parse(definition.uri);
+    return {
+        key: definition.key,
+        name: definition.name,
+        uri: definition.uri,
+        filepath: resource.fsPath || resource.path || definition.uri,
+        line: definition.declarationLine,
+        workspace: _isUriWithinRoot(definition.uri, workspaceRootUri),
+    };
+}
+
+function _setRecordValue<T>(record: Record<string, T>, key: string, value: T): void {
+    Object.defineProperty(record, key, {
+        value,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+    });
+}
+
+function _deriveModuleScanResult(
+    index: WorkspaceHdlIndex,
+    root: string,
+    libDirs: string[],
+    rootUris: string[]
+): {
+    result: ModuleScanResult;
+    duplicateGroups: Array<{ name: string; definitions: HdlDefinitionSummary[] }>;
+} {
+    const indexedDefinitions = index.getAllDefinitions('module');
+    const definitions = indexedDefinitions.map(
+        definition => _definitionEntry(definition, rootUris[0])
+    );
+    const duplicateGroups = _duplicateModuleGroups(indexedDefinitions);
     const modulesByDir: Record<string, string[]> = {};
-    const allModuleFiles: Record<string, string> = {};
-    const allModules = new Map<string, Array<{ file: string; line: number }>>();
-
-    for (const searchDir of searchDirs) {
-        if (!fs.existsSync(searchDir)) { continue; }
-        const dirModules: string[] = [];
-        for (const vfile of listVerilogFiles(searchDir)) {
-            try {
-                const content = preprocessVerilog(removeComments(readText(vfile)));
-                const lines = content.split('\n');
-                let inBlockComment = false;
-                for (let lineNo = 0; lineNo < lines.length; lineNo++) {
-                    let stripped = lines[lineNo].trim();
-                    while (true) {
-                        if (inBlockComment) {
-                            const endIdx = stripped.indexOf('*/');
-                            if (endIdx === -1) {
-                                stripped = '';
-                                break;
-                            }
-                            inBlockComment = false;
-                            stripped = stripped.substring(endIdx + 2);
-                        } else {
-                            const slIdx = stripped.indexOf('//');
-                            const bsIdx = stripped.indexOf('/*');
-                            if (slIdx !== -1 && (bsIdx === -1 || slIdx < bsIdx)) {
-                                stripped = stripped.substring(0, slIdx);
-                                break;
-                            } else if (bsIdx !== -1) {
-                                inBlockComment = true;
-                                stripped = stripped.substring(0, bsIdx);
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    MODULE_DECL_RE.lastIndex = 0;
-                    let match: RegExpExecArray | null;
-                    while ((match = MODULE_DECL_RE.exec(stripped)) !== null) {
-                        const modName = match[1];
-                        if (!allModules.has(modName)) {
-                            allModules.set(modName, []);
-                        }
-                        allModules.get(modName)!.push({ file: vfile, line: lineNo + 1 });
-                        if (!(modName in allModuleFiles)) {
-                            allModuleFiles[modName] = vfile;
-                        }
-                        if (!dirModules.includes(modName)) {
-                            dirModules.push(modName);
-                        }
-                    }
-                }
-            } catch {
-                // skip
-            }
-        }
-        if (dirModules.length > 0) {
-            modulesByDir[searchDir] = dirModules.sort();
-        }
-    }
-
+    const moduleFiles: Record<string, string> = {};
     const duplicates: Record<string, string[]> = {};
     const duplicatesWithLines: Record<string, Array<{ file: string; line: number }>> = {};
-    for (const [modName, entries] of allModules.entries()) {
-        const seenFiles = new Set<string>();
-        const uniqueEntries: Array<{ file: string; line: number }> = [];
-        for (const entry of entries) {
-            if (!seenFiles.has(entry.file)) {
-                seenFiles.add(entry.file);
-                uniqueEntries.push(entry);
-            }
+    const rootLabels = rootUris.map(uriValue => {
+        const uri = vscode.Uri.parse(uriValue);
+        return uri.fsPath || uri.path || uriValue;
+    });
+    for (const definition of definitions) {
+        if (!Object.prototype.hasOwnProperty.call(moduleFiles, definition.name)) {
+            _setRecordValue(moduleFiles, definition.name, definition.filepath);
         }
-        if (uniqueEntries.length > 1) {
-            duplicates[modName] = uniqueEntries.map(e => e.file);
-            duplicatesWithLines[modName] = uniqueEntries;
+        const rootIndex = rootUris.findIndex(rootUri =>
+            _isUriWithinRoot(definition.uri, rootUri)
+        );
+        const dirLabel = rootIndex >= 0
+            ? rootLabels[rootIndex]
+            : path.dirname(definition.filepath) || definition.uri;
+        const names = Object.prototype.hasOwnProperty.call(modulesByDir, dirLabel)
+            ? modulesByDir[dirLabel]
+            : [];
+        if (!names.includes(definition.name)) {
+            names.push(definition.name);
+            names.sort();
         }
+        _setRecordValue(modulesByDir, dirLabel, names);
     }
-
-    // 只从工作区目录选取的模块列表
-    const workspaceModules = modulesByDir[root] || [];
-
+    for (const group of duplicateGroups) {
+        _setRecordValue(
+            duplicates,
+            group.name,
+            group.definitions.map(definition => definition.uri)
+        );
+        _setRecordValue(duplicatesWithLines, group.name, group.definitions.map(definition => ({
+            file: vscode.Uri.parse(definition.uri).fsPath || definition.uri,
+            line: definition.declarationLine,
+        })));
+    }
+    const modules = [...new Set(definitions.map(definition => definition.name))].sort();
+    const workspaceModules = [...new Set(definitions
+        .filter(definition => definition.workspace)
+        .map(definition => definition.name))].sort();
     return {
-        root,
-        libDirs,
-        totalModules: allModules.size,
-        modules: Array.from(allModules.keys()).sort(),
-        workspaceModules,
-        modulesByDir,
-        moduleFiles: allModuleFiles,
-        duplicates,
-        duplicatesWithLines,
+        result: {
+            root,
+            libDirs: [...libDirs],
+            totalModules: modules.length,
+            modules,
+            workspaceModules,
+            definitions,
+            duplicates,
+            modulesByDir,
+            moduleFiles,
+            duplicatesWithLines,
+        },
+        duplicateGroups,
     };
+}
+
+function _coerceTopSelection(value: unknown): TopModuleSelection | undefined {
+    if (typeof value === 'string') {
+        return value ? { definitionKey: value, name: value } : undefined;
+    }
+    if (!value || typeof value !== 'object') {
+        return undefined;
+    }
+    const selection = value as Partial<TopModuleSelection>;
+    return typeof selection.definitionKey === 'string'
+        && typeof selection.name === 'string'
+        ? { definitionKey: selection.definitionKey, name: selection.name }
+        : undefined;
+}
+
+function _sameTopSelection(
+    left: TopModuleSelection | undefined,
+    right: TopModuleSelection | undefined
+): boolean {
+    return left?.definitionKey === right?.definitionKey && left?.name === right?.name;
+}
+
+async function _presentScanResult(
+    context: vscode.ExtensionContext,
+    result: ModuleScanResult,
+    duplicateGroups: Array<{ name: string; definitions: HdlDefinitionSummary[] }>,
+    generation: number
+): Promise<void> {
+    if (generation !== hdlPresentationGeneration) {
+        return;
+    }
+    treeProvider.setScanResult(result);
+    tbPanelProvider.setModuleMap(result.moduleFiles);
+
+    const stored = _coerceTopSelection(getTopModule(context));
+    const selection = resolveTopModuleSelection(stored, result.definitions);
+    treeProvider.topModule = selection;
+
+    const summary = formatDuplicateSummary(duplicateGroups);
+    if (summary.outputLines.length > 0) {
+        output.appendWarning([
+            'Duplicate module definitions:',
+            ...summary.outputLines,
+        ].join('\n'));
+        statusBarItem.text = summary.statusText;
+    } else {
+        statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
+    }
+    if (!_sameTopSelection(stored, selection)) {
+        await setTopModule(context, selection);
+    }
+}
+
+async function _scanModulesFromIndex(
+    context: vscode.ExtensionContext,
+    root: string,
+    settings: ExtensionSettings,
+    rootUris: string[],
+    generation: number
+): Promise<ModuleScanResult | null> {
+    statusBarItem.text = '$(sync~spin) VeriFlow: scanning...';
+    const preparation = _prepareDependencyAnalyzer(
+        context,
+        rootUris,
+        _filterHdlDefines(settings.defines)
+    );
+    return _runDependencyOperation(async () => {
+        await preparation;
+        const index = hdlIndex;
+        if (!index) {
+            return null;
+        }
+        const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
+        await _presentScanResult(
+            context,
+            derived.result,
+            derived.duplicateGroups,
+            generation
+        );
+        return derived.result;
+    });
+}
+
+async function _scanModulesWithErrorReporting(
+    context: vscode.ExtensionContext
+): Promise<ModuleScanResult | null> {
+    try {
+        return await cmdScanModules(context);
+    } catch (error) {
+        output.appendError(
+            `HDL module scan failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return null;
+    }
+}
+
+async function _refreshIndexedUri(
+    context: vscode.ExtensionContext,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    _markOutdatedIfCompleted(context);
+    const root = getWorkspaceRoot();
+    if (!root) {
+        return;
+    }
+    const settings = getSettings();
+    const rootUris = _dependencyRootUris(root, settings.libDirs);
+    const rootIdentity = JSON.stringify(rootUris);
+    const defines = _filterHdlDefines(settings.defines);
+    const generation = ++hdlPresentationGeneration;
+    await _runDependencyOperation(async () => {
+        try {
+            let index = hdlIndex;
+            if (!index || hdlIndexIdentity !== rootIdentity) {
+                await _getDependencyAnalyzer(context, rootUris, defines);
+                index = hdlIndex;
+            } else {
+                await hdlIndexLoad;
+                await index.updateConfiguration(defines);
+                if (remove) {
+                    await index.removeUri(uri.toString());
+                } else {
+                    await index.refreshUri(uri.toString());
+                }
+            }
+            if (!index) {
+                return;
+            }
+            const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
+            await _presentScanResult(
+                context,
+                derived.result,
+                derived.duplicateGroups,
+                generation
+            );
+        } catch (error) {
+            _resetDependencyIndex();
+            throw error;
+        }
+    });
+}
+
+async function _refreshIndexedUriWithErrorReporting(
+    context: vscode.ExtensionContext,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    try {
+        await _refreshIndexedUri(context, uri, remove);
+    } catch (error) {
+        output.appendError(
+            `HDL index update failed for ${uri.toString()}: ${
+                error instanceof Error ? error.message : String(error)
+            }`
+        );
+    }
 }
 
 async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
@@ -720,23 +899,28 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
     if (!root) { return null; }
 
     const settings = getSettings();
-    statusBarItem.text = '$(sync~spin) VeriFlow: scanning...';
-
-    const result = _scanModulesInternal(root, settings.libDirs);
-    treeProvider.setScanResult(result);
-    tbPanelProvider.setModuleMap(result.moduleFiles);
-
-    // 输出重复模块详细日志
-    if (result.duplicatesWithLines && Object.keys(result.duplicatesWithLines).length > 0) {
-        for (const [modName, entries] of Object.entries(result.duplicatesWithLines)) {
-            for (const entry of entries) {
-                output.appendWarning(`  Module ${modName} defined in: ${entry.file}:${entry.line}`);
-            }
-        }
+    const rootUris = _dependencyRootUris(root, settings.libDirs);
+    const identity = JSON.stringify([
+        rootUris,
+        Object.entries(_filterHdlDefines(settings.defines))
+            .sort(([left], [right]) => left.localeCompare(right)),
+    ]);
+    if (hdlScanInFlight?.identity === identity) {
+        return hdlScanInFlight.promise;
     }
-
-    statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
-    return result;
+    const generation = ++hdlPresentationGeneration;
+    const scan = {
+        identity,
+        promise: _scanModulesFromIndex(context, root, settings, rootUris, generation),
+    };
+    hdlScanInFlight = scan;
+    const clear = (): void => {
+        if (hdlScanInFlight === scan) {
+            hdlScanInFlight = undefined;
+        }
+    };
+    void scan.promise.then(clear, clear);
+    return scan.promise;
 }
 
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
@@ -751,19 +935,37 @@ async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<v
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
+    await cmdScanModules(context);
     // 只从工作区目录的模块中选取
-    const workspaceModules = treeProvider.getWorkspaceModuleNames();
-    if (workspaceModules.length === 0) {
+    const definitions = treeProvider.getWorkspaceDefinitions();
+    if (definitions.length === 0) {
         vscode.window.showWarningMessage('No modules found in workspace. Add .v/.sv files or configure veriflow.libDirs, then scan again.');
         return;
     }
-    const selected = await vscode.window.showQuickPick(workspaceModules, {
+    const counts = new Map<string, number>();
+    for (const definition of definitions) {
+        counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
+    }
+    const choices = definitions.map(definition => ({
+        label: definition.name,
+        description: (counts.get(definition.name) ?? 0) > 1
+            ? path.relative(getWorkspaceRoot()!, definition.filepath) || definition.filepath
+            : undefined,
+        definitionKey: definition.key,
+        name: definition.name,
+    }));
+    const selected = await vscode.window.showQuickPick(choices, {
         placeHolder: 'Select top module for simulation (workspace only)',
+        matchOnDescription: true,
     });
     if (selected) {
-        treeProvider.topModule = selected;
-        await setTopModule(context, selected);
-        output.appendInfo(`Top module: ${selected}`);
+        const selection: TopModuleSelection = {
+            definitionKey: selected.definitionKey,
+            name: selected.name,
+        };
+        treeProvider.topModule = selection;
+        await setTopModule(context, selection);
+        output.appendInfo(`Top module: ${selection.name}`);
     }
 }
 
@@ -771,12 +973,13 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
 
-    let topModule = treeProvider.topModule;
-    if (!topModule) {
+    let topSelection = _coerceTopSelection(treeProvider.topModule);
+    if (!topSelection) {
         await cmdSelectTop(context);
-        topModule = treeProvider.topModule;
+        topSelection = _coerceTopSelection(treeProvider.topModule);
     }
-    if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    const topModule = topSelection.name;
 
     // 检查文件变动
     _checkDepFilesChanged(context);
@@ -788,7 +991,12 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo(`Analyzing: top=${topModule}, root=${root}`);
     statusBarItem.text = '$(search) VeriFlow: analyzing...';
 
-    const result = await _resolveDependencies(context, root, settings, topModule);
+    const result = await _resolveDependencies(
+        context,
+        root,
+        settings,
+        topSelection.definitionKey
+    );
     treeProvider.setAnalyzeResult(result);
 
     // 保存结果和状态
@@ -834,12 +1042,13 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
 
-    let topModule = treeProvider.topModule;
-    if (!topModule) {
+    let topSelection = _coerceTopSelection(treeProvider.topModule);
+    if (!topSelection) {
         await cmdSelectTop(context);
-        topModule = treeProvider.topModule;
+        topSelection = _coerceTopSelection(treeProvider.topModule);
     }
-    if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    const topModule = topSelection.name;
 
     // 检查文件变动
     _checkDepFilesChanged(context);
@@ -871,7 +1080,12 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo('========================================');
     statusBarItem.text = '$(run) VeriFlow: simulating...';
 
-    const depResult = await _resolveDependencies(context, root, settings, topModule);
+    const depResult = await _resolveDependencies(
+        context,
+        root,
+        settings,
+        topSelection.definitionKey
+    );
     const ambiguousNames = Object.keys(depResult.ambiguousModules);
     if (depResult.missingModules.length > 0 || ambiguousNames.length > 0) {
         if (depResult.missingModules.length > 0) {
@@ -933,12 +1147,13 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
 
-    let topModule = treeProvider.topModule;
-    if (!topModule) {
+    let topSelection = _coerceTopSelection(treeProvider.topModule);
+    if (!topSelection) {
         await cmdSelectTop(context);
-        topModule = treeProvider.topModule;
+        topSelection = _coerceTopSelection(treeProvider.topModule);
     }
-    if (!topModule) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
+    const topModule = topSelection.name;
 
     // 检查文件变动
     _checkDepFilesChanged(context);

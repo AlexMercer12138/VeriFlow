@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { DependencyResult, ModuleScanResult } from './core';
+import { DependencyResult, ModuleDefinitionEntry, ModuleScanResult } from './core';
+import type { TopModuleSelection } from './config';
 
 type TreeItemType = 'top' | 'depSection' | 'depBranch' | 'depModule' | 'libSection' | 'libModule' | 'empty' | 'missingModule';
 
@@ -11,7 +12,9 @@ class ModuleTreeItem extends vscode.TreeItem {
         public readonly itemType: TreeItemType,
         public readonly moduleName?: string,
         public readonly filePath?: string,
-        public readonly children?: ModuleTreeItem[]
+        public readonly children?: ModuleTreeItem[],
+        public readonly fileUri?: string,
+        itemDescription?: string
     ) {
         super(label, collapsibleState);
 
@@ -57,12 +60,15 @@ class ModuleTreeItem extends vscode.TreeItem {
             this.contextValue = 'libSection';
         } else if (itemType === 'libModule') {
             this.iconPath = new vscode.ThemeIcon('symbol-module');
-            this.tooltip = filePath || moduleName;
-            this.description = filePath ? path.basename(filePath) : undefined;
+            this.tooltip = fileUri || filePath || moduleName;
+            this.description = itemDescription
+                ?? (filePath ? path.basename(filePath) : undefined);
             this.command = {
                 command: 'vscode.open',
                 title: 'Open File',
-                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+                arguments: fileUri
+                    ? [vscode.Uri.parse(fileUri)]
+                    : filePath ? [vscode.Uri.file(filePath)] : [],
             };
         } else if (itemType === 'empty') {
             this.iconPath = new vscode.ThemeIcon('info');
@@ -74,16 +80,16 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
     private _onDidChangeTreeData = new vscode.EventEmitter<ModuleTreeItem | undefined | null>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-    private _topModule: string = '';
+    private _topModule: TopModuleSelection | undefined;
     private _scanResult: ModuleScanResult | null = null;
     private _analyzeResult: DependencyResult | null = null;
 
-    set topModule(value: string) {
+    set topModule(value: TopModuleSelection | undefined) {
         this._topModule = value;
         this.refresh();
     }
 
-    get topModule(): string {
+    get topModule(): TopModuleSelection | undefined {
         return this._topModule;
     }
 
@@ -127,7 +133,7 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
             'Top Module',
             vscode.TreeItemCollapsibleState.None,
             'top',
-            this._topModule || undefined
+            this._topModule?.name
         ));
 
         if (this._analyzeResult) {
@@ -241,25 +247,43 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
 
     private _buildLibTree(): ModuleTreeItem {
         const result = this._scanResult!;
-        const modulesByDir = result.modulesByDir || {};
-        const moduleFiles = result.moduleFiles || {};
         const depModules = new Set(Object.keys(this._analyzeResult?.moduleMap || {}));
+        const nameCounts = new Map<string, number>();
+        const definitionsByDir = new Map<string, ModuleDefinitionEntry[]>();
+        for (const definition of result.definitions) {
+            nameCounts.set(definition.name, (nameCounts.get(definition.name) ?? 0) + 1);
+            const dir = definition.filepath
+                ? path.dirname(definition.filepath)
+                : definition.uri;
+            const definitions = definitionsByDir.get(dir) ?? [];
+            definitions.push(definition);
+            definitionsByDir.set(dir, definitions);
+        }
 
         const sectionChildren: ModuleTreeItem[] = [];
 
-        for (const [dirLabel, modNames] of Object.entries(modulesByDir)) {
+        for (const [dirLabel, definitions] of [...definitionsByDir.entries()]
+            .sort(([left], [right]) => left.localeCompare(right))) {
             const dirChildren: ModuleTreeItem[] = [];
 
-            for (const modName of modNames) {
-                const filePath = moduleFiles[modName] || '';
-                const inDep = depModules.has(modName);
+            for (const definition of definitions.sort((left, right) =>
+                left.name.localeCompare(right.name)
+                || left.uri.localeCompare(right.uri)
+                || left.line - right.line
+            )) {
+                const inDep = depModules.has(definition.name);
                 const suffix = inDep ? ' [dep]' : '';
                 dirChildren.push(new ModuleTreeItem(
-                    modName + suffix,
+                    definition.name + suffix,
                     vscode.TreeItemCollapsibleState.None,
                     'libModule',
-                    modName,
-                    filePath
+                    definition.name,
+                    definition.filepath,
+                    undefined,
+                    definition.uri,
+                    (nameCounts.get(definition.name) ?? 0) > 1
+                        ? path.relative(result.root, definition.filepath) || definition.filepath
+                        : undefined
                 ));
             }
 
@@ -290,5 +314,9 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
     // 只返回工作区目录中的模块名
     getWorkspaceModuleNames(): string[] {
         return this._scanResult?.workspaceModules || [];
+    }
+
+    getWorkspaceDefinitions(): ModuleDefinitionEntry[] {
+        return this._scanResult?.definitions.filter(definition => definition.workspace) ?? [];
     }
 }

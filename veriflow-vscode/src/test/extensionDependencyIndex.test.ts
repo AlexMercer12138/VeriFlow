@@ -185,6 +185,7 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
     const commands = new Map<string, () => Promise<void>>();
     const disposable = { dispose(): void {} };
     const workspaceState = new Map<string, unknown>();
+    let workspaceReady = false;
     const context = {
         extensionPath: path.join('D:', 'Extensions', 'VeriFlow'),
         subscriptions: [] as unknown[],
@@ -280,7 +281,7 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
         },
     };
     const configStub = {
-        getWorkspaceRoot: () => folder.uri.fsPath,
+        getWorkspaceRoot: () => workspaceReady ? folder.uri.fsPath : undefined,
         getTopModule: () => 'top',
         setTopModule: async () => undefined,
         getSettings: () => ({ ...settings, libDirs: [...settings.libDirs], defines: { ...settings.defines } }),
@@ -346,6 +347,7 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
         deactivate(): Promise<void>;
     };
     extension.activate(context);
+    workspaceReady = true;
     moduleLoader._load = originalLoad;
 
     return {

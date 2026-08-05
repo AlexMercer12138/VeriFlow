@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
-import { ModuleTreeProvider } from './moduleTreeProvider';
-import { DependencyResult } from './core';
+import { DependencyResult, ModuleDefinitionEntry } from './core';
 
 export function getWorkspaceRoot(): string | undefined {
     const folders = vscode.workspace.workspaceFolders;
@@ -10,12 +9,55 @@ export function getWorkspaceRoot(): string | undefined {
     return folders[0].uri.fsPath;
 }
 
-export function getTopModule(context: vscode.ExtensionContext): string {
-    return context.workspaceState.get<string>('veriflow.topModule', '');
+export type TopModuleSelection = { definitionKey: string; name: string };
+
+export function getTopModule(
+    context: vscode.ExtensionContext
+): TopModuleSelection | undefined {
+    const stored = context.workspaceState.get<unknown>('veriflow.topModule');
+    if (typeof stored === 'string') {
+        return stored ? { definitionKey: '', name: stored } : undefined;
+    }
+    if (!stored || typeof stored !== 'object') {
+        return undefined;
+    }
+    const selection = stored as Partial<TopModuleSelection>;
+    return typeof selection.definitionKey === 'string'
+        && typeof selection.name === 'string'
+        && selection.name.length > 0
+        ? { definitionKey: selection.definitionKey, name: selection.name }
+        : undefined;
 }
 
-export async function setTopModule(context: vscode.ExtensionContext, moduleName: string): Promise<void> {
-    await context.workspaceState.update('veriflow.topModule', moduleName);
+export async function setTopModule(
+    context: vscode.ExtensionContext,
+    selection: TopModuleSelection | undefined
+): Promise<void> {
+    await context.workspaceState.update('veriflow.topModule', selection);
+}
+
+export function resolveTopModuleSelection(
+    stored: TopModuleSelection | undefined,
+    definitions: ModuleDefinitionEntry[]
+): TopModuleSelection | undefined {
+    if (!stored) {
+        return undefined;
+    }
+    const workspaceDefinitions = definitions.filter(definition => definition.workspace);
+    if (stored.definitionKey) {
+        const exact = workspaceDefinitions.find(
+            definition => definition.key === stored.definitionKey
+        );
+        return exact
+            ? { definitionKey: exact.key, name: exact.name }
+            : undefined;
+    }
+    const matching = workspaceDefinitions.filter(
+        definition => definition.name === stored.name
+    );
+    return matching.length === 1
+        ? { definitionKey: matching[0].key, name: matching[0].name }
+        : undefined;
 }
 
 // 状态管理: 'idle' | 'completed' | 'error' | 'outdated'

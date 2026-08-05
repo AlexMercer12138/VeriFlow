@@ -69,14 +69,63 @@ export interface DuplicateEntry {
     line: number;
 }
 
+export interface ModuleDefinitionEntry {
+    key: string;
+    name: string;
+    uri: string;
+    filepath: string;
+    line: number;
+    workspace: boolean;
+}
+
 export interface ModuleScanResult {
     root: string;
     libDirs: string[];
     totalModules: number;
     modules: string[];
     workspaceModules: string[];
+    definitions: ModuleDefinitionEntry[];
+    duplicates: Record<string, string[]>;
     modulesByDir: Record<string, string[]>;
     moduleFiles: Record<string, string>;
-    duplicates: Record<string, string[]>;
+    /** Retained until the module instantiation picker migrates to exact definitions. */
     duplicatesWithLines: Record<string, DuplicateEntry[]>;
+}
+
+export type DuplicateSummaryInput = {
+    name: string;
+    definitions: Array<{
+        uri: string;
+        declarationLine: number;
+    }>;
+};
+
+export type DuplicatePresentationSummary = {
+    outputLines: string[];
+    statusText: string;
+    popupMessage: undefined;
+};
+
+export function formatDuplicateSummary(
+    groups: DuplicateSummaryInput[]
+): DuplicatePresentationSummary {
+    const sortedGroups = [...groups]
+        .map(group => ({
+            name: group.name,
+            definitions: [...group.definitions].sort((left, right) =>
+                left.uri.localeCompare(right.uri)
+                || left.declarationLine - right.declarationLine
+            ),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+    const count = sortedGroups.length;
+    return {
+        outputLines: sortedGroups.flatMap(group => group.definitions.map(
+            definition => `  ${group.name}: ${definition.uri}:${definition.declarationLine}`
+        )),
+        statusText: count === 0
+            ? '$(circuit-board) VeriFlow'
+            : `$(warning) VeriFlow: ${count} duplicate module name${count === 1 ? '' : 's'}`,
+        popupMessage: undefined,
+    };
 }
