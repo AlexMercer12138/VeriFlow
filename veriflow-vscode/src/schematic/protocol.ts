@@ -2,6 +2,11 @@ import type { SourceSpan } from '../core/hdl/model';
 import type { SchematicGraph } from './graphModel';
 import type { SchematicLayout } from './layoutStore';
 
+/** Bounds work on untrusted layouts while accommodating very large schematics. */
+const MAX_LAYOUT_NODES = 50_000;
+/** Bounds source-map work while accommodating deeply composed include expansions. */
+const MAX_COMPOSITE_PARTS = 5_000;
+
 export type WebviewCommand =
     | { type: 'ready' }
     | { type: 'selectModule'; moduleKey: string }
@@ -97,10 +102,16 @@ function normalizeLayout(value: unknown): SchematicLayout | undefined {
     }
 
     const nodes: SchematicLayout['nodes'] = {};
-    for (const [id, candidate] of Object.entries(nodesValue)) {
-        if (!nonEmptyString(id)) {
+    let nodeCount = 0;
+    for (const id in nodesValue) {
+        if (!Object.prototype.propertyIsEnumerable.call(nodesValue, id)) {
+            continue;
+        }
+        nodeCount += 1;
+        if (nodeCount > MAX_LAYOUT_NODES) {
             return undefined;
         }
+        const candidate = nodesValue[id];
         const normalizedNode = normalizeNodeLayout(candidate);
         if (!normalizedNode) {
             return undefined;
@@ -135,19 +146,35 @@ function normalizeSourceSpan(value: unknown): SourceSpan | undefined {
     if (!sourceOffset(start)
         || !sourceOffset(end)
         || start > end
-        || (uri !== undefined && !nonEmptyString(uri))
-        || (compositeParts !== undefined && !Array.isArray(compositeParts))) {
+        || (uri !== undefined && !nonEmptyString(uri))) {
         return undefined;
+    }
+
+    let parts: unknown[] | undefined;
+    let partCount = 0;
+    if (compositeParts !== undefined) {
+        if (!Array.isArray(compositeParts)) {
+            return undefined;
+        }
+        parts = compositeParts;
+        partCount = parts.length;
+        if (partCount > MAX_COMPOSITE_PARTS) {
+            return undefined;
+        }
     }
 
     const span: SourceSpan = { start, end };
     if (uri !== undefined) {
         span.uri = uri;
     }
-    if (compositeParts !== undefined) {
+    if (parts !== undefined) {
         const normalizedParts: NonNullable<SourceSpan['compositeParts']> = [];
         let previous: NonNullable<SourceSpan['compositeParts']>[number] | undefined;
-        for (const candidate of compositeParts) {
+        for (let index = 0; index < partCount; index += 1) {
+            if (!Object.prototype.propertyIsEnumerable.call(parts, index)) {
+                return undefined;
+            }
+            const candidate = parts[index];
             if (!isRecord(candidate)) {
                 return undefined;
             }

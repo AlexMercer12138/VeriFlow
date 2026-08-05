@@ -76,6 +76,8 @@ function testLayoutValidation(): void {
         moduleKey: 'module:top',
         layout: {
             nodes: {
+                '': { x: -1, y: -2, fixed: false },
+                '  ': { x: 3, y: 4, fixed: true },
                 first: { x: 12, y: -8, fixed: true, edgePoints: [{ x: 1, y: 2 }] },
                 second: { x: 0, y: 0, fixed: false, ignored: 'value' },
             },
@@ -93,6 +95,8 @@ function testLayoutValidation(): void {
         moduleKey: 'module:top',
         layout: {
             nodes: {
+                '': { x: -1, y: -2, fixed: false },
+                '  ': { x: 3, y: 4, fixed: true },
                 first: { x: 12, y: -8, fixed: true },
                 second: { x: 0, y: 0, fixed: false },
             },
@@ -146,11 +150,6 @@ function testLayoutValidation(): void {
             minimap: true,
         },
         {
-            nodes: { '  ': { x: 0, y: 0, fixed: false } },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-        {
             nodes: {},
             viewport: { x: 0, y: 0, zoom: 1 },
             minimap: true,
@@ -165,6 +164,23 @@ function testLayoutValidation(): void {
         moduleKey: '  ',
         layout: { nodes: {}, viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
     });
+}
+
+function testLayoutBreadthLimit(): void {
+    const overLimitNodes: Record<string, unknown> = {};
+    for (let index = 0; index <= 50_000; index += 1) {
+        overLimitNodes[`node:${index}`] = { x: index, y: 0, fixed: false };
+    }
+    const parsed = parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:oversized',
+        layout: {
+            nodes: overLimitNodes,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+    assert.strictEqual(parsed?.type, undefined);
 }
 
 function testSourceSpanValidation(): void {
@@ -241,6 +257,41 @@ function testSourceSpanValidation(): void {
     for (const span of invalidSpans) {
         assertRejected({ type: 'revealSource', span });
     }
+}
+
+function testCompositePartsBreadthLimit(): void {
+    const overLimitParts = Array.from({ length: 5_001 }, (_, index) => ({
+        uri: 'file:///large.sv',
+        start: index,
+        end: index,
+    }));
+    const parsed = parseWebviewCommand({
+        type: 'revealSource',
+        span: { start: 0, end: 5_001, compositeParts: overLimitParts },
+    });
+    assert.strictEqual(parsed?.type, undefined);
+
+    const customIteratorParts: unknown[] = [];
+    let iteratorAccesses = 0;
+    Object.defineProperty(customIteratorParts, Symbol.iterator, {
+        get(): never {
+            iteratorAccesses += 1;
+            throw new Error('composite iterator must not be accessed');
+        },
+    });
+    assert.deepStrictEqual(
+        parseWebviewCommand({
+            type: 'revealSource',
+            span: { start: 0, end: 0, compositeParts: customIteratorParts },
+        }),
+        { type: 'revealSource', span: { start: 0, end: 0, compositeParts: [] } }
+    );
+    assert.strictEqual(iteratorAccesses, 0);
+
+    assertRejected({
+        type: 'revealSource',
+        span: { start: 0, end: 1, compositeParts: new Array(1) },
+    });
 }
 
 function testHostileInputs(): void {
@@ -394,7 +445,9 @@ async function main(): Promise<void> {
     testInitialContract();
     testEveryCommandAndSanitization();
     testLayoutValidation();
+    testLayoutBreadthLimit();
     testSourceSpanValidation();
+    testCompositePartsBreadthLimit();
     testHostileInputs();
 
     console.log('Schematic protocol tests passed');
