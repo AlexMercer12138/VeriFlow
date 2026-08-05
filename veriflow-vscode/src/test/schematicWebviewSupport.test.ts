@@ -128,6 +128,25 @@ function rectanglesOverlap(left: SchematicRect, right: SchematicRect): boolean {
         && left.y + left.height > right.y;
 }
 
+function testNonLabelSegmentSkipsPlacementScan(): void {
+    const nodeBounds = new Proxy([] as SchematicRect[], {
+        get(): never {
+            throw new Error('node bounds scanned');
+        },
+    });
+    let placement: ReturnType<typeof placeSchematicNetworkLabel> | undefined;
+
+    assert.doesNotThrow(() => {
+        placement = placeSchematicNetworkLabel(
+            [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+            nodeBounds,
+            'fanout',
+            1
+        );
+    }, 'a non-label fanout segment must not scan node bounds');
+    assert.strictEqual(placement, undefined);
+}
+
 function testNetworkLabelPlacementAvoidsNodes(): void {
     const route = [
         { x: 20, y: 100 },
@@ -159,6 +178,7 @@ function testNetworkLabelPlacementAvoidsNodes(): void {
 }
 
 void Promise.resolve()
+    .then(testNonLabelSegmentSkipsPlacementScan)
     .then(testNetworkLabelPlacementAvoidsNodes)
     .then(testSelectionStatusSummary)
     .then(testExactCellNavigationCommands)

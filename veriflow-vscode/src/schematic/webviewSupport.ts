@@ -66,7 +66,20 @@ export function placeSchematicNetworkLabel(
     route: readonly SchematicPoint[],
     nodeBounds: readonly SchematicRect[],
     label: string
-): SchematicNetworkLabelPlacement {
+): SchematicNetworkLabelPlacement;
+export function placeSchematicNetworkLabel(
+    route: readonly SchematicPoint[],
+    nodeBounds: readonly SchematicRect[],
+    label: string,
+    segmentIndex: number
+): SchematicNetworkLabelPlacement | undefined;
+export function placeSchematicNetworkLabel(
+    route: readonly SchematicPoint[],
+    nodeBounds: readonly SchematicRect[],
+    label: string,
+    segmentIndex = 0
+): SchematicNetworkLabelPlacement | undefined {
+    if (segmentIndex !== 0) return undefined;
     const labelWidth = Math.max(24, label.length * 10 + 8);
     const labelHeight = 16;
     const clearance = 4;

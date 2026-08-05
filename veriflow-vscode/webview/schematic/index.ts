@@ -459,7 +459,8 @@ function renderNetworks(
             const labelPlacement = placeSchematicNetworkLabel(
                 [sourcePosition, ...vertices, targetPosition],
                 nodeBounds,
-                labelText
+                labelText,
+                index
             );
             const edge = graph.addEdge({
                 id: `${network.id}:segment:${index}`,
@@ -486,7 +487,7 @@ function renderNetworks(
                             : null,
                     },
                 },
-                labels: index === 0 ? [{
+                labels: labelPlacement ? [{
                     attrs: {
                         text: {
                             text: labelText,
