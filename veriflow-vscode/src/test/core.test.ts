@@ -1754,7 +1754,7 @@ function testModuleInstantiationUsesWorkspaceIndex(): void {
     assert.match(commandSource, /getAllDefinitions\('module'\)/);
     assert.match(commandSource, /getDefinition\(selected\.definitionKey\)/);
     assert.doesNotMatch(extensionSource, /showModuleInstantiationPicker\(\s*result\b/);
-    assert.match(extensionSource, /const index = hdlIndex;/);
+    assert.match(extensionSource, /const index = presentation\.index;/);
     assert.match(
         extensionSource,
         /showModuleInstantiationPicker\(\s*\(\) => isCurrent\(\) \? index : undefined,\s*isCurrent,\s*root\s*\)/

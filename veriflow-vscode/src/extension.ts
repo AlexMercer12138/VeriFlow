@@ -84,10 +84,23 @@ let hdlPreparationInFlight: {
     identity: string;
     promise: Promise<DependencyAnalyzer>;
 } | undefined;
-let hdlScanInFlight: {
+type HdlScanOwnership = {
+    lifecycleGeneration: number;
+    rootGeneration: number;
+    settingsGeneration: number;
+    presentationGeneration: number;
+    rootIdentity: string;
+};
+type HdlScanPresentation = HdlScanOwnership & {
+    result: ModuleScanResult;
+    indexGeneration: number;
+    index: WorkspaceHdlIndex;
+};
+type HdlScanOperation = HdlScanOwnership & {
     identity: string;
-    promise: Promise<ModuleScanResult | null>;
-} | undefined;
+    promise: Promise<HdlScanPresentation | null>;
+};
+let hdlScanInFlight: HdlScanOperation | undefined;
 let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
 let hdlRootGeneration = 0;
@@ -1008,6 +1021,32 @@ function _isCurrentHdlPresentation(
         && index === hdlIndex;
 }
 
+function _isCurrentHdlScanOwnership(ownership: HdlScanOwnership): boolean {
+    return _isCurrentHdlLifecycle(ownership.lifecycleGeneration)
+        && ownership.rootGeneration === hdlRootGeneration
+        && ownership.settingsGeneration === hdlWatchSettingsGeneration
+        && ownership.presentationGeneration === hdlPresentationGeneration
+        && ownership.rootIdentity === _currentHdlRootIdentity();
+}
+
+function _isCurrentHdlScanPresentation(presentation: HdlScanPresentation): boolean {
+    return _isCurrentHdlScanOwnership(presentation)
+        && presentation.rootIdentity === hdlPresentationRootIdentity
+        && presentation.indexGeneration === hdlIndexGeneration
+        && presentation.index === hdlIndex;
+}
+
+function _sameHdlScanOwnership(
+    left: HdlScanOwnership,
+    right: HdlScanOwnership
+): boolean {
+    return left.lifecycleGeneration === right.lifecycleGeneration
+        && left.rootGeneration === right.rootGeneration
+        && left.settingsGeneration === right.settingsGeneration
+        && left.presentationGeneration === right.presentationGeneration
+        && left.rootIdentity === right.rootIdentity;
+}
+
 function _isCurrentTopInvocation(
     intentVersion: number,
     lifecycleGeneration: number
@@ -1062,15 +1101,17 @@ function _isCurrentInstantiationPresentation(
     intentVersion: number,
     lifecycleGeneration: number,
     rootGeneration: number,
-    presentationGeneration: number,
-    rootIdentity: string | undefined,
-    indexGeneration: number,
-    index: WorkspaceHdlIndex | undefined
+    settingsGeneration: number,
+    rootIdentity: string,
+    scan: HdlScanOperation,
+    presentation: HdlScanPresentation
 ): boolean {
     return _isCurrentInstantiationInvocation(intentVersion, lifecycleGeneration)
         && rootGeneration === hdlRootGeneration
-        && indexGeneration === hdlIndexGeneration
-        && _isCurrentHdlPresentation(presentationGeneration, rootIdentity, index);
+        && settingsGeneration === hdlWatchSettingsGeneration
+        && rootIdentity === _currentHdlRootIdentity()
+        && _sameHdlScanOwnership(scan, presentation)
+        && _isCurrentHdlScanPresentation(presentation);
 }
 
 function _currentHdlRootIdentity(): string | undefined {
@@ -1576,9 +1617,9 @@ async function _scanModulesFromIndex(
     root: string,
     settings: ExtensionSettings,
     rootUris: string[],
-    generation: number
-): Promise<ModuleScanResult | null> {
-    const lifecycleGeneration = hdlLifecycleGeneration;
+    ownership: HdlScanOwnership
+): Promise<HdlScanPresentation | null> {
+    const lifecycleGeneration = ownership.lifecycleGeneration;
     const scanningStatus = '$(sync~spin) VeriFlow: scanning...';
     if (statusBarItem.text !== scanningStatus) {
         hdlLastNonScanningStatusText = statusBarItem.text;
@@ -1586,7 +1627,7 @@ async function _scanModulesFromIndex(
     const statusBeforeScan = hdlLastNonScanningStatusText;
     const restoreStatus = (): void => {
         if (_isCurrentHdlLifecycle(lifecycleGeneration)
-            && generation === hdlPresentationGeneration
+            && ownership.presentationGeneration === hdlPresentationGeneration
             && statusBarItem.text === scanningStatus) {
             statusBarItem.text = statusBeforeScan;
         }
@@ -1604,15 +1645,25 @@ async function _scanModulesFromIndex(
             if (!index || hdlStopping) {
                 return null;
             }
+            const indexGeneration = hdlIndexGeneration;
+            if (!_isCurrentHdlScanOwnership(ownership)) {
+                return null;
+            }
             const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
             await _presentScanResult(
                 context,
                 derived.result,
                 derived.duplicateGroups,
-                generation,
+                ownership.presentationGeneration,
                 rootUris
             );
-            return derived.result;
+            const presentation = {
+                ...ownership,
+                result: derived.result,
+                indexGeneration,
+                index,
+            };
+            return _isCurrentHdlScanPresentation(presentation) ? presentation : null;
         } catch (error) {
             if (error instanceof HdlIndexPreparationInvalidatedError
                 || error instanceof HdlStoppingError
@@ -1620,7 +1671,7 @@ async function _scanModulesFromIndex(
                 return null;
             }
             if (error instanceof HdlWatchPlanReconciliationError
-                && generation === hdlPresentationGeneration) {
+                && ownership.presentationGeneration === hdlPresentationGeneration) {
                 hdlPresentationGeneration++;
                 hdlPresentationRootIdentity = undefined;
                 _resetDependencyIndex();
@@ -1790,27 +1841,37 @@ async function _refreshIndexedUriWithErrorReporting(
     }
 }
 
-async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
-    if (hdlStopping) { return null; }
+function _startModuleScan(context: vscode.ExtensionContext): HdlScanOperation | undefined {
+    if (hdlStopping) { return undefined; }
     const lifecycleGeneration = hdlLifecycleGeneration;
+    const rootGeneration = hdlRootGeneration;
+    const settingsGeneration = hdlWatchSettingsGeneration;
     const root = getWorkspaceRoot();
-    if (!root) { return null; }
+    if (!root) { return undefined; }
 
     const settings = getSettings();
     const rootUris = _dependencyRootUris(root, settings.libDirs);
+    const rootIdentity = JSON.stringify(rootUris);
     const identity = JSON.stringify([
         rootUris,
         Object.entries(_filterHdlDefines(settings.defines))
             .sort(([left], [right]) => left.localeCompare(right)),
     ]);
-    if (hdlScanInFlight?.identity === identity) {
-        const result = await hdlScanInFlight.promise;
-        return _isCurrentHdlLifecycle(lifecycleGeneration) ? result : null;
+    if (hdlScanInFlight?.identity === identity
+        && _isCurrentHdlScanOwnership(hdlScanInFlight)) {
+        return hdlScanInFlight;
     }
-    const generation = ++hdlPresentationGeneration;
+    const ownership: HdlScanOwnership = {
+        lifecycleGeneration,
+        rootGeneration,
+        settingsGeneration,
+        presentationGeneration: ++hdlPresentationGeneration,
+        rootIdentity,
+    };
     const scan = {
+        ...ownership,
         identity,
-        promise: _scanModulesFromIndex(context, root, settings, rootUris, generation),
+        promise: _scanModulesFromIndex(context, root, settings, rootUris, ownership),
     };
     hdlScanInFlight = scan;
     const clear = (): void => {
@@ -1819,36 +1880,61 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
         }
     };
     void scan.promise.then(clear, clear);
-    const result = await scan.promise;
-    return _isCurrentHdlLifecycle(lifecycleGeneration) ? result : null;
+    return scan;
+}
+
+async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
+    const lifecycleGeneration = hdlLifecycleGeneration;
+    const scan = _startModuleScan(context);
+    if (!scan) { return null; }
+    const presentation = await scan.promise;
+    return _isCurrentHdlLifecycle(lifecycleGeneration)
+        ? presentation?.result ?? null
+        : null;
 }
 
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
     const intentVersion = ++hdlInstantiationIntentVersion;
     if (hdlStopping) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
+    const rootGeneration = hdlRootGeneration;
+    const settingsGeneration = hdlWatchSettingsGeneration;
     const root = getWorkspaceRoot();
     if (!root) {
         vscode.window.showWarningMessage('No workspace folder open.');
         return;
     }
-    const result = await cmdScanModules(context);
-    if (!result || !_isCurrentInstantiationInvocation(intentVersion, lifecycleGeneration)) {
+    const rootIdentity = _currentHdlRootIdentity();
+    const scan = _startModuleScan(context);
+    if (!rootIdentity
+        || !scan
+        || scan.lifecycleGeneration !== lifecycleGeneration
+        || scan.rootGeneration !== rootGeneration
+        || scan.settingsGeneration !== settingsGeneration
+        || scan.rootIdentity !== rootIdentity) {
         return;
     }
-    const rootGeneration = hdlRootGeneration;
-    const presentationGeneration = hdlPresentationGeneration;
-    const rootIdentity = hdlPresentationRootIdentity;
-    const indexGeneration = hdlIndexGeneration;
-    const index = hdlIndex;
+    const presentation = await scan.promise;
+    if (!presentation || !_isCurrentInstantiationPresentation(
+        intentVersion,
+        lifecycleGeneration,
+        rootGeneration,
+        settingsGeneration,
+        rootIdentity,
+        scan,
+        presentation
+    )) {
+        return;
+    }
+    const index = presentation.index;
     const isCurrent = (): boolean => _isCurrentInstantiationPresentation(
         intentVersion,
         lifecycleGeneration,
         rootGeneration,
-        presentationGeneration,
+        settingsGeneration,
         rootIdentity,
-        indexGeneration,
-        index
+        scan,
+        presentation
     );
     if (!isCurrent()) { return; }
     await showModuleInstantiationPicker(

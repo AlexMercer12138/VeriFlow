@@ -463,6 +463,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         gate: ReturnType<typeof createScanGate>;
         cancel: boolean;
     }> = [];
+    let instantiationPickerCalls = 0;
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
     type WatchEventKind = 'change' | 'create' | 'delete';
@@ -982,6 +983,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 getIndex: () => FakeIndex | undefined,
                 isCurrent: () => boolean
             ) => {
+                instantiationPickerCalls++;
                 const behavior = queuedInstantiationPickers.shift();
                 if (!behavior) { return; }
                 behavior.gate.markStarted();
@@ -1149,6 +1151,67 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(staleBeforeCancellation, 'stale picker after newer cancellation');
         assert.strictEqual(instantiationPickerSideEffects, sideEffectsBeforeCancellation);
 
+        const expectEntryScanReplacementToInvalidateInstantiation = async (
+            label: string,
+            startReplacementScans: () => Array<Promise<unknown>>
+        ): Promise<void> => {
+            storedTop = { definitionKey: '', name: 'top' };
+            const entryScanPersistenceGate = createScanGate();
+            nextTopPersistenceGate = entryScanPersistenceGate;
+            const pickerCallsBeforeReplacement = instantiationPickerCalls;
+            const sideEffectsBeforeReplacement = instantiationPickerSideEffects;
+            const invocation = Promise.resolve(commands.get('veriflow.instantiateModule')!());
+            await withTimeout(
+                entryScanPersistenceGate.started,
+                `${label} entry scan persistence`
+            );
+            const replacementScans = startReplacementScans();
+            entryScanPersistenceGate.allow();
+            await withTimeout(
+                Promise.all([invocation, ...replacementScans]),
+                `${label} entry scan replacement`
+            );
+            assert.strictEqual(instantiationPickerCalls, pickerCallsBeforeReplacement, label);
+            assert.strictEqual(
+                instantiationPickerSideEffects,
+                sideEffectsBeforeReplacement,
+                label
+            );
+            storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        };
+
+        await expectEntryScanReplacementToInvalidateInstantiation('defines', () => {
+            settings.defines = { INSTANTIATION_ENTRY_AWAY: true };
+            const away = Promise.resolve(configListener!({
+                affectsConfiguration: section => section === 'veriflow.defines',
+            }));
+            settings.defines = {};
+            const back = Promise.resolve(configListener!({
+                affectsConfiguration: section => section === 'veriflow.defines',
+            }));
+            return [away, back];
+        });
+
+        await expectEntryScanReplacementToInvalidateInstantiation('library roots', () => {
+            settings.libDirs = ['/instantiation-entry-away'];
+            const away = Promise.resolve(configListener!({
+                affectsConfiguration: section => section === 'veriflow.libDirs',
+            }));
+            settings.libDirs = ['/A-library'];
+            const back = Promise.resolve(configListener!({
+                affectsConfiguration: section => section === 'veriflow.libDirs',
+            }));
+            return [away, back];
+        });
+
+        await expectEntryScanReplacementToInvalidateInstantiation('workspace folders', () => {
+            workspaceFolders.push({ uri: FakeUri.parse('file:///entry-away-workspace') });
+            const away = Promise.resolve(workspaceFoldersListener!());
+            workspaceFolders.pop();
+            const back = Promise.resolve(workspaceFoldersListener!());
+            return [away, back];
+        });
+
         const warningsBeforeForeignEvents = warnings.length;
         await withTimeout(
             fireHdlWatchEvent('change', unconfiguredWorkspaceUri),
@@ -1308,14 +1371,15 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(events.includes(`remove:${libraryDefinition.uri}`));
 
         const scansBeforeConfig = events.filter(event => event === 'scan').length;
+        const indexesBeforeDefinesRescan = FakeIndex.instances.length;
+        const previousIndex = FakeIndex.instances.at(-1)!;
         settings.defines = { FEATURE: true };
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.defines',
         })), 'defines rescan');
         assert.ok(events.filter(event => event === 'scan').length > scansBeforeConfig);
-        assert.strictEqual(FakeIndex.instances.length, 1);
+        assert.strictEqual(FakeIndex.instances.length, indexesBeforeDefinesRescan);
 
-        const previousIndex = FakeIndex.instances[0];
         const oldLibraryWatcher = watcherRecords.find(record =>
             !record.disposed
             && record.pattern instanceof FakeRelativePattern
@@ -1326,9 +1390,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.libDirs',
         })), 'library roots rescan');
-        assert.strictEqual(FakeIndex.instances.length, 2);
+        assert.strictEqual(FakeIndex.instances.length, indexesBeforeDefinesRescan + 1);
         assert.strictEqual(previousIndex.disposed, true);
-        assert.deepStrictEqual(FakeIndex.instances[1].scannedRoots.at(-1), [
+        assert.deepStrictEqual(FakeIndex.instances.at(-1)?.scannedRoots.at(-1), [
             workspaceRootUri,
             'file:///other-library',
         ]);
