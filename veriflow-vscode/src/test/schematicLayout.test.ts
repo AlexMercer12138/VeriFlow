@@ -186,6 +186,20 @@ async function testRoundTripAndRematch(): Promise<void> {
         nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
         viewport: { x: 10, y: 20, zoom: 1.25 }, minimap: false,
     });
+    const storageKey = [
+        'veriflow.schematicLayout',
+        encodeURIComponent('file:///top.sv'),
+        encodeURIComponent('module:top:0'),
+    ].join(':');
+    assert.deepStrictEqual(state.keys(), [storageKey]);
+    assert.deepStrictEqual(state.get<unknown>(storageKey), {
+        schemaVersion: 1,
+        layout: {
+            nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
+            viewport: { x: 10, y: 20, zoom: 1.25 },
+            minimap: false,
+        },
+    });
     assert.deepStrictEqual(store.load('file:///top.sv', 'module:top:0')?.viewport,
         { x: 10, y: 20, zoom: 1.25 });
     const merged = mergeLayout(graph, store.load('file:///top.sv', 'module:top:0'));
@@ -265,6 +279,19 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         'module:normalize:0',
         input as SchematicLayout
     );
+    const storageKey = [
+        'veriflow.schematicLayout',
+        encodeURIComponent('file:///normalize.sv'),
+        encodeURIComponent('module:normalize:0'),
+    ].join(':');
+    assert.deepStrictEqual(state.get<unknown>(storageKey), {
+        schemaVersion: 1,
+        layout: {
+            nodes: { valid: { x: 4, y: 8, fixed: false } },
+            viewport: { x: 0, y: 0, zoom: 4 },
+            minimap: true,
+        },
+    });
     const loaded = store.load('file:///normalize.sv', 'module:normalize:0')!;
     assert.deepStrictEqual(loaded.nodes, {
         valid: { x: 4, y: 8, fixed: false },
@@ -279,10 +306,7 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         0.1
     );
 
-    const key = state.keys().find(candidate =>
-        candidate.includes(encodeURIComponent('module:normalize:0'))
-    )!;
-    state.set(key, {
+    state.set(storageKey, {
         schemaVersion: 1,
         layout: {
             nodes: {},
