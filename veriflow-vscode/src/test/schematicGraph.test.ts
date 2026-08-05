@@ -103,6 +103,225 @@ async function testStructuralEdgeCases(): Promise<void> {
     );
 }
 
+async function testDirectionAwareInstanceConnections(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const document = await parseWithRealWorker(fixture, fs.readFileSync(fixture, 'utf8'));
+    const selectedModule = document.modules.find(
+        item => item.name === 'connection_direction_top'
+    )!;
+    const selectedGraph = buildSchematicGraph(document, selectedModule, new Map());
+    const selectedInstance = selectedGraph.nodes.find(
+        node => node.id === 'instance:u_selected'
+    )!;
+    const outputAdapter = selectedGraph.nodes.find(node => node.label === 'y[0]')!;
+
+    assert.strictEqual(outputAdapter.kind, 'expression');
+    assert.deepStrictEqual(outputAdapter.pins.map(pin => [pin.name, pin.direction]), [
+        ['value', 'load'],
+        ['y', 'driver'],
+    ]);
+    assert.deepStrictEqual(
+        selectedGraph.networks.find(network => network.name === 'y[0]')?.endpoints,
+        [
+            {
+                nodeId: selectedInstance.id,
+                pinId: 'instance:u_selected:y',
+                role: 'driver',
+            },
+            {
+                nodeId: outputAdapter.id,
+                pinId: `${outputAdapter.id}:value`,
+                role: 'load',
+            },
+        ]
+    );
+    assert.deepStrictEqual(
+        selectedGraph.networks.find(network => network.name === 'y')?.endpoints,
+        [
+            {
+                nodeId: outputAdapter.id,
+                pinId: `${outputAdapter.id}:y`,
+                role: 'driver',
+            },
+            {
+                nodeId: 'port:y',
+                pinId: 'port:y:y',
+                role: 'load',
+            },
+        ]
+    );
+    assert.strictEqual(
+        selectedGraph.networks.find(network => network.name === 'y[0]')
+            ?.endpoints.filter(endpoint => endpoint.role === 'driver').length,
+        1
+    );
+
+    const inoutBoundary = selectedGraph.nodes.find(
+        node => node.kind === 'opaque' && node.label === 'shared[0]'
+    )!;
+    assert.ok(inoutBoundary);
+    assert.deepStrictEqual(inoutBoundary.pins.map(pin => [pin.name, pin.direction]), [
+        ['value', 'bidirectional'],
+        ['shared', 'bidirectional'],
+    ]);
+    assert.deepStrictEqual(
+        selectedGraph.networks.find(network => network.name === 'shared[0]')?.endpoints,
+        [
+            {
+                nodeId: selectedInstance.id,
+                pinId: 'instance:u_selected:io',
+                role: 'bidirectional',
+            },
+            {
+                nodeId: inoutBoundary.id,
+                pinId: `${inoutBoundary.id}:value`,
+                role: 'bidirectional',
+            },
+        ]
+    );
+
+    const positionalModule = document.modules.find(
+        item => item.name === 'positional_direction_top'
+    )!;
+    const positionalGraph = buildSchematicGraph(document, positionalModule, new Map());
+    const positional = positionalGraph.nodes.find(
+        node => node.id === 'instance:u_positional'
+    )!;
+    assert.deepStrictEqual(positional.pins.map(pin => [pin.name, pin.direction]), [
+        ['a', 'load'],
+        ['y', 'driver'],
+        ['io', 'bidirectional'],
+    ]);
+    assert.deepStrictEqual(
+        positionalGraph.networks.map(network => [
+            network.name,
+            network.endpoints.find(endpoint => endpoint.nodeId === positional.id)?.role,
+        ]),
+        [['a', 'load'], ['shared', 'bidirectional'], ['y', 'driver']]
+    );
+}
+
+async function testContinuousAssignmentTargetsRemainVisible(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const document = await parseWithRealWorker(fixture, fs.readFileSync(fixture, 'utf8'));
+    const module = document.modules.find(item => item.name === 'assignment_target_top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+    const selectedAssignment = module.continuousAssignments.find(
+        assignment => assignment.target.text === 'y[1]'
+    )!;
+    const selectedTarget = graph.nodes.find(node =>
+        node.kind === 'expression'
+        && node.label === 'y[1]'
+        && node.sourceSpan?.start === selectedAssignment.target.span.start
+    )!;
+
+    assert.ok(selectedTarget);
+    assert.deepStrictEqual(selectedTarget.pins.map(pin => [pin.name, pin.direction]), [
+        ['value', 'load'],
+        ['y', 'driver'],
+    ]);
+    assert.strictEqual(selectedTarget.sourceSpan?.uri, fixture);
+    assert.ok(graph.networks.find(network => network.name === 'y')
+        ?.endpoints.some(endpoint =>
+            endpoint.nodeId === selectedTarget.id
+            && endpoint.pinId === `${selectedTarget.id}:y`
+            && endpoint.role === 'driver'
+        ));
+    const selectedValueNetwork = graph.networks.find(network =>
+        network.endpoints.some(endpoint =>
+            endpoint.nodeId === selectedTarget.id
+            && endpoint.pinId === `${selectedTarget.id}:value`
+        )
+    )!;
+    assert.strictEqual(
+        selectedValueNetwork.endpoints.filter(endpoint => endpoint.role === 'driver').length,
+        1
+    );
+    assert.strictEqual(
+        selectedValueNetwork.endpoints.filter(endpoint => endpoint.role === 'load').length,
+        1
+    );
+
+    const compositeAssignment = module.continuousAssignments.find(
+        assignment => assignment.target.text === '{z, y[0]}'
+    )!;
+    const compositeTarget = graph.nodes.find(node =>
+        node.kind === 'opaque'
+        && node.label === '{z, y[0]}'
+        && node.sourceSpan?.start === compositeAssignment.target.span.start
+    )!;
+    assert.ok(compositeTarget);
+    assert.deepStrictEqual(compositeTarget.pins.map(pin => [pin.name, pin.direction]), [
+        ['value', 'load'],
+        ['z', 'bidirectional'],
+        ['y', 'bidirectional'],
+    ]);
+    for (const targetName of ['z', 'y']) {
+        assert.ok(graph.networks.find(network => network.name === targetName)
+            ?.endpoints.some(endpoint =>
+                endpoint.nodeId === compositeTarget.id
+                && endpoint.role === 'bidirectional'
+            ));
+    }
+    assert.ok(graph.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_UNSUPPORTED_STRUCTURAL_BOUNDARY'
+        && diagnostic.span?.start === compositeAssignment.target.span.start
+        && diagnostic.span?.end === compositeAssignment.target.span.end
+    ));
+}
+
+async function testDynamicTargetsStayConservative(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const document = await parseWithRealWorker(fixture, fs.readFileSync(fixture, 'utf8'));
+    const module = document.modules.find(item => item.name === 'dynamic_target_top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+    const instance = module.instances[0];
+    const connection = instance.portConnections.find(item => item.name === 'y')!;
+    const assignment = module.continuousAssignments.find(
+        item => item.target.text === 'y[idx]'
+    )!;
+    const connectionBoundary = graph.nodes.find(node =>
+        node.kind === 'opaque'
+        && node.sourceSpan?.start === connection.expressionSpan.start
+    )!;
+    const assignmentBoundary = graph.nodes.find(node =>
+        node.kind === 'opaque'
+        && node.sourceSpan?.start === assignment.target.span.start
+    )!;
+
+    for (const boundary of [connectionBoundary, assignmentBoundary]) {
+        assert.ok(boundary);
+        assert.deepStrictEqual(boundary.pins.map(pin => [pin.name, pin.direction]), [
+            ['value', 'load'],
+            ['y', 'bidirectional'],
+            ['idx', 'bidirectional'],
+        ]);
+        assert.ok(boundary.pins.every(pin =>
+            pin.name !== 'idx' || pin.direction !== 'driver'
+        ));
+    }
+    const idxNetwork = graph.networks.find(network => network.name === 'idx')!;
+    assert.deepStrictEqual(idxNetwork.endpoints.map(endpoint => endpoint.role), [
+        'driver',
+        'bidirectional',
+        'bidirectional',
+    ]);
+    assert.strictEqual(
+        idxNetwork.endpoints.filter(endpoint => endpoint.role === 'driver').length,
+        1
+    );
+    assert.ok(graph.networks.find(network => network.name === 'y')
+        ?.endpoints.some(endpoint =>
+            endpoint.nodeId === connectionBoundary.id
+            && endpoint.role === 'bidirectional'
+        ));
+    assert.ok(graph.networks.find(network => network.name === 'y')
+        ?.endpoints.some(endpoint =>
+            endpoint.nodeId === assignmentBoundary.id
+            && endpoint.role === 'bidirectional'
+        ));
+}
+
 async function testExternalDefinitionBinding(): Promise<void> {
     const uri = 'memory:/external-top.sv';
     const source = [
@@ -345,6 +564,9 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
 async function main(): Promise<void> {
     await testGoldenGraph();
     await testStructuralEdgeCases();
+    await testDirectionAwareInstanceConnections();
+    await testDynamicTargetsStayConservative();
+    await testContinuousAssignmentTargetsRemainVisible();
     await testExternalDefinitionBinding();
     await testDuplicateLocalDefinitionIsUnbound();
     await testWorkspaceAmbiguitySuppressesLocalFallback();

@@ -292,6 +292,46 @@ function sourceNode(
     };
 }
 
+function targetBoundaryNode(
+    id: string,
+    kind: 'expression' | 'opaque',
+    expression: ExpressionModel,
+    references: readonly ExpressionReference[],
+    scopeNetworks: ReadonlyMap<string, NamedNetwork>,
+    role: 'driver' | 'bidirectional',
+    documentUri: string
+): GraphNode {
+    const readOnly = isForeign(expression.span, documentUri);
+    const valueRole = role === 'driver' ? 'load' : 'bidirectional';
+    const referenceRole = kind === 'opaque' ? 'bidirectional' : role;
+    const targetPins: GraphPin[] = references.map(reference => ({
+        id: `${id}:${reference.name}`,
+        name: reference.name,
+        direction: referenceRole,
+        side: pinSide(referenceRole),
+        width: scopeNetworks.get(reference.name)?.width ?? unknownWidth,
+        readOnly: readOnly || isForeign(reference.sourceSpan, documentUri),
+        sourceSpan: reference.sourceSpan,
+    }));
+    return {
+        id,
+        kind,
+        label: expression.text,
+        subtitle: kind === 'opaque' ? 'structural boundary' : undefined,
+        pins: [{
+            id: `${id}:value`,
+            name: 'value',
+            direction: valueRole,
+            side: pinSide(valueRole),
+            width: expression.width,
+            readOnly,
+            sourceSpan: expression.span,
+        }, ...targetPins],
+        readOnly,
+        sourceSpan: expression.span,
+    };
+}
+
 function addEndpoint(
     network: SchematicNetwork,
     node: GraphNode,
@@ -358,6 +398,7 @@ export function buildSchematicGraph(
     const scopeNetworks = namedNetworks(module);
     const networks = new Map<string, SchematicNetwork>();
     const structuralNodes: GraphNode[] = [];
+    const structuralDiagnostics: HdlDiagnostic[] = [];
     const inputNodes = module.ports
         .filter(port => port.direction === 'input')
         .map(port => portNode(port, module, document.uri));
@@ -429,6 +470,42 @@ export function buildSchematicGraph(
                 connection.expressionSpan,
                 scopeNetworks
             );
+            if (pin.direction !== 'load') {
+                const targetRole = pin.direction === 'driver'
+                    ? 'driver'
+                    : 'bidirectional';
+                const exactSelect = pin.direction === 'driver'
+                    && expression.kind === 'select'
+                    && references.length === 1;
+                const boundaryId = exactSelect
+                    ? expressionId
+                    : `opaque:connection:${connection.expressionSpan.uri ?? document.uri}`
+                        + `:${connection.expressionSpan.start}`;
+                const boundaryNode = targetBoundaryNode(
+                    boundaryId,
+                    exactSelect ? 'expression' : 'opaque',
+                    expression,
+                    references,
+                    scopeNetworks,
+                    targetRole,
+                    document.uri
+                );
+                structuralNodes.push(boundaryNode);
+                const network: SchematicNetwork = {
+                    id: `network:${boundaryId}`,
+                    name: connection.expression,
+                    width: expression.width,
+                    endpoints: [],
+                    sourceSpan: connection.expressionSpan,
+                };
+                addEndpoint(network, node, pin);
+                addEndpoint(network, boundaryNode, boundaryNode.pins[0]);
+                networks.set(network.id, network);
+                for (const targetPin of boundaryNode.pins.slice(1)) {
+                    addEndpoint(getNamedNetwork(targetPin.name)!, boundaryNode, targetPin);
+                }
+                continue;
+            }
             const expressionNode = sourceNode(
                 expressionId,
                 'expression',
@@ -455,12 +532,16 @@ export function buildSchematicGraph(
     }
 
     for (const assignment of module.continuousAssignments) {
-        const target = assignment.target.kind === 'identifier'
+        const directTarget = assignment.target.kind === 'identifier'
             ? getNamedNetwork(assignment.target.text)
             : undefined;
-        if (!target) {
-            continue;
-        }
+        const targetReferences = expressionReferences(
+            module,
+            assignment.target.span,
+            scopeNetworks
+        );
+        const exactSelect = assignment.target.kind === 'select'
+            && targetReferences.length === 1;
         const kind = assignment.value.kind === 'constant' ? 'constant' : 'expression';
         const id = `${kind}:${assignment.value.span.uri ?? document.uri}`
             + `:${assignment.value.span.start}`;
@@ -477,7 +558,47 @@ export function buildSchematicGraph(
         for (const dependency of node.pins.slice(0, -1)) {
             addEndpoint(getNamedNetwork(dependency.name)!, node, dependency);
         }
-        addEndpoint(target, node, node.pins.at(-1)!);
+        if (directTarget) {
+            addEndpoint(directTarget, node, node.pins.at(-1)!);
+            continue;
+        }
+
+        const targetId = exactSelect
+            ? `expression-target:${assignment.target.span.uri ?? document.uri}`
+                + `:${assignment.target.span.start}`
+            : `opaque:assignment-target:${assignment.target.span.uri ?? document.uri}`
+                + `:${assignment.target.span.start}`;
+        const targetNode = targetBoundaryNode(
+            targetId,
+            exactSelect ? 'expression' : 'opaque',
+            assignment.target,
+            targetReferences,
+            scopeNetworks,
+            'driver',
+            document.uri
+        );
+        structuralNodes.push(targetNode);
+        const valueNetwork: SchematicNetwork = {
+            id: `network:${targetId}`,
+            name: assignment.target.text,
+            width: assignment.target.width,
+            endpoints: [],
+            sourceSpan: assignment.target.span,
+        };
+        addEndpoint(valueNetwork, node, node.pins.at(-1)!);
+        addEndpoint(valueNetwork, targetNode, targetNode.pins[0]);
+        networks.set(valueNetwork.id, valueNetwork);
+        for (const targetPin of targetNode.pins.slice(1)) {
+            addEndpoint(getNamedNetwork(targetPin.name)!, targetNode, targetPin);
+        }
+        if (!exactSelect) {
+            structuralDiagnostics.push({
+                severity: 'info',
+                code: 'HDL_UNSUPPORTED_STRUCTURAL_BOUNDARY',
+                message: `Continuous assignment target ${assignment.target.text} is shown as an opaque structural boundary.`,
+                span: assignment.target.span,
+            });
+        }
     }
 
     for (const opaque of module.opaqueRegions) {
@@ -535,6 +656,7 @@ export function buildSchematicGraph(
         networks: [...networks.values()],
         diagnostics: [
             ...document.diagnostics,
+            ...structuralDiagnostics,
             ...nodes.filter(node => node.readOnly).map(node => {
                 const port = node.kind === 'port'
                     ? module.ports.find(candidate => candidate.name === node.label)
