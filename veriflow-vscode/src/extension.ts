@@ -220,14 +220,7 @@ export function activate(context: vscode.ExtensionContext): void {
         context,
         schematicNavigationRegistry,
         {
-            parseDocument: document => getHdlParser(context).parse(
-                document.uri.toString(),
-                document.version,
-                document.getText(),
-                { defines: _filterHdlDefines(getSettings().defines) },
-                'interactive'
-            ),
-            getIndex: () => _getSchematicIndex(context),
+            getIndex: document => _getSchematicIndex(context, document.uri),
         }
     );
     context.subscriptions.push(
@@ -396,8 +389,13 @@ function _absoluteUri(base: vscode.Uri, value: string): vscode.Uri | undefined {
     return undefined;
 }
 
-function _dependencyRootUris(root: string, libDirs: string[]): string[] {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri
+function _dependencyRootUris(
+    root: string,
+    libDirs: string[],
+    rootUri?: vscode.Uri
+): string[] {
+    const workspaceRoot = rootUri
+        ?? vscode.workspace.workspaceFolders?.[0]?.uri
         ?? vscode.Uri.file(root);
     const roots = [workspaceRoot];
     for (const libDir of libDirs) {
@@ -616,16 +614,29 @@ async function _getDependencyAnalyzer(
 }
 
 async function _getSchematicIndex(
-    context: vscode.ExtensionContext
+    context: vscode.ExtensionContext,
+    resource: vscode.Uri
 ): Promise<WorkspaceHdlIndex | undefined> {
-    if (hdlIndex && !hdlPreparationInFlight) return hdlIndex;
     const root = getWorkspaceRoot();
-    if (!root) return hdlIndex;
     const settings = getSettings();
+    const resourceRoot = resource.with({
+        path: path.posix.dirname(resource.path),
+        query: '',
+        fragment: '',
+    });
+    const rootUris = root
+        ? _dependencyRootUris(root, settings.libDirs)
+        : _dependencyRootUris(resourceRoot.fsPath, settings.libDirs, resourceRoot);
+    const rootIdentity = JSON.stringify(rootUris);
+    if (hdlIndex
+        && hdlIndexIdentity === rootIdentity
+        && !hdlPreparationInFlight) {
+        return hdlIndex;
+    }
     try {
         await _prepareDependencyAnalyzer(
             context,
-            _dependencyRootUris(root, settings.libDirs),
+            rootUris,
             _filterHdlDefines(settings.defines)
         );
     } catch {

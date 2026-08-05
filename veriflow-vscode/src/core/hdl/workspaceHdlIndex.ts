@@ -328,6 +328,36 @@ export class WorkspaceHdlIndex {
         });
     }
 
+    async parseOpenDocument(
+        uri: string,
+        version: number,
+        text: string,
+        signal?: AbortSignal
+    ): Promise<HdlDocument> {
+        const canonicalUri = canonicalizeSourceUri(uri);
+        return this.runExclusive(async () => {
+            this.checkpoint(signal);
+            const batch = this.createBatch();
+            const resolvedIncludes = await this.resolveIncludes(
+                canonicalUri,
+                text,
+                batch,
+                this.defines,
+                signal
+            );
+            this.checkpoint(signal);
+            const document = await this.options.parser.parse(
+                canonicalUri,
+                version,
+                text,
+                { defines: this.defines, resolvedIncludes },
+                'interactive'
+            );
+            this.checkpoint(signal);
+            return document;
+        });
+    }
+
     getDefinition(key: HdlDefinitionKey): HdlDefinitionSummary | undefined {
         return this.getAllDefinitions().find(definition => definition.key === key);
     }

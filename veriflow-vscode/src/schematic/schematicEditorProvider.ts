@@ -27,8 +27,9 @@ import {
 import { buildSchematicWebviewHtml } from './webviewSupport';
 
 export type SchematicEditorServices = {
-    parseDocument(document: vscode.TextDocument): Promise<HdlDocument>;
-    getIndex(): WorkspaceHdlIndex | undefined | Promise<WorkspaceHdlIndex | undefined>;
+    getIndex(
+        document: vscode.TextDocument
+    ): WorkspaceHdlIndex | undefined | Promise<WorkspaceHdlIndex | undefined>;
 };
 
 type SelectableModule = SelectableSchematicModule<ModuleModel>;
@@ -102,6 +103,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let consumePendingSelection = true;
         let registration: { dispose(): void } | undefined;
         let ensureRegistered = (): void => undefined;
+        let refreshAbortController: AbortController | undefined;
 
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) {
@@ -117,7 +119,9 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             })),
             selectedModuleKey: state.selectedModuleKey ?? '',
         });
-        const buildSelectedGraph = async (): Promise<void> => {
+        const buildSelectedGraph = async (
+            preparedIndex?: WorkspaceHdlIndex
+        ): Promise<void> => {
             const selected = state.modules.find(module =>
                 module.key === state.selectedModuleKey
             );
@@ -129,7 +133,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             }
             const parsedDocument = state.parsedDocument;
             const build = graphBuilds.begin(parsedDocument, selected.key);
-            const index = await this.services.getIndex();
+            const index = preparedIndex ?? await this.services.getIndex(document);
             if (state.disposed || !graphBuilds.isCurrent(
                 build,
                 state.parsedDocument,
@@ -165,8 +169,31 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const refreshDocument = async (): Promise<void> => {
             const generation = ++state.refreshGeneration;
+            refreshAbortController?.abort();
+            const refreshController = new AbortController();
+            refreshAbortController = refreshController;
+            const documentUri = document.uri.toString();
+            const documentVersion = document.version;
+            const documentText = document.getText();
             try {
-                const parsed = await this.services.parseDocument(document);
+                const index = await this.services.getIndex(document);
+                if (!isCurrentSchematicRefresh(
+                    generation,
+                    state.refreshGeneration,
+                    state.disposed,
+                    token.isCancellationRequested
+                )) {
+                    return;
+                }
+                if (!index) {
+                    throw new Error('HDL workspace index is unavailable');
+                }
+                const parsed = await index.parseOpenDocument(
+                    documentUri,
+                    documentVersion,
+                    documentText,
+                    refreshController.signal
+                );
                 if (!isCurrentSchematicRefresh(
                     generation,
                     state.refreshGeneration,
@@ -191,7 +218,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     pending,
                     state.selectedModuleKey
                 );
-                await buildSelectedGraph();
+                await buildSelectedGraph(index);
                 if (!isCurrentSchematicRefresh(
                     generation,
                     state.refreshGeneration,
@@ -215,6 +242,10 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     if (state.ready) {
                         await reportError(state.errorMessage);
                     }
+                }
+            } finally {
+                if (refreshAbortController === refreshController) {
+                    refreshAbortController = undefined;
                 }
             }
         };
@@ -245,6 +276,9 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 this.navigation.markFocused(handle);
             }
         };
+        const tokenSubscription = token.onCancellationRequested(() => {
+            refreshAbortController?.abort();
+        });
 
         const messageSubscription = panel.webview.onDidReceiveMessage(message => {
             const command = parseWebviewCommand(message);
@@ -296,11 +330,13 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         const panelSubscription = panel.onDidDispose(() => {
             state.disposed = true;
             state.refreshGeneration++;
+            refreshAbortController?.abort();
             graphBuilds.invalidate();
             registration?.dispose();
             messageSubscription.dispose();
             documentSubscription.dispose();
             focusSubscription.dispose();
+            tokenSubscription.dispose();
             panelSubscription.dispose();
         });
 
