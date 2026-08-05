@@ -33,12 +33,19 @@ export type HdlDefinitionSummary = {
     modelFingerprint: string;
 };
 
+export type HdlUnresolvedIncludeSummary = {
+    ownerUri: string;
+    fromUri: string;
+    rawPath: string;
+};
+
 export type HdlFileSummary = {
     uri: string;
     mtimeMs: number;
     size: number;
     contentHash: string;
     includeUris: string[];
+    unresolvedIncludes?: HdlUnresolvedIncludeSummary[];
     definitions: HdlDefinitionSummary[];
     diagnostics: HdlDiagnostic[];
 };

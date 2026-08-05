@@ -190,6 +190,17 @@ async function testLoadRejectsMalformedCurrentSchema(): Promise<void> {
                 }],
             }],
         },
+        {
+            ...currentSchema,
+            files: [{
+                ...file,
+                unresolvedIncludes: [{
+                    ownerUri: 'memory:/top.sv',
+                    fromUri: 1,
+                    rawPath: 'missing.svh',
+                }],
+            }],
+        },
     ];
 
     for (const value of malformedValues) {
@@ -233,6 +244,28 @@ async function testStoreWaitsForMementoUpdates(): Promise<void> {
     assert.strictEqual(clearComplete, false);
     memento.resolveNext();
     await clear;
+}
+
+async function testStagedWorkspaceSnapshotIsIgnoredByLoad(): Promise<void> {
+    const store = new WorkspaceIndexStore(new MemoryMemento());
+    const committed: PersistedWorkspaceIndex = {
+        schemaVersion: 1,
+        parserFingerprint: 'parser:a',
+        files: [],
+    };
+    const staged: PersistedWorkspaceIndex = {
+        schemaVersion: 1,
+        parserFingerprint: 'parser:b',
+        files: [],
+    };
+    await store.save(committed);
+
+    await store.stage(staged);
+    assert.deepStrictEqual(store.load('parser:a'), committed);
+    assert.strictEqual(store.load('parser:b'), undefined);
+
+    await store.discardStaged();
+    assert.deepStrictEqual(store.load('parser:a'), committed);
 }
 
 async function testDefinitionsExposeOneBasedDeclarationLines(): Promise<void> {
@@ -401,6 +434,59 @@ async function testPersistenceIdentityIncludesDefines(): Promise<void> {
     }
 }
 
+async function testLoadedUnchangedFilesUsePersistedFastPath(): Promise<void> {
+    const harness = createWorkspaceIndexHarness({
+        'file:///ws/a.sv': 'module persisted_a; endmodule',
+        'file:///ws/b.sv': 'module persisted_b; endmodule',
+    });
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws']);
+        assert.strictEqual(harness.parserCalls.length, 2);
+
+        await reloaded.load();
+        await reloaded.scan(['file:///ws']);
+
+        assert.strictEqual(harness.parserCalls.length, 2);
+        assert.strictEqual(reloaded.findDefinitions('persisted_a').length, 1);
+        assert.strictEqual(reloaded.findDefinitions('persisted_b').length, 1);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testLoadedOwnerRefreshesWhenResolvedIncludeChanges(): Promise<void> {
+    const topUri = 'file:///ws/top.sv';
+    const portsUri = 'file:///ws/ports.svh';
+    const harness = createWorkspaceIndexHarness({
+        [topUri]: [
+            'module top (',
+            '`include "ports.svh"',
+            '); endmodule',
+        ].join('\n'),
+        [portsUri]: 'input logic old_i',
+    });
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws']);
+        await reloaded.load();
+        harness.files.set(portsUri, 'output logic new_o');
+
+        await reloaded.refreshUri(portsUri);
+
+        assert.deepStrictEqual(
+            reloaded.findDefinitions('top')[0].ports.map(port => port.name),
+            ['new_o']
+        );
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testFullScanRemovesMissingFilesOnlyWithinRoots(): Promise<void> {
     const aUri = 'file:///ws/a.sv';
     const bUri = 'file:///ws/b.sv';
@@ -535,6 +621,47 @@ async function testIncludeGraphTransitiveRefreshAndStructuralFingerprints(): Pro
     }
 }
 
+async function testUnresolvedIncludeEdgesSurviveReloadAndRecreation(): Promise<void> {
+    const topUri = 'file:///ws/missing-top.sv';
+    const portsUri = 'file:///ws/ports.svh';
+    const harness = createWorkspaceIndexHarness({
+        [topUri]: [
+            'module missing_top (',
+            '`include "ports.svh"',
+            '); endmodule',
+        ].join('\n'),
+    });
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws']);
+        await reloaded.load();
+        harness.files.set(portsUri, 'input logic created_i');
+
+        await reloaded.refreshUri(portsUri);
+
+        assert.deepStrictEqual(
+            reloaded.findDefinitions('missing_top')[0].ports.map(port => port.name),
+            ['created_i']
+        );
+        assert.deepStrictEqual(reloaded.getDependentsOfInclude(portsUri), [topUri]);
+
+        harness.files.delete(portsUri);
+        await reloaded.removeUri(portsUri);
+        assert.deepStrictEqual(reloaded.findDefinitions('missing_top')[0].ports, []);
+
+        harness.files.set(portsUri, 'output logic recreated_o');
+        await reloaded.refreshUri(portsUri);
+        assert.deepStrictEqual(
+            reloaded.findDefinitions('missing_top')[0].ports.map(port => port.name),
+            ['recreated_o']
+        );
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testAbortIsAtomicAndDoesNotPersistOrInvalidate(): Promise<void> {
     const harness = createWorkspaceIndexHarness({
         'file:///ws/a.sv': 'module a; endmodule',
@@ -598,6 +725,110 @@ async function testAbortDuringSaveDoesNotCommitMemoryOrInvalidate(): Promise<voi
         }
     } finally {
         harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testStageAbortIgnoresDiscardFailureAndKeepsCommittedSnapshot(): Promise<void> {
+    const uri = 'file:///ws/stage-abort.sv';
+    const harness = createWorkspaceIndexHarness({
+        [uri]: 'module committed_old; endmodule',
+    });
+    const reloaded = harness.createIndex();
+    const controller = new AbortController();
+    const events: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => events.push(event));
+    try {
+        await harness.index.scan(['file:///ws']);
+        harness.files.set(uri, 'module staged_new___; endmodule');
+        harness.hooks.beforePersist = call => {
+            if (call.key.endsWith('.pending') && call.value !== undefined) {
+                controller.abort();
+            } else if (call.key.endsWith('.pending') && call.value === undefined) {
+                throw new Error('discard failed');
+            }
+        };
+
+        await assert.rejects(
+            harness.index.refreshUri(uri, controller.signal),
+            error => error instanceof Error && error.name === 'AbortError'
+        );
+        assert.strictEqual(harness.index.findDefinitions('committed_old').length, 1);
+        assert.deepStrictEqual(events.slice(1), []);
+
+        await reloaded.load();
+        assert.strictEqual(reloaded.findDefinitions('committed_old').length, 1);
+        assert.strictEqual(reloaded.findDefinitions('staged_new___').length, 0);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testAbortAfterFormalCommitPointCompletesConsistently(): Promise<void> {
+    const uri = 'file:///ws/formal-commit.sv';
+    const harness = createWorkspaceIndexHarness({
+        [uri]: 'module formal_old; endmodule',
+    });
+    const reloaded = harness.createIndex();
+    const controller = new AbortController();
+    const events: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => events.push(event));
+    try {
+        await harness.index.scan(['file:///ws']);
+        events.length = 0;
+        harness.files.set(uri, 'module formal_new; endmodule');
+        harness.hooks.beforePersist = call => {
+            if (call.key === 'veriflow.hdlWorkspaceIndex.v1') {
+                controller.abort();
+            }
+        };
+
+        await harness.index.refreshUri(uri, controller.signal);
+
+        assert.strictEqual(harness.index.findDefinitions('formal_new').length, 1);
+        assert.strictEqual(events.length, 1);
+        await reloaded.load();
+        assert.strictEqual(reloaded.findDefinitions('formal_new').length, 1);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testFormalSaveFailureDoesNotCommitMemory(): Promise<void> {
+    const uri = 'file:///ws/formal-failure.sv';
+    const harness = createWorkspaceIndexHarness({
+        [uri]: 'module failure_old; endmodule',
+    });
+    const reloaded = harness.createIndex();
+    const events: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => events.push(event));
+    try {
+        await harness.index.scan(['file:///ws']);
+        events.length = 0;
+        harness.files.set(uri, 'module failure_new; endmodule');
+        harness.hooks.beforePersist = call => {
+            if (call.key === 'veriflow.hdlWorkspaceIndex.v1') {
+                throw new Error('formal save failed');
+            }
+        };
+
+        const controller = new AbortController();
+        await assert.rejects(
+            harness.index.refreshUri(uri, controller.signal),
+            /formal save failed/
+        );
+
+        assert.strictEqual(harness.index.findDefinitions('failure_old').length, 1);
+        assert.deepStrictEqual(events, []);
+        await reloaded.load();
+        assert.strictEqual(reloaded.findDefinitions('failure_old').length, 1);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
         await harness.dispose();
     }
 }
@@ -767,6 +998,33 @@ async function testPersistedResolveUsesTheExactDefinitionKey(): Promise<void> {
     }
 }
 
+async function testResolveRefreshesStalePersistedSummary(): Promise<void> {
+    const uri = 'file:///ws/stale-resolve.sv';
+    const harness = createWorkspaceIndexHarness({
+        [uri]: 'module old_name(input logic old_i); endmodule',
+    });
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws']);
+        const oldSummary = harness.index.findDefinitions('old_name')[0];
+        harness.files.set(uri, 'module new_name(output logic new_o); endmodule');
+
+        await reloaded.load();
+        const resolved = await reloaded.resolveDefinition(oldSummary.key);
+
+        assert.strictEqual(resolved.summary.key, oldSummary.key);
+        assert.strictEqual(resolved.summary.name, 'new_name');
+        assert.notStrictEqual(resolved.summary.modelFingerprint, oldSummary.modelFingerprint);
+        assert.strictEqual(resolved.module?.name, 'new_name');
+        assert.deepStrictEqual(resolved.summary.ports.map(port => port.name), ['new_o']);
+        assert.deepStrictEqual(resolved.module?.ports.map(port => port.name), ['new_o']);
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void> {
     const harness = createWorkspaceIndexHarness({
         'file:///ws/a.sv': 'module background_a; endmodule',
@@ -808,18 +1066,26 @@ async function main(): Promise<void> {
     await testLoadRejectsMalformedCurrentSchema();
     await testClearRemovesPersistedIndex();
     await testStoreWaitsForMementoUpdates();
+    await testStagedWorkspaceSnapshotIsIgnoredByLoad();
     await testDefinitionsExposeOneBasedDeclarationLines();
     await testCompositeDefinitionsUseTheirOriginalDeclarationLines();
     await testInitialScanDuplicatesAndRefresh();
     await testWorkspacePersistenceAndUnchangedCache();
     await testPersistenceIdentityIncludesDefines();
+    await testLoadedUnchangedFilesUsePersistedFastPath();
+    await testLoadedOwnerRefreshesWhenResolvedIncludeChanges();
     await testFullScanRemovesMissingFilesOnlyWithinRoots();
     await testIncludeGraphTransitiveRefreshAndStructuralFingerprints();
+    await testUnresolvedIncludeEdgesSurviveReloadAndRecreation();
     await testAbortIsAtomicAndDoesNotPersistOrInvalidate();
     await testAbortDuringSaveDoesNotCommitMemoryOrInvalidate();
+    await testStageAbortIgnoresDiscardFailureAndKeepsCommittedSnapshot();
+    await testAbortAfterFormalCommitPointCompletesConsistently();
+    await testFormalSaveFailureDoesNotCommitMemory();
     await testInvalidationRemoveAndConfigurationBatches();
     await testRemoveContinuesPastUnreadableDependents();
     await testPersistedResolveUsesTheExactDefinitionKey();
+    await testResolveRefreshesStalePersistedSummary();
     await testIndexPrioritiesAndInteractiveQueuePrecedence();
 
     console.log('HDL workspace index tests passed');

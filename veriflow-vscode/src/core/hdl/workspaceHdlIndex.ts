@@ -16,6 +16,7 @@ import type {
     HdlDefinitionKind,
     HdlDefinitionSummary,
     HdlFileSummary,
+    HdlUnresolvedIncludeSummary,
     PersistedWorkspaceIndex,
 } from './workspaceIndexTypes';
 
@@ -234,10 +235,18 @@ export class WorkspaceHdlIndex {
         signal?.throwIfAborted();
         const canonicalUri = canonicalizeSourceUri(uri);
         return this.runExclusive(async () => {
+            const unresolvedOwners = await this.getNewlyResolvedOwners(
+                canonicalUri,
+                signal
+            );
             const previousFiles = this.files;
             const batch = this.createBatch();
             await this.processUris(
-                [canonicalUri, ...this.getDependentsOfInclude(canonicalUri)],
+                [
+                    canonicalUri,
+                    ...this.getDependentsOfInclude(canonicalUri),
+                    ...unresolvedOwners,
+                ],
                 batch,
                 this.defines,
                 signal,
@@ -330,33 +339,60 @@ export class WorkspaceHdlIndex {
         module?: ModuleModel;
     }> {
         return this.runExclusive(async () => {
-            const summary = this.getDefinition(key);
+            let summary = this.getDefinition(key);
             if (!summary) {
                 throw new Error(`HDL definition not found: ${key}`);
             }
-            let document = this.documents.get(summary.uri)?.document;
-            if (!document) {
-                const batch = this.createBatch();
-                const prepared = await this.prepareDocument(
-                    summary.uri,
+            const batch = this.createBatch();
+            const prepared = await this.prepareDocument(
+                summary.uri,
+                batch,
+                this.defines
+            );
+            const currentFile = batch.files.get(summary.uri);
+            let document: HdlDocument;
+            if (!currentFile || !this.isPreparedFresh(currentFile, prepared)) {
+                const previousFiles = this.files;
+                await this.processUris(
+                    [summary.uri, ...this.getDependentsOfInclude(summary.uri)],
                     batch,
-                    this.defines
+                    this.defines,
+                    undefined,
+                    true
                 );
-                document = await this.options.parser.parse(
-                    summary.uri,
-                    prepared.input.version,
-                    prepared.input.text,
-                    { defines: this.defines, resolvedIncludes: prepared.resolvedIncludes },
-                    'background'
-                );
-                this.documents.set(summary.uri, {
-                    contentHash: prepared.contentHash,
-                    mtimeMs: prepared.input.mtimeMs,
-                    size: prepared.input.size,
-                    preprocessingFingerprint: prepared.preprocessingFingerprint,
-                    resolvedIncludes: prepared.resolvedIncludes,
-                    document,
-                });
+                await this.commitBatch(previousFiles, batch);
+                summary = this.getDefinition(key);
+                if (!summary) {
+                    throw new Error(`HDL definition not found after refresh: ${key}`);
+                }
+                const refreshed = this.documents.get(summary.uri);
+                if (!refreshed) {
+                    throw new Error(`HDL document not found after refresh: ${summary.uri}`);
+                }
+                document = refreshed.document;
+            } else {
+                const cached = this.documents.get(summary.uri);
+                if (cached
+                    && cached.contentHash === prepared.contentHash
+                    && cached.preprocessingFingerprint === prepared.preprocessingFingerprint) {
+                    document = cached.document;
+                } else {
+                    document = await this.options.parser.parse(
+                        summary.uri,
+                        prepared.input.version,
+                        prepared.input.text,
+                        { defines: this.defines, resolvedIncludes: prepared.resolvedIncludes },
+                        'background'
+                    );
+                    this.documents.set(summary.uri, {
+                        contentHash: prepared.contentHash,
+                        mtimeMs: prepared.input.mtimeMs,
+                        size: prepared.input.size,
+                        preprocessingFingerprint: prepared.preprocessingFingerprint,
+                        resolvedIncludes: prepared.resolvedIncludes,
+                        document,
+                    });
+                }
             }
             const module = summary.kind === 'module'
                 ? document.modules.find(candidate =>
@@ -500,6 +536,9 @@ export class WorkspaceHdlIndex {
             }
             return cached.resolvedIncludes.map(include => include.resolvedUri);
         }
+        if (!cached && current && this.isPreparedFresh(current, prepared)) {
+            return prepared.resolvedIncludes.map(include => include.resolvedUri);
+        }
         if (sourceChanged
             || forceAffected
             || (cached
@@ -540,6 +579,26 @@ export class WorkspaceHdlIndex {
             .map(include => include.resolvedUri)
             .filter((resolvedUri): resolvedUri is string => resolvedUri !== undefined)
             .map(resolvedUri => canonicalizeSourceUri(resolvedUri)))].sort();
+        const unresolvedByKey = new Map<string, HdlUnresolvedIncludeSummary>();
+        for (const include of document.includes) {
+            if (include.resolvedUri !== undefined || !include.path) {
+                continue;
+            }
+            const unresolved: HdlUnresolvedIncludeSummary = {
+                ownerUri: uri,
+                fromUri: canonicalizeSourceUri(include.span.uri ?? uri),
+                rawPath: include.path,
+            };
+            unresolvedByKey.set(
+                `${unresolved.fromUri}\0${unresolved.rawPath}`,
+                unresolved
+            );
+        }
+        const unresolvedIncludes = [...unresolvedByKey.values()].sort((left, right) =>
+            left.ownerUri.localeCompare(right.ownerUri)
+            || left.fromUri.localeCompare(right.fromUri)
+            || left.rawPath.localeCompare(right.rawPath)
+        );
         if (!cached && current && !sourceChanged && (
             JSON.stringify(current.includeUris) !== JSON.stringify(includeUris)
             || JSON.stringify(current.definitions.map(definition => [
@@ -559,6 +618,7 @@ export class WorkspaceHdlIndex {
             size: prepared.input.size,
             contentHash: prepared.contentHash,
             includeUris,
+            unresolvedIncludes,
             definitions,
             diagnostics: document.diagnostics,
         });
@@ -571,6 +631,57 @@ export class WorkspaceHdlIndex {
             document,
         });
         return prepared.resolvedIncludes.map(include => include.resolvedUri);
+    }
+
+    private isPreparedFresh(
+        current: HdlFileSummary,
+        prepared: PreparedDocument
+    ): boolean {
+        if (current.unresolvedIncludes === undefined) {
+            return false;
+        }
+        if (current.mtimeMs !== prepared.input.mtimeMs
+            || current.size !== prepared.input.size
+            || current.contentHash !== prepared.contentHash) {
+            return false;
+        }
+        const includeTexts = new Map<string, string>();
+        for (const include of prepared.resolvedIncludes) {
+            includeTexts.set(canonicalizeSourceUri(include.resolvedUri), include.text);
+        }
+        const includeUris = [...includeTexts.keys()].sort();
+        if (JSON.stringify(current.includeUris) !== JSON.stringify(includeUris)) {
+            return false;
+        }
+        return includeUris.every(uri => {
+            const persisted = this.files.get(uri);
+            const text = includeTexts.get(uri);
+            return persisted !== undefined
+                && text !== undefined
+                && persisted.contentHash === contentHash(text);
+        });
+    }
+
+    private async getNewlyResolvedOwners(
+        targetUri: string,
+        signal?: AbortSignal
+    ): Promise<string[]> {
+        const owners = new Set<string>();
+        for (const file of this.files.values()) {
+            for (const include of file.unresolvedIncludes ?? []) {
+                this.checkpoint(signal);
+                const resolved = await this.options.resolveInclude(
+                    include.fromUri,
+                    include.rawPath
+                );
+                this.checkpoint(signal);
+                if (resolved
+                    && canonicalizeSourceUri(resolved) === targetUri) {
+                    owners.add(canonicalizeSourceUri(include.ownerUri));
+                }
+            }
+        }
+        return [...owners].sort();
     }
 
     private async prepareDocument(
@@ -682,18 +793,32 @@ export class WorkspaceHdlIndex {
         nextDefines?: Record<string, string | true>
     ): Promise<void> {
         this.checkpoint(signal);
-        await this.options.store.save(this.persistedSnapshot(
+        const snapshot = this.persistedSnapshot(
             batch.files,
             nextDefines ?? this.defines
-        ));
-        try {
-            this.checkpoint(signal);
-        } catch (error) {
-            await this.options.store.save(this.persistedSnapshot(
-                previousFiles,
-                this.defines
-            ));
-            throw error;
+        );
+        if (signal) {
+            try {
+                await this.options.store.stage(snapshot);
+            } catch (error) {
+                await this.discardStagedBestEffort();
+                throw error;
+            }
+            try {
+                this.checkpoint(signal);
+            } catch (error) {
+                await this.discardStagedBestEffort();
+                throw error;
+            }
+            try {
+                await this.options.store.save(snapshot);
+            } catch (error) {
+                await this.discardStagedBestEffort();
+                throw error;
+            }
+            await this.discardStagedBestEffort();
+        } else {
+            await this.options.store.save(snapshot);
         }
         this.files = batch.files;
         this.documents = batch.documents;
@@ -743,6 +868,14 @@ export class WorkspaceHdlIndex {
                 left.uri.localeCompare(right.uri)
             ),
         };
+    }
+
+    private async discardStagedBestEffort(): Promise<void> {
+        try {
+            await this.options.store.discardStaged();
+        } catch {
+            // Pending snapshots are never read and cleanup must not mask commit state.
+        }
     }
 
     private emit(event: WorkspaceIndexInvalidation): void {

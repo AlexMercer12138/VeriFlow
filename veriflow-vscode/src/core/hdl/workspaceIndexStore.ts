@@ -6,6 +6,7 @@ type MementoLike = {
 };
 
 const KEY = 'veriflow.hdlWorkspaceIndex.v1';
+const PENDING_KEY = 'veriflow.hdlWorkspaceIndex.v1.pending';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -82,6 +83,13 @@ function isDefinitionSummary(value: unknown): boolean {
         && typeof value.modelFingerprint === 'string';
 }
 
+function isUnresolvedIncludeSummary(value: unknown): boolean {
+    return isRecord(value)
+        && typeof value.ownerUri === 'string'
+        && typeof value.fromUri === 'string'
+        && typeof value.rawPath === 'string';
+}
+
 function isDiagnostic(value: unknown): boolean {
     return isRecord(value)
         && (value.severity === 'error' || value.severity === 'warning' || value.severity === 'info')
@@ -97,6 +105,9 @@ function isFileSummary(value: unknown): boolean {
         && isNumber(value.size)
         && typeof value.contentHash === 'string'
         && isStringArray(value.includeUris)
+        && (value.unresolvedIncludes === undefined
+            || (Array.isArray(value.unresolvedIncludes)
+                && value.unresolvedIncludes.every(isUnresolvedIncludeSummary)))
         && Array.isArray(value.definitions)
         && value.definitions.every(isDefinitionSummary)
         && Array.isArray(value.diagnostics)
@@ -123,6 +134,14 @@ export class WorkspaceIndexStore {
 
     async save(value: PersistedWorkspaceIndex): Promise<void> {
         await this.state.update(KEY, value);
+    }
+
+    async stage(value: PersistedWorkspaceIndex): Promise<void> {
+        await this.state.update(PENDING_KEY, value);
+    }
+
+    async discardStaged(): Promise<void> {
+        await this.state.update(PENDING_KEY, undefined);
     }
 
     async clear(): Promise<void> {

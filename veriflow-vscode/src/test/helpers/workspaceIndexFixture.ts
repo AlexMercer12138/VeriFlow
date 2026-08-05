@@ -12,15 +12,22 @@ type ParserCall = {
     priority: 'interactive' | 'background';
 };
 
+type PersistCall = {
+    key: string;
+    value: unknown;
+    writeNumber: number;
+};
+
 type ParserHooks = {
     onDispatch?: (call: ParserCall) => void;
     afterParse?: (call: ParserCall) => void | Promise<void>;
-    beforePersist?: () => void | Promise<void>;
+    beforePersist?: (call: PersistCall) => void | Promise<void>;
 };
 
 class MemoryMemento {
     readonly writes: unknown[] = [];
     private readonly values = new Map<string, unknown>();
+    private writeNumber = 0;
 
     constructor(private readonly hooks: ParserHooks) {}
 
@@ -29,7 +36,12 @@ class MemoryMemento {
     }
 
     async update(key: string, value: unknown): Promise<void> {
-        await this.hooks.beforePersist?.();
+        this.writeNumber++;
+        await this.hooks.beforePersist?.({
+            key,
+            value,
+            writeNumber: this.writeNumber,
+        });
         const clone = value === undefined
             ? undefined
             : JSON.parse(JSON.stringify(value)) as unknown;
