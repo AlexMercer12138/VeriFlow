@@ -617,6 +617,7 @@ export class WorkspaceHdlIndex {
             mtimeMs: prepared.input.mtimeMs,
             size: prepared.input.size,
             contentHash: prepared.contentHash,
+            preprocessingFingerprint: prepared.preprocessingFingerprint,
             includeUris,
             unresolvedIncludes,
             definitions,
@@ -638,6 +639,10 @@ export class WorkspaceHdlIndex {
         prepared: PreparedDocument
     ): boolean {
         if (current.unresolvedIncludes === undefined) {
+            return false;
+        }
+        if (current.preprocessingFingerprint === undefined
+            || current.preprocessingFingerprint !== prepared.preprocessingFingerprint) {
             return false;
         }
         if (current.mtimeMs !== prepared.input.mtimeMs

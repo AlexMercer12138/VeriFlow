@@ -44,6 +44,7 @@ export type HdlFileSummary = {
     mtimeMs: number;
     size: number;
     contentHash: string;
+    preprocessingFingerprint?: string;
     includeUris: string[];
     unresolvedIncludes?: HdlUnresolvedIncludeSummary[];
     definitions: HdlDefinitionSummary[];

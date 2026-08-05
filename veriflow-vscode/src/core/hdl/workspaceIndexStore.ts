@@ -104,6 +104,8 @@ function isFileSummary(value: unknown): boolean {
         && isNumber(value.mtimeMs)
         && isNumber(value.size)
         && typeof value.contentHash === 'string'
+        && (value.preprocessingFingerprint === undefined
+            || typeof value.preprocessingFingerprint === 'string')
         && isStringArray(value.includeUris)
         && (value.unresolvedIncludes === undefined
             || (Array.isArray(value.unresolvedIncludes)

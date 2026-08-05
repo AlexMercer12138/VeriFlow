@@ -101,6 +101,7 @@ class InstrumentedParser extends HdlParserClient {
 export type WorkspaceIndexHarness = {
     index: WorkspaceHdlIndex;
     files: Map<string, string>;
+    includeMappings: Map<string, string>;
     parserCalls: Array<{ uri: string; priority: 'interactive' | 'background' }>;
     parserOptions: HdlParseOptions[];
     persistedWrites: unknown[];
@@ -117,6 +118,7 @@ export function createWorkspaceIndexHarness(
         canonicalizeSourceUri(uri),
         text,
     ]));
+    const includeMappings = new Map<string, string>();
     const parserCalls: ParserCall[] = [];
     const parserOptions: HdlParseOptions[] = [];
     const hooks: ParserHooks = {};
@@ -155,6 +157,11 @@ export function createWorkspaceIndexHarness(
             };
         },
         async resolveInclude(fromUri: string, includePath: string) {
+            const mappedUri = includeMappings.get(includePath);
+            if (mappedUri !== undefined) {
+                const canonicalMappedUri = canonicalizeSourceUri(mappedUri);
+                return files.has(canonicalMappedUri) ? canonicalMappedUri : undefined;
+            }
             let resolved: string;
             try {
                 resolved = canonicalizeSourceUri(new URL(includePath, fromUri).toString());
@@ -167,6 +174,7 @@ export function createWorkspaceIndexHarness(
     const harness: WorkspaceIndexHarness = {
         index: undefined as unknown as WorkspaceHdlIndex,
         files,
+        includeMappings,
         parserCalls,
         parserOptions,
         persistedWrites: memento.writes,

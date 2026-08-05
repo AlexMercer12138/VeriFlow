@@ -53,6 +53,7 @@ async function testRoundTripPersistence(): Promise<void> {
             mtimeMs: 1_725_000_000_123,
             size: 248,
             contentHash: 'sha256:top-source',
+            preprocessingFingerprint: 'sha256:top-preprocessing',
             includeUris: ['file:///workspace/defs.svh'],
             definitions: [{
                 key: 'module:file:///workspace/top.sv:14',
@@ -143,11 +144,14 @@ async function testLoadRejectsMalformedCurrentSchema(): Promise<void> {
         parserFingerprint: 'parser:a',
         files: [file],
     };
+    memento.set('veriflow.hdlWorkspaceIndex.v1', currentSchema);
+    assert.deepStrictEqual(store.load('parser:a'), currentSchema);
     const malformedValues: unknown[] = [
         null,
         { schemaVersion: 1, parserFingerprint: 'parser:a' },
         { ...currentSchema, files: {} },
         { ...currentSchema, files: [{}] },
+        { ...currentSchema, files: [{ ...file, preprocessingFingerprint: 1 }] },
         { ...currentSchema, files: [{ ...file, definitions: [{}] }] },
         {
             ...currentSchema,
@@ -479,6 +483,63 @@ async function testLoadedOwnerRefreshesWhenResolvedIncludeChanges(): Promise<voi
         assert.deepStrictEqual(
             reloaded.findDefinitions('top')[0].ports.map(port => port.name),
             ['new_o']
+        );
+    } finally {
+        harness.index.dispose();
+        reloaded.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testLoadedScanRefreshesWhenIncludeMappingChanges(): Promise<void> {
+    const topUri = 'file:///ws/top.sv';
+    const aUri = 'file:///ws/a.svh';
+    const bUri = 'file:///ws/b.svh';
+    const harness = createWorkspaceIndexHarness({
+        [topUri]: [
+            'module mapped_top (',
+            '`include "raw1.svh"',
+            '`include "raw2.svh"',
+            '); endmodule',
+        ].join('\n'),
+        [aUri]: [
+            '`ifdef B_WAS_FIRST',
+            'input logic selected_a',
+            '`else',
+            '`define A_WAS_FIRST',
+            '`endif',
+        ].join('\n'),
+        [bUri]: [
+            '`ifdef A_WAS_FIRST',
+            'input logic selected_b',
+            '`else',
+            '`define B_WAS_FIRST',
+            '`endif',
+        ].join('\n'),
+    });
+    harness.includeMappings.set('raw1.svh', aUri);
+    harness.includeMappings.set('raw2.svh', bUri);
+    const reloaded = harness.createIndex();
+    try {
+        await harness.index.scan(['file:///ws']);
+        assert.deepStrictEqual(
+            harness.index.findDefinitions('mapped_top')[0].ports.map(port => port.name),
+            ['selected_b']
+        );
+        const parserCallsBeforeReload = harness.parserCalls.length;
+
+        await reloaded.load();
+        harness.includeMappings.set('raw1.svh', bUri);
+        harness.includeMappings.set('raw2.svh', aUri);
+        await reloaded.scan(['file:///ws']);
+
+        assert.deepStrictEqual(
+            reloaded.findDefinitions('mapped_top')[0].ports.map(port => port.name),
+            ['selected_a']
+        );
+        assert.deepStrictEqual(
+            harness.parserCalls.slice(parserCallsBeforeReload).map(call => call.uri),
+            [topUri]
         );
     } finally {
         harness.index.dispose();
@@ -1074,6 +1135,7 @@ async function main(): Promise<void> {
     await testPersistenceIdentityIncludesDefines();
     await testLoadedUnchangedFilesUsePersistedFastPath();
     await testLoadedOwnerRefreshesWhenResolvedIncludeChanges();
+    await testLoadedScanRefreshesWhenIncludeMappingChanges();
     await testFullScanRemovesMissingFilesOnlyWithinRoots();
     await testIncludeGraphTransitiveRefreshAndStructuralFingerprints();
     await testUnresolvedIncludeEdgesSurviveReloadAndRecreation();
