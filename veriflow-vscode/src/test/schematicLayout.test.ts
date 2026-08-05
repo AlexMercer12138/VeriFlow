@@ -15,6 +15,7 @@ import {
     SchematicLayout,
     SchematicLayoutStore,
 } from '../schematic/layoutStore';
+import { parseWebviewCommand } from '../schematic/protocol';
 
 class MemoryMemento {
     private readonly values = new Map<string, unknown>();
@@ -350,6 +351,56 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         store.load('file:///normalize.sv', 'module:normalize:0'),
         undefined
     );
+}
+
+async function testProtocolSpecialNodeRoundTrip(): Promise<void> {
+    const inputNodes = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(inputNodes, '__proto__', {
+        value: { x: 17, y: 23, fixed: true },
+        enumerable: true,
+    });
+    const command = parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:special-node',
+        layout: {
+            nodes: inputNodes,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+    assert.strictEqual(command?.type, 'saveLayout');
+    if (command?.type !== 'saveLayout') {
+        throw new Error('expected a valid saveLayout command');
+    }
+
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    await store.save('file:///special.sv', command.moduleKey, command.layout);
+
+    const persisted = state.get<{ layout: SchematicLayout }>(state.keys()[0])!;
+    assert.strictEqual(Object.getPrototypeOf(persisted.layout.nodes), Object.prototype);
+    assert.strictEqual(
+        Object.prototype.propertyIsEnumerable.call(persisted.layout.nodes, '__proto__'),
+        true
+    );
+    assert.deepStrictEqual(persisted.layout.nodes['__proto__'], {
+        x: 17,
+        y: 23,
+        fixed: true,
+    });
+
+    const loaded = store.load('file:///special.sv', command.moduleKey)!;
+    assert.strictEqual(Object.getPrototypeOf(loaded.nodes), Object.prototype);
+    assert.strictEqual(
+        Object.prototype.propertyIsEnumerable.call(loaded.nodes, '__proto__'),
+        true
+    );
+    assert.deepStrictEqual(loaded.nodes['__proto__'], {
+        x: 17,
+        y: 23,
+        fixed: true,
+    });
+    assert.strictEqual(({} as { x?: number }).x, undefined);
 }
 
 async function testStaleObjectCleanupAndClearFixed(): Promise<void> {
@@ -784,6 +835,7 @@ async function main(): Promise<void> {
     await testRoundTripAndRematch();
     await testVersionValidationAndKeyIsolation();
     await testNormalizationAndNoEdgePersistence();
+    await testProtocolSpecialNodeRoundTrip();
     await testStaleObjectCleanupAndClearFixed();
     await testMergePreservesAllMatchedCoordinates();
     await testMergePlacesNewNodesAroundMatchedNodes();

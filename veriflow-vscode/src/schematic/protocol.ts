@@ -104,12 +104,12 @@ function normalizeLayout(value: unknown): SchematicLayout | undefined {
     const nodes: SchematicLayout['nodes'] = {};
     let nodeCount = 0;
     for (const id in nodesValue) {
-        if (!Object.prototype.propertyIsEnumerable.call(nodesValue, id)) {
-            continue;
-        }
         nodeCount += 1;
         if (nodeCount > MAX_LAYOUT_NODES) {
             return undefined;
+        }
+        if (!Object.prototype.propertyIsEnumerable.call(nodesValue, id)) {
+            continue;
         }
         const candidate = nodesValue[id];
         const normalizedNode = normalizeNodeLayout(candidate);

@@ -167,20 +167,48 @@ function testLayoutValidation(): void {
 }
 
 function testLayoutBreadthLimit(): void {
-    const overLimitNodes: Record<string, unknown> = {};
-    for (let index = 0; index <= 50_000; index += 1) {
-        overLimitNodes[`node:${index}`] = { x: index, y: 0, fixed: false };
+    const boundedNodes: Record<string, unknown> = {};
+    for (let index = 0; index < 50_000; index += 1) {
+        boundedNodes[`node:${index}`] = { x: index, y: 0, fixed: false };
     }
-    const parsed = parseWebviewCommand({
+    const atLimit = parseWebviewCommand({
         type: 'saveLayout',
-        moduleKey: 'module:oversized',
+        moduleKey: 'module:at-limit',
         layout: {
-            nodes: overLimitNodes,
+            nodes: boundedNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
             minimap: true,
         },
     });
-    assert.strictEqual(parsed?.type, undefined);
+    assert.strictEqual(atLimit?.type, 'saveLayout');
+
+    boundedNodes['node:50000'] = { x: 50_000, y: 0, fixed: false };
+    const overLimit = parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:over-limit',
+        layout: {
+            nodes: boundedNodes,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+    assert.strictEqual(overLimit?.type, undefined);
+
+    const inheritedNodePrototype: Record<string, unknown> = {};
+    for (let index = 0; index <= 100_000; index += 1) {
+        inheritedNodePrototype[`inherited:${index}`] = { x: index, y: 0, fixed: false };
+    }
+    const inheritedOnlyNodes = Object.create(inheritedNodePrototype);
+    const inheritedOverLimit = parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:inherited-over-limit',
+        layout: {
+            nodes: inheritedOnlyNodes,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+    assert.strictEqual(inheritedOverLimit?.type, undefined);
 }
 
 function testSourceSpanValidation(): void {

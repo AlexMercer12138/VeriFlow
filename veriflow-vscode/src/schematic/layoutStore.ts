@@ -102,7 +102,12 @@ function normalizeLayout(value: unknown): SchematicLayout | undefined {
     for (const [id, candidate] of Object.entries(value.nodes)) {
         const normalized = normalizeNodeLayout(candidate);
         if (normalized) {
-            nodes[id] = normalized;
+            Object.defineProperty(nodes, id, {
+                value: normalized,
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
         }
     }
     const normalized: SchematicLayout = {
