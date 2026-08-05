@@ -215,8 +215,14 @@ function _joinRelativeUri(base: vscode.Uri, relativePath: string): vscode.Uri {
 }
 
 function _absoluteUri(base: vscode.Uri, value: string): vscode.Uri | undefined {
-    if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')) {
-        return vscode.Uri.file(value);
+    const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(value);
+    const isUncPath = value.startsWith('\\\\');
+    if (isWindowsDrivePath || isUncPath) {
+        if (base.scheme === 'file') {
+            return vscode.Uri.file(value);
+        }
+        const normalized = value.replace(/\\/g, '/');
+        return base.with({ path: isWindowsDrivePath ? `/${normalized}` : normalized });
     }
     if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
         return vscode.Uri.parse(value);

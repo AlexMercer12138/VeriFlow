@@ -47,6 +47,14 @@ class FakeUri {
 
     static file(value: string): FakeUri {
         let normalized = value.replace(/\\/g, '/');
+        if (normalized.startsWith('//')) {
+            const [authority, ...segments] = normalized.slice(2).split('/');
+            return new FakeUri(
+                'file',
+                authority,
+                path.posix.normalize(`/${segments.join('/')}`)
+            );
+        }
         if (/^[A-Za-z]:\//.test(normalized)) {
             normalized = `/${normalized}`;
         } else if (!normalized.startsWith('/')) {
@@ -537,6 +545,22 @@ async function testRemoteAbsoluteLibDirPreservesWorkspaceAuthority(): Promise<vo
     }
 }
 
+async function testRemoteWindowsAbsoluteLibDirPreservesWorkspaceAuthority(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.folder.uri = FakeUri.parse('vscode-remote://ssh-win/C:/workspace/project');
+        harness.settings.libDirs = ['C:\\sdk\\hdl'];
+        await harness.analyze();
+
+        assert.deepStrictEqual(FakeWorkspaceHdlIndex.instances[0].scannedRoots[0], [
+            'vscode-remote://ssh-win/C:/workspace/project',
+            'vscode-remote://ssh-win/C:/sdk/hdl',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function assertAbsoluteIncludeResolution(
     includePath: string,
     expectedUri: string
@@ -559,6 +583,13 @@ async function testWindowsAbsoluteInclude(): Promise<void> {
     await assertAbsoluteIncludeResolution(
         'C:\\sdk\\include\\defs.svh',
         'file:///C:/sdk/include/defs.svh'
+    );
+}
+
+async function testLocalUncAbsoluteInclude(): Promise<void> {
+    await assertAbsoluteIncludeResolution(
+        '\\\\server\\share\\defs.svh',
+        'file://server/share/defs.svh'
     );
 }
 
@@ -592,12 +623,47 @@ async function testRemotePosixAbsoluteInclude(): Promise<void> {
     }
 }
 
+async function testRemoteWindowsAbsoluteInclude(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.folder.uri = FakeUri.parse('vscode-remote://ssh-win/C:/workspace/project');
+        harness.existingUris.add('vscode-remote://ssh-win/C:/sdk/include/defs.svh');
+        await harness.analyze();
+        const resolved = await FakeWorkspaceHdlIndex.instances[0].options.resolveInclude(
+            'vscode-remote://ssh-win/C:/workspace/project/src/top.sv',
+            'C:\\sdk\\include\\defs.svh'
+        );
+        assert.strictEqual(resolved, 'vscode-remote://ssh-win/C:/sdk/include/defs.svh');
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testRemoteUncAbsoluteInclude(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.folder.uri = FakeUri.parse('vscode-remote://ssh-win/C:/workspace/project');
+        harness.existingUris.add('vscode-remote://ssh-win//server/share/defs.svh');
+        await harness.analyze();
+        const resolved = await FakeWorkspaceHdlIndex.instances[0].options.resolveInclude(
+            'vscode-remote://ssh-win/C:/workspace/project/src/top.sv',
+            '\\\\server\\share\\defs.svh'
+        );
+        assert.strictEqual(resolved, 'vscode-remote://ssh-win//server/share/defs.svh');
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testAbsoluteIncludeReviewCases(): Promise<void> {
     const tests: Array<[string, () => Promise<void>]> = [
         ['Windows absolute include', testWindowsAbsoluteInclude],
+        ['local UNC absolute include', testLocalUncAbsoluteInclude],
         ['POSIX absolute include', testPosixAbsoluteInclude],
         ['absolute URI include', testAbsoluteUriInclude],
         ['remote POSIX absolute include', testRemotePosixAbsoluteInclude],
+        ['remote Windows absolute include', testRemoteWindowsAbsoluteInclude],
+        ['remote UNC absolute include', testRemoteUncAbsoluteInclude],
     ];
     const failures: string[] = [];
     for (const [name, test] of tests) {
@@ -619,8 +685,9 @@ async function main(): Promise<void> {
     await testLibDirOrderControlsIncludePriority();
     await testRootIdentityControlsIndexLifetime();
     await testNonFileWorkspaceRootsPreserveUriIdentity();
-    await testAbsoluteIncludeReviewCases();
     await testRemoteAbsoluteLibDirPreservesWorkspaceAuthority();
+    await testRemoteWindowsAbsoluteLibDirPreservesWorkspaceAuthority();
+    await testAbsoluteIncludeReviewCases();
     console.log('extension dependency index tests passed');
 }
 
