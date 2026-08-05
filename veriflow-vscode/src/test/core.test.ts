@@ -1459,6 +1459,75 @@ async function testModuleInstantiationChoices(): Promise<void> {
     }
 }
 
+function testTestbenchGeneratorUsesOnlyOwnOverrides(): void {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-prototype-tb-'));
+    const baseConfig: TbConfig = {
+        name: 'tb_prototype_keys',
+        time_unit: '1ns',
+        time_precision: '1ps',
+        clocks_mhz: [],
+        reset_active_high: true,
+        reset_duration: '10',
+        modules: [{
+            definitionKey: 'module:file:///prototype_keys.sv:0',
+            module_name: 'prototype_keys',
+            instance_name: 'u_prototype_keys',
+            parameters: [
+                { name: '__proto__', value: 'P_PROTO' },
+                { name: 'constructor', value: 'P_CTOR' },
+                { name: 'toString', value: 'P_STRING' },
+            ],
+            ports: [
+                { name: '__proto__', direction: 'input' },
+                { name: 'constructor', direction: 'input' },
+                { name: 'toString', direction: 'input' },
+            ],
+            port_signals: {},
+            param_values: {},
+        }],
+        wave_file: 'prototype.vcd',
+        timeout: '100',
+    };
+
+    const defaultFile = new TestbenchGenerator().generate(baseConfig, outputDir);
+    const defaultContent = fs.readFileSync(defaultFile, 'utf8');
+    assert.ok(defaultContent.includes([
+        '    reg __proto__;',
+        '    reg constructor;',
+        '    reg toString;',
+    ].join('\n')));
+    assert.ok(defaultContent.includes([
+        '        .__proto__   ( P_PROTO  ),',
+        '        .constructor ( P_CTOR   ),',
+        '        .toString    ( P_STRING ))',
+        '    u_prototype_keys (',
+        '        .__proto__   ( __proto__   ),',
+        '        .constructor ( constructor ),',
+        '        .toString    ( toString    ));',
+    ].join('\n')));
+
+    const portSignals = Object.create(null) as Record<string, string>;
+    const paramValues = Object.create(null) as Record<string, string>;
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+        portSignals[name] = `sig_${name}`;
+        paramValues[name] = `value_${name}`;
+    }
+    const explicitFile = new TestbenchGenerator().generate({
+        ...baseConfig,
+        name: 'tb_prototype_explicit',
+        modules: [{
+            ...baseConfig.modules[0],
+            port_signals: portSignals,
+            param_values: paramValues,
+        }],
+    }, outputDir);
+    const explicitContent = fs.readFileSync(explicitFile, 'utf8');
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+        assert.ok(explicitContent.includes(`value_${name}`));
+        assert.ok(explicitContent.includes(`sig_${name}`));
+    }
+}
+
 async function testEscapedModuleInstantiationRoundTrip(): Promise<void> {
     assert.deepStrictEqual([
         'child',
@@ -1523,6 +1592,54 @@ async function testEscapedModuleInstantiationRoundTrip(): Promise<void> {
         assert.deepStrictEqual(
             parsed.modules[0].instances[0].portConnections.map(item => item.name),
             ['\\in.a', '\\out$b']
+        );
+
+        const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-escaped-tb-'));
+        const testbenchFile = new TestbenchGenerator().generate({
+            name: 'tb_escaped',
+            time_unit: '1ns',
+            time_precision: '1ps',
+            clocks_mhz: [],
+            reset_active_high: true,
+            reset_duration: '10',
+            modules: [{
+                definitionKey: definition.key,
+                module_name: moduleInfo.name,
+                instance_name: instanceName,
+                ports: moduleInfo.ports,
+                parameters: moduleInfo.parameters,
+                port_signals: {},
+                param_values: {},
+            }],
+            wave_file: 'escaped.vcd',
+            timeout: '100',
+        }, outputDir);
+        const testbenchSource = fs.readFileSync(testbenchFile, 'utf8');
+        assert.ok(testbenchSource.includes([
+            '    // ---- Shared DUT input signals (reg) ----',
+            '    reg \\in.a ;',
+            '',
+            '    // ---- Shared DUT output signals (wire) ----',
+            '    wire \\out$b ;',
+        ].join('\n')));
+        assert.ok(testbenchSource.includes([
+            '    \\foo.bar #(',
+            '        .\\P.W ( 8 ))',
+            '    u_foo_bar (',
+            '        .\\in.a  ( \\in.a  ),',
+            '        .\\out$b ( \\out$b ));',
+        ].join('\n')));
+        const parsedTestbench = await harness.parseInteractive(
+            pathToFileURL(testbenchFile).toString(),
+            testbenchSource
+        );
+        assert.deepStrictEqual(parsedTestbench.diagnostics.filter(diagnostic =>
+            diagnostic.code === 'systemverilog.syntax-error'
+            || diagnostic.code === 'systemverilog.missing-syntax'
+        ), []);
+        assert.strictEqual(
+            parsedTestbench.modules[0].instances[0].moduleName,
+            '\\foo.bar'
         );
     } finally {
         await harness.dispose();
@@ -1664,6 +1781,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer non-file URI fallback', testDependencyAnalyzerNonFileUriFallback],
     ['dependency analyzer production wiring', testDependencyAnalyzerProductionWiring],
     ['testbench generator', testTestbenchGenerator],
+    ['testbench generator own overrides', testTestbenchGeneratorUsesOnlyOwnOverrides],
     ['log parser', testLogParser],
     ['simulation runner paths', testSimulationRunnerPathResolution],
     ['simulation runner command logging', testSimulationRunnerCommandLogging],

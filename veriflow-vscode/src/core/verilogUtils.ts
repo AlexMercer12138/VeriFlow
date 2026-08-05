@@ -205,7 +205,3 @@ function isEscaped(content: string, index: number): boolean {
     }
     return backslashCount % 2 === 1;
 }
-
-export const MODULE_DECL_RE = /\bmodule\s+(\w+)/g;
-export const INST_RE = /\b(?!module\b)(?!endmodule\b)(\w+)\s+(?:#\s*\([^)]*\)\s*)?(\w+)\s*\(/g;
-export const INCLUDE_RE = /`include\s+["<]([^">]+)[">]/g;

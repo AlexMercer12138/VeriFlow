@@ -11,6 +11,18 @@ import { getSettings } from './config';
 
 type TestbenchModuleIndex = Pick<WorkspaceHdlIndex, 'getAllDefinitions' | 'getDefinition'>;
 
+function copyStringRecord(value: unknown): Record<string, string> {
+    const copy = Object.create(null) as Record<string, string>;
+    if (!value || typeof value !== 'object') { return copy; }
+    for (const key of Object.keys(value)) {
+        const item = (value as Record<string, unknown>)[key];
+        if (typeof item === 'string') {
+            copy[key] = item;
+        }
+    }
+    return copy;
+}
+
 export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'veriflow.testbench';
 
@@ -62,6 +74,7 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
 
         const messageDisposable = webviewView.webview.onDidReceiveMessage(async (message) => {
             if (!this._isCurrentMessageSource(webviewView, generation)) { return; }
+            if (!message || typeof message !== 'object' || Array.isArray(message)) { return; }
             switch (message.type) {
                 case 'getModules':
                     this.refreshModules();
@@ -110,7 +123,7 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     refreshModules(): void {
         if (this._disposed) { return; }
         this._postModules();
-        this._postModuleValidity();
+        this._syncEntries();
     }
 
     dispose(): void {
@@ -133,7 +146,9 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     private _addModule(definitionKey: string): void {
         if (this._moduleEntries.length >= 20) { return; }
         const index = this._getIndex();
-        const definition = definitionKey ? index?.getDefinition(definitionKey) : undefined;
+        const definition = typeof definitionKey === 'string' && definitionKey
+            ? index?.getDefinition(definitionKey)
+            : undefined;
         if (!definition || definition.kind !== 'module') {
             this._reportError('The selected module definition is no longer available. Refresh and select it again.');
             return;
@@ -151,7 +166,7 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             displayName,
             definition,
             choice?.description ?? definition.uri,
-            sameCount
+            this._nextDefaultInstanceName(definition.name)
         );
 
         this._moduleEntries.push(entry);
@@ -163,13 +178,17 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     }
 
     private _removeModule(index: number): void {
-        if (index < 0 || index >= this._moduleEntries.length) { return; }
+        if (!Number.isInteger(index) || index < 0 || index >= this._moduleEntries.length) {
+            return;
+        }
         this._moduleEntries.splice(index, 1);
         this._postMessage({ type: 'moduleRemoved', index });
     }
 
     private _selectModule(index: number): void {
-        if (index < 0 || index >= this._moduleEntries.length) { return; }
+        if (!Number.isInteger(index) || index < 0 || index >= this._moduleEntries.length) {
+            return;
+        }
         const entry = this._moduleEntries[index];
         this._postMessage({
             type: 'moduleSelected',
@@ -179,33 +198,57 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     }
 
     private _updateInstanceName(index: number, value: string): void {
-        if (index < 0 || index >= this._moduleEntries.length) { return; }
+        if (!Number.isInteger(index)
+            || index < 0
+            || index >= this._moduleEntries.length
+            || typeof value !== 'string') { return; }
         this._moduleEntries[index].instanceName = value.trim();
     }
 
     private _updatePortSignal(index: number, portName: string, value: string): void {
-        if (index < 0 || index >= this._moduleEntries.length) { return; }
-        this._moduleEntries[index].setPortSignal(portName, value.trim());
+        if (!Number.isInteger(index)
+            || index < 0
+            || index >= this._moduleEntries.length
+            || typeof portName !== 'string'
+            || typeof value !== 'string') { return; }
+        const entry = this._moduleEntries[index];
+        if (!entry.ports.some(port => port.name === portName)) { return; }
+        entry.setPortSignal(portName, value.trim());
     }
 
     private _updateParamValue(index: number, paramName: string, value: string): void {
-        if (index < 0 || index >= this._moduleEntries.length) { return; }
-        this._moduleEntries[index].setParamValue(paramName, value.trim());
+        if (!Number.isInteger(index)
+            || index < 0
+            || index >= this._moduleEntries.length
+            || typeof paramName !== 'string'
+            || typeof value !== 'string') { return; }
+        const entry = this._moduleEntries[index];
+        if (!entry.params.some(param => param.name === paramName)) { return; }
+        entry.setParamValue(paramName, value.trim());
     }
 
     private async _generate(
-        config: any,
+        config: unknown,
         sourceView: vscode.WebviewView,
         generation: number
     ): Promise<void> {
         if (!this._isCurrentMessageSource(sourceView, generation)) { return; }
+        if (!config || typeof config !== 'object' || Array.isArray(config)) {
+            this._reportError('Invalid testbench request. Refresh the view and try again.');
+            return;
+        }
+        const values = config as Record<string, unknown>;
+        const stringValue = (key: string, fallback: string): string => {
+            const value = values[key];
+            return typeof value === 'string' && value.length > 0 ? value : fallback;
+        };
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!root) {
             vscode.window.showWarningMessage('No workspace folder open.');
             return;
         }
 
-        const name = (config.name || '').trim();
+        const name = stringValue('name', '').trim();
         if (!name) {
             vscode.window.showWarningMessage('Please enter a testbench name.');
             return;
@@ -225,21 +268,26 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         const modules = this._resolveModulesForGeneration();
         if (!modules) { return; }
 
-        const outputDirSetting = (config.output_dir || getSettings().testbenchOutputDir || '.').trim() || '.';
+        const outputDirSetting = stringValue(
+            'output_dir',
+            getSettings().testbenchOutputDir || '.'
+        ).trim() || '.';
         const outputDir = path.isAbsolute(outputDirSetting)
             ? outputDirSetting
             : path.join(root, outputDirSetting);
 
         const tbConfig: TbConfig = {
             name,
-            time_unit: config.time_unit || '1ns',
-            time_precision: config.time_precision || '1ps',
-            clocks_mhz: config.clocks_mhz || ['100'],
-            reset_active_high: config.reset_active_high === true,
-            reset_duration: config.reset_duration || '100',
+            time_unit: stringValue('time_unit', '1ns'),
+            time_precision: stringValue('time_precision', '1ps'),
+            clocks_mhz: Array.isArray(values.clocks_mhz)
+                ? values.clocks_mhz.filter((value): value is string => typeof value === 'string')
+                : ['100'],
+            reset_active_high: values.reset_active_high === true,
+            reset_duration: stringValue('reset_duration', '100'),
             modules,
-            wave_file: config.wave_file || `${name}.vcd`,
-            timeout: config.timeout || '1000000',
+            wave_file: stringValue('wave_file', `${name}.vcd`),
+            timeout: stringValue('timeout', '1000000'),
         };
 
         try {
@@ -268,7 +316,15 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     private _resolveModulesForGeneration(): TbModuleConfig[] | undefined {
         const index = this._getIndex();
         const modules: TbModuleConfig[] = [];
+        const instanceNames = new Set<string>();
         for (const entry of this._moduleEntries) {
+            if (instanceNames.has(entry.instanceName)) {
+                this._reportError(
+                    `Each DUT instance name must be unique. Duplicate: "${entry.instanceName}".`
+                );
+                return undefined;
+            }
+            instanceNames.add(entry.instanceName);
             const resolution = this._resolveEntry(index, entry);
             if (resolution.error || !resolution.definition) {
                 this._reportError(resolution.error ?? 'The selected module definition is unavailable.');
@@ -281,22 +337,32 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
                 instance_name: entry.instanceName,
                 ports: info.ports,
                 parameters: info.parameters,
-                port_signals: { ...entry.portSignalOverrides },
-                param_values: { ...entry.paramValueOverrides },
+                port_signals: copyStringRecord(entry.portSignalOverrides),
+                param_values: copyStringRecord(entry.paramValueOverrides),
             });
         }
         return modules;
     }
 
-    private _postModuleValidity(): void {
+    private _syncEntries(): void {
         const index = this._getIndex();
         this._postMessage({
-            type: 'moduleValidity',
-            entries: this._moduleEntries.map((entry, indexValue) => ({
-                index: indexValue,
-                error: this._resolveEntry(index, entry).error,
+            type: 'syncEntries',
+            entries: this._moduleEntries.map(entry => ({
+                ...entry.toJSON(),
+                invalidReason: this._resolveEntry(index, entry).error,
             })),
         });
+    }
+
+    private _nextDefaultInstanceName(moduleName: string): string {
+        const base = defaultModuleInstanceIdentifier(moduleName);
+        const used = new Set(this._moduleEntries.map(entry => entry.instanceName));
+        if (!used.has(base)) { return base; }
+        for (let suffix = 1; ; suffix++) {
+            const candidate = `${base}_${suffix}`;
+            if (!used.has(candidate)) { return candidate; }
+        }
     }
 
     private _resolveEntry(
@@ -709,6 +775,27 @@ button.secondary:hover {
 
     function post(msg) { vscode.postMessage(msg); }
 
+    function hasOwn(record, key) {
+        return Object.prototype.hasOwnProperty.call(record, key);
+    }
+
+    function copyStringRecord(record) {
+        const copy = Object.create(null);
+        if (!record || typeof record !== 'object') return copy;
+        Object.keys(record).forEach(key => {
+            if (typeof record[key] === 'string') copy[key] = record[key];
+        });
+        return copy;
+    }
+
+    function normalizeEntry(entry) {
+        return {
+            ...entry,
+            portSignalOverrides: copyStringRecord(entry.portSignalOverrides),
+            paramValueOverrides: copyStringRecord(entry.paramValueOverrides),
+        };
+    }
+
     function setValidation(message = '') {
         const el = document.getElementById('validationMessage');
         el.textContent = message;
@@ -796,7 +883,7 @@ button.secondary:hover {
         if (entry.params && entry.params.length > 0) {
             html += '<div style="font-weight:600;margin:4px 0;">Parameters</div>';
             entry.params.forEach(p => {
-                const val = entry.paramValueOverrides[p.name] !== undefined ? entry.paramValueOverrides[p.name] : p.value;
+                const val = hasOwn(entry.paramValueOverrides, p.name) ? entry.paramValueOverrides[p.name] : p.value;
                 html += '<div class="param-row"><label>' + escapeHtml(p.name) + ':</label><input type="text" class="param-input" data-pname="' + escapeHtml(p.name) + '" value="' + escapeHtml(val) + '" /></div>';
             });
         }
@@ -804,7 +891,7 @@ button.secondary:hover {
         if (entry.ports && entry.ports.length > 0) {
             html += '<div style="font-weight:600;margin:4px 0;">Ports</div>';
             entry.ports.forEach(p => {
-                const sig = entry.portSignalOverrides[p.name] !== undefined ? entry.portSignalOverrides[p.name] : p.name;
+                const sig = hasOwn(entry.portSignalOverrides, p.name) ? entry.portSignalOverrides[p.name] : p.name;
                 const hint = p.direction + (p.width ? ' ' + p.width : '');
                 html += '<div class="port-row"><label>' + escapeHtml(p.name) + ' <span class="hint">' + escapeHtml(hint) + '</span>:</label><input type="text" class="port-input" data-pname="' + escapeHtml(p.name) + '" value="' + escapeHtml(sig) + '" /></div>';
             });
@@ -898,10 +985,10 @@ button.secondary:hover {
                 break;
             case 'moduleAdded':
                 setValidation('');
-                moduleEntries.push(msg.entry);
+                moduleEntries.push(normalizeEntry(msg.entry));
                 selectedModuleIndex = moduleEntries.length - 1;
                 renderModuleList();
-                renderModuleDetail(msg.entry, selectedModuleIndex);
+                renderModuleDetail(moduleEntries[selectedModuleIndex], selectedModuleIndex);
                 break;
             case 'moduleRemoved':
                 moduleEntries.splice(msg.index, 1);
@@ -916,18 +1003,22 @@ button.secondary:hover {
                 break;
             case 'moduleSelected':
                 selectedModuleIndex = msg.index;
+                moduleEntries[msg.index] = normalizeEntry(msg.entry);
                 renderModuleList();
-                renderModuleDetail(msg.entry, msg.index);
+                renderModuleDetail(moduleEntries[msg.index], msg.index);
                 break;
-            case 'moduleValidity':
-                msg.entries.forEach(item => {
-                    if (moduleEntries[item.index]) {
-                        moduleEntries[item.index].invalidReason = item.error || '';
-                    }
-                });
+            case 'syncEntries':
+                moduleEntries = msg.entries.map(normalizeEntry);
+                selectedModuleIndex = moduleEntries.length === 0
+                    ? -1
+                    : Math.min(Math.max(selectedModuleIndex, 0), moduleEntries.length - 1);
                 renderModuleList();
-                const invalidEntry = msg.entries.find(item => item.error);
-                setValidation(invalidEntry ? invalidEntry.error : '');
+                renderModuleDetail(
+                    moduleEntries[selectedModuleIndex] || null,
+                    selectedModuleIndex
+                );
+                const invalidEntry = moduleEntries.find(item => item.invalidReason);
+                setValidation(invalidEntry ? invalidEntry.invalidReason : '');
                 break;
             case 'addClockRow':
                 addClock();
@@ -968,14 +1059,14 @@ class TbModuleEntry {
     instanceName: string;
     ports: Port[] = [];
     params: Parameter[] = [];
-    portSignalOverrides: Record<string, string> = {};
-    paramValueOverrides: Record<string, string> = {};
+    portSignalOverrides: Record<string, string> = Object.create(null);
+    paramValueOverrides: Record<string, string> = Object.create(null);
 
     constructor(
         moduleName: string,
         definition: HdlDefinitionSummary,
         sourceDescription: string,
-        sameModuleCount: number
+        instanceName: string
     ) {
         const info = toModuleInfo(definition);
         this.definitionKey = definition.key;
@@ -984,8 +1075,7 @@ class TbModuleEntry {
         this.verilogModuleName = definition.name;
         this.filepath = info.filepath;
         this.sourceDescription = sourceDescription;
-        this.instanceName = defaultModuleInstanceIdentifier(definition.name)
-            + (sameModuleCount > 0 ? `_${sameModuleCount}` : '');
+        this.instanceName = instanceName;
         this.ports = info.ports;
         this.params = info.parameters;
     }
@@ -1009,8 +1099,8 @@ class TbModuleEntry {
             instanceName: this.instanceName,
             ports: this.ports,
             params: this.params,
-            portSignalOverrides: { ...this.portSignalOverrides },
-            paramValueOverrides: { ...this.paramValueOverrides },
+            portSignalOverrides: copyStringRecord(this.portSignalOverrides),
+            paramValueOverrides: copyStringRecord(this.paramValueOverrides),
         };
     }
 }

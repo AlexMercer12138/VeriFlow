@@ -92,9 +92,14 @@ function testAllStructuralConsumersUseWorkspaceIndex(): void {
 
     const typesSource = fs.readFileSync(path.join(extensionRoot, 'src', 'core', 'types.ts'), 'utf8');
     const extensionSource = fs.readFileSync(path.join(extensionRoot, 'src', 'extension.ts'), 'utf8');
+    const utilitySource = fs.readFileSync(
+        path.join(extensionRoot, 'src', 'core', 'verilogUtils.ts'),
+        'utf8'
+    );
     assert.ok(!typesSource.includes('modulesByDir'));
     assert.ok(!typesSource.includes('moduleFiles'));
     assert.ok(!extensionSource.includes('setModuleMap'));
+    assert.doesNotMatch(utilitySource, /export const (?:MODULE_DECL_RE|INST_RE|INCLUDE_RE)\b/);
 }
 
 function testDuplicateSummaryIsMergedAndHasNoPopup(): void {

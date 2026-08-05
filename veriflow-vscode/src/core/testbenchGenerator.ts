@@ -19,9 +19,33 @@ function clog2(val: number): number {
 }
 
 function isValidVerilogIdentifier(name: string): boolean {
-    if (!name) { return false; }
-    const first = name[0];
-    return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first === '_';
+    return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(name) || /^\\\S+$/.test(name);
+}
+
+function identifierBeforePunctuation(name: string): string {
+    return name.startsWith('\\') ? `${name} ` : name;
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+    const normalized = Object.create(null) as Record<string, string>;
+    if (!value || typeof value !== 'object') { return normalized; }
+    for (const key of Object.keys(value)) {
+        const item = (value as Record<string, unknown>)[key];
+        if (typeof item === 'string') {
+            normalized[key] = item;
+        }
+    }
+    return normalized;
+}
+
+function ownValue(
+    values: Record<string, string>,
+    name: string,
+    fallback: string
+): string {
+    return Object.prototype.hasOwnProperty.call(values, name)
+        ? values[name]
+        : fallback;
 }
 
 function replaceClog2(expr: string): string {
@@ -154,14 +178,14 @@ export class TestbenchGenerator {
 
         for (const { mod, ports, params } of allParsed) {
             // Build param value map for width resolution
-            const paramValues = mod.param_values || {};
-            const paramMap: Record<string, string> = {};
+            const paramValues = normalizeStringRecord(mod.param_values);
+            const paramMap = Object.create(null) as Record<string, string>;
             for (const p of params) {
-                paramMap[p.name] = paramValues[p.name] || p.value;
+                paramMap[p.name] = ownValue(paramValues, p.name, p.value);
             }
-            const portSignals = mod.port_signals || {};
+            const portSignals = normalizeStringRecord(mod.port_signals);
             for (const port of ports) {
-                const sigName = portSignals[port.name] || port.name;
+                const sigName = ownValue(portSignals, port.name, port.name);
                 if (excludeSignals.has(sigName)) { continue; }
                 const existing = mergedSignals.get(sigName);
                 if (!existing) {
@@ -177,10 +201,10 @@ export class TestbenchGenerator {
         }
 
         // ---- Generate shared signal declarations ----
-        // Only generate declarations for valid Verilog identifiers (first char is letter or underscore)
-        const inputSignals: Record<string, string | undefined> = {};
-        const outputSignals: Record<string, string | undefined> = {};
-        const inoutSignals: Record<string, string | undefined> = {};
+        // Only generate declarations for simple or escaped Verilog identifiers.
+        const inputSignals = Object.create(null) as Record<string, string | undefined>;
+        const outputSignals = Object.create(null) as Record<string, string | undefined>;
+        const inoutSignals = Object.create(null) as Record<string, string | undefined>;
 
         for (const [sigName, { port, paramMap }] of mergedSignals.entries()) {
             if (!isValidVerilogIdentifier(sigName)) { continue; }
@@ -198,7 +222,8 @@ export class TestbenchGenerator {
             L.push('    // ---- Shared DUT input signals (reg) ----');
             for (const sig of Object.keys(inputSignals).sort()) {
                 const w = inputSignals[sig];
-                const decl = w ? `    reg ${w} ${sig};` : `    reg ${sig};`;
+                const identifier = identifierBeforePunctuation(sig);
+                const decl = w ? `    reg ${w} ${identifier};` : `    reg ${identifier};`;
                 L.push(decl);
             }
             L.push('');
@@ -208,7 +233,8 @@ export class TestbenchGenerator {
             L.push('    // ---- Shared DUT output signals (wire) ----');
             for (const sig of Object.keys(outputSignals).sort()) {
                 const w = outputSignals[sig];
-                const decl = w ? `    wire ${w} ${sig};` : `    wire ${sig};`;
+                const identifier = identifierBeforePunctuation(sig);
+                const decl = w ? `    wire ${w} ${identifier};` : `    wire ${identifier};`;
                 L.push(decl);
             }
             L.push('');
@@ -218,7 +244,8 @@ export class TestbenchGenerator {
             L.push('    // ---- Shared DUT inout signals (wire) ----');
             for (const sig of Object.keys(inoutSignals).sort()) {
                 const w = inoutSignals[sig];
-                const decl = w ? `    wire ${w} ${sig};` : `    wire ${sig};`;
+                const identifier = identifierBeforePunctuation(sig);
+                const decl = w ? `    wire ${w} ${identifier};` : `    wire ${identifier};`;
                 L.push(decl);
             }
             L.push('');
@@ -228,8 +255,8 @@ export class TestbenchGenerator {
         for (const { mod, ports, params } of allParsed) {
             const modName = mod.module_name || 'unknown';
             const instName = mod.instance_name || `u_${modName}`;
-            const portSignals = mod.port_signals || {};
-            const paramValues = mod.param_values || {};
+            const portSignals = normalizeStringRecord(mod.port_signals);
+            const paramValues = normalizeStringRecord(mod.param_values);
 
             L.push(`    // ---- DUT: ${modName} (${instName}) ----`);
 
@@ -238,11 +265,11 @@ export class TestbenchGenerator {
                 instanceName: instName,
                 parameters: params.map(param => ({
                     name: param.name,
-                    value: paramValues[param.name] || param.value,
+                    value: ownValue(paramValues, param.name, param.value),
                 })),
                 ports: ports.map(port => ({
                     name: port.name,
-                    value: portSignals[port.name] || port.name,
+                    value: ownValue(portSignals, port.name, port.name),
                 })),
                 baseIndent: '    ',
             });

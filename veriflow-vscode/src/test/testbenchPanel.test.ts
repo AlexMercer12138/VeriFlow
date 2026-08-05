@@ -78,29 +78,12 @@ function createHarness(initialDefinitions: HdlDefinitionSummary[]) {
     const errors: string[] = [];
     const generatedConfigs: any[] = [];
     let currentIndex: FakeIndex | undefined = indexOf(initialDefinitions);
-    let receiveMessage: ((message: any) => Promise<void> | void) | undefined;
-    let disposeView: (() => void) | undefined;
     const disposable = { dispose(): void {} };
-    const webview = {
-        options: {},
-        html: '',
-        postMessage(message: PostedMessage): Promise<boolean> {
-            posted.push(message);
-            return Promise.resolve(true);
-        },
-        onDidReceiveMessage(listener: (message: any) => Promise<void> | void) {
-            receiveMessage = listener;
-            return disposable;
-        },
-    };
-    const view = {
-        visible: true,
-        webview,
-        onDidChangeVisibility(): typeof disposable { return disposable; },
-        onDidDispose(listener: () => void): typeof disposable {
-            disposeView = listener;
-            return disposable;
-        },
+    type HarnessView = {
+        posted: PostedMessage[];
+        receiveMessage?: (message: any) => Promise<void> | void;
+        disposeView?: () => void;
+        view: any;
     };
     class FakeGenerator {
         generate(config: any, outputDir: string): string {
@@ -141,7 +124,34 @@ function createHarness(initialDefinitions: HdlDefinitionSummary[]) {
         { extensionUri: { value: 'file:///extension' } },
         () => currentIndex
     );
-    provider.resolveWebviewView(view, {}, {});
+    const resolveView = (): HarnessView => {
+        const state: HarnessView = { posted: [], view: undefined };
+        const webview = {
+            options: {},
+            html: '',
+            postMessage(message: PostedMessage): Promise<boolean> {
+                state.posted.push(message);
+                posted.push(message);
+                return Promise.resolve(true);
+            },
+            onDidReceiveMessage(listener: (message: any) => Promise<void> | void) {
+                state.receiveMessage = listener;
+                return disposable;
+            },
+        };
+        state.view = {
+            visible: true,
+            webview,
+            onDidChangeVisibility(): typeof disposable { return disposable; },
+            onDidDispose(listener: () => void): typeof disposable {
+                state.disposeView = listener;
+                return disposable;
+            },
+        };
+        provider.resolveWebviewView(state.view, {}, {});
+        return state;
+    };
+    let currentView = resolveView();
     return {
         provider,
         posted,
@@ -149,11 +159,16 @@ function createHarness(initialDefinitions: HdlDefinitionSummary[]) {
         errors,
         generatedConfigs,
         setIndex(index: FakeIndex | undefined): void { currentIndex = index; },
-        async send(message: any): Promise<void> {
-            assert.ok(receiveMessage, 'webview message listener was registered');
-            await receiveMessage!(message);
+        get view() { return currentView; },
+        resolveView(): HarnessView {
+            currentView = resolveView();
+            return currentView;
         },
-        disposeView(): void { disposeView?.(); },
+        async send(message: any, target: HarnessView = currentView): Promise<void> {
+            assert.ok(target.receiveMessage, 'webview message listener was registered');
+            await target.receiveMessage!(message);
+        },
+        disposeView(target: HarnessView = currentView): void { target.disposeView?.(); },
     };
 }
 
@@ -224,16 +239,16 @@ async function testLiveResolutionAndFingerprintRejection(): Promise<void> {
 
     harness.setIndex(indexOf([{ ...original, modelFingerprint: 'fp-2' }, duplicate]));
     harness.provider.refreshModules();
-    const changed = latest(harness.posted, 'moduleValidity');
-    assert.match(changed.entries[0].error, /changed/i);
+    const changed = latest(harness.posted, 'syncEntries');
+    assert.match(changed.entries[0].invalidReason, /changed/i);
     await harness.send({ type: 'generate', config: { name: 'tb_changed' } });
     assert.strictEqual(harness.generatedConfigs.length, 1);
     assert.match(latest(harness.posted, 'error').message, /changed/i);
 
     harness.setIndex(indexOf([duplicate]));
     harness.provider.refreshModules();
-    const missing = latest(harness.posted, 'moduleValidity');
-    assert.match(missing.entries[0].error, /no longer available/i);
+    const missing = latest(harness.posted, 'syncEntries');
+    assert.match(missing.entries[0].invalidReason, /no longer available/i);
     await harness.send({ type: 'generate', config: { name: 'tb_missing' } });
     assert.strictEqual(harness.generatedConfigs.length, 1);
     assert.match(latest(harness.posted, 'error').message, /no longer available/i);
@@ -252,10 +267,244 @@ async function testDisposedPanelIgnoresOldMessages(): Promise<void> {
     assert.deepStrictEqual(harness.errors, []);
 }
 
+async function testReresolvedViewHydratesEntriesBeforeEditing(): Promise<void> {
+    const a = definition('a', 'unit_a', 'file:///C:/workspace/a.sv', 1, 'fp-a');
+    const b = definition('b', 'unit_b', 'file:///C:/workspace/b.sv', 1, 'fp-b');
+    const harness = createHarness([a, b]);
+    const firstView = harness.view;
+    await harness.send({ type: 'addModule', definitionKey: a.key });
+    await harness.send({
+        type: 'updatePortSignal',
+        index: 0,
+        portName: 'data_i',
+        value: 'a_payload',
+    });
+    await harness.send({
+        type: 'updateParamValue',
+        index: 0,
+        paramName: 'WIDTH',
+        value: '12',
+    });
+
+    harness.disposeView(firstView);
+    const secondView = harness.resolveView();
+    await harness.send({ type: 'getModules' }, secondView);
+    assert.deepStrictEqual(
+        secondView.posted.slice(-2).map(message => message.type),
+        ['modules', 'syncEntries']
+    );
+    const snapshot = latest(secondView.posted, 'syncEntries');
+    assert.strictEqual(snapshot.entries.length, 1);
+    assert.strictEqual(snapshot.entries[0].definitionKey, a.key);
+    assert.strictEqual(snapshot.entries[0].portSignalOverrides.data_i, 'a_payload');
+    assert.strictEqual(snapshot.entries[0].paramValueOverrides.WIDTH, '12');
+    assert.strictEqual(snapshot.entries[0].invalidReason, undefined);
+
+    await harness.send({ type: 'addModule', definitionKey: b.key }, firstView);
+    await harness.send({ type: 'addModule', definitionKey: b.key }, secondView);
+    assert.strictEqual(latest(secondView.posted, 'moduleAdded').index, 1);
+    await harness.send({
+        type: 'updatePortSignal',
+        index: 1,
+        portName: 'data_i',
+        value: 'b_payload',
+    }, secondView);
+    await harness.send({ type: 'generate', config: { name: 'tb_hydrated' } }, secondView);
+
+    const generated = harness.generatedConfigs.at(-1);
+    assert.deepStrictEqual(
+        generated.modules.map((moduleConfig: any) => moduleConfig.definitionKey),
+        [a.key, b.key]
+    );
+    assert.strictEqual(generated.modules[0].port_signals.data_i, 'a_payload');
+    assert.strictEqual(generated.modules[1].port_signals.data_i, 'b_payload');
+}
+
+async function testPanelOverridesArePrototypeSafe(): Promise<void> {
+    const special = definition(
+        'special',
+        'prototype_ports',
+        'file:///C:/workspace/prototype_ports.sv',
+        1,
+        'fp-special'
+    );
+    special.parameters = [
+        { name: '__proto__', defaultExpression: 'P_PROTO' },
+        { name: 'constructor', defaultExpression: 'P_CTOR' },
+        { name: 'toString', defaultExpression: 'P_STRING' },
+    ];
+    special.ports = ['__proto__', 'constructor', 'toString'].map(name => ({
+        name,
+        direction: 'input' as const,
+        width: { kind: 'known' as const, bits: 1 },
+    }));
+    const harness = createHarness([special]);
+    await harness.send({ type: 'addModule', definitionKey: special.key });
+    await harness.send({
+        type: 'updatePortSignal',
+        index: 0,
+        portName: '__proto__',
+        value: 'sig_proto',
+    });
+    await harness.send({
+        type: 'updateParamValue',
+        index: 0,
+        paramName: '__proto__',
+        value: 'value_proto',
+    });
+    for (const name of ['constructor', 'toString']) {
+        await harness.send({
+            type: 'updatePortSignal',
+            index: 0,
+            portName: name,
+            value: `sig_${name}`,
+        });
+        await harness.send({
+            type: 'updateParamValue',
+            index: 0,
+            paramName: name,
+            value: `value_${name}`,
+        });
+    }
+    await harness.send({
+        type: 'updatePortSignal',
+        index: 0,
+        portName: 'not_a_port',
+        value: 'untrusted',
+    });
+    await harness.send({
+        type: 'updatePortSignal',
+        index: 0,
+        portName: '__proto__',
+        value: 42,
+    });
+
+    harness.provider.refreshModules();
+    const synced = latest(harness.posted, 'syncEntries').entries[0];
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+        assert.ok(Object.prototype.hasOwnProperty.call(synced.portSignalOverrides, name));
+        assert.ok(Object.prototype.hasOwnProperty.call(synced.paramValueOverrides, name));
+    }
+    assert.ok(!Object.prototype.hasOwnProperty.call(
+        synced.portSignalOverrides,
+        'not_a_port'
+    ));
+
+    await harness.send({ type: 'generate', config: { name: 'tb_special_keys' } });
+    const moduleConfig = harness.generatedConfigs.at(-1).modules[0];
+    assert.strictEqual(moduleConfig.port_signals.__proto__, 'sig_proto');
+    assert.strictEqual(moduleConfig.param_values.__proto__, 'value_proto');
+    assert.ok(Object.prototype.hasOwnProperty.call(moduleConfig.port_signals, '__proto__'));
+    assert.ok(Object.prototype.hasOwnProperty.call(moduleConfig.param_values, '__proto__'));
+    const html = harness.view.view.webview.html as string;
+    assert.ok(html.includes('hasOwn(entry.paramValueOverrides, p.name)'));
+    assert.ok(html.includes('hasOwn(entry.portSignalOverrides, p.name)'));
+    assert.match(
+        html,
+        /case 'moduleAdded':[\s\S]*renderModuleDetail\(moduleEntries\[selectedModuleIndex\], selectedModuleIndex\)/
+    );
+}
+
+async function testDefaultInstanceNamesStayUnique(): Promise<void> {
+    const plain = definition('plain', 'plain', 'file:///C:/workspace/plain.sv', 1, 'fp-p');
+    const harness = createHarness([plain]);
+    await harness.send({ type: 'addModule', definitionKey: plain.key });
+    assert.strictEqual(latest(harness.posted, 'moduleAdded').entry.instanceName, 'u_plain');
+    await harness.send({ type: 'addModule', definitionKey: plain.key });
+    assert.strictEqual(latest(harness.posted, 'moduleAdded').entry.instanceName, 'u_plain_1');
+    await harness.send({ type: 'removeModule', index: 0 });
+    await harness.send({ type: 'addModule', definitionKey: plain.key });
+    assert.strictEqual(latest(harness.posted, 'moduleAdded').entry.instanceName, 'u_plain');
+
+    const dotted = definition(
+        'dotted',
+        '\\foo.bar ',
+        'file:///C:/workspace/dotted.sv',
+        1,
+        'fp-dotted'
+    );
+    const dashed = definition(
+        'dashed',
+        '\\foo-bar ',
+        'file:///C:/workspace/dashed.sv',
+        1,
+        'fp-dashed'
+    );
+    const escapedHarness = createHarness([dotted, dashed]);
+    await escapedHarness.send({ type: 'addModule', definitionKey: dotted.key });
+    await escapedHarness.send({ type: 'addModule', definitionKey: dashed.key });
+    const escapedNames = escapedHarness.posted
+        .filter(message => message.type === 'moduleAdded')
+        .map(message => message.entry.instanceName);
+    assert.deepStrictEqual(escapedNames, ['u_foo_bar', 'u_foo_bar_1']);
+}
+
+async function testGenerateRejectsDuplicateInstanceNames(): Promise<void> {
+    const a = definition('a', 'unit_a', 'file:///C:/workspace/a.sv', 1, 'fp-a');
+    const b = definition('b', 'unit_b', 'file:///C:/workspace/b.sv', 1, 'fp-b');
+    const harness = createHarness([a, b]);
+    await harness.send({ type: 'addModule', definitionKey: a.key });
+    await harness.send({ type: 'addModule', definitionKey: b.key });
+    await harness.send({
+        type: 'updateInstanceName',
+        index: 1,
+        value: 'u_unit_a',
+    });
+    await harness.send({ type: 'generate', config: { name: 'tb_duplicate_instances' } });
+    assert.strictEqual(harness.generatedConfigs.length, 0);
+    assert.match(latest(harness.posted, 'error').message, /instance name.*unique/i);
+}
+
+async function testGeneratePreservesDefaultsForEmptyConfigValues(): Promise<void> {
+    const item = definition('item', 'item', 'file:///C:/workspace/item.sv', 1, 'fp-item');
+    const harness = createHarness([item]);
+    await harness.send({ type: 'addModule', definitionKey: item.key });
+    await harness.send({
+        type: 'generate',
+        config: {
+            name: 'tb_defaults',
+            time_unit: '',
+            time_precision: '',
+            reset_duration: '',
+            wave_file: '',
+            timeout: '',
+        },
+    });
+
+    const generated = harness.generatedConfigs.at(-1);
+    assert.strictEqual(generated.time_unit, '1ns');
+    assert.strictEqual(generated.time_precision, '1ps');
+    assert.strictEqual(generated.reset_duration, '100');
+    assert.strictEqual(generated.wave_file, 'tb_defaults.vcd');
+    assert.strictEqual(generated.timeout, '1000000');
+}
+
+async function testMalformedWebviewMessagesHaveNoSideEffects(): Promise<void> {
+    const item = definition('item', 'item', 'file:///C:/workspace/item.sv', 1, 'fp-item');
+    const harness = createHarness([item]);
+    await harness.send({ type: 'addModule', definitionKey: item.key });
+    await harness.send({ type: 'removeModule', index: '0' });
+    harness.provider.refreshModules();
+    assert.strictEqual(latest(harness.posted, 'syncEntries').entries.length, 1);
+
+    const generatedBefore = harness.generatedConfigs.length;
+    await harness.send({ type: 'generate', config: null });
+    assert.strictEqual(harness.generatedConfigs.length, generatedBefore);
+    assert.match(latest(harness.posted, 'error').message, /invalid testbench request/i);
+    await harness.send(null);
+    assert.strictEqual(harness.generatedConfigs.length, generatedBefore);
+}
+
 async function main(): Promise<void> {
     await testExactChoicesAndResolvedAdd();
     await testLiveResolutionAndFingerprintRejection();
     await testDisposedPanelIgnoresOldMessages();
+    await testReresolvedViewHydratesEntriesBeforeEditing();
+    await testPanelOverridesArePrototypeSafe();
+    await testDefaultInstanceNamesStayUnique();
+    await testGenerateRejectsDuplicateInstanceNames();
+    await testGeneratePreservesDefaultsForEmptyConfigValues();
+    await testMalformedWebviewMessagesHaveNoSideEffects();
     console.log('testbench panel tests passed');
 }
 
