@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as vscode from 'vscode';
 
 import type { HdlDocument, ModuleModel } from '../core/hdl/model';
+import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import { buildSchematicGraph, type InstanceDefinitionBinding } from './graphBuilder';
 import {
@@ -18,7 +19,10 @@ import {
 import { parseWebviewCommand, type HostEvent } from './protocol';
 import {
     isCurrentSchematicRefresh,
+    selectableSchematicModules,
+    selectSchematicModuleKey,
     SchematicBuildGeneration,
+    type SelectableSchematicModule,
 } from './schematicEditorSupport';
 import { buildSchematicWebviewHtml } from './webviewSupport';
 
@@ -27,11 +31,7 @@ export type SchematicEditorServices = {
     getIndex(): WorkspaceHdlIndex | undefined | Promise<WorkspaceHdlIndex | undefined>;
 };
 
-type SelectableModule = {
-    key: string;
-    name: string;
-    model: ModuleModel;
-};
+type SelectableModule = SelectableSchematicModule<ModuleModel>;
 
 type PanelState = {
     disposed: boolean;
@@ -44,20 +44,6 @@ type PanelState = {
     layout?: SchematicLayout;
     errorMessage?: string;
 };
-
-function moduleDefinitionKey(uri: string, module: ModuleModel): string {
-    return `module:${uri}:${module.declarationSpan.start}`;
-}
-
-function modulesOwnedByUri(document: HdlDocument, uri: string): SelectableModule[] {
-    return document.modules
-        .filter(module => (module.nameSpan.uri ?? document.uri) === uri)
-        .map(module => ({
-            key: moduleDefinitionKey(uri, module),
-            name: module.name,
-            model: module,
-        }));
-}
 
 function instanceBindings(
     module: ModuleModel,
@@ -94,7 +80,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         panel: vscode.WebviewPanel,
         token: vscode.CancellationToken
     ): Promise<void> {
-        const uri = document.uri.toString();
+        const uri = canonicalizeSourceUri(document.uri.toString());
         const assetRoot = vscode.Uri.joinPath(
             this.context.extensionUri,
             'media',
@@ -191,19 +177,20 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 }
                 state.errorMessage = undefined;
                 state.parsedDocument = parsed;
-                state.modules = modulesOwnedByUri(parsed, uri);
+                state.modules = selectableSchematicModules(
+                    uri,
+                    parsed.uri,
+                    parsed.modules
+                );
                 const pending = consumePendingSelection
                     ? this.navigation.consumePending(uri)
                     : undefined;
                 consumePendingSelection = false;
-                const selectedStillExists = state.modules.some(module =>
-                    module.key === state.selectedModuleKey
+                state.selectedModuleKey = selectSchematicModuleKey(
+                    state.modules,
+                    pending,
+                    state.selectedModuleKey
                 );
-                state.selectedModuleKey = state.modules.some(module => module.key === pending)
-                    ? pending
-                    : selectedStillExists
-                        ? state.selectedModuleKey
-                        : state.modules[0]?.key;
                 await buildSelectedGraph();
                 if (!isCurrentSchematicRefresh(
                     generation,
@@ -297,7 +284,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             })().catch(error => { void reportError(error); });
         });
         const documentSubscription = vscode.workspace.onDidChangeTextDocument(event => {
-            if (event.document.uri.toString() === uri) {
+            if (canonicalizeSourceUri(event.document.uri.toString()) === uri) {
                 void refreshDocument();
             }
         });
