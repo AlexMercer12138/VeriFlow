@@ -392,6 +392,31 @@ async function testDependencyAnalyzerTopIdentity(): Promise<void> {
     }
 }
 
+async function testDependencyAnalyzerRejectsReachableNameCollision(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-name-collision-'));
+    const harness = await createDependencyHarness(projectDir, {
+        'a/dup.sv': 'module dup; dup u_other(); endmodule\n',
+        'b/dup.sv': 'module dup; endmodule\n',
+    });
+    try {
+        const definitions = harness.index.findDefinitions('dup', 'module');
+        const top = definitions[0];
+        const boundDependency = definitions[1];
+        const result = new DependencyAnalyzer(harness.index).resolve(top.key, {
+            dup: boundDependency.key,
+        });
+
+        assert.deepStrictEqual(result.ambiguousModules, {
+            dup: definitions.map(definition => definition.key).sort(),
+        });
+        assert.strictEqual(result.moduleMap.dup, fileURLToPath(top.uri));
+        assert.deepStrictEqual(result.depGraph.dup, ['dup']);
+        assert.deepStrictEqual(result.files, [fileURLToPath(top.uri)]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testDependencyAnalyzerIncludeOrderAndCycles(): Promise<void> {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-order-'));
     const harness = await createDependencyHarness(projectDir, {
@@ -1522,6 +1547,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer procedural statements', testDependencyAnalyzerProceduralStatements],
     ['dependency analyzer missing and ambiguous modules', testDependencyAnalyzerMissingAndAmbiguousModules],
     ['dependency analyzer top identity', testDependencyAnalyzerTopIdentity],
+    ['dependency analyzer rejects reachable name collision', testDependencyAnalyzerRejectsReachableNameCollision],
     ['dependency analyzer include order and cycles', testDependencyAnalyzerIncludeOrderAndCycles],
     ['dependency analyzer non-file URI fallback', testDependencyAnalyzerNonFileUriFallback],
     ['dependency analyzer production wiring', testDependencyAnalyzerProductionWiring],

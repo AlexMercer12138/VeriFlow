@@ -65,6 +65,7 @@ export class DependencyAnalyzer {
         }
 
         const definitionState = new Map<string, 'visiting' | 'done'>();
+        const definitionsByName = new Map<string, HdlDefinitionSummary>();
         const fileState = new Map<string, 'visiting' | 'done'>();
 
         const addFile = (uri: string): void => {
@@ -82,10 +83,20 @@ export class DependencyAnalyzer {
         };
 
         const visit = (definition: HdlDefinitionSummary): void => {
+            const existingDefinition = definitionsByName.get(definition.name);
+            if (existingDefinition && existingDefinition.key !== definition.key) {
+                ambiguous.set(definition.name, [
+                    ...(ambiguous.get(definition.name) ?? []),
+                    existingDefinition.key,
+                    definition.key,
+                ]);
+                return;
+            }
             const state = definitionState.get(definition.key);
             if (state === 'visiting' || state === 'done') {
                 return;
             }
+            definitionsByName.set(definition.name, definition);
             definitionState.set(definition.key, 'visiting');
             result.moduleMap[definition.name] = indexedUriToPath(definition.uri);
 
