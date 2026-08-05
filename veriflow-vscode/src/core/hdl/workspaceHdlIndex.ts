@@ -333,6 +333,17 @@ export class WorkspaceHdlIndex {
             .sort();
     }
 
+    async canResolveUnresolvedInclude(uri: string, signal?: AbortSignal): Promise<boolean> {
+        signal?.throwIfAborted();
+        const canonicalUri = canonicalizeSourceUri(uri);
+        return this.runExclusive(async () => {
+            this.checkpoint(signal);
+            const owners = await this.getNewlyResolvedOwners(canonicalUri, signal);
+            this.checkpoint(signal);
+            return owners.length > 0;
+        });
+    }
+
     async resolveDefinition(key: HdlDefinitionKey): Promise<{
         summary: HdlDefinitionSummary;
         document: HdlDocument;

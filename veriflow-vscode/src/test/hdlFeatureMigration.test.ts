@@ -393,6 +393,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         modelFingerprint: 'rogue-top',
     }];
     const indexedExternalIncludeUri = 'file:///external/generated/defs.svh';
+    const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
+    const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const definitions = [
         workspaceDefinition,
         secondWorkspaceDefinition,
@@ -426,7 +428,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     let nextTopPersistenceGate: ReturnType<typeof createScanGate> | undefined;
+    let nextTopPersistenceError: Error | undefined;
     let nextDependencyPersistenceGate: ReturnType<typeof createScanGate> | undefined;
+    let nextDependencyPersistenceError: Error | undefined;
     let nextDependencyResultTag: string | undefined;
     let deferredQuickPickSelection: {
         label: string;
@@ -453,10 +457,19 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let analyzeStatus = 'idle';
     let simulateStatus = 'idle';
     let outputClearCount = 0;
+    let outputShowCount = 0;
+    let treeWriteCount = 0;
+    let statusWriteCount = 0;
+    let parserCreateCalls = 0;
     const executedCommands: Array<{ name: string; args: unknown[] }> = [];
     const presentedLibDirs: string[][] = [];
     let quickPickItems: Array<{ label: string; description?: string }> = [];
-    const status = { text: '', tooltip: '', command: '', show(): void {}, dispose(): void {} };
+    let statusText = '';
+    const status = {
+        get text(): string { return statusText; },
+        set text(value: string) { statusText = value; statusWriteCount++; },
+        tooltip: '', command: '', show(): void {}, dispose(): void {},
+    };
     const disposable = { dispose(): void {} };
     const folder = { uri: FakeUri.parse(workspaceRootUri) };
     const workspaceFolders = [folder, { uri: FakeUri.parse('file:///B-workspace') }];
@@ -497,6 +510,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         async refreshUri(uri: string): Promise<void> {
             events.push(`refresh:${uri}`);
             this.indexedUris.add(uri);
+            if (uri === unresolvedExternalIncludeUri) {
+                events.push(`refresh-owner:${topDefinition.uri}`);
+            }
             if (uri === unconfiguredWorkspaceUri) {
                 this.definitions.push(...unconfiguredWorkspaceDefinitions);
             }
@@ -513,6 +529,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         }
         getFile(uri: string): object | undefined {
             return this.indexedUris.has(uri) ? {} : undefined;
+        }
+        async canResolveUnresolvedInclude(uri: string): Promise<boolean> {
+            events.push(`probe-unresolved:${uri}`);
+            return uri === unresolvedExternalIncludeUri;
         }
         getAllDefinitions(kind?: string): Definition[] {
             return kind && kind !== 'module' ? [] : [...this.definitions].sort((left, right) =>
@@ -547,18 +567,21 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         set topModule(selection: TopModuleSelection | undefined) {
             this._topModule = selection;
             presentedTop = selection;
+            treeWriteCount++;
         }
         setScanResult(result: {
             definitions: ModuleDefinitionEntry[];
             moduleFiles: Record<string, string>;
             libDirs?: string[];
         } | null): void {
+            treeWriteCount++;
             lastScanResult = result ?? undefined;
             if (result) {
                 presentedLibDirs.push([...(result.libDirs ?? [])]);
             }
         }
         setAnalyzeResult(result: unknown): void {
+            treeWriteCount++;
             this.analyzeResult = result;
             presentedAnalyzeResult = result;
         }
@@ -665,9 +688,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         setTopModule: async (_context: unknown, selection: TopModuleSelection | undefined) => {
             const gate = nextTopPersistenceGate;
             nextTopPersistenceGate = undefined;
+            const error = nextTopPersistenceError;
+            nextTopPersistenceError = undefined;
             if (gate) {
                 gate.markStarted();
                 await gate.release;
+            }
+            if (error) {
+                throw error;
             }
             storedTop = selection;
         },
@@ -694,9 +722,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         setDependencyResult: async (_context: unknown, result: unknown) => {
             const gate = nextDependencyPersistenceGate;
             nextDependencyPersistenceGate = undefined;
+            const error = nextDependencyPersistenceError;
+            nextDependencyPersistenceError = undefined;
             if (gate) {
                 gate.markStarted();
                 await gate.release;
+            }
+            if (error) {
+                throw error;
             }
             persistedDependencyResult = result;
         },
@@ -727,7 +760,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         listVerilogFiles: () => [], readText: () => '',
         preprocessVerilog: (value: string) => value, removeComments: (value: string) => value,
-        createHdlParserClient: () => ({ clearCache(): void {}, async dispose(): Promise<void> {} }),
+        createHdlParserClient: () => {
+            parserCreateCalls++;
+            return { clearCache(): void {}, async dispose(): Promise<void> {} };
+        },
         formatDuplicateSummary: (groups: Array<{ name: string; definitions: Definition[] }>) => ({
             outputLines: groups.flatMap(group => group.definitions.map(
                 definition => `  ${group.name}: ${definition.uri}:${definition.declarationLine}`
@@ -750,7 +786,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         './output': {
             appendError(): void {}, appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
             appendWarning(message: string): void { warnings.push(message); },
-            clear(): void { outputClearCount++; }, dispose(): void {}, show(): void {},
+            clear(): void { outputClearCount++; }, dispose(): void {},
+            show(): void { outputShowCount++; },
         },
         fs: {
             existsSync(): boolean { return true; },
@@ -767,6 +804,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         subscriptions: [] as unknown[],
         workspaceState: { get: () => undefined, update: async () => undefined },
     };
+    let extensionDeactivated = false;
     try {
         extension.activate(context);
         await withTimeout(
@@ -812,10 +850,29 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(warnings.length, warningsBeforeForeignEvents);
 
         await withTimeout(
+            Promise.resolve(createListener!(FakeUri.parse(unresolvedExternalIncludeUri))),
+            'unresolved external include creation'
+        );
+        await withTimeout(
+            Promise.resolve(createListener!(FakeUri.parse(rogueExternalUri))),
+            'unrelated external HDL creation'
+        );
+        assert.ok(events.includes(`probe-unresolved:${unresolvedExternalIncludeUri}`));
+        assert.ok(events.includes(`refresh:${unresolvedExternalIncludeUri}`));
+        assert.ok(events.includes(`refresh-owner:${topDefinition.uri}`));
+        assert.ok(events.includes(`probe-unresolved:${rogueExternalUri}`));
+        assert.ok(!events.includes(`refresh:${rogueExternalUri}`));
+
+        await withTimeout(
             Promise.resolve(changeListener!(FakeUri.parse(indexedExternalIncludeUri))),
             'indexed external include change'
         );
         assert.ok(events.includes(`refresh:${indexedExternalIncludeUri}`));
+        await withTimeout(
+            Promise.resolve(deleteListener!(FakeUri.parse(indexedExternalIncludeUri))),
+            'indexed external include delete'
+        );
+        assert.ok(events.includes(`remove:${indexedExternalIncludeUri}`));
 
         await withTimeout(
             Promise.resolve(commands.get('veriflow.selectTop')!()),
@@ -987,6 +1044,58 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before same-root top persistence'
+        );
+        const sameRootTopPickerGate = createScanGate();
+        const sameRootTopPersistenceGate = createScanGate();
+        nextQuickPickGate = sameRootTopPickerGate;
+        nextTopPersistenceGate = sameRootTopPersistenceGate;
+        const sameRootTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(sameRootTopPickerGate.started, 'same-root top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        sameRootTopPickerGate.allow();
+        await withTimeout(sameRootTopPersistenceGate.started, 'same-root top persistence');
+        await withTimeout(
+            Promise.resolve(changeListener!(FakeUri.parse(workspaceDefinition.uri))),
+            'same-root refresh during top persistence'
+        );
+        sameRootTopPersistenceGate.allow();
+        await withTimeout(sameRootTopPicker, 'same-root persisted top selection');
+        const sameRootTopSelection = {
+            definitionKey: prototypeNamedDefinition.key,
+            name: prototypeNamedDefinition.name,
+        };
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        const deletedTopPickerGate = createScanGate();
+        const deletedTopPersistenceGate = createScanGate();
+        nextQuickPickGate = deletedTopPickerGate;
+        nextTopPersistenceGate = deletedTopPersistenceGate;
+        const deletedTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(deletedTopPickerGate.started, 'top picker before selected delete');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        deletedTopPickerGate.allow();
+        await withTimeout(deletedTopPersistenceGate.started, 'top persistence before selected delete');
+        const selectedTopDelete = Promise.resolve(
+            deleteListener!(FakeUri.parse(topDefinition.uri))
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+        deletedTopPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([deletedTopPicker, selectedTopDelete]),
+            'deleted persisted top selection'
+        );
+        assert.strictEqual(storedTop, undefined);
+        assert.strictEqual(presentedTop, undefined);
+        await withTimeout(
+            Promise.resolve(createListener!(FakeUri.parse(topDefinition.uri))),
+            'restore top after persisted selection delete'
+        );
+
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
             'scan before out-of-order top persistence'
         );
         const staleTopPickerGate = createScanGate();
@@ -1049,6 +1158,44 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.libDirs',
         })), 'top persistence recovery');
+
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before rejected top persistence'
+        );
+        const rejectedTopPickerGate = createScanGate();
+        const rejectedTopPersistenceGate = createScanGate();
+        nextQuickPickGate = rejectedTopPickerGate;
+        nextTopPersistenceGate = rejectedTopPersistenceGate;
+        nextTopPersistenceError = new Error('top persistence failed');
+        const rejectedTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(rejectedTopPickerGate.started, 'rejected top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        rejectedTopPickerGate.allow();
+        await withTimeout(rejectedTopPersistenceGate.started, 'rejected top persistence');
+        rejectedTopPersistenceGate.allow();
+        await withTimeout(
+            assert.rejects(rejectedTopPicker, /top persistence failed/),
+            'rejected top selection'
+        );
+        const retainedTopSelection = {
+            definitionKey: topDefinition.key,
+            name: topDefinition.name,
+        };
+        assert.deepStrictEqual(storedTop, retainedTopSelection);
+        assert.deepStrictEqual(presentedTop, retainedTopSelection);
+
+        const recoveredTopPickerGate = createScanGate();
+        nextQuickPickGate = recoveredTopPickerGate;
+        const recoveredTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(recoveredTopPickerGate.started, 'recovered top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        recoveredTopPickerGate.allow();
+        await withTimeout(recoveredTopPicker, 'recovered top persistence');
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
         storedTop = { definitionKey: '', name: 'top' };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),
@@ -1267,11 +1414,124 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(slowSameIdentityScan, 'stale scan after workspace removal');
         assert.strictEqual(lastScanResult, undefined);
         assert.deepStrictEqual(testbenchModuleMap, {});
+
+        await withTimeout(extension.deactivate(), 'reset before deactivation race');
+        extensionDeactivated = true;
+        workspaceFolders.push(folder, { uri: FakeUri.parse('file:///B-workspace') });
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        persistedDependencyResult = null;
+        analyzeStatus = 'idle';
+        simulateStatus = 'idle';
+        extension.activate(context);
+        extensionDeactivated = false;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before deferred deactivation'
+        );
+
+        const deactivationPersistenceGate = createScanGate();
+        nextDependencyPersistenceGate = deactivationPersistenceGate;
+        const deferredDeactivationSimulation = Promise.resolve(
+            commands.get('veriflow.simulate')!()
+        );
+        await withTimeout(
+            deactivationPersistenceGate.started,
+            'dependency persistence before deactivation'
+        );
+        const runnersBeforeDeactivation = runnerCalls;
+        const parsersBeforeDeactivation = parserCreateCalls;
+        const indexesBeforeDeactivation = FakeIndex.instances.length;
+        const scansBeforeDeactivation = events.filter(event => event === 'scan').length;
+        const treeWritesBeforeDeactivation = treeWriteCount;
+        const statusWritesBeforeDeactivation = statusWriteCount;
+        const outputShowsBeforeDeactivation = outputShowCount;
+        let deactivationSettled = false;
+        const deferredDeactivation = extension.deactivate().then(() => {
+            deactivationSettled = true;
+            extensionDeactivated = true;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(deactivationSettled, false);
+        deactivationPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([deferredDeactivationSimulation, deferredDeactivation]),
+            'deferred extension deactivation'
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(runnerCalls, runnersBeforeDeactivation);
+        assert.strictEqual(parserCreateCalls, parsersBeforeDeactivation);
+        assert.strictEqual(FakeIndex.instances.length, indexesBeforeDeactivation);
+        assert.strictEqual(events.filter(event => event === 'scan').length, scansBeforeDeactivation);
+        assert.strictEqual(treeWriteCount, treeWritesBeforeDeactivation);
+        assert.strictEqual(statusWriteCount, statusWritesBeforeDeactivation);
+
+        await Promise.all([
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            Promise.resolve(commands.get('veriflow.selectTop')!()),
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            Promise.resolve(commands.get('veriflow.openVcdViewer')!()),
+            Promise.resolve(commands.get('veriflow.instantiateModule')!()),
+            Promise.resolve(commands.get('veriflow.showOutput')!()),
+        ]);
+        assert.strictEqual(runnerCalls, runnersBeforeDeactivation);
+        assert.strictEqual(parserCreateCalls, parsersBeforeDeactivation);
+        assert.strictEqual(FakeIndex.instances.length, indexesBeforeDeactivation);
+        assert.strictEqual(events.filter(event => event === 'scan').length, scansBeforeDeactivation);
+        assert.strictEqual(treeWriteCount, treeWritesBeforeDeactivation);
+        assert.strictEqual(statusWriteCount, statusWritesBeforeDeactivation);
+        assert.strictEqual(outputShowCount, outputShowsBeforeDeactivation);
+
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        extension.activate(context);
+        extensionDeactivated = false;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before rejected persistence deactivation'
+        );
+        const deactivationPickerGate = createScanGate();
+        const rejectedDeactivationPersistenceGate = createScanGate();
+        nextQuickPickGate = deactivationPickerGate;
+        nextTopPersistenceGate = rejectedDeactivationPersistenceGate;
+        nextTopPersistenceError = new Error('deactivation persistence failed');
+        const rejectedDeactivationPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(deactivationPickerGate.started, 'picker before rejected deactivation');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        deactivationPickerGate.allow();
+        await withTimeout(
+            rejectedDeactivationPersistenceGate.started,
+            'rejected persistence before deactivation'
+        );
+        const rejectedDeactivationSelection = assert.rejects(
+            rejectedDeactivationPicker,
+            /deactivation persistence failed/
+        );
+        const treeWritesBeforeRejectedDeactivation = treeWriteCount;
+        const statusWritesBeforeRejectedDeactivation = statusWriteCount;
+        let rejectedDeactivationSettled = false;
+        const rejectedPersistenceDeactivation = extension.deactivate().then(() => {
+            rejectedDeactivationSettled = true;
+            extensionDeactivated = true;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(rejectedDeactivationSettled, false);
+        rejectedDeactivationPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([rejectedDeactivationSelection, rejectedPersistenceDeactivation]),
+            'rejected persistence deactivation drain'
+        );
+        assert.strictEqual(treeWriteCount, treeWritesBeforeRejectedDeactivation);
+        assert.strictEqual(statusWriteCount, statusWritesBeforeRejectedDeactivation);
     } finally {
         for (const gate of scanGates.values()) {
             gate.allow();
         }
-        await withTimeout(extension.deactivate(), 'extension deactivation');
+        if (!extensionDeactivated) {
+            await withTimeout(extension.deactivate(), 'extension deactivation');
+        }
         delete require.cache[require.resolve('../extension')];
     }
 }

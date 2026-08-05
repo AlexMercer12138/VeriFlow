@@ -82,10 +82,19 @@ let hdlScanInFlight: {
 let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
 let hdlWorkflowGeneration = 0;
+let hdlLifecycleGeneration = 0;
+let hdlStopping = false;
+let hdlAbortController = new AbortController();
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 
 class HdlIndexPreparationInvalidatedError extends Error {}
+class HdlStoppingError extends Error {
+    constructor() {
+        super('HDL lifecycle is stopping');
+        this.name = 'HdlStoppingError';
+    }
+}
 
 // 状态管理
 let _analyzeStatus: string = 'idle';
@@ -96,6 +105,9 @@ let _pendingWaveAfterSimulate = false;
 let _pendingWaveAfterAnalyze = false;
 
 export function activate(context: vscode.ExtensionContext): void {
+    hdlStopping = false;
+    hdlLifecycleGeneration++;
+    hdlAbortController = new AbortController();
     if (hdlParser && hdlParserExtensionPath !== context.extensionPath) {
         throw new Error(
             'HDL parser belongs to a different extension path; call deactivate() before reactivating'
@@ -152,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
-        ['veriflow.showOutput', () => output.show()],
+        ['veriflow.showOutput', () => { if (!hdlStopping) { output.show(); } }],
     ];
     for (const [name, fn] of cmds) {
         context.subscriptions.push(vscode.commands.registerCommand(name, fn));
@@ -160,6 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async (e) => {
+            if (hdlStopping) { return; }
             const definesChanged = e.affectsConfiguration('veriflow.defines');
             const rootsChanged = e.affectsConfiguration('veriflow.libDirs');
             if (definesChanged) {
@@ -178,6 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push(
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+            if (hdlStopping) { return; }
             _invalidateDependencyPresentation(context);
             _invalidateChangedHdlRootIdentity(context, true);
             await _scanModulesWithErrorReporting(context);
@@ -186,14 +200,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // 文件系统监视器：检测工作区文件变动
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{v,sv,vh,svh}');
-    watcher.onDidChange(uri => _refreshIndexedUriWithErrorReporting(context, uri, false));
-    watcher.onDidCreate(uri => _refreshIndexedUriWithErrorReporting(context, uri, false));
-    watcher.onDidDelete(uri => _refreshIndexedUriWithErrorReporting(context, uri, true));
+    watcher.onDidChange(uri => hdlStopping
+        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, false));
+    watcher.onDidCreate(uri => hdlStopping
+        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, false));
+    watcher.onDidDelete(uri => hdlStopping
+        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, true));
     context.subscriptions.push(watcher);
 
     // 窗口焦点变化检测
     context.subscriptions.push(
         vscode.window.onDidChangeWindowState((e) => {
+            if (hdlStopping) { return; }
             if (e.focused) {
                 _checkDepFilesChanged(context);
             } else {
@@ -212,6 +230,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function getHdlParser(context: vscode.ExtensionContext): HdlParserClient {
+    if (hdlStopping) {
+        throw new HdlStoppingError();
+    }
     if (hdlParser) {
         if (hdlParserExtensionPath !== context.extensionPath) {
             throw new Error(
@@ -279,7 +300,22 @@ function _dependencyRootUris(root: string, libDirs: string[]): string[] {
     return [...new Set(roots.map(uri => uri.toString()))];
 }
 
-async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
+function _isCurrentHdlLifecycle(generation: number): boolean {
+    return !hdlStopping && generation === hdlLifecycleGeneration;
+}
+
+function _throwIfHdlLifecycleStopped(generation: number): void {
+    if (!_isCurrentHdlLifecycle(generation)) {
+        throw new HdlStoppingError();
+    }
+}
+
+async function _findHdlFiles(
+    root: vscode.Uri,
+    files: string[],
+    lifecycleGeneration: number
+): Promise<void> {
+    _throwIfHdlLifecycleStopped(lifecycleGeneration);
     let entries: [string, vscode.FileType][];
     try {
         entries = await vscode.workspace.fs.readDirectory(root);
@@ -288,10 +324,11 @@ async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
     }
     entries.sort(([left], [right]) => left.localeCompare(right));
     for (const [name, fileType] of entries) {
+        _throwIfHdlLifecycleStopped(lifecycleGeneration);
         const uri = vscode.Uri.joinPath(root, name);
         if ((fileType & vscode.FileType.Directory) !== 0) {
             if (!name.startsWith('.')) {
-                await _findHdlFiles(uri, files);
+                await _findHdlFiles(uri, files, lifecycleGeneration);
             }
         } else if ((fileType & vscode.FileType.File) !== 0 && _isHdlUri(uri)) {
             files.push(uri.toString());
@@ -313,6 +350,10 @@ function _createWorkspaceHdlIndex(
     defines: Record<string, string | true>,
     rootIdentity: string
 ): WorkspaceHdlIndex {
+    if (hdlStopping) {
+        throw new HdlStoppingError();
+    }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     const knownHdlUris = new Set<string>();
     const rootUris: vscode.Uri[] = [];
     const store = new WorkspaceIndexStore(context.workspaceState);
@@ -324,23 +365,27 @@ function _createWorkspaceHdlIndex(
             .digest('hex')}`,
         defines,
         async findFiles(roots: string[]): Promise<string[]> {
+            _throwIfHdlLifecycleStopped(lifecycleGeneration);
             knownHdlUris.clear();
             rootUris.splice(0, rootUris.length, ...roots.map(root => vscode.Uri.parse(root)));
             const files: string[] = [];
             for (const root of rootUris) {
-                await _findHdlFiles(root, files);
+                await _findHdlFiles(root, files, lifecycleGeneration);
             }
+            _throwIfHdlLifecycleStopped(lifecycleGeneration);
             for (const uri of files) {
                 knownHdlUris.add(uri);
             }
             return [...knownHdlUris].sort();
         },
         async readFile(uri: string) {
+            _throwIfHdlLifecycleStopped(lifecycleGeneration);
             const resource = vscode.Uri.parse(uri);
             const [bytes, stat] = await Promise.all([
                 vscode.workspace.fs.readFile(resource),
                 vscode.workspace.fs.stat(resource),
             ]);
+            _throwIfHdlLifecycleStopped(lifecycleGeneration);
             return {
                 text: Buffer.from(bytes).toString('utf8'),
                 version: stat.mtime,
@@ -349,6 +394,7 @@ function _createWorkspaceHdlIndex(
             };
         },
         async resolveInclude(fromUri: string, includePath: string) {
+            _throwIfHdlLifecycleStopped(lifecycleGeneration);
             const source = vscode.Uri.parse(fromUri);
             const absolute = _absoluteUri(source, includePath);
             const candidates = absolute ? [absolute] : [
@@ -368,8 +414,11 @@ function _createWorkspaceHdlIndex(
             }
             const seen = new Set<string>();
             for (const candidate of candidates) {
+                _throwIfHdlLifecycleStopped(lifecycleGeneration);
                 const key = candidate.toString();
-                if (!seen.has(key) && await _isFile(candidate)) {
+                const exists = !seen.has(key) && await _isFile(candidate);
+                _throwIfHdlLifecycleStopped(lifecycleGeneration);
+                if (exists) {
                     return key;
                 }
                 seen.add(key);
@@ -384,6 +433,11 @@ async function _getDependencyAnalyzer(
     rootUris: string[],
     defines: Record<string, string | true>
 ): Promise<DependencyAnalyzer> {
+    if (hdlStopping) {
+        throw new HdlStoppingError();
+    }
+    const lifecycleGeneration = hdlLifecycleGeneration;
+    const signal = hdlAbortController.signal;
     const rootIdentity = JSON.stringify(rootUris);
     if (hdlIndex && hdlIndexIdentity !== rootIdentity) {
         _resetDependencyIndex();
@@ -405,8 +459,13 @@ async function _getDependencyAnalyzer(
             analyzer,
             load,
             rootUris,
-            defines
+            defines,
+            signal,
+            lifecycleGeneration
         );
+        if (!_isCurrentHdlLifecycle(lifecycleGeneration)) {
+            throw new HdlStoppingError();
+        }
         if (generation !== hdlIndexGeneration
             || hdlIndex !== index
             || hdlIndexIdentity !== rootIdentity) {
@@ -414,7 +473,7 @@ async function _getDependencyAnalyzer(
         }
         return analyzer;
     } catch (error) {
-        if (generation === hdlIndexGeneration && hdlIndex === index) {
+        if (!hdlStopping && generation === hdlIndexGeneration && hdlIndex === index) {
             _resetDependencyIndex();
         }
         throw error;
@@ -432,6 +491,9 @@ function _resetDependencyIndex(): void {
 }
 
 function _runDependencyOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (hdlStopping) {
+        return Promise.reject(new HdlStoppingError());
+    }
     const result = hdlOperationTail.then(operation);
     hdlOperationTail = result.then(() => undefined, () => undefined);
     return result;
@@ -441,6 +503,9 @@ function _persistTopModule(
     context: vscode.ExtensionContext,
     selection: TopModuleSelection | undefined
 ): Promise<void> {
+    if (hdlStopping) {
+        return Promise.resolve();
+    }
     hdlTopPersistencePending++;
     const result = hdlTopPersistenceTail.then(() => setTopModule(context, selection));
     hdlTopPersistenceTail = result.then(() => undefined, () => undefined);
@@ -465,6 +530,9 @@ function _persistDependencyResult(
     context: vscode.ExtensionContext,
     result: DependencyResult | null
 ): Promise<void> {
+    if (hdlStopping) {
+        return Promise.resolve();
+    }
     const persistence = hdlDependencyPersistenceTail.then(
         () => setDependencyResult(context, result)
     );
@@ -487,6 +555,9 @@ function _prepareDependencyAnalyzer(
     rootUris: string[],
     defines: Record<string, string | true>
 ): Promise<DependencyAnalyzer> {
+    if (hdlStopping) {
+        return Promise.reject(new HdlStoppingError());
+    }
     const identity = JSON.stringify([
         rootUris,
         Object.entries(defines).sort(([left], [right]) => left.localeCompare(right)),
@@ -516,15 +587,27 @@ function _resolveDependencies(
     settings: ExtensionSettings,
     topDefinitionKeyOrName: string
 ): Promise<DependencyResult> {
+    if (hdlStopping) {
+        return Promise.reject(new HdlStoppingError());
+    }
     const rootUris = _dependencyRootUris(root, settings.libDirs);
     const defines = _filterHdlDefines(settings.defines);
     const preparation = _prepareDependencyAnalyzer(context, rootUris, defines);
     return _runDependencyOperation(async () => {
         const analyzer = await preparation;
+        if (hdlStopping) {
+            throw new HdlStoppingError();
+        }
         try {
-            return analyzer.resolve(topDefinitionKeyOrName);
+            const result = await analyzer.resolve(topDefinitionKeyOrName);
+            if (hdlStopping) {
+                throw new HdlStoppingError();
+            }
+            return result;
         } catch (error) {
-            _resetDependencyIndex();
+            if (!hdlStopping) {
+                _resetDependencyIndex();
+            }
             throw error;
         }
     });
@@ -535,34 +618,59 @@ async function _finishDependencyIndexPreparation(
     analyzer: DependencyAnalyzer,
     load: Promise<void>,
     rootUris: string[],
-    defines: Record<string, string | true>
+    defines: Record<string, string | true>,
+    signal: AbortSignal,
+    lifecycleGeneration: number
 ): Promise<DependencyAnalyzer> {
     await load;
+    _throwIfHdlLifecycleStopped(lifecycleGeneration);
     await index.updateConfiguration(defines);
-    await index.scan(rootUris);
+    _throwIfHdlLifecycleStopped(lifecycleGeneration);
+    await index.scan(rootUris, signal);
+    _throwIfHdlLifecycleStopped(lifecycleGeneration);
     return analyzer;
 }
 
+async function _drainHdlWork(): Promise<void> {
+    while (true) {
+        const operationTail = hdlOperationTail;
+        const topPersistenceTail = hdlTopPersistenceTail;
+        const dependencyPersistenceTail = hdlDependencyPersistenceTail;
+        await Promise.all([
+            operationTail,
+            topPersistenceTail,
+            dependencyPersistenceTail,
+        ]);
+        if (operationTail === hdlOperationTail
+            && topPersistenceTail === hdlTopPersistenceTail
+            && dependencyPersistenceTail === hdlDependencyPersistenceTail) {
+            return;
+        }
+    }
+}
+
 export async function deactivate(): Promise<void> {
+    hdlStopping = true;
+    hdlLifecycleGeneration++;
+    hdlPresentationGeneration++;
+    hdlWorkflowGeneration++;
+    hdlAbortController.abort();
+    hdlPreparationInFlight = undefined;
+    hdlScanInFlight = undefined;
+    hdlPresentationRootIdentity = undefined;
+    _pendingSimulateAfterAnalyze = false;
+    _pendingWaveAfterAnalyze = false;
+    _pendingWaveAfterSimulate = false;
+    _resetDependencyIndex();
     if (simulateProcess) {
         simulateProcess.kill();
         simulateProcess = null;
     }
-    await Promise.all([
-        hdlOperationTail,
-        hdlTopPersistenceTail,
-        hdlDependencyPersistenceTail,
-    ]);
+    await _drainHdlWork();
     hdlOperationTail = Promise.resolve();
     hdlTopPersistenceTail = Promise.resolve();
     hdlTopPersistencePending = 0;
     hdlDependencyPersistenceTail = Promise.resolve();
-    hdlPreparationInFlight = undefined;
-    hdlScanInFlight = undefined;
-    hdlPresentationGeneration = 0;
-    hdlPresentationRootIdentity = undefined;
-    hdlWorkflowGeneration = 0;
-    _resetDependencyIndex();
     const parser = hdlParser;
     hdlParser = undefined;
     hdlParserExtensionPath = undefined;
@@ -585,6 +693,7 @@ function _restoreState(context: vscode.ExtensionContext): void {
 }
 
 function _updateStatusBar(): void {
+    if (hdlStopping) { return; }
     const parts: string[] = ['$(circuit-board) VeriFlow'];
     if (_analyzeStatus !== 'idle') {
         const icon = _analyzeStatus === 'completed' ? '$(check)' : _analyzeStatus === 'error' ? '$(error)' : '$(warning)';
@@ -598,6 +707,7 @@ function _updateStatusBar(): void {
 }
 
 function _setAnalyzeStatus(context: vscode.ExtensionContext, status: string): void {
+    if (hdlStopping) { return; }
     _analyzeStatus = status;
     setAnalyzeStatus(context, status);
     // 分析依赖变为 outdated/error/idle 时，编译仿真也同步
@@ -608,6 +718,7 @@ function _setAnalyzeStatus(context: vscode.ExtensionContext, status: string): vo
 }
 
 function _setSimulateStatus(context: vscode.ExtensionContext, status: string): void {
+    if (hdlStopping) { return; }
     _simulateStatus = status;
     setSimulateStatus(context, status);
     _updateStatusBar();
@@ -713,6 +824,7 @@ function _duplicateModuleGroups(
 }
 
 function _invalidateDependencyPresentation(context: vscode.ExtensionContext): void {
+    if (hdlStopping) { return; }
     hdlWorkflowGeneration++;
     _markOutdatedIfCompleted(context);
     treeProvider.setAnalyzeResult(null);
@@ -724,7 +836,7 @@ function _invalidateDependencyPresentation(context: vscode.ExtensionContext): vo
 }
 
 function _isCurrentHdlWorkflow(generation: number): boolean {
-    return generation === hdlWorkflowGeneration;
+    return !hdlStopping && generation === hdlWorkflowGeneration;
 }
 
 function _isCurrentHdlPresentation(
@@ -732,7 +844,8 @@ function _isCurrentHdlPresentation(
     rootIdentity: string | undefined,
     index: WorkspaceHdlIndex | undefined
 ): boolean {
-    return generation === hdlPresentationGeneration
+    return !hdlStopping
+        && generation === hdlPresentationGeneration
         && rootIdentity === hdlPresentationRootIdentity
         && index === hdlIndex;
 }
@@ -746,6 +859,7 @@ function _currentHdlRootIdentity(): string | undefined {
 }
 
 function _clearHdlPresentation(context: vscode.ExtensionContext): void {
+    if (hdlStopping) { return; }
     treeProvider.setScanResult(null);
     treeProvider.setAnalyzeResult(null);
     treeProvider.topModule = undefined;
@@ -761,6 +875,7 @@ function _invalidateChangedHdlRootIdentity(
     context: vscode.ExtensionContext,
     force = false
 ): void {
+    if (hdlStopping) { return; }
     const nextIdentity = _currentHdlRootIdentity();
     const presentationChanged = hdlPresentationRootIdentity !== undefined
         && hdlPresentationRootIdentity !== nextIdentity;
@@ -963,13 +1078,15 @@ async function _scanModulesFromIndex(
         try {
             await preparation;
         } catch (error) {
-            if (error instanceof HdlIndexPreparationInvalidatedError) {
+            if (error instanceof HdlIndexPreparationInvalidatedError
+                || error instanceof HdlStoppingError
+                || hdlStopping) {
                 return null;
             }
             throw error;
         }
         const index = hdlIndex;
-        if (!index) {
+        if (!index || hdlStopping) {
             return null;
         }
         const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
@@ -987,9 +1104,11 @@ async function _scanModulesFromIndex(
 async function _scanModulesWithErrorReporting(
     context: vscode.ExtensionContext
 ): Promise<ModuleScanResult | null> {
+    if (hdlStopping) { return null; }
     try {
         return await cmdScanModules(context);
     } catch (error) {
+        if (hdlStopping || error instanceof HdlStoppingError) { return null; }
         output.appendError(
             `HDL module scan failed: ${error instanceof Error ? error.message : String(error)}`
         );
@@ -1002,6 +1121,7 @@ async function _refreshIndexedUri(
     uri: vscode.Uri,
     remove: boolean
 ): Promise<void> {
+    if (hdlStopping) { return; }
     const root = getWorkspaceRoot();
     if (!root) {
         return;
@@ -1011,9 +1131,20 @@ async function _refreshIndexedUri(
     const rootIdentity = JSON.stringify(rootUris);
     const uriValue = uri.toString();
     const currentIndex = hdlIndexIdentity === rootIdentity ? hdlIndex : undefined;
-    const admitted = rootUris.some(rootUri =>
+    let admitted = rootUris.some(rootUri =>
         isSourceUriWithinRoot(uriValue, rootUri)
     ) || currentIndex?.getFile(uriValue) !== undefined;
+    if (!admitted && !remove && currentIndex) {
+        admitted = await currentIndex.canResolveUnresolvedInclude(
+            uriValue,
+            hdlAbortController.signal
+        );
+        if (hdlStopping
+            || currentIndex !== hdlIndex
+            || hdlIndexIdentity !== rootIdentity) {
+            return;
+        }
+    }
     if (!admitted) {
         return;
     }
@@ -1021,6 +1152,7 @@ async function _refreshIndexedUri(
     const defines = _filterHdlDefines(settings.defines);
     const generation = ++hdlPresentationGeneration;
     await _runDependencyOperation(async () => {
+        if (hdlStopping) { return; }
         try {
             let index = hdlIndex;
             if (!index || hdlIndexIdentity !== rootIdentity) {
@@ -1038,6 +1170,7 @@ async function _refreshIndexedUri(
             if (!index) {
                 return;
             }
+            if (hdlStopping) { return; }
             const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
             await _presentScanResult(
                 context,
@@ -1047,6 +1180,7 @@ async function _refreshIndexedUri(
                 rootIdentity
             );
         } catch (error) {
+            if (hdlStopping || error instanceof HdlStoppingError) { return; }
             _resetDependencyIndex();
             throw error;
         }
@@ -1058,9 +1192,11 @@ async function _refreshIndexedUriWithErrorReporting(
     uri: vscode.Uri,
     remove: boolean
 ): Promise<void> {
+    if (hdlStopping) { return; }
     try {
         await _refreshIndexedUri(context, uri, remove);
     } catch (error) {
+        if (hdlStopping || error instanceof HdlStoppingError) { return; }
         output.appendError(
             `HDL index update failed for ${uri.toString()}: ${
                 error instanceof Error ? error.message : String(error)
@@ -1070,6 +1206,7 @@ async function _refreshIndexedUriWithErrorReporting(
 }
 
 async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
+    if (hdlStopping) { return null; }
     const root = getWorkspaceRoot();
     if (!root) { return null; }
 
@@ -1099,18 +1236,21 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
 }
 
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
+    if (hdlStopping) { return; }
     if (!getWorkspaceRoot()) {
         vscode.window.showWarningMessage('No workspace folder open.');
         return;
     }
     const result = await cmdScanModules(context);
-    if (result) {
+    if (!hdlStopping && result) {
         await showModuleInstantiationPicker(result);
     }
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
+    if (hdlStopping) { return; }
     await cmdScanModules(context);
+    if (hdlStopping) { return; }
     const generation = hdlPresentationGeneration;
     const rootIdentity = hdlPresentationRootIdentity;
     const index = hdlIndex;
@@ -1150,16 +1290,28 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         definitionKey: definition.key,
         name: definition.name,
     };
-    await _persistTopModule(context, selection);
+    treeProvider.topModule = selection;
+    try {
+        await _persistTopModule(context, selection);
+    } catch (error) {
+        if (!hdlStopping
+            && _sameTopSelection(_coerceTopSelection(treeProvider.topModule), selection)) {
+            treeProvider.topModule = resolveTopModuleSelection(
+                _coerceTopSelection(getTopModule(context)),
+                treeProvider.getWorkspaceDefinitions()
+            );
+        }
+        throw error;
+    }
     if (!_isCurrentHdlPresentation(generation, rootIdentity, index)) {
         await hdlTopPersistenceTail;
         return;
     }
-    treeProvider.topModule = selection;
     output.appendInfo(`Top module: ${selection.name}`);
 }
 
 async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
+    if (hdlStopping) { return; }
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1242,6 +1394,7 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
+    if (hdlStopping) { return; }
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1358,6 +1511,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
+    if (hdlStopping) { return; }
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1407,6 +1561,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
+    if (hdlStopping) { return; }
     let target = uri;
     if (!target) {
         const selected = await vscode.window.showOpenDialog({
@@ -1417,6 +1572,7 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
             title: 'Open VCD in VeriFlow Viewer',
         });
         target = selected?.[0];
+        if (hdlStopping) { return; }
     }
 
     if (!target) {
@@ -1435,6 +1591,7 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
 }
 
 async function _doOpenWave(context: vscode.ExtensionContext, root: string, topModule: string, settings: ExtensionSettings): Promise<void> {
+    if (hdlStopping) { return; }
     const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
     const viewer = _resolveViewer(settings);
 
@@ -1450,6 +1607,7 @@ async function _doOpenWave(context: vscode.ExtensionContext, root: string, topMo
             vscode.Uri.file(waveFile),
             WaveformEditorProvider.viewType
         );
+        if (hdlStopping) { return; }
         output.appendSuccess(`Opened built-in waveform viewer: ${waveFile}`);
         return;
     }

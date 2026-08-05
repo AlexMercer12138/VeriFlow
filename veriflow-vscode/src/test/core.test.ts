@@ -499,7 +499,7 @@ function testDependencyAnalyzerProductionWiring(): void {
     assert.doesNotMatch(extensionSource, /depAnalyzer\.resolve\([^\n]+,\s*searchDirs\)/);
     assert.match(extensionSource, /entry\[1\] !== false/);
     assert.match(extensionSource, /await index\.load\(\)|hdlIndexLoad = index\.load\(\)/);
-    assert.match(extensionSource, /await index\.scan\(rootUris\)/);
+    assert.match(extensionSource, /await index\.scan\(rootUris, signal\)/);
     assert.ok(
         extensionSource.indexOf('index?.dispose();')
         < extensionSource.indexOf('await parser?.dispose();')

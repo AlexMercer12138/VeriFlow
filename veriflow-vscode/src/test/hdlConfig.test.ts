@@ -199,6 +199,8 @@ async function testExtensionLifecycle(): Promise<void> {
         assert.strictEqual(parser.disposeCalls, 1);
         assert.strictEqual(outputDisposals, 1);
 
+        assert.throws(() => extension.getHdlParser(context), /stopping/i);
+        extension.activate(context);
         const replacement = extension.getHdlParser(context);
         assert.notStrictEqual(replacement, parser);
         assert.strictEqual(parserCreations, 2);

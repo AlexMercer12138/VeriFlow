@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceIndexInvalidation } from '../core/hdl/workspaceHdlIndex';
 import { WorkspaceIndexStore } from '../core/hdl/workspaceIndexStore';
 import type { PersistedWorkspaceIndex } from '../core/hdl/workspaceIndexTypes';
@@ -723,6 +724,57 @@ async function testUnresolvedIncludeEdgesSurviveReloadAndRecreation(): Promise<v
     }
 }
 
+async function testUnresolvedIncludeCandidateQueryIsReadOnly(): Promise<void> {
+    const topUri = 'file:///A/top.sv';
+    const includeUri = 'file:///B/shared/defs.svh';
+    const rogueUri = 'file:///B/rogue.sv';
+    const harness = createWorkspaceIndexHarness({
+        [topUri]: [
+            '`include "shared/defs.svh"',
+            'module unresolved_owner; endmodule',
+        ].join('\n'),
+    });
+    harness.includeMappings.set('shared/defs.svh', includeUri);
+    const invalidations: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => invalidations.push(event));
+    try {
+        await harness.index.scan(['file:///A']);
+        assert.ok(harness.index.getFile(topUri)?.unresolvedIncludes?.some(include =>
+            include.rawPath === 'shared/defs.svh'
+        ));
+        harness.files.set(canonicalizeSourceUri(includeUri), '`define SHARED_DEFS 1');
+        const writesBeforeQuery = harness.persistedWrites.length;
+        const parserCallsBeforeQuery = harness.parserCalls.length;
+        invalidations.length = 0;
+        const candidateIndex = harness.index as unknown as {
+            canResolveUnresolvedInclude?: (uri: string) => Promise<boolean>;
+        };
+
+        assert.strictEqual(typeof candidateIndex.canResolveUnresolvedInclude, 'function');
+        assert.strictEqual(
+            await candidateIndex.canResolveUnresolvedInclude!(includeUri),
+            true
+        );
+        assert.strictEqual(
+            await candidateIndex.canResolveUnresolvedInclude!(rogueUri),
+            false
+        );
+        assert.strictEqual(harness.persistedWrites.length, writesBeforeQuery);
+        assert.strictEqual(harness.parserCalls.length, parserCallsBeforeQuery);
+        assert.deepStrictEqual(invalidations, []);
+        assert.strictEqual(harness.index.getFile(includeUri), undefined);
+
+        await harness.index.refreshUri(includeUri);
+        assert.ok(harness.index.getFile(includeUri));
+        assert.ok(harness.index.getDependentsOfInclude(includeUri).includes(
+            canonicalizeSourceUri(topUri)
+        ));
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testAbortIsAtomicAndDoesNotPersistOrInvalidate(): Promise<void> {
     const harness = createWorkspaceIndexHarness({
         'file:///ws/a.sv': 'module a; endmodule',
@@ -1139,6 +1191,7 @@ async function main(): Promise<void> {
     await testFullScanRemovesMissingFilesOnlyWithinRoots();
     await testIncludeGraphTransitiveRefreshAndStructuralFingerprints();
     await testUnresolvedIncludeEdgesSurviveReloadAndRecreation();
+    await testUnresolvedIncludeCandidateQueryIsReadOnly();
     await testAbortIsAtomicAndDoesNotPersistOrInvalidate();
     await testAbortDuringSaveDoesNotCommitMemoryOrInvalidate();
     await testStageAbortIgnoresDiscardFailureAndKeepsCommittedSnapshot();
