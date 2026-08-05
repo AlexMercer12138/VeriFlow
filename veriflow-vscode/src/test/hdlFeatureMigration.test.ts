@@ -398,7 +398,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     }];
     const indexedExternalIncludeUri = 'file:///external/generated/defs.svh';
     const metacharExternalIncludeUri = 'file:///external/generated/defs[0].svh';
+    const externalNonstandardIncludeUri = 'file:///external/generated/defs.inc';
+    const localNonstandardIncludeUri = `${workspaceRootUri}/generated/local.inc`;
+    const conditionalNonstandardIncludeUri = 'file:///external/generated/conditional.inc';
+    const rogueNonstandardIncludeUri = 'file:///external/generated/rogue.inc';
     const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
+    const racingUnresolvedIncludeUri = 'file:///B-workspace/shared/racing.svh';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const definitions = [
         workspaceDefinition,
@@ -436,7 +441,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
     let nextOpenDialogGate: ReturnType<typeof createScanGate> | undefined;
-    let nextWatcherConstructionError: Error | undefined;
+    let nextUnresolvedProbeGate: ReturnType<typeof createScanGate> | undefined;
+    let pendingWatcherConstructionError: {
+        remainingSuccessfulConstructions: number;
+        remainingFailures?: number;
+        error: Error;
+    } | undefined;
     let nextTopPersistenceGate: ReturnType<typeof createScanGate> | undefined;
     let nextTopPersistenceError: Error | undefined;
     let nextDependencyPersistenceGate: ReturnType<typeof createScanGate> | undefined;
@@ -476,11 +486,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let treeWriteCount = 0;
     let statusWriteCount = 0;
     let parserCreateCalls = 0;
+    let workspaceSourceRevision = 1;
     const executedCommands: Array<{ name: string; args: unknown[] }> = [];
     const presentedLibDirs: string[][] = [];
     let quickPickItems: Array<{ label: string; description?: string }> = [];
     let quickPickCallCount = 0;
     let statusText = '';
+    let derivedDefinesKey = '';
+    let presentedDefinesKey = '';
     const status = {
         get text(): string { return statusText; },
         set text(value: string) { statusText = value; statusWriteCount++; },
@@ -567,6 +580,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             metacharExternalIncludeUri,
         ]);
         disposed = false;
+        workspaceIndexedRevision = 0;
         currentDefinesKey = '';
         constructor(readonly options: unknown) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
@@ -577,6 +591,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         async scan(roots: string[]): Promise<void> {
             this.scannedRoots.push([...roots]);
             events.push('scan');
+            const workspaceRevisionAtRead = workspaceSourceRevision;
             const gate = nextScanGate ?? roots.map(root => scanGates.get(root)).find(Boolean);
             nextScanGate = undefined;
             if (gate) {
@@ -589,11 +604,25 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             if (failedScanDefines.has(this.currentDefinesKey)) {
                 throw new Error(`scan failed for defines: ${this.currentDefinesKey}`);
             }
+            this.workspaceIndexedRevision = workspaceRevisionAtRead;
+            events.push(`scan-commit:${workspaceRevisionAtRead}`);
         }
         async refreshUri(uri: string): Promise<void> {
             events.push(`refresh:${uri}`);
+            events.push(`refresh-defines:${this.currentDefinesKey}:${uri}`);
             this.indexedUris.add(uri);
+            if (uri === workspaceDefinition.uri) {
+                this.workspaceIndexedRevision = workspaceSourceRevision;
+                events.push(`refresh-revision:${workspaceSourceRevision}`);
+            }
             if (uri === unresolvedExternalIncludeUri) {
+                events.push(`refresh-owner:${topDefinition.uri}`);
+            }
+            if ([
+                externalNonstandardIncludeUri,
+                localNonstandardIncludeUri,
+                conditionalNonstandardIncludeUri,
+            ].includes(uri)) {
                 events.push(`refresh-owner:${topDefinition.uri}`);
             }
             if (uri === unconfiguredWorkspaceUri) {
@@ -606,6 +635,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         }
         async removeUri(uri: string): Promise<void> {
             events.push(`remove:${uri}`);
+            if ([externalNonstandardIncludeUri, localNonstandardIncludeUri].includes(uri)) {
+                events.push(`remove-owner:${topDefinition.uri}`);
+            }
             this.indexedUris.delete(uri);
             const retained = this.definitions.filter(definition => definition.uri !== uri);
             this.definitions.splice(0, this.definitions.length, ...retained);
@@ -613,23 +645,49 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         getFile(uri: string): object | undefined {
             return this.indexedUris.has(uri) ? {} : undefined;
         }
+        getDependentsOfInclude(uri: string): string[] {
+            const isConditionalInclude = uri === conditionalNonstandardIncludeUri
+                && this.currentDefinesKey === 'WATCHER_CONSTRUCTION_FAILURE';
+            return [externalNonstandardIncludeUri, localNonstandardIncludeUri].includes(uri)
+                || isConditionalInclude
+                ? [topDefinition.uri]
+                : [];
+        }
         async canResolveUnresolvedInclude(uri: string): Promise<boolean> {
-            events.push(`probe-unresolved:${uri}`);
-            return uri === unresolvedExternalIncludeUri;
+            events.push(`probe-unresolved:${this.currentDefinesKey}:${uri}`);
+            const gate = nextUnresolvedProbeGate;
+            nextUnresolvedProbeGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
+            return uri === unresolvedExternalIncludeUri
+                || uri === racingUnresolvedIncludeUri;
         }
         getWatchPlan(): {
             resolvedExternalIncludeUris: string[];
             unresolvedExternalCandidateUris: string[];
         } {
+            const conditionalIncludeUris = this.currentDefinesKey
+                === 'WATCHER_CONSTRUCTION_FAILURE'
+                ? [conditionalNonstandardIncludeUri]
+                : [];
             return {
                 resolvedExternalIncludeUris: [
                     indexedExternalIncludeUri,
                     metacharExternalIncludeUri,
+                    externalNonstandardIncludeUri,
+                    localNonstandardIncludeUri,
+                    ...conditionalIncludeUris,
                 ],
-                unresolvedExternalCandidateUris: [unresolvedExternalIncludeUri],
+                unresolvedExternalCandidateUris: [
+                    unresolvedExternalIncludeUri,
+                    racingUnresolvedIncludeUri,
+                ],
             };
         }
         getAllDefinitions(kind?: string): Definition[] {
+            derivedDefinesKey = this.currentDefinesKey;
             return kind && kind !== 'module' ? [] : [...this.definitions].sort((left, right) =>
                 left.name.localeCompare(right.name)
                 || left.uri.localeCompare(right.uri)
@@ -672,6 +730,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             treeWriteCount++;
             lastScanResult = result ?? undefined;
             if (result) {
+                presentedDefinesKey = derivedDefinesKey;
                 presentedLibDirs.push([...(result.libDirs ?? [])]);
             }
         }
@@ -782,10 +841,18 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 return disposable;
             },
             createFileSystemWatcher(pattern: string | FakeRelativePattern) {
-                const constructionError = nextWatcherConstructionError;
-                nextWatcherConstructionError = undefined;
-                if (constructionError) {
-                    throw constructionError;
+                const pendingError = pendingWatcherConstructionError;
+                if (pendingError) {
+                    if (pendingError.remainingSuccessfulConstructions === 0) {
+                        if (pendingError.remainingFailures === undefined
+                            || pendingError.remainingFailures <= 1) {
+                            pendingWatcherConstructionError = undefined;
+                        } else {
+                            pendingError.remainingFailures--;
+                        }
+                        throw pendingError.error;
+                    }
+                    pendingError.remainingSuccessfulConstructions--;
                 }
                 const record: WatcherRecord = {
                     pattern,
@@ -934,12 +1001,44 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let extensionDeactivated = false;
     try {
         extension.activate(context);
+        pendingWatcherConstructionError = {
+            remainingSuccessfulConstructions: 0,
+            error: new Error('initial index watcher construction failed'),
+        };
+        await assert.rejects(
+            withTimeout(
+                Promise.resolve(commands.get('veriflow.scanModules')!()),
+                'failed initial index watcher construction'
+            ),
+            /initial index watcher construction failed/
+        );
+        const failedInitialIndex = FakeIndex.instances.at(-1)!;
+        assert.strictEqual(failedInitialIndex.disposed, true);
+        FakeIndex.instances.splice(0);
+
+        const initialScanGate = createScanGate();
+        nextScanGate = initialScanGate;
+        const initialScan = Promise.resolve(commands.get('veriflow.scanModules')!());
+        await withTimeout(initialScanGate.started, 'initial scan watcher window');
+        const initialIndex = FakeIndex.instances.at(-1)!;
+        workspaceSourceRevision++;
+        const initialWindowRefresh = fireHdlWatchEvent(
+            'change',
+            workspaceDefinition.uri
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+        initialScanGate.allow();
         await withTimeout(
-            Promise.resolve(commands.get('veriflow.scanModules')!()),
-            'initial module scan'
+            Promise.all([initialScan, initialWindowRefresh]),
+            'initial module scan with watcher refresh'
         );
 
         assert.strictEqual(FakeIndex.instances.length, 1);
+        assert.strictEqual(initialIndex.workspaceIndexedRevision, workspaceSourceRevision);
+        assert.ok(
+            events.indexOf('scan-commit:1')
+            < events.indexOf(`refresh-revision:${workspaceSourceRevision}`)
+        );
         assert.strictEqual(lastScanResult?.definitions.length, 5);
         assert.ok(lastScanResult?.definitions.find(
             definition => definition.key === topDefinition.key
@@ -971,6 +1070,16 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             patternValue instanceof FakeRelativePattern
             && patternValue.baseUri.toString() === 'file:///external/generated'
             && patternValue.pattern === 'defs[[]0[]].svh'
+        ));
+        assert.ok(activePatterns.some(patternValue =>
+            patternValue instanceof FakeRelativePattern
+            && patternValue.baseUri.toString() === 'file:///external/generated'
+            && patternValue.pattern === 'defs.inc'
+        ));
+        assert.ok(activePatterns.some(patternValue =>
+            patternValue instanceof FakeRelativePattern
+            && patternValue.baseUri.toString() === `${workspaceRootUri}/generated`
+            && patternValue.pattern === 'local.inc'
         ));
         assert.strictEqual(warnings.length, 1);
         assert.ok(warnings[0].includes(workspaceDefinition.uri));
@@ -1006,7 +1115,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             fireHdlWatchEvent('create', rogueExternalUri),
             'unrelated external HDL creation'
         );
-        assert.ok(events.includes(`probe-unresolved:${unresolvedExternalIncludeUri}`));
+        assert.ok(events.some(event =>
+            event.endsWith(`:${unresolvedExternalIncludeUri}`)
+            && event.startsWith('probe-unresolved:')
+        ));
         assert.ok(events.includes(`refresh:${unresolvedExternalIncludeUri}`));
         assert.ok(events.includes(`refresh-owner:${topDefinition.uri}`));
         assert.strictEqual(
@@ -1014,6 +1126,31 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             probesBeforeRogueExternal
         );
         assert.ok(!events.includes(`refresh:${rogueExternalUri}`));
+
+        settings.defines = { PROBE_A: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'unresolved probe defines A scan');
+        const staleProbeGate = createScanGate();
+        nextUnresolvedProbeGate = staleProbeGate;
+        const staleProbeEvent = fireHdlWatchEvent('create', racingUnresolvedIncludeUri);
+        await withTimeout(staleProbeGate.started, 'stale unresolved include probe');
+
+        settings.defines = { PROBE_B: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'unresolved probe defines B scan');
+        assert.strictEqual(FakeIndex.instances.at(-1)?.currentDefinesKey, 'PROBE_B');
+        staleProbeGate.allow();
+        await withTimeout(staleProbeEvent, 'stale unresolved include probe recovery');
+        const racingRefreshes = events.filter(event =>
+            event.startsWith('refresh-defines:')
+            && event.endsWith(`:${racingUnresolvedIncludeUri}`)
+        );
+        assert.strictEqual(racingRefreshes.at(-1),
+            `refresh-defines:PROBE_B:${racingUnresolvedIncludeUri}`);
+        assert.strictEqual(FakeIndex.instances.at(-1)?.currentDefinesKey, 'PROBE_B');
+        assert.strictEqual(presentedDefinesKey, 'PROBE_B');
 
         await withTimeout(
             fireHdlWatchEvent('change', indexedExternalIncludeUri),
@@ -1025,6 +1162,29 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'metacharacter external include change'
         );
         assert.ok(events.includes(`refresh:${metacharExternalIncludeUri}`));
+        await withTimeout(
+            fireHdlWatchEvent('change', externalNonstandardIncludeUri),
+            'external nonstandard include change'
+        );
+        await withTimeout(
+            fireHdlWatchEvent('change', localNonstandardIncludeUri),
+            'local nonstandard include change'
+        );
+        assert.ok(events.includes(`refresh:${externalNonstandardIncludeUri}`));
+        assert.ok(events.includes(`refresh:${localNonstandardIncludeUri}`));
+        assert.ok(events.filter(event => event === `refresh-owner:${topDefinition.uri}`).length >= 2);
+        await withTimeout(
+            fireHdlWatchEvent('delete', externalNonstandardIncludeUri),
+            'external nonstandard include delete'
+        );
+        assert.ok(events.includes(`remove:${externalNonstandardIncludeUri}`));
+        assert.ok(events.includes(`remove-owner:${topDefinition.uri}`));
+        const rogueNonstandardEventsBefore = events.length;
+        await withTimeout(
+            fireHdlWatchEvent('change', rogueNonstandardIncludeUri),
+            'rogue nonstandard include change'
+        );
+        assert.deepStrictEqual(events.slice(rogueNonstandardEventsBefore), []);
         await withTimeout(
             fireHdlWatchEvent('delete', indexedExternalIncludeUri),
             'indexed external include delete'
@@ -1123,6 +1283,27 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             events.filter(event => event === `refresh:${libraryDefinition.uri}`).length,
             staleWatcherRefreshesBefore
         );
+
+        pendingWatcherConstructionError = {
+            remainingSuccessfulConstructions: 0,
+            remainingFailures: 3,
+            error: new Error('persistent watcher construction failure'),
+        };
+        settings.libDirs = ['/persistent-failure'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'persistent watcher construction failure recovery');
+        const invalidatedScanResult = lastScanResult;
+        assert.strictEqual(invalidatedScanResult, undefined);
+        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.strictEqual(FakeIndex.instances.at(-1)?.disposed, true);
+
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan after persistent watcher construction failure'
+        );
+        assert.deepStrictEqual(lastScanResult?.libDirs, ['/persistent-failure']);
+        assert.strictEqual(FakeIndex.instances.at(-1)?.disposed, false);
 
         settings.libDirs = ['/overlap', '/overlap/nested'];
         await withTimeout(Promise.resolve(configListener!({
@@ -1877,12 +2058,69 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(status.text, retainedSameIdentityStatus);
         failedScanRoots.delete(sameIdentityRoots);
 
-        nextWatcherConstructionError = new Error('watcher construction failed');
+        pendingWatcherConstructionError = {
+            remainingSuccessfulConstructions: 0,
+            error: new Error('immediate watcher construction failed'),
+        };
+        settings.defines = { IMMEDIATE_WATCHER_CONSTRUCTION_FAILURE: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'immediate watcher construction recovery scan');
+        assert.strictEqual(
+            FakeIndex.instances.at(-1)?.currentDefinesKey,
+            'IMMEDIATE_WATCHER_CONSTRUCTION_FAILURE'
+        );
+        assert.strictEqual(status.text, retainedSameIdentityStatus);
+        await withTimeout(
+            fireHdlWatchEvent('change', workspaceDefinition.uri),
+            'watch event after immediate construction recovery'
+        );
+        assert.ok(events.includes(
+            `refresh-defines:IMMEDIATE_WATCHER_CONSTRUCTION_FAILURE:${workspaceDefinition.uri}`
+        ));
+
+        pendingWatcherConstructionError = {
+            remainingSuccessfulConstructions: watcherRecords.filter(
+                record => !record.disposed
+            ).length,
+            error: new Error('watcher construction failed'),
+        };
         settings.defines = { WATCHER_CONSTRUCTION_FAILURE: true };
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.defines',
         })), 'watcher construction scan failure');
-        assert.strictEqual(status.text, retainedSameIdentityStatus);
+        const failedWatcherPlanIndex = FakeIndex.instances.at(-1)!;
+        const failedWatcherPlanResult = lastScanResult;
+        assert.strictEqual(failedWatcherPlanIndex.disposed, true);
+        assert.strictEqual(failedWatcherPlanResult, undefined);
+        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.notStrictEqual(status.text, retainedSameIdentityStatus);
+        assert.ok(!watcherRecords.some(record =>
+            !record.disposed
+            && record.pattern instanceof FakeRelativePattern
+            && record.pattern.baseUri.toString() === 'file:///external/generated'
+            && record.pattern.pattern === 'conditional.inc'
+        ));
+
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'watcher construction plan recovery scan'
+        );
+        assert.notStrictEqual(FakeIndex.instances.at(-1), failedWatcherPlanIndex);
+        assert.strictEqual(presentedDefinesKey, 'WATCHER_CONSTRUCTION_FAILURE');
+        assert.ok(watcherRecords.some(record =>
+            !record.disposed
+            && record.pattern instanceof FakeRelativePattern
+            && record.pattern.baseUri.toString() === 'file:///external/generated'
+            && record.pattern.pattern === 'conditional.inc'
+        ));
+        await withTimeout(
+            fireHdlWatchEvent('change', conditionalNonstandardIncludeUri),
+            'conditional include after watcher plan recovery'
+        );
+        assert.ok(events.includes(
+            `refresh-defines:WATCHER_CONSTRUCTION_FAILURE:${conditionalNonstandardIncludeUri}`
+        ));
 
         const chainedOldScanGate = createScanGate();
         nextScanGate = chainedOldScanGate;

@@ -333,15 +333,14 @@ export class WorkspaceHdlIndex {
 
     getWatchPlan(roots: string[]): WorkspaceHdlWatchPlan {
         const canonicalRoots = roots.map(root => canonicalizeSourceUri(root));
-        const isExternal = (uri: string): boolean => !canonicalRoots.some(root =>
-            isUriWithinRoot(uri, root)
-        );
+        const needsExactWatcher = (uri: string): boolean => !isHdlUri(uri)
+            || !canonicalRoots.some(root => isUriWithinRoot(uri, root));
         const resolvedExternalIncludeUris = new Set<string>();
         const unresolvedExternalCandidateUris = new Set<string>();
         for (const file of this.files.values()) {
             for (const includeUri of file.includeUris) {
                 const canonicalUri = canonicalizeSourceUri(includeUri);
-                if (isExternal(canonicalUri)) {
+                if (needsExactWatcher(canonicalUri)) {
                     resolvedExternalIncludeUris.add(canonicalUri);
                 }
             }
@@ -351,7 +350,7 @@ export class WorkspaceHdlIndex {
                     include.rawPath
                 )) {
                     const canonicalUri = canonicalizeSourceUri(candidate);
-                    if (isExternal(canonicalUri)) {
+                    if (needsExactWatcher(canonicalUri)) {
                         unresolvedExternalCandidateUris.add(canonicalUri);
                     }
                 }

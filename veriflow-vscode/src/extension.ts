@@ -109,6 +109,7 @@ type HdlWatchEvent = {
 type HdlWatchRegistry = {
     version: number;
     lifecycleGeneration: number;
+    settingsGeneration: number;
     rootIdentity: string;
     indexGeneration: number;
     index: WorkspaceHdlIndex | undefined;
@@ -119,11 +120,18 @@ type HdlWatchRegistry = {
 
 let hdlWatchRegistry: HdlWatchRegistry | undefined;
 let hdlWatchRegistryVersion = 0;
+let hdlWatchSettingsGeneration = 0;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 const HDL_WATCH_GLOB = '**/*.{v,sv,vh,svh}';
 
 class HdlIndexPreparationInvalidatedError extends Error {}
+class HdlWatchPlanReconciliationError extends Error {
+    constructor(error: unknown) {
+        super(error instanceof Error ? error.message : String(error));
+        this.name = 'HdlWatchPlanReconciliationError';
+    }
+}
 class HdlStoppingError extends Error {
     constructor() {
         super('HDL lifecycle is stopping');
@@ -212,6 +220,14 @@ export function activate(context: vscode.ExtensionContext): void {
             if (hdlStopping) { return; }
             const definesChanged = e.affectsConfiguration('veriflow.defines');
             const rootsChanged = e.affectsConfiguration('veriflow.libDirs');
+            if (definesChanged || rootsChanged) {
+                hdlWatchSettingsGeneration++;
+                try {
+                    _reconcileHdlWatchersForCurrentRoots(context);
+                } catch {
+                    // The rescan below retries watcher construction after invalidation.
+                }
+            }
             if (definesChanged) {
                 hdlParser?.clearCache();
             }
@@ -229,6 +245,12 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             if (hdlStopping) { return; }
+            hdlWatchSettingsGeneration++;
+            try {
+                _reconcileHdlWatchersForCurrentRoots(context);
+            } catch {
+                // The rescan below retries watcher construction after invalidation.
+            }
             _invalidateDependencyPresentation(context);
             _invalidateChangedHdlRootIdentity(context, true);
             await _scanModulesWithErrorReporting(context);
@@ -487,9 +509,16 @@ async function _getDependencyAnalyzer(
     let index = hdlIndex;
     if (!index) {
         index = _createWorkspaceHdlIndex(context, defines, rootIdentity);
+        const analyzer = new DependencyAnalyzer(index);
+        try {
+            _reconcileHdlWatchers(context, rootUris, index);
+        } catch (error) {
+            index.dispose();
+            throw error;
+        }
         hdlIndex = index;
         hdlIndexIdentity = rootIdentity;
-        depAnalyzer = new DependencyAnalyzer(index);
+        depAnalyzer = analyzer;
         hdlIndexLoad = index.load();
     }
     const analyzer = depAnalyzer!;
@@ -533,7 +562,11 @@ function _resetDependencyIndex(): void {
     if (hdlStopping) {
         _disposeHdlWatchRegistry();
     } else if (hdlActiveContext) {
-        _reconcileHdlWatchersForCurrentRoots(hdlActiveContext);
+        try {
+            _reconcileHdlWatchersForCurrentRoots(hdlActiveContext);
+        } catch {
+            // Reset must complete; the next index preparation retries watcher construction.
+        }
     }
 }
 
@@ -1009,6 +1042,7 @@ function _currentHdlRootIdentity(): string | undefined {
 
 function _hasCurrentHdlWatchOwnership(registry: HdlWatchRegistry): boolean {
     return _isCurrentHdlLifecycle(registry.lifecycleGeneration)
+        && registry.settingsGeneration === hdlWatchSettingsGeneration
         && registry.rootIdentity === _currentHdlRootIdentity()
         && registry.indexGeneration === hdlIndexGeneration
         && registry.index === hdlIndex;
@@ -1062,6 +1096,13 @@ async function _flushHdlWatchEvents(
                     event.remove,
                     registry
                 );
+            } else {
+                await _requeueHdlWatchEvent(
+                    context,
+                    registry,
+                    event.uri,
+                    event.remove
+                );
             }
         } finally {
             event.resolve();
@@ -1097,6 +1138,21 @@ function _queueHdlWatchEvent(
         queueMicrotask(() => { void _flushHdlWatchEvents(context, registry); });
     }
     return event.promise;
+}
+
+function _requeueHdlWatchEvent(
+    context: vscode.ExtensionContext,
+    staleRegistry: HdlWatchRegistry,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    const currentRegistry = hdlWatchRegistry;
+    if (!currentRegistry
+        || currentRegistry === staleRegistry
+        || !_isCurrentHdlWatchRegistry(currentRegistry)) {
+        return Promise.resolve();
+    }
+    return _queueHdlWatchEvent(context, currentRegistry, uri, remove);
 }
 
 function _reconcileHdlWatchers(
@@ -1139,6 +1195,7 @@ function _reconcileHdlWatchers(
     const registry: HdlWatchRegistry = {
         version: hdlWatchRegistryVersion + 1,
         lifecycleGeneration: hdlLifecycleGeneration,
+        settingsGeneration: hdlWatchSettingsGeneration,
         rootIdentity,
         indexGeneration: hdlIndexGeneration,
         index,
@@ -1201,13 +1258,18 @@ function _reconcileHdlWatchersForCurrentRoots(context: vscode.ExtensionContext):
     );
 }
 
-function _clearHdlPresentation(context: vscode.ExtensionContext): void {
+function _clearHdlPresentation(
+    context: vscode.ExtensionContext,
+    preserveTopSelection = false
+): void {
     if (hdlStopping) { return; }
     treeProvider.setScanResult(null);
     treeProvider.setAnalyzeResult(null);
-    treeProvider.topModule = undefined;
     tbPanelProvider.setModuleMap({});
-    _clearPersistedTopModule(context);
+    if (!preserveTopSelection) {
+        treeProvider.topModule = undefined;
+        _clearPersistedTopModule(context);
+    }
     _clearPersistedDependencyResult(context);
     _lastDepFileHashes = {};
     output.clear();
@@ -1381,6 +1443,11 @@ async function _presentScanResult(
         return;
     }
     const rootIdentity = JSON.stringify(rootUris);
+    try {
+        _reconcileHdlWatchers(context, rootUris, hdlIndex);
+    } catch (error) {
+        throw new HdlWatchPlanReconciliationError(error);
+    }
     treeProvider.setScanResult(result);
     tbPanelProvider.setModuleMap(result.moduleFiles);
     hdlPresentationRootIdentity = rootIdentity;
@@ -1390,7 +1457,6 @@ async function _presentScanResult(
         : _coerceTopSelection(getTopModule(context));
     const selection = resolveTopModuleSelection(stored, result.definitions);
     treeProvider.topModule = selection;
-    _reconcileHdlWatchers(context, rootUris, hdlIndex);
 
     const summary = formatDuplicateSummary(duplicateGroups);
     if (summary.outputLines.length > 0) {
@@ -1455,6 +1521,13 @@ async function _scanModulesFromIndex(
                 || hdlStopping) {
                 return null;
             }
+            if (error instanceof HdlWatchPlanReconciliationError
+                && generation === hdlPresentationGeneration) {
+                hdlPresentationGeneration++;
+                hdlPresentationRootIdentity = undefined;
+                _resetDependencyIndex();
+                _clearHdlPresentation(context, true);
+            }
             throw error;
         } finally {
             restoreStatus();
@@ -1483,8 +1556,11 @@ async function _refreshIndexedUri(
     remove: boolean,
     watcherRegistry?: HdlWatchRegistry
 ): Promise<void> {
-    if (hdlStopping
-        || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+    if (hdlStopping) {
+        return;
+    }
+    if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+        await _requeueHdlWatchEvent(context, watcherRegistry, uri, remove);
         return;
     }
     if (watcherRegistry && !watcherRegistry.index) {
@@ -1502,15 +1578,21 @@ async function _refreshIndexedUri(
     const currentIndex = hdlIndexIdentity === rootIdentity ? hdlIndex : undefined;
     let admitted = rootUris.some(rootUri =>
         isSourceUriWithinRoot(uriValue, rootUri)
-    ) || currentIndex?.getFile(uriValue) !== undefined;
+    ) || currentIndex?.getFile(uriValue) !== undefined
+        || (currentIndex?.getDependentsOfInclude(uriValue).length ?? 0) > 0;
     if (!admitted && !remove && currentIndex) {
         admitted = await currentIndex.canResolveUnresolvedInclude(
             uriValue,
             hdlAbortController.signal
         );
-        if (hdlStopping
-            || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))
-            || currentIndex !== hdlIndex
+        if (hdlStopping) {
+            return;
+        }
+        if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+            await _requeueHdlWatchEvent(context, watcherRegistry, uri, remove);
+            return;
+        }
+        if (currentIndex !== hdlIndex
             || hdlIndexIdentity !== rootIdentity) {
             return;
         }
@@ -1525,22 +1607,31 @@ async function _refreshIndexedUri(
     const defines = _filterHdlDefines(settings.defines);
     const generation = ++hdlPresentationGeneration;
     await _runDependencyOperation(async () => {
-        if (hdlStopping
-            || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+        const requeueIfStale = (): boolean => {
+            if (!watcherRegistry || _hasCurrentHdlWatchOwnership(watcherRegistry)) {
+                return false;
+            }
+            void _requeueHdlWatchEvent(context, watcherRegistry, uri, remove);
+            return true;
+        };
+        if (hdlStopping || requeueIfStale()) {
             return;
         }
         try {
             let index = hdlIndex;
             if (!index || hdlIndexIdentity !== rootIdentity) {
                 await _getDependencyAnalyzer(context, rootUris, defines);
+                if (hdlStopping || requeueIfStale()) {
+                    return;
+                }
                 index = hdlIndex;
             } else {
                 await hdlIndexLoad;
-                if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+                if (hdlStopping || requeueIfStale()) {
                     return;
                 }
                 await index.updateConfiguration(defines);
-                if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+                if (hdlStopping || requeueIfStale()) {
                     return;
                 }
                 if (remove) {
@@ -1548,12 +1639,14 @@ async function _refreshIndexedUri(
                 } else {
                     await index.refreshUri(uriValue);
                 }
+                if (hdlStopping || requeueIfStale()) {
+                    return;
+                }
             }
             if (!index) {
                 return;
             }
-            if (hdlStopping
-                || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+            if (hdlStopping || requeueIfStale()) {
                 return;
             }
             const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
@@ -1564,6 +1657,7 @@ async function _refreshIndexedUri(
                 generation,
                 rootUris
             );
+            requeueIfStale();
         } catch (error) {
             if (hdlStopping || error instanceof HdlStoppingError) { return; }
             _resetDependencyIndex();
@@ -1578,8 +1672,11 @@ async function _refreshIndexedUriWithErrorReporting(
     remove: boolean,
     watcherRegistry?: HdlWatchRegistry
 ): Promise<void> {
-    if (hdlStopping
-        || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+    if (hdlStopping) {
+        return;
+    }
+    if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+        await _requeueHdlWatchEvent(context, watcherRegistry, uri, remove);
         return;
     }
     try {

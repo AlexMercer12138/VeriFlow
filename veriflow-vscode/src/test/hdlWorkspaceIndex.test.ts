@@ -779,16 +779,22 @@ async function testExternalIncludeWatchPlanIsReadOnly(): Promise<void> {
     const rootUri = 'file:///A';
     const topUri = `${rootUri}/top.sv`;
     const resolvedIncludeUri = 'file:///external/generated/defs.svh';
+    const externalNonstandardIncludeUri = 'file:///external/generated/defs.inc';
+    const localNonstandardIncludeUri = `${rootUri}/generated/local.inc`;
     const unresolvedCandidateUri = 'file:///external/future/created.svh';
     const rootContainedCandidateUri = `${rootUri}/future/local.svh`;
     const harness = createWorkspaceIndexHarness({
         [topUri]: [
             `\`include "${resolvedIncludeUri}"`,
+            `\`include "${externalNonstandardIncludeUri}"`,
+            `\`include "${localNonstandardIncludeUri}"`,
             `\`include "${unresolvedCandidateUri}"`,
             `\`include "${rootContainedCandidateUri}"`,
             'module watch_plan_owner; endmodule',
         ].join('\n'),
         [resolvedIncludeUri]: '`define GENERATED_DEFS 1',
+        [externalNonstandardIncludeUri]: '`define EXTERNAL_INC 1',
+        [localNonstandardIncludeUri]: '`define LOCAL_INC 1',
     });
     const invalidations: WorkspaceIndexInvalidation[] = [];
     harness.index.onDidInvalidate(event => invalidations.push(event));
@@ -802,14 +808,57 @@ async function testExternalIncludeWatchPlanIsReadOnly(): Promise<void> {
         const plan = harness.index.getWatchPlan([rootUri]);
 
         assert.deepStrictEqual(plan, {
-            resolvedExternalIncludeUris: [canonicalizeSourceUri(resolvedIncludeUri)],
+            resolvedExternalIncludeUris: [
+                canonicalizeSourceUri(resolvedIncludeUri),
+                canonicalizeSourceUri(externalNonstandardIncludeUri),
+                canonicalizeSourceUri(localNonstandardIncludeUri),
+            ].sort(),
             unresolvedExternalCandidateUris: [canonicalizeSourceUri(unresolvedCandidateUri)],
         });
+        for (const includeUri of [
+            externalNonstandardIncludeUri,
+            localNonstandardIncludeUri,
+        ]) {
+            assert.strictEqual(harness.index.getFile(includeUri), undefined);
+            assert.deepStrictEqual(
+                harness.index.getDependentsOfInclude(includeUri),
+                [canonicalizeSourceUri(topUri)]
+            );
+        }
         assert.strictEqual(harness.parserCalls.length, parserCallsBeforePlan);
         assert.strictEqual(harness.persistedWrites.length, persistedWritesBeforePlan);
         assert.strictEqual(harness.includeResolveCalls.length, resolveCallsBeforePlan);
-        assert.deepStrictEqual(invalidations, []);
+        assert.strictEqual(invalidations.length, 0);
         assert.strictEqual(harness.index.getFile(unresolvedCandidateUri), undefined);
+
+        for (const [includeUri, replacement] of [
+            [externalNonstandardIncludeUri, '`define EXTERNAL_INC 2'],
+            [localNonstandardIncludeUri, '`define LOCAL_INC 2'],
+        ] as const) {
+            invalidations.length = 0;
+            harness.files.set(canonicalizeSourceUri(includeUri), replacement);
+            await harness.index.refreshUri(includeUri);
+            assert.ok(invalidations.at(-1)?.affectedDocumentUris.includes(
+                canonicalizeSourceUri(topUri)
+            ));
+        }
+
+        invalidations.length = 0;
+        harness.files.delete(canonicalizeSourceUri(externalNonstandardIncludeUri));
+        await harness.index.removeUri(externalNonstandardIncludeUri);
+        assert.ok(invalidations.at(-1)?.affectedDocumentUris.includes(
+            canonicalizeSourceUri(topUri)
+        ));
+        assert.deepStrictEqual(
+            harness.index.getDependentsOfInclude(externalNonstandardIncludeUri),
+            []
+        );
+
+        const parserCallsBeforeRogue = harness.parserCalls.length;
+        invalidations.length = 0;
+        await harness.index.refreshUri('file:///external/generated/rogue.inc');
+        assert.strictEqual(harness.parserCalls.length, parserCallsBeforeRogue);
+        assert.deepStrictEqual(invalidations, []);
     } finally {
         harness.index.dispose();
         await harness.dispose();
