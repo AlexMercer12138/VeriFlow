@@ -22,6 +22,7 @@ import {
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
 import type { HdlDefinitionSummary } from './core';
+import { canonicalizeSourceUri } from './core/hdl/preprocessor';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -262,8 +263,8 @@ function _dependencyRootUris(root: string, libDirs: string[]): string[] {
 }
 
 function _isUriWithinRoot(uriValue: string, rootValue: string): boolean {
-    const uri = vscode.Uri.parse(uriValue);
-    const root = vscode.Uri.parse(rootValue);
+    const uri = vscode.Uri.parse(canonicalizeSourceUri(uriValue));
+    const root = vscode.Uri.parse(canonicalizeSourceUri(rootValue));
     if (uri.scheme !== root.scheme || uri.authority !== root.authority) {
         return false;
     }
@@ -685,10 +686,26 @@ function _deriveModuleScanResult(
         const uri = vscode.Uri.parse(uriValue);
         return uri.fsPath || uri.path || uriValue;
     });
-    for (const definition of definitions) {
+    const prioritizedDefinitions = [...indexedDefinitions].sort((left, right) => {
+        const leftRoot = rootUris.findIndex(rootUri =>
+            _isUriWithinRoot(left.uri, rootUri)
+        );
+        const rightRoot = rootUris.findIndex(rootUri =>
+            _isUriWithinRoot(right.uri, rootUri)
+        );
+        const leftPriority = leftRoot >= 0 ? leftRoot : rootUris.length;
+        const rightPriority = rightRoot >= 0 ? rightRoot : rootUris.length;
+        return leftPriority - rightPriority
+            || left.uri.localeCompare(right.uri)
+            || left.declarationStart - right.declarationStart;
+    });
+    for (const definition of prioritizedDefinitions) {
         if (!Object.prototype.hasOwnProperty.call(moduleFiles, definition.name)) {
-            _setRecordValue(moduleFiles, definition.name, definition.filepath);
+            const entry = _definitionEntry(definition, rootUris[0]);
+            _setRecordValue(moduleFiles, entry.name, entry.filepath);
         }
+    }
+    for (const definition of definitions) {
         const rootIndex = rootUris.findIndex(rootUri =>
             _isUriWithinRoot(definition.uri, rootUri)
         );

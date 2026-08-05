@@ -296,44 +296,50 @@ class FakeUri {
     with(change: { path?: string }): FakeUri {
         return new FakeUri(this.scheme, this.authority, change.path ?? this.path);
     }
-    get fsPath(): string { return this.path; }
+    get fsPath(): string {
+        return this.scheme === 'file' && /^\/[A-Za-z]:\//.test(this.path)
+            ? this.path.slice(1).replace(/\//g, '\\')
+            : this.path;
+    }
     toString(): string { return `${this.scheme}://${this.authority}${this.path}`; }
 }
 
 async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
+    const workspaceRootUri = 'file:///D:/Software/VeriFlow';
+    const canonicalWorkspaceRootUri = 'file:///d:/software/veriflow';
     const workspaceDefinition: Definition = {
-        key: 'module:file:///workspace/rtl/alu.sv:0',
+        key: `module:${canonicalWorkspaceRootUri}/rtl/alu.sv:0`,
         kind: 'module',
         name: 'alu',
-        uri: 'file:///workspace/rtl/alu.sv',
+        uri: `${canonicalWorkspaceRootUri}/rtl/alu.sv`,
         declarationStart: 0,
         declarationLine: 1,
         parameters: [], ports: [], dependencies: [], modelFingerprint: 'workspace',
     };
     const libraryDefinition: Definition = {
         ...workspaceDefinition,
-        key: 'module:file:///library/alu.sv:0',
-        uri: 'file:///library/alu.sv',
+        key: 'module:file:///A-library/alu.sv:0',
+        uri: 'file:///A-library/alu.sv',
         modelFingerprint: 'library',
     };
     const secondWorkspaceDefinition: Definition = {
         ...workspaceDefinition,
-        key: 'module:file:///workspace/ip/alu.sv:0',
-        uri: 'file:///workspace/ip/alu.sv',
+        key: `module:${canonicalWorkspaceRootUri}/ip/alu.sv:0`,
+        uri: `${canonicalWorkspaceRootUri}/ip/alu.sv`,
         modelFingerprint: 'workspace-ip',
     };
     const topDefinition: Definition = {
         ...workspaceDefinition,
-        key: 'module:file:///workspace/top.sv:0',
+        key: `module:${canonicalWorkspaceRootUri}/top.sv:0`,
         name: 'top',
-        uri: 'file:///workspace/top.sv',
+        uri: `${canonicalWorkspaceRootUri}/top.sv`,
         modelFingerprint: 'top',
     };
     const prototypeNamedDefinition: Definition = {
         ...workspaceDefinition,
-        key: 'module:file:///workspace/prototype_named.sv:0',
+        key: `module:${canonicalWorkspaceRootUri}/prototype_named.sv:0`,
         name: '__proto__',
-        uri: 'file:///workspace/prototype_named.sv',
+        uri: `${canonicalWorkspaceRootUri}/prototype_named.sv`,
         modelFingerprint: 'prototype-named',
     };
     const definitions = [
@@ -373,13 +379,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         definitions: ModuleDefinitionEntry[];
         moduleFiles: Record<string, string>;
     } | undefined;
+    let testbenchModuleMap: Record<string, string> = {};
     const presentedLibDirs: string[][] = [];
     let quickPickItems: Array<{ label: string; description?: string }> = [];
     const status = { text: '', tooltip: '', command: '', show(): void {}, dispose(): void {} };
     const disposable = { dispose(): void {} };
-    const folder = { uri: FakeUri.parse('file:///workspace') };
+    const folder = { uri: FakeUri.parse(workspaceRootUri) };
     const settings = {
-        libDirs: ['/library'], defines: {} as Record<string, string | boolean>,
+        libDirs: ['/A-library'], defines: {} as Record<string, string | boolean>,
         simulator: 'iverilog', waveViewer: 'builtin', simulatorCompileCmd: '',
         simulatorRunCmd: '', waveViewerCmd: '', waveFileTemplate: '{top_module}.vcd',
         testbenchOutputDir: '.',
@@ -407,7 +414,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         async refreshUri(uri: string): Promise<void> { events.push(`refresh:${uri}`); }
         async removeUri(uri: string): Promise<void> { events.push(`remove:${uri}`); }
         getAllDefinitions(kind?: string): Definition[] {
-            return kind && kind !== 'module' ? [] : [...definitions];
+            return kind && kind !== 'module' ? [] : [...definitions].sort((left, right) =>
+                left.name.localeCompare(right.name)
+                || left.uri.localeCompare(right.uri)
+                || left.declarationStart - right.declarationStart
+            );
         }
         getDuplicateGroups(): Array<{ name: string; definitions: Definition[] }> {
             return [{
@@ -443,7 +454,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         static readonly viewType = 'veriflow.testbench';
         setBeforeGenerate(): void {}
         setOnVisible(): void {}
-        setModuleMap(): void {}
+        setModuleMap(moduleMap: Record<string, string>): void {
+            testbenchModuleMap = { ...moduleMap };
+        }
     }
     class FakeDependencyAnalyzer {
         constructor(readonly index: FakeIndex) {}
@@ -586,6 +599,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 
         assert.strictEqual(FakeIndex.instances.length, 1);
         assert.strictEqual(lastScanResult?.definitions.length, 5);
+        assert.ok(lastScanResult?.definitions.find(
+            definition => definition.key === topDefinition.key
+        )?.workspace);
+        const expectedWorkspaceAlu = FakeUri.parse(secondWorkspaceDefinition.uri).fsPath;
+        assert.strictEqual(lastScanResult?.moduleFiles.alu, expectedWorkspaceAlu);
+        assert.strictEqual(testbenchModuleMap.alu, expectedWorkspaceAlu);
         assert.ok(Object.prototype.hasOwnProperty.call(
             lastScanResult?.moduleFiles,
             '__proto__'
@@ -618,7 +637,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'changed URI refresh'
         );
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse('file:///workspace/new.sv'))),
+            Promise.resolve(createListener!(FakeUri.parse(`${canonicalWorkspaceRootUri}/new.sv`))),
             'created URI refresh'
         );
         await withTimeout(
@@ -626,7 +645,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'deleted URI removal'
         );
         assert.ok(events.includes(`refresh:${workspaceDefinition.uri}`));
-        assert.ok(events.includes('refresh:file:///workspace/new.sv'));
+        assert.ok(events.includes(`refresh:${canonicalWorkspaceRootUri}/new.sv`));
         assert.ok(events.includes(`remove:${libraryDefinition.uri}`));
 
         const scansBeforeConfig = events.filter(event => event === 'scan').length;
@@ -645,7 +664,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(FakeIndex.instances.length, 2);
         assert.strictEqual(previousIndex.disposed, true);
         assert.deepStrictEqual(FakeIndex.instances[1].scannedRoots.at(-1), [
-            'file:///workspace',
+            workspaceRootUri,
             'file:///other-library',
         ]);
 
