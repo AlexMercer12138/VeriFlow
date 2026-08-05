@@ -93,6 +93,7 @@ let hdlPresentationRootIdentity: string | undefined;
 let hdlRootGeneration = 0;
 let hdlWorkflowGeneration = 0;
 let hdlTopIntentVersion = 0;
+let hdlInstantiationIntentVersion = 0;
 let hdlLifecycleGeneration = 0;
 let hdlStopping = false;
 let hdlAbortController = new AbortController();
@@ -800,6 +801,7 @@ export async function deactivate(): Promise<void> {
     hdlPresentationGeneration++;
     hdlWorkflowGeneration++;
     hdlTopIntentVersion++;
+    hdlInstantiationIntentVersion++;
     hdlAbortController.abort();
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
@@ -1046,6 +1048,29 @@ function _isCurrentTopIntent(
     return treeProvider.getWorkspaceDefinitions().some(definition =>
         definition.workspace && definition.key === definitionKey
     );
+}
+
+function _isCurrentInstantiationInvocation(
+    intentVersion: number,
+    lifecycleGeneration: number
+): boolean {
+    return intentVersion === hdlInstantiationIntentVersion
+        && _isCurrentHdlLifecycle(lifecycleGeneration);
+}
+
+function _isCurrentInstantiationPresentation(
+    intentVersion: number,
+    lifecycleGeneration: number,
+    rootGeneration: number,
+    presentationGeneration: number,
+    rootIdentity: string | undefined,
+    indexGeneration: number,
+    index: WorkspaceHdlIndex | undefined
+): boolean {
+    return _isCurrentInstantiationInvocation(intentVersion, lifecycleGeneration)
+        && rootGeneration === hdlRootGeneration
+        && indexGeneration === hdlIndexGeneration
+        && _isCurrentHdlPresentation(presentationGeneration, rootIdentity, index);
 }
 
 function _currentHdlRootIdentity(): string | undefined {
@@ -1799,6 +1824,7 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
 }
 
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
+    const intentVersion = ++hdlInstantiationIntentVersion;
     if (hdlStopping) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
@@ -1807,13 +1833,29 @@ async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<v
         return;
     }
     const result = await cmdScanModules(context);
-    if (_isCurrentHdlLifecycle(lifecycleGeneration) && result) {
-        await showModuleInstantiationPicker(
-            () => _isCurrentHdlLifecycle(lifecycleGeneration) ? hdlIndex : undefined,
-            () => _isCurrentHdlLifecycle(lifecycleGeneration),
-            root
-        );
+    if (!result || !_isCurrentInstantiationInvocation(intentVersion, lifecycleGeneration)) {
+        return;
     }
+    const rootGeneration = hdlRootGeneration;
+    const presentationGeneration = hdlPresentationGeneration;
+    const rootIdentity = hdlPresentationRootIdentity;
+    const indexGeneration = hdlIndexGeneration;
+    const index = hdlIndex;
+    const isCurrent = (): boolean => _isCurrentInstantiationPresentation(
+        intentVersion,
+        lifecycleGeneration,
+        rootGeneration,
+        presentationGeneration,
+        rootIdentity,
+        indexGeneration,
+        index
+    );
+    if (!isCurrent()) { return; }
+    await showModuleInstantiationPicker(
+        () => isCurrent() ? index : undefined,
+        isCurrent,
+        root
+    );
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {

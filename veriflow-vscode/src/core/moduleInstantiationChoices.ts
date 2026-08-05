@@ -8,6 +8,7 @@ export interface ModuleInstantiationChoice {
     description: string;
     moduleName: string;
     definitionKey: string;
+    modelFingerprint: string;
 }
 
 function localFilepath(uri: string): string | undefined {
@@ -38,14 +39,29 @@ export function buildModuleInstantiationChoices(
     definitions: readonly HdlDefinitionSummary[],
     workspaceRoot: string = process.cwd()
 ): ModuleInstantiationChoice[] {
+    const countsByNameAndUri = new Map<string, number>();
+    for (const definition of definitions) {
+        const key = JSON.stringify([definition.name, definition.uri]);
+        countsByNameAndUri.set(key, (countsByNameAndUri.get(key) ?? 0) + 1);
+    }
     return [...definitions]
         .sort((left, right) => left.name.localeCompare(right.name)
             || left.uri.localeCompare(right.uri)
             || left.declarationStart - right.declarationStart)
-        .map(definition => ({
-            label: definition.name,
-            description: describeDefinition(definition, workspaceRoot),
-            moduleName: definition.name,
-            definitionKey: definition.key,
-        }));
+        .map(definition => {
+            const sourceCount = countsByNameAndUri.get(JSON.stringify([
+                definition.name,
+                definition.uri,
+            ])) ?? 0;
+            const description = describeDefinition(definition, workspaceRoot);
+            return {
+                label: definition.name,
+                description: sourceCount > 1
+                    ? `${description}:${definition.declarationLine}`
+                    : description,
+                moduleName: definition.name,
+                definitionKey: definition.key,
+                modelFingerprint: definition.modelFingerprint,
+            };
+        });
 }

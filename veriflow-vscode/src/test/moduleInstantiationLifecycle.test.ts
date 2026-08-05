@@ -153,6 +153,46 @@ async function testExactIndexedDefinitionCopiesGoldenText(): Promise<void> {
     delete require.cache[require.resolve('../moduleInstantiationCommand')];
 }
 
+async function testEscapedDefinitionUsesLegalDefaultInstanceIdentifier(): Promise<void> {
+    const root = path.join(process.cwd(), 'workspace');
+    const definition = moduleDefinition(root, 'rtl/escaped.sv', '\\foo.bar', 0, [
+        { name: '\\P.W', defaultExpression: '8' },
+    ], [
+        { name: '\\in.a', direction: 'input', width: { kind: 'known', bits: 1 } },
+    ]);
+    const index = fakeIndex([definition]);
+    let quickPickCalls = 0;
+    let copiedText = '';
+    const vscodeStub = {
+        window: {
+            async showQuickPick(items: unknown[]): Promise<unknown> {
+                quickPickCalls++;
+                return quickPickCalls === 1 ? items[0] : { label: 'Copy', action: 'copy' };
+            },
+            showWarningMessage(): void {},
+            showErrorMessage(): void {},
+            showInformationMessage(): void {},
+            activeTextEditor: undefined,
+        },
+        env: {
+            clipboard: {
+                async writeText(value: string): Promise<void> { copiedText = value; },
+            },
+        },
+    };
+    const command = loadCommand(vscodeStub, []);
+
+    await command.showModuleInstantiationPicker(() => index, () => true, root);
+
+    assert.strictEqual(copiedText, [
+        '\\foo.bar #(',
+        '    .\\P.W ( 8 ))',
+        'u_foo_bar (',
+        '    .\\in.a ( \\in.a ));',
+    ].join('\n'));
+    delete require.cache[require.resolve('../moduleInstantiationCommand')];
+}
+
 async function testDeferredModulePickerRejectsReplacementAndDeactivation(): Promise<void> {
     for (const invalidation of ['replacement', 'deactivation'] as const) {
         const root = path.join(process.cwd(), 'workspace');
@@ -254,6 +294,69 @@ async function testDeferredActionPickerRequiresLiveDefinition(): Promise<void> {
     assert.deepStrictEqual(adapterDefinitions, []);
     assert.strictEqual(clipboardWrites, 0);
     delete require.cache[require.resolve('../moduleInstantiationCommand')];
+}
+
+async function testSameIndexModelReplacementInvalidatesDisplayedChoice(): Promise<void> {
+    for (const replacementPhase of ['module picker', 'action picker'] as const) {
+        const root = path.join(process.cwd(), 'workspace');
+        const displayed = moduleDefinition(root, 'rtl/child.sv', 'child', 0, [], [
+            { name: 'old_child', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ]);
+        let currentDefinition = displayed;
+        const index: FakeIndex = {
+            getAllDefinitions: () => [currentDefinition],
+            getDefinition: () => currentDefinition,
+        };
+        const replaceModel = (): void => {
+            currentDefinition = {
+                ...displayed,
+                ports: [
+                    { name: 'new_child', direction: 'input', width: { kind: 'known', bits: 1 } },
+                ],
+                modelFingerprint: 'sha256:new-child',
+            };
+        };
+        let quickPickCalls = 0;
+        let clipboardWrites = 0;
+        const adapterDefinitions: HdlDefinitionSummary[] = [];
+        const vscodeStub = {
+            window: {
+                async showQuickPick(items: unknown[]): Promise<unknown> {
+                    quickPickCalls++;
+                    if (replacementPhase === 'module picker' && quickPickCalls === 1) {
+                        replaceModel();
+                    }
+                    if (replacementPhase === 'action picker' && quickPickCalls === 2) {
+                        replaceModel();
+                    }
+                    return quickPickCalls === 1
+                        ? items[0]
+                        : { label: 'Copy', action: 'copy' };
+                },
+                showWarningMessage(): void {},
+                showErrorMessage(): void {},
+                showInformationMessage(): void {},
+                activeTextEditor: undefined,
+            },
+            env: {
+                clipboard: {
+                    async writeText(): Promise<void> { clipboardWrites++; },
+                },
+            },
+        };
+        const command = loadCommand(vscodeStub, adapterDefinitions);
+
+        await command.showModuleInstantiationPicker(() => index, () => true, root);
+
+        assert.strictEqual(
+            quickPickCalls,
+            replacementPhase === 'module picker' ? 1 : 2,
+            replacementPhase
+        );
+        assert.deepStrictEqual(adapterDefinitions, [], replacementPhase);
+        assert.strictEqual(clipboardWrites, 0, replacementPhase);
+        delete require.cache[require.resolve('../moduleInstantiationCommand')];
+    }
 }
 
 async function testInsertUsesCurrentSelectionInOriginalHdlEditor(): Promise<void> {
@@ -404,8 +507,10 @@ async function testCancellingEitherPickerHasNoSideEffects(): Promise<void> {
 
 async function main(): Promise<void> {
     await testExactIndexedDefinitionCopiesGoldenText();
+    await testEscapedDefinitionUsesLegalDefaultInstanceIdentifier();
     await testDeferredModulePickerRejectsReplacementAndDeactivation();
     await testDeferredActionPickerRequiresLiveDefinition();
+    await testSameIndexModelReplacementInvalidatesDisplayedChoice();
     await testInsertUsesCurrentSelectionInOriginalHdlEditor();
     await testInsertRejectsChangedOrNonHdlEditor();
     await testCancellingEitherPickerHasNoSideEffects();

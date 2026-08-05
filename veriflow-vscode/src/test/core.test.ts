@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
 import { toModuleInfo } from '../core/hdl/legacyModelAdapter';
+import { defaultModuleInstanceIdentifier } from '../core/moduleInstantiationIdentifier';
 import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
 import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
 import { PortParser } from '../core/portParser';
@@ -1513,6 +1514,45 @@ async function testModuleInstantiationChoices(): Promise<void> {
         assert.notStrictEqual(choices[0].definitionKey, choices[1].definitionKey);
         assert.ok(index.getDefinition(choices[0].definitionKey));
         assert.ok(index.getDefinition(choices[1].definitionKey));
+        assert.deepStrictEqual(choices.map(item => item.modelFingerprint), [
+            index.getDefinition(choices[0].definitionKey)?.modelFingerprint,
+            index.getDefinition(choices[1].definitionKey)?.modelFingerprint,
+            index.getDefinition(choices[2].definitionKey)?.modelFingerprint,
+        ]);
+
+        const duplicateUri = pathToFileURL(path.join(root, 'rtl', 'dup.sv')).toString();
+        const duplicateDefinitions = [
+            {
+                ...index.getAllDefinitions('module')[0],
+                key: `module:${duplicateUri}:100`,
+                name: 'dup',
+                uri: duplicateUri,
+                declarationStart: 100,
+                declarationLine: 7,
+                modelFingerprint: 'sha256:dup-second',
+            },
+            {
+                ...index.getAllDefinitions('module')[0],
+                key: `module:${duplicateUri}:0`,
+                name: 'dup',
+                uri: duplicateUri,
+                declarationStart: 0,
+                declarationLine: 1,
+                modelFingerprint: 'sha256:dup-first',
+            },
+        ];
+        const sameFileChoices = buildModuleInstantiationChoices(duplicateDefinitions, root);
+        assert.deepStrictEqual(
+            sameFileChoices.map(item => [
+                item.definitionKey,
+                item.description,
+                item.modelFingerprint,
+            ]),
+            [
+                [duplicateDefinitions[1].key, 'rtl/dup.sv:1', 'sha256:dup-first'],
+                [duplicateDefinitions[0].key, 'rtl/dup.sv:7', 'sha256:dup-second'],
+            ]
+        );
 
         const prototypeNamedDefinition = {
             ...index.getAllDefinitions('module')[0],
@@ -1524,6 +1564,76 @@ async function testModuleInstantiationChoices(): Promise<void> {
         assert.strictEqual(
             buildModuleInstantiationChoices([prototypeNamedDefinition], '/workspace')[0].moduleName,
             '__proto__'
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testEscapedModuleInstantiationRoundTrip(): Promise<void> {
+    assert.deepStrictEqual([
+        'child',
+        '\\foo.bar',
+        '\\123',
+        '\\$cash',
+        '\\',
+    ].map(defaultModuleInstanceIdentifier), [
+        'u_child',
+        'u_foo_bar',
+        'u_123',
+        'u_$cash',
+        'u_module',
+    ]);
+
+    const root = path.join(process.cwd(), 'escaped-instantiation');
+    const harness = await createDependencyHarness(root, {
+        'escaped.sv': [
+            'module \\foo.bar #(',
+            '    parameter int \\P.W = 8',
+            ') (',
+            '    input  logic \\in.a ,',
+            '    output logic \\out$b ',
+            ');',
+            'endmodule',
+            '',
+        ].join('\n'),
+    });
+    try {
+        const definition = harness.index.findDefinitions('\\foo.bar', 'module')[0];
+        assert.ok(definition);
+        const moduleInfo = toModuleInfo(definition);
+        const instanceName = defaultModuleInstanceIdentifier(moduleInfo.name);
+        const generated = formatModuleInstantiation({
+            moduleName: moduleInfo.name,
+            instanceName,
+            parameters: moduleInfo.parameters,
+            ports: moduleInfo.ports.map(port => ({ name: port.name, value: port.name })),
+        });
+
+        assert.strictEqual(generated, [
+            '\\foo.bar #(',
+            '    .\\P.W ( 8 ))',
+            'u_foo_bar (',
+            '    .\\in.a  ( \\in.a  ),',
+            '    .\\out$b ( \\out$b ));',
+        ].join('\n'));
+        const parsed = await harness.parseInteractive(
+            pathToFileURL(path.join(root, 'wrapper.sv')).toString(),
+            ['module wrapper;', generated, 'endmodule', ''].join('\n')
+        );
+        assert.deepStrictEqual(parsed.diagnostics.filter(diagnostic =>
+            diagnostic.code === 'systemverilog.syntax-error'
+            || diagnostic.code === 'systemverilog.missing-syntax'
+        ), []);
+        assert.strictEqual(parsed.modules[0].instances[0].moduleName, '\\foo.bar');
+        assert.strictEqual(parsed.modules[0].instances[0].instanceName, 'u_foo_bar');
+        assert.deepStrictEqual(
+            parsed.modules[0].instances[0].parameterConnections.map(item => item.name),
+            ['\\P.W']
+        );
+        assert.deepStrictEqual(
+            parsed.modules[0].instances[0].portConnections.map(item => item.name),
+            ['\\in.a', '\\out$b']
         );
     } finally {
         await harness.dispose();
@@ -1644,9 +1754,10 @@ function testModuleInstantiationUsesWorkspaceIndex(): void {
     assert.match(commandSource, /getAllDefinitions\('module'\)/);
     assert.match(commandSource, /getDefinition\(selected\.definitionKey\)/);
     assert.doesNotMatch(extensionSource, /showModuleInstantiationPicker\(\s*result\b/);
+    assert.match(extensionSource, /const index = hdlIndex;/);
     assert.match(
         extensionSource,
-        /showModuleInstantiationPicker\(\s*\(\) => [^\n]*hdlIndex/
+        /showModuleInstantiationPicker\(\s*\(\) => isCurrent\(\) \? index : undefined,\s*isCurrent,\s*root\s*\)/
     );
 }
 
@@ -1687,6 +1798,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['module instantiation formatter alignment', testModuleInstantiationFormatterAlignment],
     ['module instantiation formatter without parameters', testModuleInstantiationFormatterWithoutParameters],
     ['module instantiation formatter without ports', testModuleInstantiationFormatterWithoutPorts],
+    ['escaped module instantiation parser round trip', testEscapedModuleInstantiationRoundTrip],
     ['module instantiation choices', testModuleInstantiationChoices],
     ['module instantiation normalized adapter', testModuleInstantiationLegacyModelAdapter],
     ['module instantiation manifest contribution', testModuleInstantiationManifestContribution],

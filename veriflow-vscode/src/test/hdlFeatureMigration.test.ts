@@ -459,6 +459,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         name?: string;
     } | undefined;
     let deferredOpenDialogSelection: FakeUri[] | undefined;
+    const queuedInstantiationPickers: Array<{
+        gate: ReturnType<typeof createScanGate>;
+        cancel: boolean;
+    }> = [];
+    let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
     type WatchEventKind = 'change' | 'create' | 'delete';
     type WatcherRecord = {
@@ -972,7 +977,20 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         './core': coreStub,
         './core/hdl/workspaceIndexStore': { WorkspaceIndexStore: class {} },
         './moduleTreeProvider': { ModuleTreeProvider: FakeTreeProvider },
-        './moduleInstantiationCommand': { showModuleInstantiationPicker: async () => undefined },
+        './moduleInstantiationCommand': {
+            showModuleInstantiationPicker: async (
+                getIndex: () => FakeIndex | undefined,
+                isCurrent: () => boolean
+            ) => {
+                const behavior = queuedInstantiationPickers.shift();
+                if (!behavior) { return; }
+                behavior.gate.markStarted();
+                await behavior.gate.release;
+                if (!behavior.cancel && isCurrent() && getIndex()) {
+                    instantiationPickerSideEffects++;
+                }
+            },
+        },
         './testbenchPanel': { TestbenchPanelProvider: FakeTestbenchPanel },
         './waveformEditorProvider': {
             WaveformEditorProvider: class { static readonly viewType = 'veriflow.waveformEditor'; },
@@ -1086,6 +1104,50 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(warnings[0].includes(libraryDefinition.uri));
         assert.strictEqual(status.text, '$(warning) VeriFlow: 1 duplicate module name');
         assert.deepStrictEqual(popupWarnings, []);
+
+        const olderInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: olderInstantiationGate, cancel: false });
+        const olderInstantiation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(olderInstantiationGate.started, 'older instantiation picker');
+        const newerInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: newerInstantiationGate, cancel: false });
+        const newerInstantiation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(newerInstantiationGate.started, 'newer instantiation picker');
+        const sideEffectsBeforeReversedInstantiation = instantiationPickerSideEffects;
+        newerInstantiationGate.allow();
+        await withTimeout(newerInstantiation, 'newer instantiation completion');
+        olderInstantiationGate.allow();
+        await withTimeout(olderInstantiation, 'older instantiation completion');
+        assert.strictEqual(
+            instantiationPickerSideEffects,
+            sideEffectsBeforeReversedInstantiation + 1
+        );
+
+        const staleBeforeCancellationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: staleBeforeCancellationGate, cancel: false });
+        const staleBeforeCancellation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(
+            staleBeforeCancellationGate.started,
+            'instantiation picker before newer cancellation'
+        );
+        const cancellingInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: cancellingInstantiationGate, cancel: true });
+        const cancellingInstantiation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(cancellingInstantiationGate.started, 'cancelling instantiation picker');
+        const sideEffectsBeforeCancellation = instantiationPickerSideEffects;
+        cancellingInstantiationGate.allow();
+        await withTimeout(cancellingInstantiation, 'cancelling instantiation completion');
+        staleBeforeCancellationGate.allow();
+        await withTimeout(staleBeforeCancellation, 'stale picker after newer cancellation');
+        assert.strictEqual(instantiationPickerSideEffects, sideEffectsBeforeCancellation);
 
         const warningsBeforeForeignEvents = warnings.length;
         await withTimeout(
@@ -2192,10 +2254,58 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'scan before deferred deactivation'
         );
 
+        const presentationInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: presentationInstantiationGate, cancel: false });
+        const presentationInstantiation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(
+            presentationInstantiationGate.started,
+            'instantiation picker before presentation replacement'
+        );
+        const sideEffectsBeforePresentationReplacement = instantiationPickerSideEffects;
+        settings.defines = { INSTANTIATION_PRESENTATION: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'instantiation presentation replacement');
+        presentationInstantiationGate.allow();
+        await withTimeout(presentationInstantiation, 'stale presentation instantiation');
+        assert.strictEqual(
+            instantiationPickerSideEffects,
+            sideEffectsBeforePresentationReplacement
+        );
+
+        const rootInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: rootInstantiationGate, cancel: false });
+        const rootInstantiation = Promise.resolve(commands.get('veriflow.instantiateModule')!());
+        await withTimeout(
+            rootInstantiationGate.started,
+            'instantiation picker before root replacement'
+        );
+        const sideEffectsBeforeRootReplacement = instantiationPickerSideEffects;
+        settings.libDirs = ['/instantiation-root-replacement'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'instantiation root replacement');
+        rootInstantiationGate.allow();
+        await withTimeout(rootInstantiation, 'stale root instantiation');
+        assert.strictEqual(instantiationPickerSideEffects, sideEffectsBeforeRootReplacement);
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+
         const staleDialogGate = createScanGate();
         nextOpenDialogGate = staleDialogGate;
         const staleDialogOpen = Promise.resolve(commands.get('veriflow.openVcdViewer')!());
         await withTimeout(staleDialogGate.started, 'VCD dialog before lifecycle replacement');
+        const lifecycleInstantiationGate = createScanGate();
+        queuedInstantiationPickers.push({ gate: lifecycleInstantiationGate, cancel: false });
+        const lifecycleInstantiation = Promise.resolve(
+            commands.get('veriflow.instantiateModule')!()
+        );
+        await withTimeout(
+            lifecycleInstantiationGate.started,
+            'instantiation picker before lifecycle replacement'
+        );
+        const sideEffectsBeforeLifecycleReplacement = instantiationPickerSideEffects;
         await withTimeout(extension.deactivate(), 'deactivate with open VCD dialog');
         extensionDeactivated = true;
 
@@ -2211,9 +2321,15 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         deferredOpenDialogSelection = [FakeUri.parse('file:///waves/stale.vcd')];
         staleDialogGate.allow();
         await withTimeout(staleDialogOpen, 'stale VCD dialog completion');
+        lifecycleInstantiationGate.allow();
+        await withTimeout(lifecycleInstantiation, 'stale lifecycle instantiation completion');
         assert.strictEqual(
             executedCommands.filter(command => command.name === 'vscode.openWith').length,
             openWithBeforeStaleDialog
+        );
+        assert.strictEqual(
+            instantiationPickerSideEffects,
+            sideEffectsBeforeLifecycleReplacement
         );
 
         const currentDialogGate = createScanGate();

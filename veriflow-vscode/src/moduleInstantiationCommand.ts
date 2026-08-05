@@ -7,6 +7,7 @@ import {
     toModuleInfo,
     WorkspaceHdlIndex,
 } from './core';
+import { defaultModuleInstanceIdentifier } from './core/moduleInstantiationIdentifier';
 
 type ModuleQuickPickItem = vscode.QuickPickItem & ModuleInstantiationChoice;
 type ActionQuickPickItem = vscode.QuickPickItem & { action: 'insert' | 'copy' };
@@ -73,7 +74,10 @@ function getSelectedDefinition(
         return undefined;
     }
     const definition = initialIndex.getDefinition(selected.definitionKey);
-    return definition?.kind === 'module' ? definition : undefined;
+    return definition?.kind === 'module'
+        && definition.modelFingerprint === selected.modelFingerprint
+        ? definition
+        : undefined;
 }
 
 export async function showModuleInstantiationPicker(
@@ -122,14 +126,19 @@ export async function showModuleInstantiationPicker(
     if (!definition) { return; }
 
     const moduleInfo = toModuleInfo(definition);
-    const instanceName = `u_${moduleInfo.name}`;
+    const instanceName = defaultModuleInstanceIdentifier(moduleInfo.name);
     const ports = moduleInfo.ports.map(port => ({
         name: port.name,
         value: port.name,
     }));
     const ownsInvocation = (): boolean => isCurrent()
         && getCurrentIndex() === initialIndex
-        && initialIndex.getDefinition(selected.definitionKey) !== undefined;
+        && getSelectedDefinition(
+            getCurrentIndex,
+            initialIndex,
+            selected,
+            isCurrent
+        ) !== undefined;
 
     if (action.action === 'copy') {
         if (!ownsInvocation()) { return; }
