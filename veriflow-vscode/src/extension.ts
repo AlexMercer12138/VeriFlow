@@ -68,6 +68,9 @@ let hdlIndexLoad: Promise<void> | undefined;
 let hdlIndexIdentity: string | undefined;
 let hdlIndexGeneration = 0;
 let hdlOperationTail: Promise<void> = Promise.resolve();
+let hdlTopPersistenceTail: Promise<void> = Promise.resolve();
+let hdlTopPersistencePending = 0;
+let hdlDependencyPersistenceTail: Promise<void> = Promise.resolve();
 let hdlPreparationInFlight: {
     identity: string;
     promise: Promise<DependencyAnalyzer>;
@@ -434,6 +437,51 @@ function _runDependencyOperation<T>(operation: () => Promise<T>): Promise<T> {
     return result;
 }
 
+function _persistTopModule(
+    context: vscode.ExtensionContext,
+    selection: TopModuleSelection | undefined
+): Promise<void> {
+    hdlTopPersistencePending++;
+    const result = hdlTopPersistenceTail.then(() => setTopModule(context, selection));
+    hdlTopPersistenceTail = result.then(() => undefined, () => undefined);
+    void result.then(
+        () => { hdlTopPersistencePending--; },
+        () => { hdlTopPersistencePending--; }
+    );
+    return result;
+}
+
+function _clearPersistedTopModule(context: vscode.ExtensionContext): void {
+    void _persistTopModule(context, undefined).catch(error => {
+        output.appendError(
+            `Failed to clear persisted top module: ${
+                error instanceof Error ? error.message : String(error)
+            }`
+        );
+    });
+}
+
+function _persistDependencyResult(
+    context: vscode.ExtensionContext,
+    result: DependencyResult | null
+): Promise<void> {
+    const persistence = hdlDependencyPersistenceTail.then(
+        () => setDependencyResult(context, result)
+    );
+    hdlDependencyPersistenceTail = persistence.then(() => undefined, () => undefined);
+    return persistence;
+}
+
+function _clearPersistedDependencyResult(context: vscode.ExtensionContext): void {
+    void _persistDependencyResult(context, null).catch(error => {
+        output.appendError(
+            `Failed to clear persisted dependency result: ${
+                error instanceof Error ? error.message : String(error)
+            }`
+        );
+    });
+}
+
 function _prepareDependencyAnalyzer(
     context: vscode.ExtensionContext,
     rootUris: string[],
@@ -500,8 +548,15 @@ export async function deactivate(): Promise<void> {
         simulateProcess.kill();
         simulateProcess = null;
     }
-    await hdlOperationTail;
+    await Promise.all([
+        hdlOperationTail,
+        hdlTopPersistenceTail,
+        hdlDependencyPersistenceTail,
+    ]);
     hdlOperationTail = Promise.resolve();
+    hdlTopPersistenceTail = Promise.resolve();
+    hdlTopPersistencePending = 0;
+    hdlDependencyPersistenceTail = Promise.resolve();
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
     hdlPresentationGeneration = 0;
@@ -661,7 +716,7 @@ function _invalidateDependencyPresentation(context: vscode.ExtensionContext): vo
     hdlWorkflowGeneration++;
     _markOutdatedIfCompleted(context);
     treeProvider.setAnalyzeResult(null);
-    void setDependencyResult(context, null);
+    _clearPersistedDependencyResult(context);
     _lastDepFileHashes = {};
     _pendingSimulateAfterAnalyze = false;
     _pendingWaveAfterAnalyze = false;
@@ -695,8 +750,8 @@ function _clearHdlPresentation(context: vscode.ExtensionContext): void {
     treeProvider.setAnalyzeResult(null);
     treeProvider.topModule = undefined;
     tbPanelProvider.setModuleMap({});
-    void setTopModule(context, undefined);
-    void setDependencyResult(context, null);
+    _clearPersistedTopModule(context);
+    _clearPersistedDependencyResult(context);
     _lastDepFileHashes = {};
     output.clear();
     _updateStatusBar();
@@ -870,7 +925,9 @@ async function _presentScanResult(
     tbPanelProvider.setModuleMap(result.moduleFiles);
     hdlPresentationRootIdentity = rootIdentity;
 
-    const stored = _coerceTopSelection(getTopModule(context));
+    const stored = hdlTopPersistencePending > 0
+        ? _coerceTopSelection(treeProvider.topModule)
+        : _coerceTopSelection(getTopModule(context));
     const selection = resolveTopModuleSelection(stored, result.definitions);
     treeProvider.topModule = selection;
 
@@ -885,7 +942,7 @@ async function _presentScanResult(
         statusBarItem.text = `$(circuit-board) VeriFlow: ${result.totalModules} modules`;
     }
     if (!_sameTopSelection(stored, selection)) {
-        await setTopModule(context, selection);
+        await _persistTopModule(context, selection);
     }
 }
 
@@ -1093,10 +1150,9 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         definitionKey: definition.key,
         name: definition.name,
     };
-    await setTopModule(context, selection);
+    await _persistTopModule(context, selection);
     if (!_isCurrentHdlPresentation(generation, rootIdentity, index)) {
-        treeProvider.topModule = undefined;
-        await setTopModule(context, undefined);
+        await hdlTopPersistenceTail;
         return;
     }
     treeProvider.topModule = selection;
@@ -1142,9 +1198,9 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
 
     // 保存结果和状态
-    await setDependencyResult(context, result);
+    await _persistDependencyResult(context, result);
     if (!_isCurrentHdlWorkflow(workflowGeneration)) {
-        await setDependencyResult(context, null);
+        await hdlDependencyPersistenceTail;
         return;
     }
     treeProvider.setAnalyzeResult(result);

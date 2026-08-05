@@ -425,6 +425,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
+    let nextTopPersistenceGate: ReturnType<typeof createScanGate> | undefined;
+    let nextDependencyPersistenceGate: ReturnType<typeof createScanGate> | undefined;
+    let nextDependencyResultTag: string | undefined;
     let deferredQuickPickSelection: {
         label: string;
         description?: string;
@@ -446,6 +449,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let testbenchModuleMap: Record<string, string> = {};
     let persistedDependencyResult: unknown = null;
     let presentedAnalyzeResult: unknown = null;
+    let presentedTop: TopModuleSelection | undefined;
     let analyzeStatus = 'idle';
     let simulateStatus = 'idle';
     let outputClearCount = 0;
@@ -537,8 +541,13 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         dispose(): void { this.disposed = true; events.push('dispose-index'); }
     }
     class FakeTreeProvider {
-        topModule: TopModuleSelection | undefined;
+        private _topModule: TopModuleSelection | undefined;
         analyzeResult: unknown = null;
+        get topModule(): TopModuleSelection | undefined { return this._topModule; }
+        set topModule(selection: TopModuleSelection | undefined) {
+            this._topModule = selection;
+            presentedTop = selection;
+        }
         setScanResult(result: {
             definitions: ModuleDefinitionEntry[];
             moduleFiles: Record<string, string>;
@@ -569,6 +578,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         constructor(readonly index: FakeIndex) {}
         async resolve(definitionKey: string) {
             resolvedDefinitionKeys.push(definitionKey);
+            const resultTag = nextDependencyResultTag;
+            nextDependencyResultTag = undefined;
             const gate = nextResolveGate;
             nextResolveGate = undefined;
             if (gate) {
@@ -578,7 +589,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             return {
                 topModule: 'top',
                 topDefinitionKey: definitionKey,
-                files: [],
+                files: resultTag ? [resultTag] : [],
                 missingModules: [],
                 ambiguousModules: {},
                 moduleMap: {},
@@ -652,6 +663,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         getWorkspaceRoot: () => workspaceFolders[0]?.uri.fsPath,
         getTopModule: () => storedTop,
         setTopModule: async (_context: unknown, selection: TopModuleSelection | undefined) => {
+            const gate = nextTopPersistenceGate;
+            nextTopPersistenceGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
             storedTop = selection;
         },
         resolveTopModuleSelection: (
@@ -675,6 +692,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         setSimulateStatus: async (_context: unknown, value: string) => { simulateStatus = value; },
         getDependencyResult: () => persistedDependencyResult,
         setDependencyResult: async (_context: unknown, result: unknown) => {
+            const gate = nextDependencyPersistenceGate;
+            nextDependencyPersistenceGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
             persistedDependencyResult = result;
         },
     };
@@ -961,11 +984,129 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'selected definition restoration'
         );
 
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before out-of-order top persistence'
+        );
+        const staleTopPickerGate = createScanGate();
+        const staleTopPersistenceGate = createScanGate();
+        nextQuickPickGate = staleTopPickerGate;
+        nextTopPersistenceGate = staleTopPersistenceGate;
+        const staleTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(staleTopPickerGate.started, 'stale top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        staleTopPickerGate.allow();
+        await withTimeout(staleTopPersistenceGate.started, 'stale top persistence');
+
+        settings.libDirs = ['/top-persistence-root'];
+        const topPersistenceRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        await withTimeout(topPersistenceRootChange, 'top persistence root change');
+
+        const latestTopPickerGate = createScanGate();
+        nextQuickPickGate = latestTopPickerGate;
+        const latestTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(latestTopPickerGate.started, 'latest top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        latestTopPickerGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        staleTopPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([staleTopPicker, latestTopPicker]),
+            'out-of-order top persistence'
+        );
+        const latestTopSelection = {
+            definitionKey: prototypeNamedDefinition.key,
+            name: prototypeNamedDefinition.name,
+        };
+        assert.deepStrictEqual(storedTop, latestTopSelection);
+        assert.deepStrictEqual(presentedTop, latestTopSelection);
+
+        const clearingTopPickerGate = createScanGate();
+        const clearingTopPersistenceGate = createScanGate();
+        nextQuickPickGate = clearingTopPickerGate;
+        nextTopPersistenceGate = clearingTopPersistenceGate;
+        const clearingTopPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(clearingTopPickerGate.started, 'top picker before persistence clear');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        clearingTopPickerGate.allow();
+        await withTimeout(clearingTopPersistenceGate.started, 'top persistence before clear');
+
+        settings.libDirs = ['/top-persistence-clear'];
+        const clearingTopRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        await withTimeout(clearingTopRootChange, 'top persistence clear root change');
+        clearingTopPersistenceGate.allow();
+        await withTimeout(clearingTopPicker, 'top persistence clear');
+        assert.strictEqual(storedTop, undefined);
+        assert.strictEqual(presentedTop, undefined);
+
+        settings.libDirs = ['/latest-library'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'top persistence recovery');
         storedTop = { definitionKey: '', name: 'top' };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),
             'top migration before stale workflows'
         );
+
+        const staleDependencyPersistenceGate = createScanGate();
+        nextDependencyResultTag = 'old-persisted-analysis';
+        nextDependencyPersistenceGate = staleDependencyPersistenceGate;
+        const stalePersistedAnalyze = Promise.resolve(commands.get('veriflow.analyze')!());
+        await withTimeout(
+            staleDependencyPersistenceGate.started,
+            'stale dependency persistence'
+        );
+
+        settings.defines = { PERSISTENCE_ORDER: 'clear-before-new' };
+        const dependencyPersistenceInvalidation = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        }));
+        await withTimeout(
+            dependencyPersistenceInvalidation,
+            'dependency persistence invalidation'
+        );
+
+        nextDependencyResultTag = 'new-persisted-analysis';
+        const latestPersistedAnalyze = Promise.resolve(commands.get('veriflow.analyze')!());
+        await new Promise<void>(resolve => setImmediate(resolve));
+        staleDependencyPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([stalePersistedAnalyze, latestPersistedAnalyze]),
+            'out-of-order dependency persistence'
+        );
+        assert.deepStrictEqual(
+            (persistedDependencyResult as { files?: string[] } | null)?.files,
+            ['new-persisted-analysis']
+        );
+        assert.deepStrictEqual(presentedAnalyzeResult, persistedDependencyResult);
+        assert.strictEqual(analyzeStatus, 'completed');
+
+        const clearingDependencyPersistenceGate = createScanGate();
+        nextDependencyResultTag = 'analysis-before-persistence-clear';
+        nextDependencyPersistenceGate = clearingDependencyPersistenceGate;
+        const clearingPersistedAnalyze = Promise.resolve(commands.get('veriflow.analyze')!());
+        await withTimeout(
+            clearingDependencyPersistenceGate.started,
+            'dependency persistence before clear'
+        );
+
+        settings.defines = { PERSISTENCE_ORDER: 'clear-only' };
+        const dependencyPersistenceClear = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        }));
+        await withTimeout(dependencyPersistenceClear, 'dependency persistence clear');
+        clearingDependencyPersistenceGate.allow();
+        await withTimeout(clearingPersistedAnalyze, 'cleared dependency persistence');
+        assert.strictEqual(persistedDependencyResult, null);
+        assert.strictEqual(presentedAnalyzeResult, null);
+        assert.notStrictEqual(analyzeStatus, 'completed');
 
         const analyzeResolveGate = createScanGate();
         nextResolveGate = analyzeResolveGate;
