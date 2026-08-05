@@ -76,6 +76,7 @@ let hdlScanInFlight: {
     promise: Promise<ModuleScanResult | null>;
 } | undefined;
 let hdlPresentationGeneration = 0;
+let hdlPresentationRootIdentity: string | undefined;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 
@@ -152,17 +153,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async (e) => {
-            if (e.affectsConfiguration('veriflow.defines')) {
+            const definesChanged = e.affectsConfiguration('veriflow.defines');
+            const rootsChanged = e.affectsConfiguration('veriflow.libDirs');
+            if (definesChanged) {
                 hdlParser?.clearCache();
             }
-            if (e.affectsConfiguration('veriflow.defines')
-                || e.affectsConfiguration('veriflow.libDirs')) {
+            if (definesChanged || rootsChanged) {
+                _invalidateDependencyPresentation(context);
+            }
+            if (rootsChanged) {
+                _invalidateChangedHdlRootIdentity(context);
+            }
+            if (definesChanged || rootsChanged) {
                 await _scanModulesWithErrorReporting(context);
             }
         })
     );
     context.subscriptions.push(
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+            _invalidateDependencyPresentation(context);
+            _invalidateChangedHdlRootIdentity(context, true);
             await _scanModulesWithErrorReporting(context);
         })
     );
@@ -479,6 +489,7 @@ export async function deactivate(): Promise<void> {
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
     hdlPresentationGeneration = 0;
+    hdlPresentationRootIdentity = undefined;
     _resetDependencyIndex();
     const parser = hdlParser;
     hdlParser = undefined;
@@ -629,6 +640,55 @@ function _duplicateModuleGroups(
         .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function _invalidateDependencyPresentation(context: vscode.ExtensionContext): void {
+    _markOutdatedIfCompleted(context);
+    treeProvider.setAnalyzeResult(null);
+    void setDependencyResult(context, null);
+    _lastDepFileHashes = {};
+    _pendingSimulateAfterAnalyze = false;
+    _pendingWaveAfterAnalyze = false;
+    _pendingWaveAfterSimulate = false;
+}
+
+function _currentHdlRootIdentity(): string | undefined {
+    const root = getWorkspaceRoot();
+    if (!root) {
+        return undefined;
+    }
+    return JSON.stringify(_dependencyRootUris(root, getSettings().libDirs));
+}
+
+function _clearHdlPresentation(context: vscode.ExtensionContext): void {
+    treeProvider.setScanResult(null);
+    treeProvider.setAnalyzeResult(null);
+    treeProvider.topModule = undefined;
+    tbPanelProvider.setModuleMap({});
+    void setTopModule(context, undefined);
+    void setDependencyResult(context, null);
+    _lastDepFileHashes = {};
+    output.clear();
+    _updateStatusBar();
+}
+
+function _invalidateChangedHdlRootIdentity(
+    context: vscode.ExtensionContext,
+    force = false
+): void {
+    const nextIdentity = _currentHdlRootIdentity();
+    const presentationChanged = hdlPresentationRootIdentity !== undefined
+        && hdlPresentationRootIdentity !== nextIdentity;
+    const indexChanged = hdlIndexIdentity !== undefined
+        && hdlIndexIdentity !== nextIdentity;
+    if (!force && !presentationChanged && !indexChanged) {
+        return;
+    }
+    hdlPresentationGeneration++;
+    hdlScanInFlight = undefined;
+    hdlPresentationRootIdentity = undefined;
+    _resetDependencyIndex();
+    _clearHdlPresentation(context);
+}
+
 function _definitionEntry(
     definition: HdlDefinitionSummary,
     workspaceRootUri: string
@@ -767,13 +827,15 @@ async function _presentScanResult(
     context: vscode.ExtensionContext,
     result: ModuleScanResult,
     duplicateGroups: Array<{ name: string; definitions: HdlDefinitionSummary[] }>,
-    generation: number
+    generation: number,
+    rootIdentity: string
 ): Promise<void> {
     if (generation !== hdlPresentationGeneration) {
         return;
     }
     treeProvider.setScanResult(result);
     tbPanelProvider.setModuleMap(result.moduleFiles);
+    hdlPresentationRootIdentity = rootIdentity;
 
     const stored = _coerceTopSelection(getTopModule(context));
     const selection = resolveTopModuleSelection(stored, result.definitions);
@@ -818,7 +880,8 @@ async function _scanModulesFromIndex(
             context,
             derived.result,
             derived.duplicateGroups,
-            generation
+            generation,
+            JSON.stringify(rootUris)
         );
         return derived.result;
     });
@@ -842,7 +905,6 @@ async function _refreshIndexedUri(
     uri: vscode.Uri,
     remove: boolean
 ): Promise<void> {
-    _markOutdatedIfCompleted(context);
     const root = getWorkspaceRoot();
     if (!root) {
         return;
@@ -850,6 +912,15 @@ async function _refreshIndexedUri(
     const settings = getSettings();
     const rootUris = _dependencyRootUris(root, settings.libDirs);
     const rootIdentity = JSON.stringify(rootUris);
+    const uriValue = uri.toString();
+    const currentIndex = hdlIndexIdentity === rootIdentity ? hdlIndex : undefined;
+    const admitted = rootUris.some(rootUri =>
+        isSourceUriWithinRoot(uriValue, rootUri)
+    ) || currentIndex?.getFile(uriValue) !== undefined;
+    if (!admitted) {
+        return;
+    }
+    _markOutdatedIfCompleted(context);
     const defines = _filterHdlDefines(settings.defines);
     const generation = ++hdlPresentationGeneration;
     await _runDependencyOperation(async () => {
@@ -862,9 +933,9 @@ async function _refreshIndexedUri(
                 await hdlIndexLoad;
                 await index.updateConfiguration(defines);
                 if (remove) {
-                    await index.removeUri(uri.toString());
+                    await index.removeUri(uriValue);
                 } else {
-                    await index.refreshUri(uri.toString());
+                    await index.refreshUri(uriValue);
                 }
             }
             if (!index) {
@@ -875,7 +946,8 @@ async function _refreshIndexedUri(
                 context,
                 derived.result,
                 derived.duplicateGroups,
-                generation
+                generation,
+                rootIdentity
             );
         } catch (error) {
             _resetDependencyIndex();

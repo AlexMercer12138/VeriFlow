@@ -129,7 +129,10 @@ function testModuleTreeKeepsEveryExactDefinition(): void {
         }
         static file(filepath: string): FakeUri {
             const normalized = filepath.replace(/\\/g, '/');
-            return new FakeUri(`file:///${normalized}`, filepath);
+            const uriPath = /^[A-Za-z]:\//.test(normalized)
+                ? `/${normalized}`
+                : normalized.startsWith('/') ? normalized : `/${normalized}`;
+            return new FakeUri(`file://${uriPath}`, filepath);
         }
         toString(): string { return this.value; }
     }
@@ -159,6 +162,7 @@ function testModuleTreeKeepsEveryExactDefinition(): void {
         () => require('../moduleTreeProvider') as {
             ModuleTreeProvider: new () => {
                 setScanResult(result: unknown): void;
+                setAnalyzeResult(result: unknown): void;
                 getChildren(element?: unknown): unknown[];
             };
         }
@@ -216,6 +220,35 @@ function testModuleTreeKeepsEveryExactDefinition(): void {
         moduleItems.map(item => item.fileUri).sort(),
         definitions.map(definition => definition.uri).sort()
     );
+
+    const dependencyLocations = {
+        remote: 'vscode-remote://ssh-host/workspace/rtl/remote.sv',
+        windows: 'C:\\rtl\\windows.sv',
+        posix: '/opt/rtl/posix.sv',
+    };
+    provider.setAnalyzeResult({
+        topModule: 'remote',
+        topDefinitionKey: 'module:remote',
+        files: Object.values(dependencyLocations),
+        missingModules: [],
+        ambiguousModules: {},
+        moduleMap: dependencyLocations,
+        depGraph: {
+            remote: ['windows', 'posix'],
+            windows: [],
+            posix: [],
+        },
+    });
+    const dependencyItems = visit(provider.getChildren())
+        .filter(item => item.itemType === 'depBranch' || item.itemType === 'depModule');
+    const commandUri = (moduleName: string): string => {
+        const item = dependencyItems.find(candidate => candidate.moduleName === moduleName);
+        const command = item?.command as { arguments?: FakeUri[] } | undefined;
+        return command?.arguments?.[0]?.toString() ?? '';
+    };
+    assert.strictEqual(commandUri('remote'), dependencyLocations.remote);
+    assert.strictEqual(commandUri('windows'), 'file:///C:/rtl/windows.sv');
+    assert.strictEqual(commandUri('posix'), 'file:///opt/rtl/posix.sv');
 }
 
 async function testTopSelectionUsesExactIdentityAndMigratesLegacyNames(): Promise<void> {
@@ -344,6 +377,22 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         uri: `${indexedWorkspaceRootUri}/prototype_named.sv`,
         modelFingerprint: 'prototype-named',
     };
+    const unconfiguredWorkspaceUri = 'file:///B-workspace/mixed.sv';
+    const unconfiguredWorkspaceDefinitions: Definition[] = [{
+        ...workspaceDefinition,
+        key: `module:${unconfiguredWorkspaceUri}:0`,
+        name: 'rogue',
+        uri: unconfiguredWorkspaceUri,
+        modelFingerprint: 'rogue',
+    }, {
+        ...topDefinition,
+        key: `module:${unconfiguredWorkspaceUri}:40`,
+        uri: unconfiguredWorkspaceUri,
+        declarationStart: 40,
+        declarationLine: 3,
+        modelFingerprint: 'rogue-top',
+    }];
+    const indexedExternalIncludeUri = 'file:///external/generated/defs.svh';
     const definitions = [
         workspaceDefinition,
         secondWorkspaceDefinition,
@@ -362,6 +411,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         release: Promise<void>;
         allow(): void;
     }>();
+    const failedScanRoots = new Set<string>();
     const createScanGate = () => {
         let markStarted!: () => void;
         let allow!: () => void;
@@ -376,17 +426,25 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let createListener: ((uri: FakeUri) => unknown) | undefined;
     let deleteListener: ((uri: FakeUri) => unknown) | undefined;
     let configListener: ((event: { affectsConfiguration(section: string): boolean }) => unknown) | undefined;
+    let workspaceFoldersListener: (() => unknown) | undefined;
     let watcherPattern = '';
     let lastScanResult: {
         definitions: ModuleDefinitionEntry[];
         moduleFiles: Record<string, string>;
     } | undefined;
     let testbenchModuleMap: Record<string, string> = {};
+    let persistedDependencyResult: unknown = null;
+    let presentedAnalyzeResult: unknown = null;
+    let analyzeStatus = 'idle';
+    let simulateStatus = 'idle';
+    let outputClearCount = 0;
+    const executedCommands: Array<{ name: string; args: unknown[] }> = [];
     const presentedLibDirs: string[][] = [];
     let quickPickItems: Array<{ label: string; description?: string }> = [];
     const status = { text: '', tooltip: '', command: '', show(): void {}, dispose(): void {} };
     const disposable = { dispose(): void {} };
     const folder = { uri: FakeUri.parse(workspaceRootUri) };
+    const workspaceFolders = [folder, { uri: FakeUri.parse('file:///B-workspace') }];
     const settings = {
         libDirs: ['/A-library'], defines: {} as Record<string, string | boolean>,
         simulator: 'iverilog', waveViewer: 'builtin', simulatorCompileCmd: '',
@@ -398,6 +456,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     class FakeIndex {
         static instances: FakeIndex[] = [];
         readonly scannedRoots: string[][] = [];
+        readonly definitions = [...definitions];
+        readonly indexedUris = new Set([
+            ...definitions.map(definition => definition.uri),
+            indexedExternalIncludeUri,
+        ]);
         disposed = false;
         constructor(readonly options: unknown) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
@@ -412,42 +475,69 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 gate.markStarted();
                 await gate.release;
             }
+            if (failedScanRoots.has(JSON.stringify(roots))) {
+                throw new Error(`scan failed: ${JSON.stringify(roots)}`);
+            }
         }
-        async refreshUri(uri: string): Promise<void> { events.push(`refresh:${uri}`); }
-        async removeUri(uri: string): Promise<void> { events.push(`remove:${uri}`); }
+        async refreshUri(uri: string): Promise<void> {
+            events.push(`refresh:${uri}`);
+            this.indexedUris.add(uri);
+            if (uri === unconfiguredWorkspaceUri) {
+                this.definitions.push(...unconfiguredWorkspaceDefinitions);
+            }
+        }
+        async removeUri(uri: string): Promise<void> {
+            events.push(`remove:${uri}`);
+            this.indexedUris.delete(uri);
+            const retained = this.definitions.filter(definition => definition.uri !== uri);
+            this.definitions.splice(0, this.definitions.length, ...retained);
+        }
+        getFile(uri: string): object | undefined {
+            return this.indexedUris.has(uri) ? {} : undefined;
+        }
         getAllDefinitions(kind?: string): Definition[] {
-            return kind && kind !== 'module' ? [] : [...definitions].sort((left, right) =>
+            return kind && kind !== 'module' ? [] : [...this.definitions].sort((left, right) =>
                 left.name.localeCompare(right.name)
                 || left.uri.localeCompare(right.uri)
                 || left.declarationStart - right.declarationStart
             );
         }
         getDuplicateGroups(): Array<{ name: string; definitions: Definition[] }> {
-            return [{
-                name: 'alu',
-                definitions: [workspaceDefinition, secondWorkspaceDefinition, libraryDefinition],
-            }];
+            const byName = new Map<string, Definition[]>();
+            for (const definition of this.getAllDefinitions('module')) {
+                const matches = byName.get(definition.name) ?? [];
+                matches.push(definition);
+                byName.set(definition.name, matches);
+            }
+            return [...byName.entries()]
+                .filter(([, matches]) => matches.length > 1)
+                .map(([name, matches]) => ({ name, definitions: matches }));
         }
         getDefinition(key: string): Definition | undefined {
-            return definitions.find(definition => definition.key === key);
+            return this.definitions.find(definition => definition.key === key);
         }
         findDefinitions(name: string): Definition[] {
-            return definitions.filter(definition => definition.name === name);
+            return this.definitions.filter(definition => definition.name === name);
         }
         dispose(): void { this.disposed = true; events.push('dispose-index'); }
     }
     class FakeTreeProvider {
         topModule: TopModuleSelection | undefined;
-        analyzeResult: unknown;
+        analyzeResult: unknown = null;
         setScanResult(result: {
             definitions: ModuleDefinitionEntry[];
             moduleFiles: Record<string, string>;
             libDirs?: string[];
-        }): void {
-            lastScanResult = result;
-            presentedLibDirs.push([...(result.libDirs ?? [])]);
+        } | null): void {
+            lastScanResult = result ?? undefined;
+            if (result) {
+                presentedLibDirs.push([...(result.libDirs ?? [])]);
+            }
         }
-        setAnalyzeResult(result: unknown): void { this.analyzeResult = result; }
+        setAnalyzeResult(result: unknown): void {
+            this.analyzeResult = result;
+            presentedAnalyzeResult = result;
+        }
         getWorkspaceDefinitions(): ModuleDefinitionEntry[] {
             return lastScanResult?.definitions.filter(definition => definition.workspace) ?? [];
         }
@@ -498,9 +588,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 commands.set(name, command);
                 return disposable;
             },
+            async executeCommand(name: string, ...args: unknown[]): Promise<void> {
+                executedCommands.push({ name, args });
+            },
         },
         workspace: {
-            workspaceFolders: [folder],
+            workspaceFolders,
             fs: {
                 async readDirectory(): Promise<[string, number][]> { return []; },
                 async readFile(): Promise<Uint8Array> { return new Uint8Array(); },
@@ -512,7 +605,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 configListener = listener;
                 return disposable;
             },
-            onDidChangeWorkspaceFolders: () => disposable,
+            onDidChangeWorkspaceFolders(listener: typeof workspaceFoldersListener) {
+                workspaceFoldersListener = listener;
+                return disposable;
+            },
             createFileSystemWatcher(pattern: string) {
                 watcherPattern = pattern;
                 return {
@@ -525,7 +621,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         },
     };
     const configStub = {
-        getWorkspaceRoot: () => folder.uri.fsPath,
+        getWorkspaceRoot: () => workspaceFolders[0]?.uri.fsPath,
         getTopModule: () => storedTop,
         setTopModule: async (_context: unknown, selection: TopModuleSelection | undefined) => {
             storedTop = selection;
@@ -545,14 +641,30 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 : undefined;
         },
         getSettings: () => ({ ...settings, libDirs: [...settings.libDirs], defines: { ...settings.defines } }),
-        getAnalyzeStatus: () => 'idle', setAnalyzeStatus: async () => undefined,
-        getSimulateStatus: () => 'idle', setSimulateStatus: async () => undefined,
-        getDependencyResult: () => null, setDependencyResult: async () => undefined,
+        getAnalyzeStatus: () => analyzeStatus,
+        setAnalyzeStatus: async (_context: unknown, value: string) => { analyzeStatus = value; },
+        getSimulateStatus: () => simulateStatus,
+        setSimulateStatus: async (_context: unknown, value: string) => { simulateStatus = value; },
+        getDependencyResult: () => persistedDependencyResult,
+        setDependencyResult: async (_context: unknown, result: unknown) => {
+            persistedDependencyResult = result;
+        },
     };
     const coreStub = {
         DependencyAnalyzer: FakeDependencyAnalyzer,
         WorkspaceHdlIndex: FakeIndex,
-        SimulationRunner: class {}, LogParser: class {},
+        SimulationRunner: class {
+            compileAndRun() {
+                return {
+                    success: true,
+                    exitCode: 0,
+                    stdout: '',
+                    stderr: '',
+                    elapsedTime: 0.01,
+                    logEntries: [],
+                };
+            }
+        }, LogParser: class {},
         MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         listVerilogFiles: () => [], readText: () => '',
         preprocessVerilog: (value: string) => value, removeComments: (value: string) => value,
@@ -579,7 +691,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         './output': {
             appendError(): void {}, appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
             appendWarning(message: string): void { warnings.push(message); },
-            clear(): void {}, dispose(): void {}, show(): void {},
+            clear(): void { outputClearCount++; }, dispose(): void {}, show(): void {},
+        },
+        fs: {
+            existsSync(): boolean { return true; },
+            readFileSync(): Buffer { return Buffer.from(''); },
         },
     };
     delete require.cache[require.resolve('../extension')];
@@ -619,6 +735,29 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(status.text, '$(warning) VeriFlow: 1 duplicate module name');
         assert.deepStrictEqual(popupWarnings, []);
 
+        const warningsBeforeForeignEvents = warnings.length;
+        await withTimeout(
+            Promise.resolve(changeListener!(FakeUri.parse(unconfiguredWorkspaceUri))),
+            'unconfigured workspace change'
+        );
+        await withTimeout(
+            Promise.resolve(deleteListener!(FakeUri.parse(unconfiguredWorkspaceUri))),
+            'unconfigured workspace delete'
+        );
+        assert.ok(!events.includes(`refresh:${unconfiguredWorkspaceUri}`));
+        assert.ok(!events.includes(`remove:${unconfiguredWorkspaceUri}`));
+        assert.ok(!lastScanResult?.definitions.some(
+            definition => definition.uri === unconfiguredWorkspaceUri
+        ));
+        assert.ok(!Object.prototype.hasOwnProperty.call(testbenchModuleMap, 'rogue'));
+        assert.strictEqual(warnings.length, warningsBeforeForeignEvents);
+
+        await withTimeout(
+            Promise.resolve(changeListener!(FakeUri.parse(indexedExternalIncludeUri))),
+            'indexed external include change'
+        );
+        assert.ok(events.includes(`refresh:${indexedExternalIncludeUri}`));
+
         await withTimeout(
             Promise.resolve(commands.get('veriflow.selectTop')!()),
             'top module picker'
@@ -633,6 +772,29 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'dependency analysis'
         );
         assert.deepStrictEqual(resolvedDefinitionKeys, [topDefinition.key]);
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'completed simulation before config change'
+        );
+        assert.strictEqual(analyzeStatus, 'completed');
+        assert.strictEqual(simulateStatus, 'completed');
+
+        const resolvesBeforeConfigOpen = resolvedDefinitionKeys.length;
+        settings.defines = { CONFIG_CHANGED: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'completed-state defines change');
+        assert.strictEqual(analyzeStatus, 'outdated');
+        assert.strictEqual(simulateStatus, 'outdated');
+        assert.strictEqual(persistedDependencyResult, null);
+        assert.strictEqual(presentedAnalyzeResult, null);
+
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'open wave after defines change'
+        );
+        assert.ok(resolvedDefinitionKeys.length > resolvesBeforeConfigOpen);
+        assert.ok(executedCommands.some(command => command.name === 'vscode.openWith'));
 
         await withTimeout(
             Promise.resolve(changeListener!(FakeUri.parse(workspaceDefinition.uri))),
@@ -692,6 +854,93 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         latestGate.allow();
         await withTimeout(Promise.all([staleScan, latestScan]), 'concurrent rescans');
         assert.deepStrictEqual(presentedLibDirs.at(-1), ['/latest-library']);
+
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'top migration before failed root identity'
+        );
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            'analysis before failed root identity'
+        );
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'simulation before failed root identity'
+        );
+        assert.strictEqual(analyzeStatus, 'completed');
+        assert.strictEqual(simulateStatus, 'completed');
+
+        const failedRoots = JSON.stringify([workspaceRootUri]);
+        failedScanRoots.add(failedRoots);
+        const clearsBeforeFailedIdentity = outputClearCount;
+        settings.libDirs = [];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'failed replacement roots scan');
+        assert.strictEqual(lastScanResult, undefined);
+        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.strictEqual(storedTop, undefined);
+        assert.strictEqual(persistedDependencyResult, null);
+        assert.strictEqual(analyzeStatus, 'outdated');
+        assert.strictEqual(simulateStatus, 'outdated');
+        assert.ok(outputClearCount > clearsBeforeFailedIdentity);
+        assert.notStrictEqual(status.text, '$(warning) VeriFlow: 1 duplicate module name');
+        failedScanRoots.delete(failedRoots);
+
+        storedTop = { definitionKey: '', name: 'top' };
+        settings.libDirs = ['/before-workspace-removal'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'replacement roots recovery scan');
+        const retainedSameIdentityScan = lastScanResult;
+        const retainedSameIdentityModuleMap = { ...testbenchModuleMap };
+        const sameIdentityRoots = JSON.stringify([
+            workspaceRootUri,
+            'file:///before-workspace-removal',
+        ]);
+        failedScanRoots.add(sameIdentityRoots);
+        settings.defines = { TRANSIENT_FAILURE: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'same identity transient scan failure');
+        assert.strictEqual(lastScanResult, retainedSameIdentityScan);
+        assert.deepStrictEqual(testbenchModuleMap, retainedSameIdentityModuleMap);
+        failedScanRoots.delete(sameIdentityRoots);
+
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            'replacement dependency analysis'
+        );
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'replacement simulation'
+        );
+        assert.ok(lastScanResult);
+        assert.ok(persistedDependencyResult);
+
+        const removalGate = createScanGate();
+        scanGates.set('file:///before-workspace-removal', removalGate);
+        const indexBeforeWorkspaceRemoval = FakeIndex.instances.at(-1)!;
+        const slowSameIdentityScan = Promise.resolve(commands.get('veriflow.scanModules')!());
+        await withTimeout(removalGate.started, 'slow scan before workspace removal');
+        workspaceFolders.splice(0, workspaceFolders.length);
+        await withTimeout(
+            Promise.resolve(workspaceFoldersListener!()),
+            'last workspace removal'
+        );
+        assert.strictEqual(lastScanResult, undefined);
+        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.strictEqual(storedTop, undefined);
+        assert.strictEqual(persistedDependencyResult, null);
+        assert.strictEqual(analyzeStatus, 'outdated');
+        assert.strictEqual(simulateStatus, 'outdated');
+        assert.strictEqual(indexBeforeWorkspaceRemoval.disposed, true);
+
+        removalGate.allow();
+        await withTimeout(slowSameIdentityScan, 'stale scan after workspace removal');
+        assert.strictEqual(lastScanResult, undefined);
+        assert.deepStrictEqual(testbenchModuleMap, {});
     } finally {
         for (const gate of scanGates.values()) {
             gate.allow();

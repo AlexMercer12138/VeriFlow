@@ -5,6 +5,12 @@ import type { TopModuleSelection } from './config';
 
 type TreeItemType = 'top' | 'depSection' | 'depBranch' | 'depModule' | 'libSection' | 'libModule' | 'empty' | 'missingModule';
 
+function dependencyResource(value: string): vscode.Uri {
+    return /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
+        ? vscode.Uri.parse(value)
+        : vscode.Uri.file(value);
+}
+
 class ModuleTreeItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
@@ -38,7 +44,7 @@ class ModuleTreeItem extends vscode.TreeItem {
             this.command = {
                 command: 'vscode.open',
                 title: 'Open File',
-                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+                arguments: filePath ? [dependencyResource(filePath)] : [],
             };
         } else if (itemType === 'depModule') {
             this.iconPath = new vscode.ThemeIcon('symbol-module');
@@ -47,7 +53,7 @@ class ModuleTreeItem extends vscode.TreeItem {
             this.command = {
                 command: 'vscode.open',
                 title: 'Open File',
-                arguments: filePath ? [vscode.Uri.file(filePath)] : [],
+                arguments: filePath ? [dependencyResource(filePath)] : [],
             };
         } else if (itemType === 'missingModule') {
             this.iconPath = new vscode.ThemeIcon('question', new vscode.ThemeColor('errorForeground'));
@@ -97,7 +103,7 @@ export class ModuleTreeProvider implements vscode.TreeDataProvider<ModuleTreeIte
         return this._analyzeResult;
     }
 
-    setScanResult(result: ModuleScanResult): void {
+    setScanResult(result: ModuleScanResult | null): void {
         this._scanResult = result;
         this.refresh();
     }

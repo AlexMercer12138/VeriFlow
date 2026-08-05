@@ -121,7 +121,9 @@ async function testExtensionLifecycle(): Promise<void> {
         './config': configStub,
         './core': coreStub,
         './moduleTreeProvider': {
-            ModuleTreeProvider: class {},
+            ModuleTreeProvider: class {
+                setAnalyzeResult(): void {}
+            },
         },
         './moduleInstantiationCommand': {
             showModuleInstantiationPicker: async () => undefined,
