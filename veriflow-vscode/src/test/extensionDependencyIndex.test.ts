@@ -20,6 +20,7 @@ type IndexOptions = {
     parserFingerprint: string;
     findFiles(roots: string[]): Promise<string[]>;
     readFile(uri: string): Promise<unknown>;
+    includeCandidates(fromUri: string, includePath: string): string[];
     resolveInclude(fromUri: string, includePath: string): Promise<string | undefined>;
 };
 
@@ -91,6 +92,10 @@ class FakeUri {
     }
 }
 
+class FakeRelativePattern {
+    constructor(readonly baseUri: FakeUri, readonly pattern: string) {}
+}
+
 class FakeWorkspaceHdlIndex {
     static instances: FakeWorkspaceHdlIndex[] = [];
 
@@ -139,6 +144,16 @@ class FakeWorkspaceHdlIndex {
 
     findDefinitions(name: string): Array<{ key: string; kind: 'module'; name: string }> {
         return [{ key: `module:${name}`, kind: 'module', name }];
+    }
+
+    getWatchPlan(): {
+        resolvedExternalIncludeUris: string[];
+        unresolvedExternalCandidateUris: string[];
+    } {
+        return {
+            resolvedExternalIncludeUris: [],
+            unresolvedExternalCandidateUris: [],
+        };
     }
 
     dispose(): void {
@@ -239,6 +254,7 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
     FakeWorkspaceHdlIndex.instances = [];
     const vscodeStub = {
         Uri: FakeUri,
+        RelativePattern: FakeRelativePattern,
         FileType: { File: 1, Directory: 2 },
         StatusBarAlignment: { Left: 1 },
         window: {

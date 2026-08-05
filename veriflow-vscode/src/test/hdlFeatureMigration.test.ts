@@ -337,6 +337,10 @@ class FakeUri {
     toString(): string { return `${this.scheme}://${this.authority}${this.path}`; }
 }
 
+class FakeRelativePattern {
+    constructor(readonly baseUri: FakeUri, readonly pattern: string) {}
+}
+
 async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const workspaceRootUri = 'file:///D:/Software/VeriFlow';
     const indexedWorkspaceRootUri = process.platform === 'win32'
@@ -393,6 +397,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         modelFingerprint: 'rogue-top',
     }];
     const indexedExternalIncludeUri = 'file:///external/generated/defs.svh';
+    const metacharExternalIncludeUri = 'file:///external/generated/defs[0].svh';
     const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const definitions = [
@@ -414,6 +419,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         allow(): void;
     }>();
     const failedScanRoots = new Set<string>();
+    const failedScanDefines = new Set<string>();
     const createScanGate = () => {
         let markStarted!: () => void;
         let allow!: () => void;
@@ -425,8 +431,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         };
     };
     let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
+    let nextScanGate: ReturnType<typeof createScanGate> | undefined;
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
+    const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
+    let nextOpenDialogGate: ReturnType<typeof createScanGate> | undefined;
+    let nextWatcherConstructionError: Error | undefined;
     let nextTopPersistenceGate: ReturnType<typeof createScanGate> | undefined;
     let nextTopPersistenceError: Error | undefined;
     let nextDependencyPersistenceGate: ReturnType<typeof createScanGate> | undefined;
@@ -438,13 +448,18 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         definitionKey?: string;
         name?: string;
     } | undefined;
+    let deferredOpenDialogSelection: FakeUri[] | undefined;
     let runnerCalls = 0;
-    let changeListener: ((uri: FakeUri) => unknown) | undefined;
-    let createListener: ((uri: FakeUri) => unknown) | undefined;
-    let deleteListener: ((uri: FakeUri) => unknown) | undefined;
+    type WatchEventKind = 'change' | 'create' | 'delete';
+    type WatcherRecord = {
+        pattern: string | FakeRelativePattern;
+        disposed: boolean;
+        listeners: Partial<Record<WatchEventKind, (uri: FakeUri) => unknown>>;
+        dispose(): void;
+    };
+    const watcherRecords: WatcherRecord[] = [];
     let configListener: ((event: { affectsConfiguration(section: string): boolean }) => unknown) | undefined;
     let workspaceFoldersListener: (() => unknown) | undefined;
-    let watcherPattern = '';
     let lastScanResult: {
         definitions: ModuleDefinitionEntry[];
         moduleFiles: Record<string, string>;
@@ -464,6 +479,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const executedCommands: Array<{ name: string; args: unknown[] }> = [];
     const presentedLibDirs: string[][] = [];
     let quickPickItems: Array<{ label: string; description?: string }> = [];
+    let quickPickCallCount = 0;
     let statusText = '';
     const status = {
         get text(): string { return statusText; },
@@ -473,6 +489,66 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const disposable = { dispose(): void {} };
     const folder = { uri: FakeUri.parse(workspaceRootUri) };
     const workspaceFolders = [folder, { uri: FakeUri.parse('file:///B-workspace') }];
+    const normalizedWatchPath = (value: string): string => process.platform === 'win32'
+        ? value.toLowerCase()
+        : value;
+    const isWithinBase = (uri: FakeUri, base: FakeUri): boolean => {
+        if (uri.scheme !== base.scheme || uri.authority !== base.authority) {
+            return false;
+        }
+        const uriPath = normalizedWatchPath(path.posix.normalize(uri.path));
+        const basePath = normalizedWatchPath(path.posix.normalize(base.path));
+        return uriPath === basePath || uriPath.startsWith(
+            basePath.endsWith('/') ? basePath : `${basePath}/`
+        );
+    };
+    const watcherMatches = (record: WatcherRecord, uri: FakeUri): boolean => {
+        if (typeof record.pattern === 'string') {
+            return workspaceFolders.some(workspaceFolder =>
+                isWithinBase(uri, workspaceFolder.uri)
+            ) && ['.v', '.sv', '.vh', '.svh'].includes(
+                path.posix.extname(uri.path).toLowerCase()
+            );
+        }
+        const { baseUri, pattern: watchPattern } = record.pattern;
+        if (!isWithinBase(uri, baseUri)) {
+            return false;
+        }
+        const basePath = normalizedWatchPath(path.posix.normalize(baseUri.path));
+        const uriPath = normalizedWatchPath(path.posix.normalize(uri.path));
+        const relative = uriPath === basePath
+            ? ''
+            : uriPath.slice((basePath.endsWith('/') ? basePath : `${basePath}/`).length);
+        if (watchPattern === '**/*.{v,sv,vh,svh}') {
+            return ['.v', '.sv', '.vh', '.svh'].includes(
+                path.posix.extname(relative).toLowerCase()
+            );
+        }
+        const literalPattern = watchPattern
+            .replace(/\[\[]/g, '[')
+            .replace(/\[\]\]/g, ']')
+            .replace(/\[([*?{}])\]/g, '$1');
+        return relative === normalizedWatchPath(literalPattern);
+    };
+    const fireWatcherRecord = async (
+        record: WatcherRecord,
+        kind: WatchEventKind,
+        uri: FakeUri
+    ): Promise<void> => {
+        await Promise.resolve(record.listeners[kind]?.(uri));
+        await new Promise<void>(resolve => setImmediate(resolve));
+    };
+    const fireHdlWatchEvent = async (
+        kind: WatchEventKind,
+        uriValue: string
+    ): Promise<void> => {
+        const uri = FakeUri.parse(uriValue);
+        const matching = watcherRecords.filter(record =>
+            !record.disposed && watcherMatches(record, uri)
+        );
+        await Promise.all(matching.map(record => fireWatcherRecord(record, kind, uri)));
+        await new Promise<void>(resolve => setImmediate(resolve));
+    };
     const settings = {
         libDirs: ['/A-library'], defines: {} as Record<string, string | boolean>,
         simulator: 'iverilog', waveViewer: 'builtin', simulatorCompileCmd: '',
@@ -488,23 +564,30 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         readonly indexedUris = new Set([
             ...definitions.map(definition => definition.uri),
             indexedExternalIncludeUri,
+            metacharExternalIncludeUri,
         ]);
         disposed = false;
+        currentDefinesKey = '';
         constructor(readonly options: unknown) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
         async updateConfiguration(defines: Record<string, string | true>): Promise<void> {
-            events.push(`update:${Object.keys(defines).sort().join('+')}`);
+            this.currentDefinesKey = Object.keys(defines).sort().join('+');
+            events.push(`update:${this.currentDefinesKey}`);
         }
         async scan(roots: string[]): Promise<void> {
             this.scannedRoots.push([...roots]);
             events.push('scan');
-            const gate = roots.map(root => scanGates.get(root)).find(Boolean);
+            const gate = nextScanGate ?? roots.map(root => scanGates.get(root)).find(Boolean);
+            nextScanGate = undefined;
             if (gate) {
                 gate.markStarted();
                 await gate.release;
             }
             if (failedScanRoots.has(JSON.stringify(roots))) {
                 throw new Error(`scan failed: ${JSON.stringify(roots)}`);
+            }
+            if (failedScanDefines.has(this.currentDefinesKey)) {
+                throw new Error(`scan failed for defines: ${this.currentDefinesKey}`);
             }
         }
         async refreshUri(uri: string): Promise<void> {
@@ -533,6 +616,18 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         async canResolveUnresolvedInclude(uri: string): Promise<boolean> {
             events.push(`probe-unresolved:${uri}`);
             return uri === unresolvedExternalIncludeUri;
+        }
+        getWatchPlan(): {
+            resolvedExternalIncludeUris: string[];
+            unresolvedExternalCandidateUris: string[];
+        } {
+            return {
+                resolvedExternalIncludeUris: [
+                    indexedExternalIncludeUri,
+                    metacharExternalIncludeUri,
+                ],
+                unresolvedExternalCandidateUris: [unresolvedExternalIncludeUri],
+            };
         }
         getAllDefinitions(kind?: string): Definition[] {
             return kind && kind !== 'module' ? [] : [...this.definitions].sort((left, right) =>
@@ -622,6 +717,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     }
     const vscodeStub = {
         Uri: FakeUri,
+        RelativePattern: FakeRelativePattern,
         FileType: { File: 1, Directory: 2 },
         StatusBarAlignment: { Left: 1 },
         window: {
@@ -633,10 +729,24 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             showWarningMessage: async (message: string) => { popupWarnings.push(message); },
             showInformationMessage: async () => undefined,
             showErrorMessage: async () => undefined,
+            showOpenDialog: async () => {
+                const gate = nextOpenDialogGate;
+                nextOpenDialogGate = undefined;
+                if (!gate) {
+                    return undefined;
+                }
+                gate.markStarted();
+                await gate.release;
+                return deferredOpenDialogSelection;
+            },
             showQuickPick: async (items: Array<{ label: string; description?: string }>) => {
+                quickPickCallCount++;
                 quickPickItems = items;
-                const gate = nextQuickPickGate;
-                nextQuickPickGate = undefined;
+                let gate = queuedQuickPickGates.shift();
+                if (!gate) {
+                    gate = nextQuickPickGate;
+                    nextQuickPickGate = undefined;
+                }
                 if (!gate) {
                     return undefined;
                 }
@@ -671,13 +781,30 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 workspaceFoldersListener = listener;
                 return disposable;
             },
-            createFileSystemWatcher(pattern: string) {
-                watcherPattern = pattern;
+            createFileSystemWatcher(pattern: string | FakeRelativePattern) {
+                const constructionError = nextWatcherConstructionError;
+                nextWatcherConstructionError = undefined;
+                if (constructionError) {
+                    throw constructionError;
+                }
+                const record: WatcherRecord = {
+                    pattern,
+                    disposed: false,
+                    listeners: {},
+                    dispose(): void { this.disposed = true; },
+                };
+                watcherRecords.push(record);
                 return {
-                    ...disposable,
-                    onDidChange(listener: typeof changeListener): void { changeListener = listener; },
-                    onDidCreate(listener: typeof createListener): void { createListener = listener; },
-                    onDidDelete(listener: typeof deleteListener): void { deleteListener = listener; },
+                    dispose(): void { record.dispose(); },
+                    onDidChange(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.change = listener;
+                    },
+                    onDidCreate(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.create = listener;
+                    },
+                    onDidDelete(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.delete = listener;
+                    },
                 };
             },
         },
@@ -825,7 +952,26 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             '__proto__'
         ));
         assert.deepStrictEqual(storedTop, { definitionKey: topDefinition.key, name: 'top' });
-        assert.strictEqual(watcherPattern, '**/*.{v,sv,vh,svh}');
+        const activePatterns = watcherRecords
+            .filter(record => !record.disposed)
+            .map(record => record.pattern);
+        assert.ok(activePatterns.length >= 4);
+        assert.ok(activePatterns.every(patternValue => patternValue instanceof FakeRelativePattern));
+        assert.ok(activePatterns.some(patternValue =>
+            patternValue instanceof FakeRelativePattern
+            && patternValue.baseUri.toString() === workspaceRootUri
+            && patternValue.pattern === '**/*.{v,sv,vh,svh}'
+        ));
+        assert.ok(activePatterns.some(patternValue =>
+            patternValue instanceof FakeRelativePattern
+            && patternValue.baseUri.toString() === 'file:///A-library'
+            && patternValue.pattern === '**/*.{v,sv,vh,svh}'
+        ));
+        assert.ok(activePatterns.some(patternValue =>
+            patternValue instanceof FakeRelativePattern
+            && patternValue.baseUri.toString() === 'file:///external/generated'
+            && patternValue.pattern === 'defs[[]0[]].svh'
+        ));
         assert.strictEqual(warnings.length, 1);
         assert.ok(warnings[0].includes(workspaceDefinition.uri));
         assert.ok(warnings[0].includes(libraryDefinition.uri));
@@ -834,11 +980,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 
         const warningsBeforeForeignEvents = warnings.length;
         await withTimeout(
-            Promise.resolve(changeListener!(FakeUri.parse(unconfiguredWorkspaceUri))),
+            fireHdlWatchEvent('change', unconfiguredWorkspaceUri),
             'unconfigured workspace change'
         );
         await withTimeout(
-            Promise.resolve(deleteListener!(FakeUri.parse(unconfiguredWorkspaceUri))),
+            fireHdlWatchEvent('delete', unconfiguredWorkspaceUri),
             'unconfigured workspace delete'
         );
         assert.ok(!events.includes(`refresh:${unconfiguredWorkspaceUri}`));
@@ -850,26 +996,37 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(warnings.length, warningsBeforeForeignEvents);
 
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(unresolvedExternalIncludeUri))),
+            fireHdlWatchEvent('create', unresolvedExternalIncludeUri),
             'unresolved external include creation'
         );
+        const probesBeforeRogueExternal = events.filter(event =>
+            event.startsWith('probe-unresolved:')
+        ).length;
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(rogueExternalUri))),
+            fireHdlWatchEvent('create', rogueExternalUri),
             'unrelated external HDL creation'
         );
         assert.ok(events.includes(`probe-unresolved:${unresolvedExternalIncludeUri}`));
         assert.ok(events.includes(`refresh:${unresolvedExternalIncludeUri}`));
         assert.ok(events.includes(`refresh-owner:${topDefinition.uri}`));
-        assert.ok(events.includes(`probe-unresolved:${rogueExternalUri}`));
+        assert.strictEqual(
+            events.filter(event => event.startsWith('probe-unresolved:')).length,
+            probesBeforeRogueExternal
+        );
         assert.ok(!events.includes(`refresh:${rogueExternalUri}`));
 
         await withTimeout(
-            Promise.resolve(changeListener!(FakeUri.parse(indexedExternalIncludeUri))),
+            fireHdlWatchEvent('change', indexedExternalIncludeUri),
             'indexed external include change'
         );
         assert.ok(events.includes(`refresh:${indexedExternalIncludeUri}`));
         await withTimeout(
-            Promise.resolve(deleteListener!(FakeUri.parse(indexedExternalIncludeUri))),
+            fireHdlWatchEvent('change', metacharExternalIncludeUri),
+            'metacharacter external include change'
+        );
+        assert.ok(events.includes(`refresh:${metacharExternalIncludeUri}`));
+        await withTimeout(
+            fireHdlWatchEvent('delete', indexedExternalIncludeUri),
             'indexed external include delete'
         );
         assert.ok(events.includes(`remove:${indexedExternalIncludeUri}`));
@@ -913,15 +1070,15 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(executedCommands.some(command => command.name === 'vscode.openWith'));
 
         await withTimeout(
-            Promise.resolve(changeListener!(FakeUri.parse(workspaceDefinition.uri))),
+            fireHdlWatchEvent('change', workspaceDefinition.uri),
             'changed URI refresh'
         );
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(`${indexedWorkspaceRootUri}/new.sv`))),
+            fireHdlWatchEvent('create', `${indexedWorkspaceRootUri}/new.sv`),
             'created URI refresh'
         );
         await withTimeout(
-            Promise.resolve(deleteListener!(FakeUri.parse(libraryDefinition.uri))),
+            fireHdlWatchEvent('delete', libraryDefinition.uri),
             'deleted URI removal'
         );
         assert.ok(events.includes(`refresh:${workspaceDefinition.uri}`));
@@ -937,6 +1094,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(FakeIndex.instances.length, 1);
 
         const previousIndex = FakeIndex.instances[0];
+        const oldLibraryWatcher = watcherRecords.find(record =>
+            !record.disposed
+            && record.pattern instanceof FakeRelativePattern
+            && record.pattern.baseUri.toString() === 'file:///A-library'
+        );
+        assert.ok(oldLibraryWatcher);
         settings.libDirs = ['/other-library'];
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.libDirs',
@@ -947,6 +1110,99 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             workspaceRootUri,
             'file:///other-library',
         ]);
+        assert.strictEqual(oldLibraryWatcher.disposed, true);
+        const staleWatcherRefreshesBefore = events.filter(event =>
+            event === `refresh:${libraryDefinition.uri}`
+        ).length;
+        await fireWatcherRecord(
+            oldLibraryWatcher,
+            'change',
+            FakeUri.parse(libraryDefinition.uri)
+        );
+        assert.strictEqual(
+            events.filter(event => event === `refresh:${libraryDefinition.uri}`).length,
+            staleWatcherRefreshesBefore
+        );
+
+        settings.libDirs = ['/overlap', '/overlap/nested'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'overlapping library roots rescan');
+        const overlappingRootUri = 'file:///overlap/nested/deduplicated.sv';
+        const overlappingRefreshesBefore = events.filter(event =>
+            event === `refresh:${overlappingRootUri}`
+        ).length;
+        await withTimeout(
+            fireHdlWatchEvent('create', overlappingRootUri),
+            'overlapping watcher event'
+        );
+        assert.strictEqual(
+            events.filter(event => event === `refresh:${overlappingRootUri}`).length,
+            overlappingRefreshesBefore + 1
+        );
+        const overlappingChangesBefore = events.filter(event =>
+            event === `refresh:${overlappingRootUri}`
+        ).length;
+        await withTimeout(
+            fireHdlWatchEvent('change', overlappingRootUri),
+            'duplicate overlapping watcher change'
+        );
+        assert.strictEqual(
+            events.filter(event => event === `refresh:${overlappingRootUri}`).length,
+            overlappingChangesBefore + 1
+        );
+
+        const deleteThenCreateUri = 'file:///overlap/atomic-replacement.sv';
+        const deleteThenCreateStart = events.length;
+        await withTimeout(
+            Promise.all([
+                fireHdlWatchEvent('delete', deleteThenCreateUri),
+                fireHdlWatchEvent('create', deleteThenCreateUri),
+            ]),
+            'delete then create watcher batch'
+        );
+        assert.deepStrictEqual(
+            events.slice(deleteThenCreateStart).filter(event =>
+                event === `refresh:${deleteThenCreateUri}`
+                || event === `remove:${deleteThenCreateUri}`
+            ),
+            [`refresh:${deleteThenCreateUri}`]
+        );
+
+        const createThenDeleteUri = 'file:///overlap/removed-after-create.sv';
+        const createThenDeleteStart = events.length;
+        await withTimeout(
+            Promise.all([
+                fireHdlWatchEvent('create', createThenDeleteUri),
+                fireHdlWatchEvent('delete', createThenDeleteUri),
+            ]),
+            'create then delete watcher batch'
+        );
+        assert.deepStrictEqual(
+            events.slice(createThenDeleteStart).filter(event =>
+                event === `refresh:${createThenDeleteUri}`
+                || event === `remove:${createThenDeleteUri}`
+            ),
+            [`remove:${createThenDeleteUri}`]
+        );
+
+        const batchUriA = 'file:///overlap/batch-a.sv';
+        const batchUriB = 'file:///overlap/batch-b.sv';
+        await withTimeout(
+            Promise.all([
+                fireHdlWatchEvent('create', batchUriA),
+                fireHdlWatchEvent('create', batchUriB),
+            ]),
+            'distinct watcher event batch'
+        );
+        assert.strictEqual(
+            events.filter(event => event === `refresh:${batchUriA}`).length,
+            1
+        );
+        assert.strictEqual(
+            events.filter(event => event === `refresh:${batchUriB}`).length,
+            1
+        );
 
         const presentationsBeforeRace = presentedLibDirs.length;
         const staleGate = createScanGate();
@@ -1028,7 +1284,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(deletionPickerGate.started, 'delayed picker before definition deletion');
         deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
         await withTimeout(
-            Promise.resolve(deleteListener!(FakeUri.parse(topDefinition.uri))),
+            fireHdlWatchEvent('delete', topDefinition.uri),
             'selected definition deletion'
         );
         deletionPickerGate.allow();
@@ -1037,7 +1293,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 
         storedTop = { definitionKey: '', name: 'top' };
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(topDefinition.uri))),
+            fireHdlWatchEvent('create', topDefinition.uri),
             'selected definition restoration'
         );
 
@@ -1056,7 +1312,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         sameRootTopPickerGate.allow();
         await withTimeout(sameRootTopPersistenceGate.started, 'same-root top persistence');
         await withTimeout(
-            Promise.resolve(changeListener!(FakeUri.parse(workspaceDefinition.uri))),
+            fireHdlWatchEvent('change', workspaceDefinition.uri),
             'same-root refresh during top persistence'
         );
         sameRootTopPersistenceGate.allow();
@@ -1078,7 +1334,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         deletedTopPickerGate.allow();
         await withTimeout(deletedTopPersistenceGate.started, 'top persistence before selected delete');
         const selectedTopDelete = Promise.resolve(
-            deleteListener!(FakeUri.parse(topDefinition.uri))
+            fireHdlWatchEvent('delete', topDefinition.uri)
         );
         await new Promise<void>(resolve => setImmediate(resolve));
         deletedTopPersistenceGate.allow();
@@ -1089,7 +1345,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(storedTop, undefined);
         assert.strictEqual(presentedTop, undefined);
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(topDefinition.uri))),
+            fireHdlWatchEvent('create', topDefinition.uri),
             'restore top after persisted selection delete'
         );
 
@@ -1149,8 +1405,26 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             affectsConfiguration: section => section === 'veriflow.libDirs',
         }));
         await withTimeout(clearingTopRootChange, 'top persistence clear root change');
+        assert.strictEqual(presentedTop, undefined);
+
+        const replacementRootCancelGate = createScanGate();
+        nextQuickPickGate = replacementRootCancelGate;
+        const replacementRootCanceledPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(
+            replacementRootCancelGate.started,
+            'replacement-root picker during old selection persistence'
+        );
+        deferredQuickPickSelection = undefined;
+        replacementRootCancelGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
         clearingTopPersistenceGate.allow();
-        await withTimeout(clearingTopPicker, 'top persistence clear');
+        await withTimeout(
+            Promise.all([clearingTopPicker, replacementRootCanceledPicker]),
+            'top persistence clear with replacement-root cancellation'
+        );
         assert.strictEqual(storedTop, undefined);
         assert.strictEqual(presentedTop, undefined);
 
@@ -1158,6 +1432,183 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.libDirs',
         })), 'top persistence recovery');
+
+        const maintenanceClearBaseline = {
+            definitionKey: topDefinition.key,
+            name: topDefinition.name,
+        };
+        storedTop = maintenanceClearBaseline;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before pending maintenance top clear'
+        );
+        assert.deepStrictEqual(presentedTop, maintenanceClearBaseline);
+        const maintenanceTopClearGate = createScanGate();
+        nextTopPersistenceGate = maintenanceTopClearGate;
+        settings.libDirs = ['/maintenance-top-clear'];
+        const maintenanceTopRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        await withTimeout(maintenanceTopClearGate.started, 'pending maintenance top clear');
+        await withTimeout(maintenanceTopRootChange, 'maintenance top root replacement');
+        assert.strictEqual(presentedTop, undefined);
+
+        const maintenanceCancelPickerGate = createScanGate();
+        nextQuickPickGate = maintenanceCancelPickerGate;
+        const maintenanceCanceledPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(
+            maintenanceCancelPickerGate.started,
+            'cancel picker during maintenance top clear'
+        );
+        deferredQuickPickSelection = undefined;
+        maintenanceCancelPickerGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        maintenanceTopClearGate.allow();
+        await withTimeout(maintenanceCanceledPicker, 'maintenance top clear cancellation');
+        assert.strictEqual(storedTop, undefined);
+        assert.strictEqual(presentedTop, undefined);
+
+        settings.libDirs = ['/latest-library'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'maintenance top clear recovery');
+
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        const invocationScanGate = createScanGate();
+        scanGates.set('file:///latest-library', invocationScanGate);
+        const invocationNewPickerGate = createScanGate();
+        queuedQuickPickGates.push(invocationNewPickerGate);
+        const quickPicksBeforeInvocationOrder = quickPickCallCount;
+        const invocationOldPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(invocationScanGate.started, 'shared invocation-order scan');
+
+        const invocationNewPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        invocationScanGate.allow();
+        await withTimeout(invocationNewPickerGate.started, 'invocation-new top picker');
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(quickPickCallCount - quickPicksBeforeInvocationOrder, 1);
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        invocationNewPickerGate.allow();
+        await withTimeout(invocationNewPicker, 'invocation-new top selection');
+        await withTimeout(invocationOldPicker, 'invocation-old top completion');
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        const cancellationScanGate = createScanGate();
+        scanGates.set('file:///latest-library', cancellationScanGate);
+        const cancellingNewPickerGate = createScanGate();
+        queuedQuickPickGates.push(cancellingNewPickerGate);
+        const quickPicksBeforeCancellation = quickPickCallCount;
+        const cancelledOldPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(cancellationScanGate.started, 'shared cancellation scan');
+
+        const cancellingNewPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        cancellationScanGate.allow();
+        await withTimeout(cancellingNewPickerGate.started, 'newer cancelling top picker');
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(quickPickCallCount - quickPicksBeforeCancellation, 1);
+        deferredQuickPickSelection = undefined;
+        cancellingNewPickerGate.allow();
+        await withTimeout(cancellingNewPicker, 'newer cancelled top selection');
+        await withTimeout(cancelledOldPicker, 'older picker after newer cancellation');
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        const alreadyOpenOldPickerGate = createScanGate();
+        nextQuickPickGate = alreadyOpenOldPickerGate;
+        const alreadyOpenOldPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(alreadyOpenOldPickerGate.started, 'already-open old top picker');
+
+        const completingNewPickerGate = createScanGate();
+        nextQuickPickGate = completingNewPickerGate;
+        const completingNewPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(completingNewPickerGate.started, 'new top picker after old opened');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        completingNewPickerGate.allow();
+        await withTimeout(completingNewPicker, 'new top picker completes first');
+
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        alreadyOpenOldPickerGate.allow();
+        await withTimeout(alreadyOpenOldPicker, 'old top picker completes last');
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        const cancellationBaselineSelection = {
+            definitionKey: topDefinition.key,
+            name: topDefinition.name,
+        };
+        storedTop = cancellationBaselineSelection;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before pending persistence cancellation'
+        );
+        const pendingCancellationOldPickerGate = createScanGate();
+        const pendingCancellationPersistenceGate = createScanGate();
+        nextQuickPickGate = pendingCancellationOldPickerGate;
+        nextTopPersistenceGate = pendingCancellationPersistenceGate;
+        const pendingCancellationOldPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(
+            pendingCancellationOldPickerGate.started,
+            'old picker before pending persistence cancellation'
+        );
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        pendingCancellationOldPickerGate.allow();
+        await withTimeout(
+            pendingCancellationPersistenceGate.started,
+            'old persistence before newer cancellation'
+        );
+
+        const pendingCancellationNewPickerGate = createScanGate();
+        nextQuickPickGate = pendingCancellationNewPickerGate;
+        const pendingCancellationNewPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(
+            pendingCancellationNewPickerGate.started,
+            'new picker cancelling pending persistence'
+        );
+        deferredQuickPickSelection = undefined;
+        pendingCancellationNewPickerGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        const firstCancellationRollbackGate = createScanGate();
+        nextTopPersistenceGate = firstCancellationRollbackGate;
+        pendingCancellationPersistenceGate.allow();
+        await withTimeout(
+            firstCancellationRollbackGate.started,
+            'first cancellation rollback persistence'
+        );
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, cancellationBaselineSelection);
+
+        const chainedCancellationPickerGate = createScanGate();
+        nextQuickPickGate = chainedCancellationPickerGate;
+        const chainedCancellationPicker = Promise.resolve(
+            commands.get('veriflow.selectTop')!()
+        );
+        await withTimeout(
+            chainedCancellationPickerGate.started,
+            'second picker during cancellation rollback'
+        );
+        deferredQuickPickSelection = undefined;
+        chainedCancellationPickerGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        firstCancellationRollbackGate.allow();
+        await withTimeout(
+            Promise.all([
+                pendingCancellationOldPicker,
+                pendingCancellationNewPicker,
+                chainedCancellationPicker,
+            ]),
+            'chained cancellation persistence correction'
+        );
+        assert.deepStrictEqual(storedTop, cancellationBaselineSelection);
+        assert.deepStrictEqual(presentedTop, cancellationBaselineSelection);
 
         storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
         await withTimeout(
@@ -1400,6 +1851,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.strictEqual(analyzeStatus, 'outdated');
         assert.strictEqual(simulateStatus, 'outdated');
         assert.ok(outputClearCount > clearsBeforeFailedIdentity);
+        assert.notStrictEqual(status.text, '$(sync~spin) VeriFlow: scanning...');
         assert.notStrictEqual(status.text, '$(warning) VeriFlow: 1 duplicate module name');
         failedScanRoots.delete(failedRoots);
 
@@ -1410,6 +1862,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         })), 'replacement roots recovery scan');
         const retainedSameIdentityScan = lastScanResult;
         const retainedSameIdentityModuleMap = { ...testbenchModuleMap };
+        const retainedSameIdentityStatus = status.text;
         const sameIdentityRoots = JSON.stringify([
             workspaceRootUri,
             'file:///before-workspace-removal',
@@ -1421,7 +1874,37 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         })), 'same identity transient scan failure');
         assert.strictEqual(lastScanResult, retainedSameIdentityScan);
         assert.deepStrictEqual(testbenchModuleMap, retainedSameIdentityModuleMap);
+        assert.strictEqual(status.text, retainedSameIdentityStatus);
         failedScanRoots.delete(sameIdentityRoots);
+
+        nextWatcherConstructionError = new Error('watcher construction failed');
+        settings.defines = { WATCHER_CONSTRUCTION_FAILURE: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'watcher construction scan failure');
+        assert.strictEqual(status.text, retainedSameIdentityStatus);
+
+        const chainedOldScanGate = createScanGate();
+        nextScanGate = chainedOldScanGate;
+        settings.defines = { CHAINED_OLD_SCAN: true };
+        const chainedOldScan = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        }));
+        await withTimeout(chainedOldScanGate.started, 'older chained status scan');
+
+        failedScanDefines.add('CHAINED_NEW_SCAN');
+        settings.defines = { CHAINED_NEW_SCAN: true };
+        const chainedNewScan = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        }));
+        assert.strictEqual(status.text, '$(sync~spin) VeriFlow: scanning...');
+        chainedOldScanGate.allow();
+        await withTimeout(
+            Promise.all([chainedOldScan, chainedNewScan]),
+            'newer failed chained status scan'
+        );
+        assert.strictEqual(status.text, retainedSameIdentityStatus);
+        failedScanDefines.delete('CHAINED_NEW_SCAN');
 
         await withTimeout(
             Promise.resolve(commands.get('veriflow.analyze')!()),
@@ -1469,6 +1952,42 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),
             'scan before deferred deactivation'
+        );
+
+        const staleDialogGate = createScanGate();
+        nextOpenDialogGate = staleDialogGate;
+        const staleDialogOpen = Promise.resolve(commands.get('veriflow.openVcdViewer')!());
+        await withTimeout(staleDialogGate.started, 'VCD dialog before lifecycle replacement');
+        await withTimeout(extension.deactivate(), 'deactivate with open VCD dialog');
+        extensionDeactivated = true;
+
+        extension.activate(context);
+        extensionDeactivated = false;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan after VCD dialog lifecycle replacement'
+        );
+        const openWithBeforeStaleDialog = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        deferredOpenDialogSelection = [FakeUri.parse('file:///waves/stale.vcd')];
+        staleDialogGate.allow();
+        await withTimeout(staleDialogOpen, 'stale VCD dialog completion');
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeStaleDialog
+        );
+
+        const currentDialogGate = createScanGate();
+        nextOpenDialogGate = currentDialogGate;
+        const currentDialogOpen = Promise.resolve(commands.get('veriflow.openVcdViewer')!());
+        await withTimeout(currentDialogGate.started, 'current lifecycle VCD dialog');
+        deferredOpenDialogSelection = [FakeUri.parse('file:///waves/current.vcd')];
+        currentDialogGate.allow();
+        await withTimeout(currentDialogOpen, 'current lifecycle VCD open');
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeStaleDialog + 1
         );
 
         const deactivationPersistenceGate = createScanGate();

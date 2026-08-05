@@ -20,8 +20,10 @@ async function insertAtCursor(
     moduleName: string,
     instanceName: string,
     parameters: Array<{ name: string; value: string }>,
-    ports: Array<{ name: string; value: string }>
+    ports: Array<{ name: string; value: string }>,
+    isCurrent: () => boolean
 ): Promise<void> {
+    if (!isCurrent()) { return; }
     const range = editor.selection;
     const startLine = editor.document.lineAt(range.start.line);
     const prefix = startLine.text.substring(0, range.start.character);
@@ -40,17 +42,22 @@ async function insertAtCursor(
 
     try {
         const applied = await editor.edit(editBuilder => editBuilder.replace(range, text));
+        if (!isCurrent()) { return; }
         if (!applied) {
             vscode.window.showErrorMessage('Failed to insert module instantiation.');
         }
     } catch (error) {
+        if (!isCurrent()) { return; }
         vscode.window.showErrorMessage(
             `Failed to insert module instantiation: ${errorMessage(error)}`
         );
     }
 }
 
-export async function showModuleInstantiationPicker(result: ModuleScanResult): Promise<void> {
+export async function showModuleInstantiationPicker(
+    result: ModuleScanResult,
+    isCurrent: () => boolean = () => true
+): Promise<void> {
     const choices = buildModuleInstantiationChoices(result) as ModuleQuickPickItem[];
     if (choices.length === 0) {
         vscode.window.showWarningMessage('No Verilog/SystemVerilog modules found.');
@@ -61,7 +68,7 @@ export async function showModuleInstantiationPicker(result: ModuleScanResult): P
         placeHolder: 'Select a module to instantiate',
         matchOnDescription: true,
     });
-    if (!selected) { return; }
+    if (!isCurrent() || !selected) { return; }
 
     let moduleInfo: ModuleInfo;
     try {
@@ -85,7 +92,7 @@ export async function showModuleInstantiationPicker(result: ModuleScanResult): P
     ], {
         placeHolder: 'Choose where to place the module instantiation',
     });
-    if (!action) { return; }
+    if (!isCurrent() || !action) { return; }
 
     const instanceName = `u_${selected.moduleName}`;
     const parameters = moduleInfo.parameters.map(parameter => ({
@@ -106,8 +113,10 @@ export async function showModuleInstantiationPicker(result: ModuleScanResult): P
         });
         try {
             await vscode.env.clipboard.writeText(text);
+            if (!isCurrent()) { return; }
             vscode.window.showInformationMessage('Module instantiation copied to clipboard.');
         } catch (error) {
+            if (!isCurrent()) { return; }
             vscode.window.showErrorMessage(
                 `Failed to copy module instantiation: ${errorMessage(error)}`
             );
@@ -120,5 +129,12 @@ export async function showModuleInstantiationPicker(result: ModuleScanResult): P
         vscode.window.showWarningMessage('No active editor for module instantiation.');
         return;
     }
-    await insertAtCursor(editor, selected.moduleName, instanceName, parameters, ports);
+    await insertAtCursor(
+        editor,
+        selected.moduleName,
+        instanceName,
+        parameters,
+        ports,
+        isCurrent
+    );
 }

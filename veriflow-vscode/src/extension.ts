@@ -55,6 +55,14 @@ const DEFAULT_VIEWERS: Record<string, WaveViewerConfig> = {
     custom: { name: 'custom', launchCmd: '' },
 };
 
+type HdlTopSelectionPersistenceChain = {
+    lifecycleGeneration: number;
+    rootGeneration: number;
+    rootIdentity: string | undefined;
+    pending: number;
+    rollbackBaseline: TopModuleSelection | undefined;
+};
+
 let treeProvider: ModuleTreeProvider;
 let tbPanelProvider: TestbenchPanelProvider;
 let statusBarItem: vscode.StatusBarItem;
@@ -70,6 +78,7 @@ let hdlIndexGeneration = 0;
 let hdlOperationTail: Promise<void> = Promise.resolve();
 let hdlTopPersistenceTail: Promise<void> = Promise.resolve();
 let hdlTopPersistencePending = 0;
+let hdlTopSelectionPersistenceChain: HdlTopSelectionPersistenceChain | undefined;
 let hdlDependencyPersistenceTail: Promise<void> = Promise.resolve();
 let hdlPreparationInFlight: {
     identity: string;
@@ -81,13 +90,38 @@ let hdlScanInFlight: {
 } | undefined;
 let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
+let hdlRootGeneration = 0;
 let hdlWorkflowGeneration = 0;
 let hdlTopIntentVersion = 0;
 let hdlLifecycleGeneration = 0;
 let hdlStopping = false;
 let hdlAbortController = new AbortController();
+let hdlActiveContext: vscode.ExtensionContext | undefined;
+let hdlLastNonScanningStatusText = '$(circuit-board) VeriFlow';
+
+type HdlWatchEvent = {
+    uri: vscode.Uri;
+    remove: boolean;
+    promise: Promise<void>;
+    resolve(): void;
+};
+
+type HdlWatchRegistry = {
+    version: number;
+    lifecycleGeneration: number;
+    rootIdentity: string;
+    indexGeneration: number;
+    index: WorkspaceHdlIndex | undefined;
+    watchers: vscode.FileSystemWatcher[];
+    pendingEvents: Map<string, HdlWatchEvent>;
+    flushScheduled: boolean;
+};
+
+let hdlWatchRegistry: HdlWatchRegistry | undefined;
+let hdlWatchRegistryVersion = 0;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
+const HDL_WATCH_GLOB = '**/*.{v,sv,vh,svh}';
 
 class HdlIndexPreparationInvalidatedError extends Error {}
 class HdlStoppingError extends Error {
@@ -108,6 +142,7 @@ let _pendingWaveAfterAnalyze = false;
 export function activate(context: vscode.ExtensionContext): void {
     hdlStopping = false;
     hdlLifecycleGeneration++;
+    hdlActiveContext = context;
     hdlAbortController = new AbortController();
     if (hdlParser && hdlParserExtensionPath !== context.extensionPath) {
         throw new Error(
@@ -152,6 +187,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(circuit-board) VeriFlow';
+    hdlLastNonScanningStatusText = statusBarItem.text;
     statusBarItem.tooltip = 'VeriFlow: Verilog Simulation Manager';
     statusBarItem.command = 'veriflow.showOutput';
     statusBarItem.show();
@@ -200,14 +236,15 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     // 文件系统监视器：检测工作区文件变动
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{v,sv,vh,svh}');
-    watcher.onDidChange(uri => hdlStopping
-        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, false));
-    watcher.onDidCreate(uri => hdlStopping
-        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, false));
-    watcher.onDidDelete(uri => hdlStopping
-        ? undefined : _refreshIndexedUriWithErrorReporting(context, uri, true));
-    context.subscriptions.push(watcher);
+    _reconcileHdlWatchersForCurrentRoots(context);
+    const watcherLifecycle = hdlLifecycleGeneration;
+    context.subscriptions.push({
+        dispose: () => {
+            if (watcherLifecycle === hdlLifecycleGeneration) {
+                _disposeHdlWatchRegistry();
+            }
+        },
+    });
 
     // 窗口焦点变化检测
     context.subscriptions.push(
@@ -358,6 +395,26 @@ function _createWorkspaceHdlIndex(
     const knownHdlUris = new Set<string>();
     const rootUris: vscode.Uri[] = [];
     const store = new WorkspaceIndexStore(context.workspaceState);
+    const includeCandidates = (fromUri: string, includePath: string): string[] => {
+        const source = vscode.Uri.parse(fromUri);
+        const absolute = _absoluteUri(source, includePath);
+        const candidates = absolute ? [absolute] : [
+            _joinRelativeUri(vscode.Uri.joinPath(source, '..'), includePath),
+            ...rootUris.map(root => _joinRelativeUri(root, includePath)),
+        ];
+        if (!absolute) {
+            const normalizedSuffix = `/${includePath
+                .replace(/\\/g, '/')
+                .replace(/^\/+/, '')}`;
+            for (const knownUri of [...knownHdlUris].sort()) {
+                const candidate = vscode.Uri.parse(knownUri);
+                if (candidate.path.endsWith(normalizedSuffix)) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        return [...new Set(candidates.map(candidate => candidate.toString()))];
+    };
     return new WorkspaceHdlIndex({
         parser: getHdlParser(context),
         store,
@@ -394,35 +451,19 @@ function _createWorkspaceHdlIndex(
                 size: stat.size,
             };
         },
+        includeCandidates,
         async resolveInclude(fromUri: string, includePath: string) {
             _throwIfHdlLifecycleStopped(lifecycleGeneration);
-            const source = vscode.Uri.parse(fromUri);
-            const absolute = _absoluteUri(source, includePath);
-            const candidates = absolute ? [absolute] : [
-                _joinRelativeUri(vscode.Uri.joinPath(source, '..'), includePath),
-                ...rootUris.map(root => _joinRelativeUri(root, includePath)),
-            ];
-            if (!absolute) {
-                const normalizedSuffix = `/${includePath
-                    .replace(/\\/g, '/')
-                    .replace(/^\/+/, '')}`;
-                for (const knownUri of [...knownHdlUris].sort()) {
-                    const candidate = vscode.Uri.parse(knownUri);
-                    if (candidate.path.endsWith(normalizedSuffix)) {
-                        candidates.push(candidate);
-                    }
-                }
-            }
             const seen = new Set<string>();
-            for (const candidate of candidates) {
+            for (const candidateValue of includeCandidates(fromUri, includePath)) {
                 _throwIfHdlLifecycleStopped(lifecycleGeneration);
-                const key = candidate.toString();
-                const exists = !seen.has(key) && await _isFile(candidate);
+                const candidate = vscode.Uri.parse(candidateValue);
+                const exists = !seen.has(candidateValue) && await _isFile(candidate);
                 _throwIfHdlLifecycleStopped(lifecycleGeneration);
                 if (exists) {
-                    return key;
+                    return candidateValue;
                 }
-                seen.add(key);
+                seen.add(candidateValue);
             }
             return undefined;
         },
@@ -489,6 +530,11 @@ function _resetDependencyIndex(): void {
     depAnalyzer = undefined;
     hdlIndexGeneration++;
     index?.dispose();
+    if (hdlStopping) {
+        _disposeHdlWatchRegistry();
+    } else if (hdlActiveContext) {
+        _reconcileHdlWatchersForCurrentRoots(hdlActiveContext);
+    }
 }
 
 function _runDependencyOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -513,6 +559,55 @@ function _persistTopModule(
     void result.then(
         () => { hdlTopPersistencePending--; },
         () => { hdlTopPersistencePending--; }
+    );
+    return result;
+}
+
+function _hasTopSelectionPersistenceOwnership(
+    chain: HdlTopSelectionPersistenceChain | undefined,
+    lifecycleGeneration: number,
+    rootGeneration: number,
+    rootIdentity: string | undefined
+): chain is HdlTopSelectionPersistenceChain {
+    return Boolean(chain
+        && chain.lifecycleGeneration === lifecycleGeneration
+        && chain.rootGeneration === rootGeneration
+        && chain.rootIdentity === rootIdentity);
+}
+
+function _persistTopSelection(
+    context: vscode.ExtensionContext,
+    selection: TopModuleSelection | undefined,
+    rollbackBaseline: TopModuleSelection | undefined,
+    lifecycleGeneration: number,
+    rootGeneration: number,
+    rootIdentity: string | undefined
+): Promise<void> {
+    const currentChain = hdlTopSelectionPersistenceChain;
+    const chain = _hasTopSelectionPersistenceOwnership(
+        currentChain,
+        lifecycleGeneration,
+        rootGeneration,
+        rootIdentity
+    ) ? currentChain : {
+            lifecycleGeneration,
+            rootGeneration,
+            rootIdentity,
+            pending: 0,
+            rollbackBaseline,
+        };
+    hdlTopSelectionPersistenceChain = chain;
+    chain.pending++;
+    const result = _persistTopModule(context, selection);
+    const settle = (): void => {
+        chain.pending--;
+        if (chain.pending === 0 && hdlTopSelectionPersistenceChain === chain) {
+            hdlTopSelectionPersistenceChain = undefined;
+        }
+    };
+    void result.then(
+        settle,
+        settle
     );
     return result;
 }
@@ -672,6 +767,7 @@ export async function deactivate(): Promise<void> {
     hdlOperationTail = Promise.resolve();
     hdlTopPersistenceTail = Promise.resolve();
     hdlTopPersistencePending = 0;
+    hdlTopSelectionPersistenceChain = undefined;
     hdlDependencyPersistenceTail = Promise.resolve();
     const parser = hdlParser;
     hdlParser = undefined;
@@ -679,6 +775,7 @@ export async function deactivate(): Promise<void> {
     try {
         await parser?.dispose();
     } finally {
+        hdlActiveContext = undefined;
         output.dispose();
     }
 }
@@ -841,6 +938,14 @@ function _isCurrentHdlWorkflow(generation: number): boolean {
     return !hdlStopping && generation === hdlWorkflowGeneration;
 }
 
+function _isCurrentHdlCommand(
+    lifecycleGeneration: number,
+    workflowGeneration: number
+): boolean {
+    return _isCurrentHdlLifecycle(lifecycleGeneration)
+        && _isCurrentHdlWorkflow(workflowGeneration);
+}
+
 function _isCurrentHdlPresentation(
     generation: number,
     rootIdentity: string | undefined,
@@ -852,15 +957,40 @@ function _isCurrentHdlPresentation(
         && index === hdlIndex;
 }
 
+function _isCurrentTopInvocation(
+    intentVersion: number,
+    lifecycleGeneration: number
+): boolean {
+    return intentVersion === hdlTopIntentVersion
+        && _isCurrentHdlLifecycle(lifecycleGeneration);
+}
+
+function _isCurrentTopPresentation(
+    intentVersion: number,
+    lifecycleGeneration: number,
+    presentationGeneration: number,
+    rootIdentity: string | undefined,
+    index: WorkspaceHdlIndex | undefined
+): boolean {
+    return _isCurrentTopInvocation(intentVersion, lifecycleGeneration)
+        && _isCurrentHdlPresentation(presentationGeneration, rootIdentity, index);
+}
+
 function _isCurrentTopIntent(
     intentVersion: number,
+    lifecycleGeneration: number,
     presentationGeneration: number,
     rootIdentity: string | undefined,
     index: WorkspaceHdlIndex | undefined,
     definitionKey: string
 ): boolean {
-    if (intentVersion !== hdlTopIntentVersion
-        || !_isCurrentHdlPresentation(presentationGeneration, rootIdentity, index)
+    if (!_isCurrentTopPresentation(
+        intentVersion,
+        lifecycleGeneration,
+        presentationGeneration,
+        rootIdentity,
+        index
+    )
         || index?.getDefinition(definitionKey) === undefined) {
         return false;
     }
@@ -875,6 +1005,200 @@ function _currentHdlRootIdentity(): string | undefined {
         return undefined;
     }
     return JSON.stringify(_dependencyRootUris(root, getSettings().libDirs));
+}
+
+function _hasCurrentHdlWatchOwnership(registry: HdlWatchRegistry): boolean {
+    return _isCurrentHdlLifecycle(registry.lifecycleGeneration)
+        && registry.rootIdentity === _currentHdlRootIdentity()
+        && registry.indexGeneration === hdlIndexGeneration
+        && registry.index === hdlIndex;
+}
+
+function _isCurrentHdlWatchRegistry(registry: HdlWatchRegistry): boolean {
+    return registry === hdlWatchRegistry
+        && registry.version === hdlWatchRegistryVersion
+        && _hasCurrentHdlWatchOwnership(registry);
+}
+
+function _sameHdlWatchOwnership(
+    left: HdlWatchRegistry,
+    right: HdlWatchRegistry
+): boolean {
+    return left.lifecycleGeneration === right.lifecycleGeneration
+        && left.rootIdentity === right.rootIdentity
+        && left.indexGeneration === right.indexGeneration
+        && left.index === right.index;
+}
+
+function _disposeHdlWatchRegistry(): void {
+    hdlWatchRegistryVersion++;
+    const registry = hdlWatchRegistry;
+    hdlWatchRegistry = undefined;
+    if (!registry) {
+        return;
+    }
+    for (const watcher of registry.watchers) {
+        watcher.dispose();
+    }
+    for (const event of registry.pendingEvents.values()) {
+        event.resolve();
+    }
+    registry.pendingEvents.clear();
+}
+
+async function _flushHdlWatchEvents(
+    context: vscode.ExtensionContext,
+    registry: HdlWatchRegistry
+): Promise<void> {
+    registry.flushScheduled = false;
+    const events = [...registry.pendingEvents.values()];
+    registry.pendingEvents.clear();
+    for (const event of events) {
+        try {
+            if (_hasCurrentHdlWatchOwnership(registry)) {
+                await _refreshIndexedUriWithErrorReporting(
+                    context,
+                    event.uri,
+                    event.remove,
+                    registry
+                );
+            }
+        } finally {
+            event.resolve();
+        }
+    }
+}
+
+function _queueHdlWatchEvent(
+    context: vscode.ExtensionContext,
+    registry: HdlWatchRegistry,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    if (!_isCurrentHdlWatchRegistry(registry)) {
+        return Promise.resolve();
+    }
+    const key = uri.toString();
+    const pending = registry.pendingEvents.get(key);
+    if (pending) {
+        pending.remove = remove;
+        return pending.promise;
+    }
+    let resolve!: () => void;
+    const event: HdlWatchEvent = {
+        uri,
+        remove,
+        promise: new Promise<void>(settled => { resolve = settled; }),
+        resolve: () => resolve(),
+    };
+    registry.pendingEvents.set(key, event);
+    if (!registry.flushScheduled) {
+        registry.flushScheduled = true;
+        queueMicrotask(() => { void _flushHdlWatchEvents(context, registry); });
+    }
+    return event.promise;
+}
+
+function _reconcileHdlWatchers(
+    context: vscode.ExtensionContext,
+    rootUris: string[],
+    index: WorkspaceHdlIndex | undefined
+): void {
+    if (hdlStopping || rootUris.length === 0) {
+        _disposeHdlWatchRegistry();
+        return;
+    }
+    const rootIdentity = JSON.stringify(rootUris);
+    const patternValues: Array<{ base: vscode.Uri; pattern: string }> = rootUris.map(root => ({
+        base: vscode.Uri.parse(root),
+        pattern: HDL_WATCH_GLOB,
+    }));
+    if (index) {
+        const plan = index.getWatchPlan(rootUris);
+        for (const uriValue of [
+            ...plan.resolvedExternalIncludeUris,
+            ...plan.unresolvedExternalCandidateUris,
+        ]) {
+            const uri = vscode.Uri.parse(uriValue);
+            const filename = path.posix.basename(uri.path);
+            if (filename) {
+                patternValues.push({
+                    base: uri.with({ path: path.posix.dirname(uri.path) }),
+                    pattern: filename.replace(/([*?{}\[\]])/g, '[$1]'),
+                });
+            }
+        }
+    }
+    const uniquePatterns = new Map<string, { base: vscode.Uri; pattern: string }>();
+    for (const patternValue of patternValues) {
+        uniquePatterns.set(
+            `${patternValue.base.toString()}\0${patternValue.pattern}`,
+            patternValue
+        );
+    }
+    const registry: HdlWatchRegistry = {
+        version: hdlWatchRegistryVersion + 1,
+        lifecycleGeneration: hdlLifecycleGeneration,
+        rootIdentity,
+        indexGeneration: hdlIndexGeneration,
+        index,
+        watchers: [],
+        pendingEvents: new Map(),
+        flushScheduled: false,
+    };
+    try {
+        for (const patternValue of uniquePatterns.values()) {
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(patternValue.base, patternValue.pattern)
+            );
+            watcher.onDidChange(uri => _queueHdlWatchEvent(context, registry, uri, false));
+            watcher.onDidCreate(uri => _queueHdlWatchEvent(context, registry, uri, false));
+            watcher.onDidDelete(uri => _queueHdlWatchEvent(context, registry, uri, true));
+            registry.watchers.push(watcher);
+        }
+    } catch (error) {
+        for (const watcher of registry.watchers) {
+            watcher.dispose();
+        }
+        throw error;
+    }
+    const previous = hdlWatchRegistry;
+    hdlWatchRegistryVersion = registry.version;
+    hdlWatchRegistry = registry;
+    if (previous) {
+        for (const watcher of previous.watchers) {
+            watcher.dispose();
+        }
+        if (_sameHdlWatchOwnership(previous, registry)) {
+            for (const [key, event] of previous.pendingEvents) {
+                registry.pendingEvents.set(key, event);
+            }
+            if (registry.pendingEvents.size > 0) {
+                registry.flushScheduled = true;
+                queueMicrotask(() => { void _flushHdlWatchEvents(context, registry); });
+            }
+        } else {
+            for (const event of previous.pendingEvents.values()) {
+                event.resolve();
+            }
+        }
+        previous.pendingEvents.clear();
+    }
+}
+
+function _reconcileHdlWatchersForCurrentRoots(context: vscode.ExtensionContext): void {
+    const root = getWorkspaceRoot();
+    if (!root) {
+        _disposeHdlWatchRegistry();
+        return;
+    }
+    const rootUris = _dependencyRootUris(root, getSettings().libDirs);
+    const rootIdentity = JSON.stringify(rootUris);
+    _reconcileHdlWatchers(
+        context,
+        rootUris,
+        hdlIndexIdentity === rootIdentity ? hdlIndex : undefined
+    );
 }
 
 function _clearHdlPresentation(context: vscode.ExtensionContext): void {
@@ -903,6 +1227,7 @@ function _invalidateChangedHdlRootIdentity(
     if (!force && !presentationChanged && !indexChanged) {
         return;
     }
+    hdlRootGeneration++;
     hdlPresentationGeneration++;
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
@@ -1050,11 +1375,12 @@ async function _presentScanResult(
     result: ModuleScanResult,
     duplicateGroups: Array<{ name: string; definitions: HdlDefinitionSummary[] }>,
     generation: number,
-    rootIdentity: string
+    rootUris: string[]
 ): Promise<void> {
     if (generation !== hdlPresentationGeneration) {
         return;
     }
+    const rootIdentity = JSON.stringify(rootUris);
     treeProvider.setScanResult(result);
     tbPanelProvider.setModuleMap(result.moduleFiles);
     hdlPresentationRootIdentity = rootIdentity;
@@ -1064,6 +1390,7 @@ async function _presentScanResult(
         : _coerceTopSelection(getTopModule(context));
     const selection = resolveTopModuleSelection(stored, result.definitions);
     treeProvider.topModule = selection;
+    _reconcileHdlWatchers(context, rootUris, hdlIndex);
 
     const summary = formatDuplicateSummary(duplicateGroups);
     if (summary.outputLines.length > 0) {
@@ -1087,7 +1414,20 @@ async function _scanModulesFromIndex(
     rootUris: string[],
     generation: number
 ): Promise<ModuleScanResult | null> {
-    statusBarItem.text = '$(sync~spin) VeriFlow: scanning...';
+    const lifecycleGeneration = hdlLifecycleGeneration;
+    const scanningStatus = '$(sync~spin) VeriFlow: scanning...';
+    if (statusBarItem.text !== scanningStatus) {
+        hdlLastNonScanningStatusText = statusBarItem.text;
+    }
+    const statusBeforeScan = hdlLastNonScanningStatusText;
+    const restoreStatus = (): void => {
+        if (_isCurrentHdlLifecycle(lifecycleGeneration)
+            && generation === hdlPresentationGeneration
+            && statusBarItem.text === scanningStatus) {
+            statusBarItem.text = statusBeforeScan;
+        }
+    };
+    statusBarItem.text = scanningStatus;
     const preparation = _prepareDependencyAnalyzer(
         context,
         rootUris,
@@ -1096,6 +1436,19 @@ async function _scanModulesFromIndex(
     return _runDependencyOperation(async () => {
         try {
             await preparation;
+            const index = hdlIndex;
+            if (!index || hdlStopping) {
+                return null;
+            }
+            const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
+            await _presentScanResult(
+                context,
+                derived.result,
+                derived.duplicateGroups,
+                generation,
+                rootUris
+            );
+            return derived.result;
         } catch (error) {
             if (error instanceof HdlIndexPreparationInvalidatedError
                 || error instanceof HdlStoppingError
@@ -1103,20 +1456,9 @@ async function _scanModulesFromIndex(
                 return null;
             }
             throw error;
+        } finally {
+            restoreStatus();
         }
-        const index = hdlIndex;
-        if (!index || hdlStopping) {
-            return null;
-        }
-        const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
-        await _presentScanResult(
-            context,
-            derived.result,
-            derived.duplicateGroups,
-            generation,
-            JSON.stringify(rootUris)
-        );
-        return derived.result;
     });
 }
 
@@ -1138,9 +1480,17 @@ async function _scanModulesWithErrorReporting(
 async function _refreshIndexedUri(
     context: vscode.ExtensionContext,
     uri: vscode.Uri,
-    remove: boolean
+    remove: boolean,
+    watcherRegistry?: HdlWatchRegistry
 ): Promise<void> {
-    if (hdlStopping) { return; }
+    if (hdlStopping
+        || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+        return;
+    }
+    if (watcherRegistry && !watcherRegistry.index) {
+        await _scanModulesWithErrorReporting(context);
+        return;
+    }
     const root = getWorkspaceRoot();
     if (!root) {
         return;
@@ -1159,6 +1509,7 @@ async function _refreshIndexedUri(
             hdlAbortController.signal
         );
         if (hdlStopping
+            || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))
             || currentIndex !== hdlIndex
             || hdlIndexIdentity !== rootIdentity) {
             return;
@@ -1167,11 +1518,17 @@ async function _refreshIndexedUri(
     if (!admitted) {
         return;
     }
+    if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+        return;
+    }
     _invalidateDependencyPresentation(context);
     const defines = _filterHdlDefines(settings.defines);
     const generation = ++hdlPresentationGeneration;
     await _runDependencyOperation(async () => {
-        if (hdlStopping) { return; }
+        if (hdlStopping
+            || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+            return;
+        }
         try {
             let index = hdlIndex;
             if (!index || hdlIndexIdentity !== rootIdentity) {
@@ -1179,7 +1536,13 @@ async function _refreshIndexedUri(
                 index = hdlIndex;
             } else {
                 await hdlIndexLoad;
+                if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+                    return;
+                }
                 await index.updateConfiguration(defines);
+                if (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry)) {
+                    return;
+                }
                 if (remove) {
                     await index.removeUri(uriValue);
                 } else {
@@ -1189,14 +1552,17 @@ async function _refreshIndexedUri(
             if (!index) {
                 return;
             }
-            if (hdlStopping) { return; }
+            if (hdlStopping
+                || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+                return;
+            }
             const derived = _deriveModuleScanResult(index, root, settings.libDirs, rootUris);
             await _presentScanResult(
                 context,
                 derived.result,
                 derived.duplicateGroups,
                 generation,
-                rootIdentity
+                rootUris
             );
         } catch (error) {
             if (hdlStopping || error instanceof HdlStoppingError) { return; }
@@ -1209,11 +1575,15 @@ async function _refreshIndexedUri(
 async function _refreshIndexedUriWithErrorReporting(
     context: vscode.ExtensionContext,
     uri: vscode.Uri,
-    remove: boolean
+    remove: boolean,
+    watcherRegistry?: HdlWatchRegistry
 ): Promise<void> {
-    if (hdlStopping) { return; }
+    if (hdlStopping
+        || (watcherRegistry && !_hasCurrentHdlWatchOwnership(watcherRegistry))) {
+        return;
+    }
     try {
-        await _refreshIndexedUri(context, uri, remove);
+        await _refreshIndexedUri(context, uri, remove, watcherRegistry);
     } catch (error) {
         if (hdlStopping || error instanceof HdlStoppingError) { return; }
         output.appendError(
@@ -1226,6 +1596,7 @@ async function _refreshIndexedUriWithErrorReporting(
 
 async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleScanResult | null> {
     if (hdlStopping) { return null; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
     if (!root) { return null; }
 
@@ -1237,7 +1608,8 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
             .sort(([left], [right]) => left.localeCompare(right)),
     ]);
     if (hdlScanInFlight?.identity === identity) {
-        return hdlScanInFlight.promise;
+        const result = await hdlScanInFlight.promise;
+        return _isCurrentHdlLifecycle(lifecycleGeneration) ? result : null;
     }
     const generation = ++hdlPresentationGeneration;
     const scan = {
@@ -1251,25 +1623,44 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
         }
     };
     void scan.promise.then(clear, clear);
-    return scan.promise;
+    const result = await scan.promise;
+    return _isCurrentHdlLifecycle(lifecycleGeneration) ? result : null;
 }
 
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     if (!getWorkspaceRoot()) {
         vscode.window.showWarningMessage('No workspace folder open.');
         return;
     }
     const result = await cmdScanModules(context);
-    if (!hdlStopping && result) {
-        await showModuleInstantiationPicker(result);
+    if (_isCurrentHdlLifecycle(lifecycleGeneration) && result) {
+        await showModuleInstantiationPicker(
+            result,
+            () => _isCurrentHdlLifecycle(lifecycleGeneration)
+        );
     }
 }
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
+    const rootGeneration = hdlRootGeneration;
+    const intentVersion = ++hdlTopIntentVersion;
+    const rootIdentityAtEntry = _currentHdlRootIdentity();
+    const selectionPersistenceChainAtEntry = hdlTopSelectionPersistenceChain;
+    const hadPendingTopSelectionAtEntry = _hasTopSelectionPersistenceOwnership(
+        selectionPersistenceChainAtEntry,
+        lifecycleGeneration,
+        rootGeneration,
+        rootIdentityAtEntry
+    ) && selectionPersistenceChainAtEntry.pending > 0;
+    const persistedSelectionAtEntry = hadPendingTopSelectionAtEntry
+        ? selectionPersistenceChainAtEntry.rollbackBaseline
+        : _coerceTopSelection(getTopModule(context));
     await cmdScanModules(context);
-    if (hdlStopping) { return; }
+    if (!_isCurrentTopInvocation(intentVersion, lifecycleGeneration)) { return; }
     const generation = hdlPresentationGeneration;
     const rootIdentity = hdlPresentationRootIdentity;
     const index = hdlIndex;
@@ -1295,7 +1686,69 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         placeHolder: 'Select top module for simulation (workspace only)',
         matchOnDescription: true,
     });
-    if (!selected || !_isCurrentHdlPresentation(generation, rootIdentity, index)) {
+    if (!_isCurrentTopPresentation(
+        intentVersion,
+        lifecycleGeneration,
+        generation,
+        rootIdentity,
+        index
+    )) {
+        return;
+    }
+    if (!selected) {
+        if (!hadPendingTopSelectionAtEntry) {
+            return;
+        }
+        const baseline = resolveTopModuleSelection(
+            persistedSelectionAtEntry,
+            treeProvider.getWorkspaceDefinitions()
+        );
+        if (!_isCurrentTopPresentation(
+            intentVersion,
+            lifecycleGeneration,
+            generation,
+            rootIdentity,
+            index
+        )) {
+            return;
+        }
+        treeProvider.topModule = baseline;
+        try {
+            await _persistTopSelection(
+                context,
+                baseline,
+                persistedSelectionAtEntry,
+                lifecycleGeneration,
+                rootGeneration,
+                rootIdentity
+            );
+        } catch (error) {
+            if (_isCurrentTopPresentation(
+                intentVersion,
+                lifecycleGeneration,
+                generation,
+                rootIdentity,
+                index
+            )
+                && _sameTopSelection(_coerceTopSelection(treeProvider.topModule), baseline)) {
+                treeProvider.topModule = resolveTopModuleSelection(
+                    _coerceTopSelection(getTopModule(context)),
+                    treeProvider.getWorkspaceDefinitions()
+                );
+            }
+            throw error;
+        }
+        if (!_isCurrentTopPresentation(
+            intentVersion,
+            lifecycleGeneration,
+            generation,
+            rootIdentity,
+            index
+        )) {
+            await hdlTopPersistenceTail;
+            return;
+        }
+        treeProvider.topModule = baseline;
         return;
     }
     const definition = index?.getDefinition(selected.definitionKey);
@@ -1309,9 +1762,9 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         definitionKey: definition.key,
         name: definition.name,
     };
-    const intentVersion = ++hdlTopIntentVersion;
     if (!_isCurrentTopIntent(
         intentVersion,
+        lifecycleGeneration,
         generation,
         rootIdentity,
         index,
@@ -1321,10 +1774,18 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     }
     treeProvider.topModule = selection;
     try {
-        await _persistTopModule(context, selection);
+        await _persistTopSelection(
+            context,
+            selection,
+            persistedSelectionAtEntry,
+            lifecycleGeneration,
+            rootGeneration,
+            rootIdentity
+        );
     } catch (error) {
         if (_isCurrentTopIntent(
             intentVersion,
+            lifecycleGeneration,
             generation,
             rootIdentity,
             index,
@@ -1340,6 +1801,7 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     }
     if (!_isCurrentTopIntent(
         intentVersion,
+        lifecycleGeneration,
         generation,
         rootIdentity,
         index,
@@ -1354,6 +1816,7 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
 
 async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1361,7 +1824,7 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
-        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1386,14 +1849,14 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
             topSelection.definitionKey
         );
     } catch (error) {
-        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
         throw error;
     }
-    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
 
     // 保存结果和状态
     await _persistDependencyResult(context, result);
-    if (!_isCurrentHdlWorkflow(workflowGeneration)) {
+    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) {
         await hdlDependencyPersistenceTail;
         return;
     }
@@ -1437,6 +1900,7 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
 
 async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1444,7 +1908,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
-        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1489,10 +1953,10 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
             topSelection.definitionKey
         );
     } catch (error) {
-        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
         throw error;
     }
-    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
     const ambiguousNames = Object.keys(depResult.ambiguousModules);
     if (depResult.missingModules.length > 0 || ambiguousNames.length > 0) {
         if (depResult.missingModules.length > 0) {
@@ -1512,11 +1976,11 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendLine('');
     const outFile = path.join(root, `${topModule}.out`);
 
-    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
     const result = await Promise.resolve(simRunner.compileAndRun(
         depResult.files, outFile, simulator, root, topModule
     ));
-    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
 
     if (result.stdout) {
         for (const line of result.stdout.split('\n')) {
@@ -1546,14 +2010,15 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     // 如果有挂起的波形请求，继续执行
     if (_pendingWaveAfterSimulate) {
         _pendingWaveAfterSimulate = false;
-        if (result.success && _isCurrentHdlWorkflow(workflowGeneration)) {
-            await _doOpenWave(context, root, topModule, settings);
+        if (result.success && _isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) {
+            await _doOpenWave(context, root, topModule, settings, lifecycleGeneration);
         }
     }
 }
 
 async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
@@ -1561,7 +2026,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
-        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1590,8 +2055,9 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     }
 
     // 都已完成
-    if (fs.existsSync(waveFile) && _isCurrentHdlWorkflow(workflowGeneration)) {
-        await _doOpenWave(context, root, topModule, settings);
+    if (fs.existsSync(waveFile)
+        && _isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) {
+        await _doOpenWave(context, root, topModule, settings, lifecycleGeneration);
         return;
     }
 
@@ -1604,6 +2070,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
 
 async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
     if (hdlStopping) { return; }
+    const lifecycleGeneration = hdlLifecycleGeneration;
     let target = uri;
     if (!target) {
         const selected = await vscode.window.showOpenDialog({
@@ -1614,10 +2081,10 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
             title: 'Open VCD in VeriFlow Viewer',
         });
         target = selected?.[0];
-        if (hdlStopping) { return; }
+        if (!_isCurrentHdlLifecycle(lifecycleGeneration)) { return; }
     }
 
-    if (!target) {
+    if (!target || !_isCurrentHdlLifecycle(lifecycleGeneration)) {
         return;
     }
     if (path.extname(target.fsPath).toLowerCase() !== '.vcd') {
@@ -1632,8 +2099,14 @@ async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
     );
 }
 
-async function _doOpenWave(context: vscode.ExtensionContext, root: string, topModule: string, settings: ExtensionSettings): Promise<void> {
-    if (hdlStopping) { return; }
+async function _doOpenWave(
+    context: vscode.ExtensionContext,
+    root: string,
+    topModule: string,
+    settings: ExtensionSettings,
+    lifecycleGeneration: number
+): Promise<void> {
+    if (!_isCurrentHdlLifecycle(lifecycleGeneration)) { return; }
     const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
     const viewer = _resolveViewer(settings);
 
@@ -1649,7 +2122,7 @@ async function _doOpenWave(context: vscode.ExtensionContext, root: string, topMo
             vscode.Uri.file(waveFile),
             WaveformEditorProvider.viewType
         );
-        if (hdlStopping) { return; }
+        if (!_isCurrentHdlLifecycle(lifecycleGeneration)) { return; }
         output.appendSuccess(`Opened built-in waveform viewer: ${waveFile}`);
         return;
     }

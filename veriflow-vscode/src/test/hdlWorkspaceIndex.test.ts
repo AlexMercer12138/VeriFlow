@@ -775,6 +775,47 @@ async function testUnresolvedIncludeCandidateQueryIsReadOnly(): Promise<void> {
     }
 }
 
+async function testExternalIncludeWatchPlanIsReadOnly(): Promise<void> {
+    const rootUri = 'file:///A';
+    const topUri = `${rootUri}/top.sv`;
+    const resolvedIncludeUri = 'file:///external/generated/defs.svh';
+    const unresolvedCandidateUri = 'file:///external/future/created.svh';
+    const rootContainedCandidateUri = `${rootUri}/future/local.svh`;
+    const harness = createWorkspaceIndexHarness({
+        [topUri]: [
+            `\`include "${resolvedIncludeUri}"`,
+            `\`include "${unresolvedCandidateUri}"`,
+            `\`include "${rootContainedCandidateUri}"`,
+            'module watch_plan_owner; endmodule',
+        ].join('\n'),
+        [resolvedIncludeUri]: '`define GENERATED_DEFS 1',
+    });
+    const invalidations: WorkspaceIndexInvalidation[] = [];
+    harness.index.onDidInvalidate(event => invalidations.push(event));
+    try {
+        await harness.index.scan([rootUri]);
+        const parserCallsBeforePlan = harness.parserCalls.length;
+        const persistedWritesBeforePlan = harness.persistedWrites.length;
+        const resolveCallsBeforePlan = harness.includeResolveCalls.length;
+        invalidations.length = 0;
+
+        const plan = harness.index.getWatchPlan([rootUri]);
+
+        assert.deepStrictEqual(plan, {
+            resolvedExternalIncludeUris: [canonicalizeSourceUri(resolvedIncludeUri)],
+            unresolvedExternalCandidateUris: [canonicalizeSourceUri(unresolvedCandidateUri)],
+        });
+        assert.strictEqual(harness.parserCalls.length, parserCallsBeforePlan);
+        assert.strictEqual(harness.persistedWrites.length, persistedWritesBeforePlan);
+        assert.strictEqual(harness.includeResolveCalls.length, resolveCallsBeforePlan);
+        assert.deepStrictEqual(invalidations, []);
+        assert.strictEqual(harness.index.getFile(unresolvedCandidateUri), undefined);
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function testAbortIsAtomicAndDoesNotPersistOrInvalidate(): Promise<void> {
     const harness = createWorkspaceIndexHarness({
         'file:///ws/a.sv': 'module a; endmodule',
@@ -1192,6 +1233,7 @@ async function main(): Promise<void> {
     await testIncludeGraphTransitiveRefreshAndStructuralFingerprints();
     await testUnresolvedIncludeEdgesSurviveReloadAndRecreation();
     await testUnresolvedIncludeCandidateQueryIsReadOnly();
+    await testExternalIncludeWatchPlanIsReadOnly();
     await testAbortIsAtomicAndDoesNotPersistOrInvalidate();
     await testAbortDuringSaveDoesNotCommitMemoryOrInvalidate();
     await testStageAbortIgnoresDiscardFailureAndKeepsCommittedSnapshot();

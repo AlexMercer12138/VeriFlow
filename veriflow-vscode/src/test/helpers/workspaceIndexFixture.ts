@@ -102,6 +102,8 @@ export type WorkspaceIndexHarness = {
     index: WorkspaceHdlIndex;
     files: Map<string, string>;
     includeMappings: Map<string, string>;
+    includeResolveCalls: Array<{ fromUri: string; includePath: string }>;
+    includeCandidateCalls: Array<{ fromUri: string; includePath: string }>;
     parserCalls: Array<{ uri: string; priority: 'interactive' | 'background' }>;
     parserOptions: HdlParseOptions[];
     persistedWrites: unknown[];
@@ -119,6 +121,8 @@ export function createWorkspaceIndexHarness(
         text,
     ]));
     const includeMappings = new Map<string, string>();
+    const includeResolveCalls: Array<{ fromUri: string; includePath: string }> = [];
+    const includeCandidateCalls: Array<{ fromUri: string; includePath: string }> = [];
     const parserCalls: ParserCall[] = [];
     const parserOptions: HdlParseOptions[] = [];
     const hooks: ParserHooks = {};
@@ -131,6 +135,18 @@ export function createWorkspaceIndexHarness(
         parserOptions,
         hooks
     );
+    const includeCandidates = (fromUri: string, includePath: string): string[] => {
+        includeCandidateCalls.push({ fromUri, includePath });
+        const mappedUri = includeMappings.get(includePath);
+        if (mappedUri !== undefined) {
+            return [canonicalizeSourceUri(mappedUri)];
+        }
+        try {
+            return [canonicalizeSourceUri(new URL(includePath, fromUri).toString())];
+        } catch {
+            return [];
+        }
+    };
     const createIndex = (
         defines: Record<string, string | true> = {}
     ): WorkspaceHdlIndex => new WorkspaceHdlIndex({
@@ -156,25 +172,18 @@ export function createWorkspaceIndexHarness(
                 size: Buffer.byteLength(text),
             };
         },
+        includeCandidates,
         async resolveInclude(fromUri: string, includePath: string) {
-            const mappedUri = includeMappings.get(includePath);
-            if (mappedUri !== undefined) {
-                const canonicalMappedUri = canonicalizeSourceUri(mappedUri);
-                return files.has(canonicalMappedUri) ? canonicalMappedUri : undefined;
-            }
-            let resolved: string;
-            try {
-                resolved = canonicalizeSourceUri(new URL(includePath, fromUri).toString());
-            } catch {
-                return undefined;
-            }
-            return files.has(resolved) ? resolved : undefined;
+            includeResolveCalls.push({ fromUri, includePath });
+            return includeCandidates(fromUri, includePath).find(candidate => files.has(candidate));
         },
     });
     const harness: WorkspaceIndexHarness = {
         index: undefined as unknown as WorkspaceHdlIndex,
         files,
         includeMappings,
+        includeResolveCalls,
+        includeCandidateCalls,
         parserCalls,
         parserOptions,
         persistedWrites: memento.writes,

@@ -32,6 +32,11 @@ export type WorkspaceIndexInvalidation = {
     parserFingerprint: string;
 };
 
+export type WorkspaceHdlWatchPlan = {
+    resolvedExternalIncludeUris: string[];
+    unresolvedExternalCandidateUris: string[];
+};
+
 export type WorkspaceHdlIndexOptions = {
     parser: HdlParserClient;
     store: WorkspaceIndexStore;
@@ -44,6 +49,7 @@ export type WorkspaceHdlIndexOptions = {
         mtimeMs: number;
         size: number;
     }>;
+    includeCandidates(fromUri: string, includePath: string): string[];
     resolveInclude(fromUri: string, includePath: string): Promise<string | undefined>;
 };
 
@@ -323,6 +329,38 @@ export class WorkspaceHdlIndex {
 
     getFile(uri: string): HdlFileSummary | undefined {
         return this.files.get(canonicalizeSourceUri(uri));
+    }
+
+    getWatchPlan(roots: string[]): WorkspaceHdlWatchPlan {
+        const canonicalRoots = roots.map(root => canonicalizeSourceUri(root));
+        const isExternal = (uri: string): boolean => !canonicalRoots.some(root =>
+            isUriWithinRoot(uri, root)
+        );
+        const resolvedExternalIncludeUris = new Set<string>();
+        const unresolvedExternalCandidateUris = new Set<string>();
+        for (const file of this.files.values()) {
+            for (const includeUri of file.includeUris) {
+                const canonicalUri = canonicalizeSourceUri(includeUri);
+                if (isExternal(canonicalUri)) {
+                    resolvedExternalIncludeUris.add(canonicalUri);
+                }
+            }
+            for (const include of file.unresolvedIncludes ?? []) {
+                for (const candidate of this.options.includeCandidates(
+                    include.fromUri,
+                    include.rawPath
+                )) {
+                    const canonicalUri = canonicalizeSourceUri(candidate);
+                    if (isExternal(canonicalUri)) {
+                        unresolvedExternalCandidateUris.add(canonicalUri);
+                    }
+                }
+            }
+        }
+        return {
+            resolvedExternalIncludeUris: [...resolvedExternalIncludeUris].sort(),
+            unresolvedExternalCandidateUris: [...unresolvedExternalCandidateUris].sort(),
+        };
     }
 
     getDependentsOfInclude(uri: string): string[] {
