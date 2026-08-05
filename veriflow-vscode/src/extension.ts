@@ -94,6 +94,19 @@ let hdlPreparationInFlight: {
     identity: string;
     promise: Promise<HdlIndexPreparation>;
 } | undefined;
+type SchematicIndexEntry = {
+    identity: string;
+    lifecycleGeneration: number;
+    settingsGeneration: number;
+    rootUris: string[];
+    defines: Record<string, string | true>;
+    index: WorkspaceHdlIndex;
+    load: Promise<void>;
+    abortController: AbortController;
+    ready: boolean;
+    preparation?: Promise<WorkspaceHdlIndex>;
+};
+const schematicIndexRegistry = new Map<string, SchematicIndexEntry>();
 type HdlScanOwnership = {
     lifecycleGeneration: number;
     rootGeneration: number;
@@ -174,6 +187,7 @@ let _pendingWaveAfterSimulate = false;
 let _pendingWaveAfterAnalyze = false;
 
 export function activate(context: vscode.ExtensionContext): void {
+    _resetSchematicIndexes();
     hdlStopping = false;
     hdlLifecycleGeneration++;
     hdlActiveContext = context;
@@ -271,6 +285,7 @@ export function activate(context: vscode.ExtensionContext): void {
             const rootsChanged = e.affectsConfiguration('veriflow.libDirs');
             if (definesChanged || rootsChanged) {
                 hdlWatchSettingsGeneration++;
+                _resetSchematicIndexes();
                 try {
                     _reconcileHdlWatchersForCurrentRoots(context);
                 } catch {
@@ -295,6 +310,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             if (hdlStopping) { return; }
             hdlWatchSettingsGeneration++;
+            _resetSchematicIndexes();
             try {
                 _reconcileHdlWatchersForCurrentRoots(context);
             } catch {
@@ -636,21 +652,88 @@ async function _getSchematicIndex(
         resourceRoot
     );
     const rootIdentity = JSON.stringify(rootUris);
-    const minimumIndexGeneration = hdlIndexGeneration;
-    const current = hdlIndexIdentity === rootIdentity ? hdlIndex : undefined;
-    if (current && !hdlPreparationInFlight) return current;
-    try {
-        const prepared = await _prepareDependencyAnalyzer(
-            context,
+    const defines = _filterHdlDefines(settings.defines);
+    const identity = JSON.stringify([
+        rootUris,
+        Object.entries(defines).sort(([left], [right]) => left.localeCompare(right)),
+    ]);
+    let entry = schematicIndexRegistry.get(identity);
+    if (!entry) {
+        const index = _createWorkspaceHdlIndex(context, defines, rootIdentity);
+        entry = {
+            identity,
+            lifecycleGeneration: hdlLifecycleGeneration,
+            settingsGeneration: hdlWatchSettingsGeneration,
             rootUris,
-            _filterHdlDefines(settings.defines)
-        );
-        return prepared.rootIdentity === rootIdentity
-            && prepared.indexGeneration >= minimumIndexGeneration
-            ? prepared.index
-            : undefined;
+            defines,
+            index,
+            load: index.load(),
+            abortController: new AbortController(),
+            ready: false,
+        };
+        schematicIndexRegistry.set(identity, entry);
+    }
+    if (entry.ready) {
+        try {
+            _throwIfSchematicIndexInvalidated(entry);
+            return entry.index;
+        } catch {
+            return undefined;
+        }
+    }
+    if (entry.preparation) {
+        try {
+            return await entry.preparation;
+        } catch {
+            return undefined;
+        }
+    }
+    const preparation = (async (): Promise<WorkspaceHdlIndex> => {
+        await entry.load;
+        _throwIfSchematicIndexInvalidated(entry);
+        await entry.index.updateConfiguration(entry.defines);
+        _throwIfSchematicIndexInvalidated(entry);
+        await entry.index.scan(entry.rootUris, entry.abortController.signal);
+        _throwIfSchematicIndexInvalidated(entry);
+        entry.ready = true;
+        return entry.index;
+    })();
+    entry.preparation = preparation;
+    const clearPreparation = (): void => {
+        if (entry.preparation === preparation) {
+            entry.preparation = undefined;
+        }
+    };
+    try {
+        const index = await preparation;
+        clearPreparation();
+        return index;
     } catch {
+        clearPreparation();
+        if (schematicIndexRegistry.get(identity) === entry) {
+            schematicIndexRegistry.delete(identity);
+            entry.abortController.abort();
+            entry.index.dispose();
+        }
         return undefined;
+    }
+}
+
+function _throwIfSchematicIndexInvalidated(entry: SchematicIndexEntry): void {
+    if (hdlStopping
+        || entry.lifecycleGeneration !== hdlLifecycleGeneration
+        || entry.settingsGeneration !== hdlWatchSettingsGeneration
+        || schematicIndexRegistry.get(entry.identity) !== entry) {
+        throw new HdlIndexPreparationInvalidatedError();
+    }
+}
+
+function _resetSchematicIndexes(): void {
+    const entries = [...schematicIndexRegistry.values()];
+    schematicIndexRegistry.clear();
+    for (const entry of entries) {
+        entry.abortController.abort();
+        entry.index.dispose();
     }
 }
 
@@ -897,6 +980,7 @@ export async function deactivate(): Promise<void> {
     hdlTopIntentVersion++;
     hdlInstantiationIntentVersion++;
     hdlAbortController.abort();
+    _resetSchematicIndexes();
     tbPanelProvider?.dispose();
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;

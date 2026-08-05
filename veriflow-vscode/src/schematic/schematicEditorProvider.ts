@@ -113,6 +113,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let refreshAbortController: AbortController | undefined;
         let publishGeneration = 0;
         let currentPublishSnapshot: SchematicPublishSnapshot | undefined;
+        let layoutIntent: { moduleKey: string; layout: SchematicLayout } | undefined;
 
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) {
@@ -172,9 +173,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 ),
                 moduleKey: selected.key,
             };
+            const intendedLayout = layoutIntent?.moduleKey === selected.key
+                ? layoutIntent.layout
+                : this.layoutStore.load(uri, selected.key);
             const layout = mergeLayout(
                 graph,
-                this.layoutStore.load(uri, selected.key)
+                intendedLayout
             );
             if (!isCurrentPublish(generation)) return undefined;
             state.graph = graph;
@@ -206,7 +210,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const refreshDocument = async (): Promise<void> => {
             const generation = ++state.refreshGeneration;
-            const invocationGeneration = ++publishGeneration;
+            publishGeneration++;
             refreshAbortController?.abort();
             const refreshController = new AbortController();
             refreshAbortController = refreshController;
@@ -256,6 +260,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     pending,
                     state.selectedModuleKey
                 );
+                const invocationGeneration = ++publishGeneration;
                 const snapshot = await buildSelectedGraph(invocationGeneration, index);
                 if (!isCurrentSchematicRefresh(
                     generation,
@@ -338,6 +343,10 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     case 'saveLayout':
                         if (command.moduleKey !== state.selectedModuleKey) return;
                         state.layout = command.layout;
+                        layoutIntent = {
+                            moduleKey: command.moduleKey,
+                            layout: command.layout,
+                        };
                         await this.layoutStore.save(uri, command.moduleKey, command.layout);
                         return;
                     case 'relayoutAll':
@@ -349,6 +358,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         const graph = state.graph;
                         const layout = relayoutAll(graph, state.layout);
                         state.layout = layout;
+                        layoutIntent = { moduleKey: command.moduleKey, layout };
                         currentPublishSnapshot = capturePublishSnapshot(
                             invocationGeneration
                         );

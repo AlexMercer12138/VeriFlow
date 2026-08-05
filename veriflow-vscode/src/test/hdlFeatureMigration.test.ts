@@ -643,6 +643,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             this.workspaceIndexedRevision = workspaceRevisionAtRead;
             events.push(`scan-commit:${workspaceRevisionAtRead}`);
         }
+        async parseOpenDocument(uri: string): Promise<{ uri: string }> {
+            if (this.disposed) {
+                throw new Error('Workspace HDL index is disposed');
+            }
+            return { uri };
+        }
         async refreshUri(uri: string): Promise<void> {
             events.push(`refresh:${uri}`);
             events.push(`refresh-defines:${this.currentDefinesKey}:${uri}`);
@@ -1208,6 +1214,15 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'file:///loose-b',
             'file:///A-library',
         ]);
+        await Promise.all([
+            looseAIndex!.parseOpenDocument(looseA.toString()),
+            looseBIndex!.parseOpenDocument(looseB.toString()),
+        ]);
+        const looseAScanCount = looseAIndex!.scannedRoots.length;
+        const repeatedLooseAIndex = await schematicGetIndex!({ uri: looseA });
+        assert.strictEqual(repeatedLooseAIndex, looseAIndex);
+        assert.strictEqual(looseAIndex!.scannedRoots.length, looseAScanCount);
+        await repeatedLooseAIndex!.parseOpenDocument(looseA.toString());
 
         workspaceFolders.push(folder, { uri: FakeUri.parse('file:///B-workspace') });
         await schematicGetIndex!({ uri: workspaceAResource });

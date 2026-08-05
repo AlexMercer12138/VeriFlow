@@ -59,6 +59,7 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 type ProviderHarness = {
     messages: HostEvent[];
     moduleKeys: string[];
+    setParseGate(text: string, gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
     setSaveGate(gate: Gate): void;
     send(message: unknown): void;
@@ -80,6 +81,7 @@ async function createProviderHarness(
     let disposeListener: (() => void) | undefined;
     let viewStateListener: ((event: { webviewPanel: typeof panel }) => void) | undefined;
     let postGate: { predicate: (event: HostEvent) => boolean; gate: Gate } | undefined;
+    let parseGate: { text: string; gate: Gate } | undefined;
     let saveGate: Gate | undefined;
     const messages: HostEvent[] = [];
     const disposable = { dispose(): void {} };
@@ -159,17 +161,23 @@ async function createProviderHarness(
     };
     const context = {
         extensionUri: FakeUri.file(extensionRoot),
-        workspaceState: {
-            get: () => undefined,
-            async update(): Promise<void> {
+        workspaceState: new class {
+            private readonly values = new Map<string, unknown>();
+
+            get<T>(key: string): T | undefined {
+                return this.values.get(key) as T | undefined;
+            }
+
+            async update(key: string, value: unknown): Promise<void> {
                 const pending = saveGate;
                 if (pending) {
                     saveGate = undefined;
                     pending.markStarted();
                     await pending.release;
                 }
-            },
-        },
+                this.values.set(key, value);
+            }
+        }(),
     };
     const navigation = {
         consumePending: () => undefined,
@@ -182,6 +190,12 @@ async function createProviderHarness(
             _version: number,
             text: string
         ): Promise<HdlDocument> {
+            const pending = parseGate;
+            if (pending?.text === text) {
+                parseGate = undefined;
+                pending.gate.markStarted();
+                await pending.gate.release;
+            }
             const parsed = documentsByText.get(text);
             if (!parsed) throw new Error(`No parsed fixture for ${text}`);
             return parsed;
@@ -207,6 +221,7 @@ async function createProviderHarness(
     return {
         messages,
         moduleKeys,
+        setParseGate(text, gate): void { parseGate = { text, gate }; },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
         send(message): void { messageListener!(message); },
@@ -222,6 +237,127 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+async function testSelectionDuringRefreshPublishesRefreshedIntent(): Promise<void> {
+    const firstText = [
+        'module first(input logic old_first_i); endmodule',
+        'module second(input logic old_second_i); endmodule',
+    ].join('\n');
+    const refreshedText = [
+        'module first(input logic new_first_i); endmodule',
+        'module second(input logic new_second_i); endmodule',
+    ].join('\n');
+    const documents = new Map<string, HdlDocument>([
+        [firstText, await parseWithRealWorker('file:///workspace/design.sv', firstText)],
+        [refreshedText, await parseWithRealWorker(
+            'file:///workspace/design.sv',
+            refreshedText
+        )],
+    ]);
+    const harness = await createProviderHarness(documents, firstText);
+    try {
+        const secondKey = harness.moduleKeys[1];
+        const parseGate = createGate();
+        harness.setParseGate(refreshedText, parseGate);
+        const start = harness.messages.length;
+
+        harness.changeDocument(refreshedText, 2);
+        await parseGate.started;
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => harness.messages.slice(start).some(event =>
+                event.type === 'graph'
+                && event.graph.moduleKey === secondKey
+                && event.graph.nodes.some(node => node.id === 'port:old_second_i')
+            ),
+            'selection against pre-refresh document'
+        );
+        parseGate.allow();
+
+        await waitFor(
+            () => harness.messages.slice(start).some(event =>
+                event.type === 'graph'
+                && event.graph.moduleKey === secondKey
+                && event.graph.nodes.some(node => node.id === 'port:new_second_i')
+            ),
+            'selected module from refreshed document'
+        );
+        const latest = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.ok(latest?.type === 'graph');
+        assert.strictEqual(latest.graph.moduleKey, secondKey);
+        assert.ok(latest.graph.nodes.some(node => node.id === 'port:new_second_i'));
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void> {
+    const firstText = 'module top(input logic a); endmodule';
+    const refreshedText = 'module top(input logic a, output logic b); endmodule';
+    const documents = new Map<string, HdlDocument>([
+        [firstText, await parseWithRealWorker('file:///workspace/design.sv', firstText)],
+        [refreshedText, await parseWithRealWorker(
+            'file:///workspace/design.sv',
+            refreshedText
+        )],
+    ]);
+    const harness = await createProviderHarness(documents, firstText);
+    let relayoutSaveGate: Gate | undefined;
+    try {
+        const moduleKey = harness.moduleKeys[0];
+        const initialGraph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(initialGraph?.type === 'graph');
+        const pinnedLayout = {
+            ...initialGraph.layout,
+            nodes: Object.fromEntries(Object.entries(initialGraph.layout.nodes).map(
+                ([id, node]) => [id, {
+                    x: node.x + 1000,
+                    y: node.y + 1000,
+                    fixed: true,
+                }]
+            )),
+        };
+        const initialSaveGate = createGate();
+        harness.setSaveGate(initialSaveGate);
+        harness.send({ type: 'saveLayout', moduleKey, layout: pinnedLayout });
+        await initialSaveGate.started;
+        initialSaveGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        const parseGate = createGate();
+        harness.setParseGate(refreshedText, parseGate);
+        const start = harness.messages.length;
+
+        harness.changeDocument(refreshedText, 2);
+        await parseGate.started;
+        relayoutSaveGate = createGate();
+        harness.setSaveGate(relayoutSaveGate);
+        harness.send({ type: 'relayoutAll', moduleKey });
+        await relayoutSaveGate.started;
+        parseGate.allow();
+
+        await waitFor(
+            () => harness.messages.slice(start).some(event =>
+                event.type === 'graph'
+                && event.graph.nodes.some(node => node.id === 'port:b')
+            ),
+            'relayout intent on refreshed document'
+        );
+        const latest = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.ok(latest?.type === 'graph');
+        assert.ok(latest.graph.nodes.some(node => node.id === 'port:b'));
+        assert.strictEqual(latest.layout.nodes['port:a'].fixed, false);
+        assert.notDeepStrictEqual(
+            latest.layout.nodes['port:a'],
+            pinnedLayout.nodes['port:a']
+        );
+        relayoutSaveGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+    } finally {
+        relayoutSaveGate?.allow();
+        await harness.dispose();
+    }
 }
 
 function graphModuleKeys(messages: HostEvent[]): string[] {
@@ -357,6 +493,8 @@ void testRapidSelectionStopsStalePublish()
     .then(testRapidRefreshStopsStalePublish)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)
+    .then(testRelayoutDuringRefreshPublishesRefreshedGraph)
+    .then(testSelectionDuringRefreshPublishesRefreshedIntent)
     .then(() => console.log('schematic editor provider tests passed'))
     .catch(error => {
         console.error(error);
