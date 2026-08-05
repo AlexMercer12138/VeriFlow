@@ -82,6 +82,7 @@ let hdlScanInFlight: {
 let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
 let hdlWorkflowGeneration = 0;
+let hdlTopIntentVersion = 0;
 let hdlLifecycleGeneration = 0;
 let hdlStopping = false;
 let hdlAbortController = new AbortController();
@@ -654,6 +655,7 @@ export async function deactivate(): Promise<void> {
     hdlLifecycleGeneration++;
     hdlPresentationGeneration++;
     hdlWorkflowGeneration++;
+    hdlTopIntentVersion++;
     hdlAbortController.abort();
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
@@ -848,6 +850,23 @@ function _isCurrentHdlPresentation(
         && generation === hdlPresentationGeneration
         && rootIdentity === hdlPresentationRootIdentity
         && index === hdlIndex;
+}
+
+function _isCurrentTopIntent(
+    intentVersion: number,
+    presentationGeneration: number,
+    rootIdentity: string | undefined,
+    index: WorkspaceHdlIndex | undefined,
+    definitionKey: string
+): boolean {
+    if (intentVersion !== hdlTopIntentVersion
+        || !_isCurrentHdlPresentation(presentationGeneration, rootIdentity, index)
+        || index?.getDefinition(definitionKey) === undefined) {
+        return false;
+    }
+    return treeProvider.getWorkspaceDefinitions().some(definition =>
+        definition.workspace && definition.key === definitionKey
+    );
 }
 
 function _currentHdlRootIdentity(): string | undefined {
@@ -1290,11 +1309,27 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         definitionKey: definition.key,
         name: definition.name,
     };
+    const intentVersion = ++hdlTopIntentVersion;
+    if (!_isCurrentTopIntent(
+        intentVersion,
+        generation,
+        rootIdentity,
+        index,
+        selection.definitionKey
+    )) {
+        return;
+    }
     treeProvider.topModule = selection;
     try {
         await _persistTopModule(context, selection);
     } catch (error) {
-        if (!hdlStopping
+        if (_isCurrentTopIntent(
+            intentVersion,
+            generation,
+            rootIdentity,
+            index,
+            selection.definitionKey
+        )
             && _sameTopSelection(_coerceTopSelection(treeProvider.topModule), selection)) {
             treeProvider.topModule = resolveTopModuleSelection(
                 _coerceTopSelection(getTopModule(context)),
@@ -1303,10 +1338,17 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         }
         throw error;
     }
-    if (!_isCurrentHdlPresentation(generation, rootIdentity, index)) {
+    if (!_isCurrentTopIntent(
+        intentVersion,
+        generation,
+        rootIdentity,
+        index,
+        selection.definitionKey
+    )) {
         await hdlTopPersistenceTail;
         return;
     }
+    treeProvider.topModule = selection;
     output.appendInfo(`Top module: ${selection.name}`);
 }
 

@@ -1162,6 +1162,48 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan before overlapping top persistence'
+        );
+        const overlappingOldPickerGate = createScanGate();
+        const overlappingOldPersistenceGate = createScanGate();
+        nextQuickPickGate = overlappingOldPickerGate;
+        nextTopPersistenceGate = overlappingOldPersistenceGate;
+        nextTopPersistenceError = new Error('overlapping top persistence failed');
+        const overlappingOldPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(overlappingOldPickerGate.started, 'overlapping old top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        overlappingOldPickerGate.allow();
+        await withTimeout(
+            overlappingOldPersistenceGate.started,
+            'overlapping old top persistence'
+        );
+        const overlappingOldRejection = assert.rejects(
+            overlappingOldPicker,
+            /overlapping top persistence failed/
+        );
+
+        const overlappingNewPickerGate = createScanGate();
+        nextQuickPickGate = overlappingNewPickerGate;
+        const overlappingNewPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(overlappingNewPickerGate.started, 'overlapping new top picker');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === '__proto__');
+        const treeWritesBeforeOverlappingNewIntent = treeWriteCount;
+        overlappingNewPickerGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.ok(treeWriteCount > treeWritesBeforeOverlappingNewIntent);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        overlappingOldPersistenceGate.allow();
+        await withTimeout(
+            Promise.all([overlappingOldRejection, overlappingNewPicker]),
+            'overlapping same-value top persistence'
+        );
+        assert.deepStrictEqual(storedTop, sameRootTopSelection);
+        assert.deepStrictEqual(presentedTop, sameRootTopSelection);
+
+        storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
             'scan before rejected top persistence'
         );
         const rejectedTopPickerGate = createScanGate();
