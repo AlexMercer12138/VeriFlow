@@ -7,6 +7,12 @@ module included_child (
 );
 endmodule
 
+module inherited_port_top (
+`include "schematic-port-prefix.svh"
+    local_inherited
+);
+endmodule
+
 module include_top (
     input logic local_clk,
 `include "schematic-ports.svh"
@@ -24,6 +30,13 @@ module include_top (
     );
     foreign_child foreign_instance (
         .clk(local_clk),
+        .done(included_done)
+    );
+    included_child local_expression_instance (
+        .clk(
+`include "schematic-expression.svh"
+        ),
+        .enable(included_enable),
         .done(included_done)
     );
     included_child local_group_before (

@@ -27,6 +27,8 @@ type DefinitionBinding = {
     ports: readonly IndexedPortSummary[];
 };
 
+export type InstanceDefinitionBinding = HdlDefinitionSummary | null;
+
 type NamedNetwork = {
     width: WidthValue;
     sourceSpan: SourceSpan;
@@ -90,11 +92,14 @@ function localDefinition(document: HdlDocument, name: string): DefinitionBinding
 function boundDefinition(
     document: HdlDocument,
     instance: InstanceModel,
-    definitions: ReadonlyMap<string, HdlDefinitionSummary>
+    definitions: ReadonlyMap<string, InstanceDefinitionBinding>
 ): DefinitionBinding | undefined {
     const explicit = definitions.get(instance.id);
     if (explicit?.kind === 'module' && explicit.name === instance.moduleName) {
         return explicit;
+    }
+    if (definitions.has(instance.id)) {
+        return undefined;
     }
     return localDefinition(document, instance.moduleName);
 }
@@ -120,9 +125,31 @@ function namedNetworks(module: ModuleModel): Map<string, NamedNetwork> {
     return networks;
 }
 
-function portNode(port: PortModel, documentUri: string): GraphNode {
+function foreignPortControlSpan(
+    port: PortModel,
+    module: ModuleModel,
+    documentUri: string
+): SourceSpan | undefined {
+    const group = module.portDeclarationGroups.find(candidate =>
+        candidate.id === port.declarationGroupId
+    );
+    const inheritsSharedPrefix = port.inheritsDirection
+        || port.inheritsType
+        || port.inheritsPackedRange;
+    const controllingSpans = [
+        port.nameSpan,
+        ...(inheritsSharedPrefix && group ? [group.sharedPrefixSpan] : []),
+        port.directionSpan,
+        port.packedRangeSpan,
+        port.headerItemSpan,
+        port.bodyDeclarationSpan,
+    ].filter((span): span is SourceSpan => span !== undefined);
+    return controllingSpans.find(span => isForeign(span, documentUri));
+}
+
+function portNode(port: PortModel, module: ModuleModel, documentUri: string): GraphNode {
     const role = portRole(port.direction);
-    const readOnly = isForeign(port.nameSpan, documentUri);
+    const readOnly = foreignPortControlSpan(port, module, documentUri) !== undefined;
     const id = `port:${port.name}`;
     return {
         id,
@@ -148,8 +175,7 @@ function instanceNode(
     documentUri: string
 ): GraphNode {
     const id = `instance:${instance.instanceName}`;
-    const readOnly = isForeign(instance.nameSpan, documentUri)
-        || isForeign(instance.itemSpan, documentUri);
+    const readOnly = isForeign(instance.nameSpan, documentUri);
     const ports = definition?.ports ?? [];
     const pins = ports.map(port => {
         const role = instancePinRole(port.direction);
@@ -157,8 +183,7 @@ function instanceNode(
         const wildcard = instance.portConnections.find(candidate =>
             candidate.syntax === 'wildcard'
         );
-        const sourceSpan = connection?.nameSpan
-            ?? connection?.expressionSpan
+        const sourceSpan = connection?.expressionSpan
             ?? wildcard?.connectionSpan;
         const pinReadOnly = readOnly || isForeign(sourceSpan, documentUri);
         return {
@@ -275,12 +300,21 @@ function addEndpoint(
     network.endpoints.push({ nodeId: node.id, pinId: pin.id, role: pin.direction });
 }
 
-function foreignDiagnostic(node: GraphNode): HdlDiagnostic {
+function foreignDiagnostic(node: GraphNode, span: SourceSpan | undefined): HdlDiagnostic {
     return {
         severity: 'info',
         code: 'HDL_FOREIGN_SOURCE_READ_ONLY',
         message: `${node.label} originates from an included source and is read-only here.`,
-        span: node.sourceSpan,
+        span,
+    };
+}
+
+function foreignPinDiagnostic(node: GraphNode, pin: GraphPin): HdlDiagnostic {
+    return {
+        severity: 'info',
+        code: 'HDL_FOREIGN_SOURCE_READ_ONLY',
+        message: `${node.label}.${pin.name} originates from an included source and is read-only here.`,
+        span: pin.sourceSpan,
     };
 }
 
@@ -319,20 +353,20 @@ function compareSourceOrder(left: GraphNode, right: GraphNode, module: ModuleMod
 export function buildSchematicGraph(
     document: HdlDocument,
     module: ModuleModel,
-    definitions: ReadonlyMap<string, HdlDefinitionSummary>
+    definitions: ReadonlyMap<string, InstanceDefinitionBinding>
 ): SchematicGraph {
     const scopeNetworks = namedNetworks(module);
     const networks = new Map<string, SchematicNetwork>();
     const structuralNodes: GraphNode[] = [];
     const inputNodes = module.ports
         .filter(port => port.direction === 'input')
-        .map(port => portNode(port, document.uri));
+        .map(port => portNode(port, module, document.uri));
     const inoutNodes = module.ports
         .filter(port => port.direction === 'inout')
-        .map(port => portNode(port, document.uri));
+        .map(port => portNode(port, module, document.uri));
     const outputNodes = module.ports
         .filter(port => port.direction === 'output')
-        .map(port => portNode(port, document.uri));
+        .map(port => portNode(port, module, document.uri));
 
     const getNamedNetwork = (name: string): SchematicNetwork | undefined => {
         const model = scopeNetworks.get(name);
@@ -501,7 +535,18 @@ export function buildSchematicGraph(
         networks: [...networks.values()],
         diagnostics: [
             ...document.diagnostics,
-            ...nodes.filter(node => node.readOnly).map(foreignDiagnostic),
+            ...nodes.filter(node => node.readOnly).map(node => {
+                const port = node.kind === 'port'
+                    ? module.ports.find(candidate => candidate.name === node.label)
+                    : undefined;
+                const span = port
+                    ? foreignPortControlSpan(port, module, document.uri)
+                    : node.sourceSpan;
+                return foreignDiagnostic(node, span);
+            }),
+            ...nodes.flatMap(node => node.readOnly ? [] : node.pins
+                .filter(pin => pin.readOnly)
+                .map(pin => foreignPinDiagnostic(node, pin))),
         ],
     };
 }

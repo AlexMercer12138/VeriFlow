@@ -181,12 +181,35 @@ async function testDuplicateLocalDefinitionIsUnbound(): Promise<void> {
     assert.deepStrictEqual(instance.pins, []);
 }
 
+async function testWorkspaceAmbiguitySuppressesLocalFallback(): Promise<void> {
+    const uri = 'memory:/ambiguous-workspace.sv';
+    const source = [
+        'module shared_child(input logic value); endmodule',
+        'module ambiguous_top(input logic value);',
+        '    shared_child u_shared(.value(value));',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(uri, source);
+    const module = document.modules.find(item => item.name === 'ambiguous_top')!;
+    const parsedInstance = module.instances[0];
+    const bindings = new Map<string, HdlDefinitionSummary | null>([
+        [parsedInstance.id, null],
+    ]);
+    const graph = buildSchematicGraph(document, module, bindings);
+    const instance = graph.nodes.find(node => node.id === 'instance:u_shared')!;
+
+    assert.strictEqual(instance.definitionKey, undefined);
+    assert.deepStrictEqual(instance.pins, []);
+}
+
 async function testIncludedObjectsAreReadOnly(): Promise<void> {
     const parent = fixturePath('hdl', 'schematic-includes.sv');
     const ports = fixturePath('hdl', 'schematic-ports.svh');
     const body = fixturePath('hdl', 'schematic-body.svh');
     const item = fixturePath('hdl', 'schematic-instance-item.svh');
     const child = fixturePath('hdl', 'schematic-child.svh');
+    const expression = fixturePath('hdl', 'schematic-expression.svh');
+    const portPrefix = fixturePath('hdl', 'schematic-port-prefix.svh');
     const document = await parseWithRealWorker(parent, fs.readFileSync(parent, 'utf8'), {
         defines: {},
         resolvedIncludes: [
@@ -214,6 +237,18 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
                 resolvedUri: item,
                 text: fs.readFileSync(item, 'utf8'),
             },
+            {
+                fromUri: parent,
+                rawPath: 'schematic-expression.svh',
+                resolvedUri: expression,
+                text: fs.readFileSync(expression, 'utf8'),
+            },
+            {
+                fromUri: parent,
+                rawPath: 'schematic-port-prefix.svh',
+                resolvedUri: portPrefix,
+                text: fs.readFileSync(portPrefix, 'utf8'),
+            },
         ],
     });
     const module = document.modules.find(item => item.name === 'include_top')!;
@@ -240,6 +275,7 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
             'included_instance',
             'local_after',
             'foreign_instance',
+            'local_expression_instance',
             'local_group_before',
             'included_group',
             'local_group_after',
@@ -259,6 +295,22 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
         graph.nodes.find(node => node.id === 'instance:foreign_instance')?.definitionKey,
         `module:${child}:${foreignDefinition.declarationSpan.start}`
     );
+    const expressionInstance = graph.nodes.find(
+        node => node.id === 'instance:local_expression_instance'
+    )!;
+    const expressionPin = expressionInstance.pins.find(pin => pin.name === 'clk')!;
+    assert.strictEqual(expressionInstance.readOnly, false);
+    assert.strictEqual(expressionPin.readOnly, true);
+    assert.strictEqual(expressionPin.sourceSpan?.uri, expression);
+    assert.strictEqual(expressionPin.sourceSpan?.compositeParts, undefined);
+    assert.strictEqual(
+        expressionInstance.pins.find(pin => pin.name === 'enable')?.readOnly,
+        false
+    );
+    assert.ok(graph.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
+        && diagnostic.span?.uri === expression
+    ));
     assert.ok(graph.diagnostics.some(diagnostic =>
         diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
         && diagnostic.span?.uri === ports
@@ -267,6 +319,27 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
         diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
         && diagnostic.span?.uri === body
     ));
+
+    const inheritedModule = document.modules.find(
+        item => item.name === 'inherited_port_top'
+    )!;
+    const inheritedModel = inheritedModule.ports.find(
+        port => port.name === 'local_inherited'
+    )!;
+    assert.strictEqual(inheritedModel.inheritsDirection, true);
+    assert.strictEqual(inheritedModel.inheritsType, true);
+    const inheritedGraph = buildSchematicGraph(document, inheritedModule, new Map());
+    const inheritedPort = inheritedGraph.nodes.find(
+        node => node.id === 'port:local_inherited'
+    )!;
+    assert.strictEqual(inheritedPort.readOnly, true);
+    assert.strictEqual(inheritedPort.pins[0].readOnly, true);
+    assert.strictEqual(inheritedPort.sourceSpan?.uri, parent);
+    assert.strictEqual(inheritedPort.sourceSpan?.compositeParts, undefined);
+    assert.ok(inheritedGraph.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
+        && diagnostic.span?.uri === portPrefix
+    ));
 }
 
 async function main(): Promise<void> {
@@ -274,6 +347,7 @@ async function main(): Promise<void> {
     await testStructuralEdgeCases();
     await testExternalDefinitionBinding();
     await testDuplicateLocalDefinitionIsUnbound();
+    await testWorkspaceAmbiguitySuppressesLocalFallback();
     await testIncludedObjectsAreReadOnly();
 
     console.log('Schematic graph tests passed');
