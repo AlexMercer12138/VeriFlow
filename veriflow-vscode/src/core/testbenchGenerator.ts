@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { formatModuleInstantiation } from './moduleInstantiationFormatter';
+import { effectiveModuleInstanceIdentifier } from './moduleInstantiationIdentifier';
 import { Port, Parameter } from './types';
 
 export interface TbModuleConfig {
@@ -254,7 +255,7 @@ export class TestbenchGenerator {
         // ---- DUT instantiations ----
         for (const { mod, ports, params } of allParsed) {
             const modName = mod.module_name || 'unknown';
-            const instName = mod.instance_name || `u_${modName}`;
+            const instName = effectiveModuleInstanceIdentifier(modName, mod.instance_name);
             const portSignals = normalizeStringRecord(mod.port_signals);
             const paramValues = normalizeStringRecord(mod.param_values);
 

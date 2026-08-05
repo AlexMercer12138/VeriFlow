@@ -1605,7 +1605,7 @@ async function testEscapedModuleInstantiationRoundTrip(): Promise<void> {
             modules: [{
                 definitionKey: definition.key,
                 module_name: moduleInfo.name,
-                instance_name: instanceName,
+                instance_name: '',
                 ports: moduleInfo.ports,
                 parameters: moduleInfo.parameters,
                 port_signals: {},

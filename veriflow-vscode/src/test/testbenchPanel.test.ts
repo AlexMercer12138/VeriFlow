@@ -455,6 +455,41 @@ async function testGenerateRejectsDuplicateInstanceNames(): Promise<void> {
     assert.match(latest(harness.posted, 'error').message, /instance name.*unique/i);
 }
 
+async function testGenerateRejectsEmptyNameDefaultCollision(): Promise<void> {
+    const unit = definition('unit', 'unit_a', 'file:///C:/workspace/unit_a.sv', 1, 'fp-a');
+    const harness = createHarness([unit]);
+    await harness.send({ type: 'addModule', definitionKey: unit.key });
+    await harness.send({ type: 'addModule', definitionKey: unit.key });
+    await harness.send({
+        type: 'updateInstanceName',
+        index: 1,
+        value: '',
+    });
+
+    await harness.send({ type: 'generate', config: { name: 'tb_default_collision' } });
+
+    assert.strictEqual(harness.generatedConfigs.length, 0);
+    assert.match(latest(harness.posted, 'error').message, /instance name.*unique/i);
+}
+
+async function testGenerateResolvesEmptyInstanceNameToDefault(): Promise<void> {
+    const unit = definition('unit', 'unit_a', 'file:///C:/workspace/unit_a.sv', 1, 'fp-a');
+    const harness = createHarness([unit]);
+    await harness.send({ type: 'addModule', definitionKey: unit.key });
+    await harness.send({
+        type: 'updateInstanceName',
+        index: 0,
+        value: '',
+    });
+
+    await harness.send({ type: 'generate', config: { name: 'tb_default_instance' } });
+
+    assert.strictEqual(
+        harness.generatedConfigs.at(-1).modules[0].instance_name,
+        'u_unit_a'
+    );
+}
+
 async function testGeneratePreservesDefaultsForEmptyConfigValues(): Promise<void> {
     const item = definition('item', 'item', 'file:///C:/workspace/item.sv', 1, 'fp-item');
     const harness = createHarness([item]);
@@ -503,6 +538,8 @@ async function main(): Promise<void> {
     await testPanelOverridesArePrototypeSafe();
     await testDefaultInstanceNamesStayUnique();
     await testGenerateRejectsDuplicateInstanceNames();
+    await testGenerateResolvesEmptyInstanceNameToDefault();
+    await testGenerateRejectsEmptyNameDefaultCollision();
     await testGeneratePreservesDefaultsForEmptyConfigValues();
     await testMalformedWebviewMessagesHaveNoSideEffects();
     console.log('testbench panel tests passed');

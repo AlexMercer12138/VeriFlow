@@ -8,3 +8,11 @@ export function defaultModuleInstanceIdentifier(moduleName: string): string {
     const sanitized = source.replace(/[^A-Za-z0-9_$]/g, '_');
     return `u_${sanitized || 'module'}`;
 }
+
+export function effectiveModuleInstanceIdentifier(
+    moduleName: string,
+    instanceName: unknown
+): string {
+    const normalized = typeof instanceName === 'string' ? instanceName.trim() : '';
+    return normalized || defaultModuleInstanceIdentifier(moduleName);
+}

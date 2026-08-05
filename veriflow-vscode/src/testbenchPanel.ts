@@ -6,7 +6,10 @@ import { toModuleInfo } from './core/hdl/legacyModelAdapter';
 import type { WorkspaceHdlIndex } from './core/hdl/workspaceHdlIndex';
 import type { HdlDefinitionSummary } from './core/hdl/workspaceIndexTypes';
 import { buildModuleInstantiationChoices } from './core/moduleInstantiationChoices';
-import { defaultModuleInstanceIdentifier } from './core/moduleInstantiationIdentifier';
+import {
+    defaultModuleInstanceIdentifier,
+    effectiveModuleInstanceIdentifier,
+} from './core/moduleInstantiationIdentifier';
 import { getSettings } from './config';
 
 type TestbenchModuleIndex = Pick<WorkspaceHdlIndex, 'getAllDefinitions' | 'getDefinition'>;
@@ -316,15 +319,20 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     private _resolveModulesForGeneration(): TbModuleConfig[] | undefined {
         const index = this._getIndex();
         const modules: TbModuleConfig[] = [];
+        const effectiveInstanceNames = this._moduleEntries.map(entry =>
+            effectiveModuleInstanceIdentifier(entry.verilogModuleName, entry.instanceName)
+        );
         const instanceNames = new Set<string>();
-        for (const entry of this._moduleEntries) {
-            if (instanceNames.has(entry.instanceName)) {
+        for (const instanceName of effectiveInstanceNames) {
+            if (instanceNames.has(instanceName)) {
                 this._reportError(
-                    `Each DUT instance name must be unique. Duplicate: "${entry.instanceName}".`
+                    `Each DUT instance name must be unique. Duplicate: "${instanceName}".`
                 );
                 return undefined;
             }
-            instanceNames.add(entry.instanceName);
+            instanceNames.add(instanceName);
+        }
+        for (const [entryIndex, entry] of this._moduleEntries.entries()) {
             const resolution = this._resolveEntry(index, entry);
             if (resolution.error || !resolution.definition) {
                 this._reportError(resolution.error ?? 'The selected module definition is unavailable.');
@@ -334,7 +342,7 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             modules.push({
                 definitionKey: entry.definitionKey,
                 module_name: info.name,
-                instance_name: entry.instanceName,
+                instance_name: effectiveInstanceNames[entryIndex],
                 ports: info.ports,
                 parameters: info.parameters,
                 port_signals: copyStringRecord(entry.portSignalOverrides),
