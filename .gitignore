@@ -17,6 +17,7 @@ src/presentation/gui/__pycache__/
 veriflow-vscode/node_modules/
 veriflow-vscode/out/
 veriflow-vscode/dist/
+veriflow-vscode/media/schematic/
 veriflow-vscode/*.vsix
 
 # Simulation outputs

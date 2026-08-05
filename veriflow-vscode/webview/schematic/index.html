@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+    <title>VeriFlow Schematic</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <main id="schematic-shell" data-testid="schematic-shell">
+        <div id="toolbar" role="toolbar" aria-label="Schematic controls">
+            <select id="module-selector" aria-label="Module" disabled>
+                <option>Loading</option>
+            </select>
+            <div class="toolbar-actions">
+                <button id="fit-button" class="icon-button" type="button" title="Fit schematic" aria-label="Fit schematic" disabled><span data-icon-slot></span></button>
+                <button id="zoom-reset-button" class="icon-button" type="button" title="Reset zoom to 100%" aria-label="Reset zoom to 100%" disabled><span data-icon-slot></span></button>
+                <button id="relayout-button" class="icon-button" type="button" title="Relayout schematic" aria-label="Relayout schematic" disabled><span data-icon-slot></span></button>
+                <button id="search-button" class="icon-button" type="button" title="Search schematic" aria-label="Search schematic" aria-expanded="false" aria-controls="search-controls"><span data-icon-slot></span></button>
+                <div id="search-controls" class="search-controls" hidden>
+                    <input id="search-input" type="search" aria-label="Search query" autocomplete="off" spellcheck="false">
+                    <button id="search-previous-button" class="icon-button" type="button" title="Previous result" aria-label="Previous search result" disabled><span data-icon-slot></span></button>
+                    <button id="search-next-button" class="icon-button" type="button" title="Next result" aria-label="Next search result" disabled><span data-icon-slot></span></button>
+                </div>
+                <button id="minimap-button" class="icon-button" type="button" title="Toggle minimap" aria-label="Toggle minimap" aria-pressed="false" disabled><span data-icon-slot></span></button>
+            </div>
+            <div class="diagnostic-counts" aria-label="Validation counts">
+                <span id="error-count">E 0</span>
+                <span id="warning-count">W 0</span>
+            </div>
+        </div>
+        <section id="canvas-region" aria-label="Schematic canvas">
+            <div id="canvas" data-testid="schematic-canvas"></div>
+            <div id="minimap" data-testid="schematic-minimap" hidden></div>
+            <div id="canvas-state" class="canvas-state" role="status" aria-live="polite">
+                <span id="canvas-state-message">Loading schematic</span>
+            </div>
+        </section>
+        <footer id="status-strip" role="status" aria-live="polite">
+            <span id="selection-status">No selection</span>
+            <span id="diagnostic-status">0 errors, 0 warnings</span>
+        </footer>
+    </main>
+    <script src="./index.js"></script>
+</body>
+</html>

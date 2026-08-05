@@ -61,10 +61,14 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const RANK_SEPARATION = 48;
 const NODE_SEPARATION = 24;
-const NODE_WIDTH = 160;
-const NODE_HEIGHT = 72;
-const PORT_WIDTH = 96;
-const PORT_HEIGHT = 40;
+export const SCHEMATIC_BASE_NODE_SIZE = { width: 160, height: 72 } as const;
+export const SCHEMATIC_PORT_SIZE = { width: 96, height: 40 } as const;
+export const SCHEMATIC_PIN_LAYOUT = {
+    startY: 44,
+    rowHeight: 18,
+    bottomSpacing: 18,
+    bottomPadding: 10,
+} as const;
 const FEEDBACK_LANE_SEPARATION = 32;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -218,9 +222,26 @@ function boundarySide(node: GraphNode): BoundarySide | undefined {
 }
 
 export function schematicNodeSize(node: GraphNode): SchematicNodeSize {
-    return node.kind === 'port'
-        ? { width: PORT_WIDTH, height: PORT_HEIGHT }
-        : { width: NODE_WIDTH, height: NODE_HEIGHT };
+    if (node.kind === 'port') {
+        return { ...SCHEMATIC_PORT_SIZE };
+    }
+    const sideRows = Math.max(
+        node.pins.filter(pin => pin.side === 'left').length,
+        node.pins.filter(pin => pin.side === 'right').length
+    );
+    const bottomPins = node.pins.filter(pin => pin.side === 'bottom').length;
+    const pinHeight = sideRows === 0
+        ? 0
+        : SCHEMATIC_PIN_LAYOUT.startY
+            + (sideRows - 1) * SCHEMATIC_PIN_LAYOUT.rowHeight
+            + SCHEMATIC_PIN_LAYOUT.bottomPadding;
+    return {
+        width: Math.max(
+            SCHEMATIC_BASE_NODE_SIZE.width,
+            (bottomPins + 1) * SCHEMATIC_PIN_LAYOUT.bottomSpacing
+        ),
+        height: Math.max(SCHEMATIC_BASE_NODE_SIZE.height, pinHeight),
+    };
 }
 
 function addNetworkEdges(
@@ -299,13 +320,13 @@ function placeBoundaryColumn(
     positions: Record<string, NodeLayout>
 ): void {
     const sortedIds = [...nodeIds].sort(compareIds);
-    const totalHeight = sortedIds.length * PORT_HEIGHT
+    const totalHeight = sortedIds.length * SCHEMATIC_PORT_SIZE.height
         + Math.max(0, sortedIds.length - 1) * NODE_SEPARATION;
-    const firstY = PORT_HEIGHT / 2 - totalHeight / 2;
+    const firstY = SCHEMATIC_PORT_SIZE.height / 2 - totalHeight / 2;
     sortedIds.forEach((id, index) => {
         positions[id] = {
             x,
-            y: firstY + index * (PORT_HEIGHT + NODE_SEPARATION),
+            y: firstY + index * (SCHEMATIC_PORT_SIZE.height + NODE_SEPARATION),
             fixed: false,
         };
     });
@@ -316,13 +337,17 @@ function applyBoundaryColumns(
     positions: Record<string, NodeLayout>,
     fixedNodes: ReadonlySet<string>
 ): void {
-    const interiorIds = graph.nodes
-        .filter(node => boundarySide(node) === undefined)
-        .map(node => node.id);
-    const interiorX = interiorIds.map(id => positions[id].x);
-    const minInteriorX = interiorX.length > 0 ? Math.min(...interiorX) : PORT_WIDTH;
-    const maxInteriorX = interiorX.length > 0 ? Math.max(...interiorX) : PORT_WIDTH;
-    const columnOffset = NODE_WIDTH / 2 + RANK_SEPARATION + PORT_WIDTH / 2;
+    const interiorNodes = graph.nodes
+        .filter(node => boundarySide(node) === undefined);
+    const minInteriorX = interiorNodes.length > 0
+        ? Math.min(...interiorNodes.map(node =>
+            positions[node.id].x - schematicNodeSize(node).width / 2))
+        : SCHEMATIC_PORT_SIZE.width / 2;
+    const maxInteriorX = interiorNodes.length > 0
+        ? Math.max(...interiorNodes.map(node =>
+            positions[node.id].x + schematicNodeSize(node).width / 2))
+        : SCHEMATIC_PORT_SIZE.width / 2;
+    const boundaryOffset = RANK_SEPARATION + SCHEMATIC_PORT_SIZE.width / 2;
     const leftIds = graph.nodes
         .filter(node => boundarySide(node) === 'left' && !fixedNodes.has(node.id))
         .map(node => node.id);
@@ -330,8 +355,8 @@ function applyBoundaryColumns(
         .filter(node => boundarySide(node) === 'right' && !fixedNodes.has(node.id))
         .map(node => node.id);
 
-    placeBoundaryColumn(leftIds, minInteriorX - columnOffset, positions);
-    placeBoundaryColumn(rightIds, maxInteriorX + columnOffset, positions);
+    placeBoundaryColumn(leftIds, minInteriorX - boundaryOffset, positions);
+    placeBoundaryColumn(rightIds, maxInteriorX + boundaryOffset, positions);
 }
 
 function nodesAreSeparated(

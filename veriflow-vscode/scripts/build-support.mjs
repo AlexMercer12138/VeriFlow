@@ -1,10 +1,118 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
 
 const childExitTimeoutMs = 5_000;
+
+const nodeModulesSegment = /(?:^|[\\/])node_modules(?:[\\/]|$)/;
+const licenseFileName = /^(?:licen[cs]e|copying)(?:[._-].*)?$/i;
+
+function compareText(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function resolveMetafileInput(input, sourceRoot) {
+    const nativePath = input.replace(/[\\/]/g, path.sep);
+    return path.isAbsolute(nativePath)
+        ? path.normalize(nativePath)
+        : path.resolve(sourceRoot, nativePath);
+}
+
+async function findPackageManifest(inputPath) {
+    let directory = path.dirname(inputPath);
+    while (true) {
+        const manifestPath = path.join(directory, 'package.json');
+        try {
+            return {
+                directory,
+                manifestPath,
+                manifest: JSON.parse(await readFile(manifestPath, 'utf8')),
+            };
+        } catch (error) {
+            if (error instanceof SyntaxError) {
+                throw new Error(`Invalid package manifest ${manifestPath}: ${error.message}`);
+            }
+            if (error?.code !== 'ENOENT') throw error;
+        }
+        const parent = path.dirname(directory);
+        if (parent === directory) {
+            throw new Error(`No package manifest found for bundled input ${inputPath}`);
+        }
+        directory = parent;
+    }
+}
+
+async function readLicenseText(packageDirectory, identity) {
+    const candidates = (await readdir(packageDirectory, { withFileTypes: true }))
+        .filter(entry => entry.isFile() && licenseFileName.test(entry.name))
+        .map(entry => entry.name)
+        .sort(compareText);
+    for (const candidate of candidates) {
+        const text = await readFile(path.join(packageDirectory, candidate), 'utf8');
+        if (text.trim().length > 0) {
+            return { licenseFile: candidate, licenseText: text.trim() };
+        }
+    }
+    throw new Error(`${identity} contributes to the schematic bundle but has no license text`);
+}
+
+export async function collectBundledPackageLicenses(metafile, sourceRoot) {
+    const packageInputs = Object.keys(metafile?.inputs ?? {})
+        .filter(input => nodeModulesSegment.test(input))
+        .sort(compareText);
+    const packages = new Map();
+    for (const input of packageInputs) {
+        const packageInfo = await findPackageManifest(resolveMetafileInput(input, sourceRoot));
+        const { name, version, license } = packageInfo.manifest;
+        const manifestIdentity = `${name ?? '<unnamed>'}@${version ?? '<unversioned>'}`;
+        if (typeof name !== 'string' || name.length === 0
+            || typeof version !== 'string' || version.length === 0) {
+            throw new Error(`Bundled package ${packageInfo.manifestPath} lacks name or version`);
+        }
+        if (typeof license !== 'string' || license.trim().length === 0) {
+            throw new Error(`${manifestIdentity} contributes to the schematic bundle but lacks a declared license`);
+        }
+        const identity = `${name}\0${version}`;
+        if (packages.has(identity)) continue;
+        packages.set(identity, {
+            name,
+            version,
+            license: license.trim(),
+            ...await readLicenseText(packageInfo.directory, manifestIdentity),
+        });
+    }
+    return [...packages.values()].sort((left, right) =>
+        compareText(left.name, right.name)
+        || compareText(left.version, right.version)
+    );
+}
+
+function packageIdentity(packageNotice) {
+    return `${packageNotice.name}\0${packageNotice.version}`;
+}
+
+export function formatThirdPartyNotices(parserPackages, frontendPackages) {
+    const frontendByIdentity = new Map();
+    for (const packageNotice of frontendPackages) {
+        frontendByIdentity.set(packageIdentity(packageNotice), packageNotice);
+    }
+    const sortedFrontend = [...frontendByIdentity.values()].sort((left, right) =>
+        compareText(left.name, right.name)
+        || compareText(left.version, right.version)
+    );
+    const sections = [...parserPackages, ...sortedFrontend].map(packageNotice => {
+        const declaredLicense = packageNotice.license?.trim();
+        const declaration = declaredLicense
+            ? `Declared license: ${declaredLicense}\n\n`
+            : '';
+        return `## ${packageNotice.name} ${packageNotice.version}\n\n`
+            + declaration
+            + `${packageNotice.licenseText.trim()}\n`;
+    });
+    return `# Third-Party Notices\n\n${sections.join('\n')}`;
+}
 
 async function verifyParserAssets(assets) {
     await Promise.all(assets.map(async asset => {
@@ -28,7 +136,7 @@ export async function verifyAndCopyParserAssets(assets) {
 }
 
 export async function buildBundles(bundleOptions) {
-    await Promise.all(bundleOptions.map(options => build(options)));
+    return Promise.all(bundleOptions.map(options => build(options)));
 }
 
 function contextualError(label, reason) {

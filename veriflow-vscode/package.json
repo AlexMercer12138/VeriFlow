@@ -248,7 +248,9 @@
     "publish": "vsce publish"
   },
   "dependencies": {
+    "@antv/x6": "3.1.7",
     "@dagrejs/dagre": "3.1.0",
+    "lucide": "1.28.0",
     "web-tree-sitter": "0.26.11"
   },
   "devDependencies": {

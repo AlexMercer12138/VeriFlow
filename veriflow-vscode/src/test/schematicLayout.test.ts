@@ -731,6 +731,31 @@ async function testEmptyAndDisconnectedGraphs(): Promise<void> {
     );
 }
 
+async function testPinAwareNodeSizing(): Promise<void> {
+    const denseNode = (id: string): GraphNode => node(id, 'instance', [
+        ...Array.from({ length: 10 }, (_, index) =>
+            pin(id, `input-${index}`, 'load', 'left')),
+        ...Array.from({ length: 8 }, (_, index) =>
+            pin(id, `output-${index}`, 'driver', 'right')),
+        ...Array.from({ length: 12 }, (_, index) =>
+            pin(id, `inout-${index}`, 'bidirectional', 'bottom')),
+    ]);
+    const first = denseNode('instance:dense-a');
+    const second = denseNode('instance:dense-b');
+    assert.deepStrictEqual(schematicNodeSize(first), { width: 234, height: 216 });
+
+    const graph: SchematicGraph = {
+        fileUri: 'file:///dense.sv',
+        moduleKey: 'module:dense:0',
+        moduleName: 'dense',
+        nodes: [first, second],
+        networks: [],
+        diagnostics: [],
+    };
+    const layout = autoLayout(graph);
+    assertNodePairSeparated(graph, layout, first.id, second.id);
+}
+
 async function testDeterministicFeedbackRoutes(): Promise<void> {
     const nodeA = 'opaque:a';
     const nodeB = 'opaque:b';
@@ -844,6 +869,7 @@ async function main(): Promise<void> {
     await testPartialAndFullRelayout();
     await testPartialLayoutAvoidsFixedObstacles();
     await testEmptyAndDisconnectedGraphs();
+    await testPinAwareNodeSizing();
     await testDeterministicFeedbackRoutes();
 
     console.log('Schematic layout tests passed');
