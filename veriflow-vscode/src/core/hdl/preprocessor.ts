@@ -349,6 +349,25 @@ export function canonicalizeSourceUri(
     }
 }
 
+export function isSourceUriWithinRoot(
+    uriValue: string,
+    rootValue: string,
+    platform: NodeJS.Platform = process.platform
+): boolean {
+    try {
+        const uri = new URL(canonicalizeSourceUri(uriValue, platform));
+        const root = new URL(canonicalizeSourceUri(rootValue, platform));
+        if (uri.protocol !== root.protocol || uri.host !== root.host) {
+            return false;
+        }
+        const rootPath = root.pathname.replace(/\/+$/, '') || '/';
+        return uri.pathname === rootPath
+            || uri.pathname.startsWith(rootPath === '/' ? '/' : `${rootPath}/`);
+    } catch {
+        return false;
+    }
+}
+
 function includeKey(fromUri: string, rawPath: string): string {
     return `${canonicalizeSourceUri(fromUri)}\0${rawPath}`;
 }

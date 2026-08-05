@@ -306,12 +306,14 @@ class FakeUri {
 
 async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const workspaceRootUri = 'file:///D:/Software/VeriFlow';
-    const canonicalWorkspaceRootUri = 'file:///d:/software/veriflow';
+    const indexedWorkspaceRootUri = process.platform === 'win32'
+        ? 'file:///d:/software/veriflow'
+        : workspaceRootUri;
     const workspaceDefinition: Definition = {
-        key: `module:${canonicalWorkspaceRootUri}/rtl/alu.sv:0`,
+        key: `module:${indexedWorkspaceRootUri}/rtl/alu.sv:0`,
         kind: 'module',
         name: 'alu',
-        uri: `${canonicalWorkspaceRootUri}/rtl/alu.sv`,
+        uri: `${indexedWorkspaceRootUri}/rtl/alu.sv`,
         declarationStart: 0,
         declarationLine: 1,
         parameters: [], ports: [], dependencies: [], modelFingerprint: 'workspace',
@@ -324,22 +326,22 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     };
     const secondWorkspaceDefinition: Definition = {
         ...workspaceDefinition,
-        key: `module:${canonicalWorkspaceRootUri}/ip/alu.sv:0`,
-        uri: `${canonicalWorkspaceRootUri}/ip/alu.sv`,
+        key: `module:${indexedWorkspaceRootUri}/ip/alu.sv:0`,
+        uri: `${indexedWorkspaceRootUri}/ip/alu.sv`,
         modelFingerprint: 'workspace-ip',
     };
     const topDefinition: Definition = {
         ...workspaceDefinition,
-        key: `module:${canonicalWorkspaceRootUri}/top.sv:0`,
+        key: `module:${indexedWorkspaceRootUri}/top.sv:0`,
         name: 'top',
-        uri: `${canonicalWorkspaceRootUri}/top.sv`,
+        uri: `${indexedWorkspaceRootUri}/top.sv`,
         modelFingerprint: 'top',
     };
     const prototypeNamedDefinition: Definition = {
         ...workspaceDefinition,
-        key: `module:${canonicalWorkspaceRootUri}/prototype_named.sv:0`,
+        key: `module:${indexedWorkspaceRootUri}/prototype_named.sv:0`,
         name: '__proto__',
-        uri: `${canonicalWorkspaceRootUri}/prototype_named.sv`,
+        uri: `${indexedWorkspaceRootUri}/prototype_named.sv`,
         modelFingerprint: 'prototype-named',
     };
     const definitions = [
@@ -637,7 +639,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'changed URI refresh'
         );
         await withTimeout(
-            Promise.resolve(createListener!(FakeUri.parse(`${canonicalWorkspaceRootUri}/new.sv`))),
+            Promise.resolve(createListener!(FakeUri.parse(`${indexedWorkspaceRootUri}/new.sv`))),
             'created URI refresh'
         );
         await withTimeout(
@@ -645,7 +647,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'deleted URI removal'
         );
         assert.ok(events.includes(`refresh:${workspaceDefinition.uri}`));
-        assert.ok(events.includes(`refresh:${canonicalWorkspaceRootUri}/new.sv`));
+        assert.ok(events.includes(`refresh:${indexedWorkspaceRootUri}/new.sv`));
         assert.ok(events.includes(`remove:${libraryDefinition.uri}`));
 
         const scansBeforeConfig = events.filter(event => event === 'scan').length;

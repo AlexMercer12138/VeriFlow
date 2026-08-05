@@ -22,7 +22,7 @@ import {
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
 import type { HdlDefinitionSummary } from './core';
-import { canonicalizeSourceUri } from './core/hdl/preprocessor';
+import { isSourceUriWithinRoot } from './core/hdl/preprocessor';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -260,17 +260,6 @@ function _dependencyRootUris(root: string, libDirs: string[]): string[] {
             ?? _joinRelativeUri(workspaceRoot, libDir));
     }
     return [...new Set(roots.map(uri => uri.toString()))];
-}
-
-function _isUriWithinRoot(uriValue: string, rootValue: string): boolean {
-    const uri = vscode.Uri.parse(canonicalizeSourceUri(uriValue));
-    const root = vscode.Uri.parse(canonicalizeSourceUri(rootValue));
-    if (uri.scheme !== root.scheme || uri.authority !== root.authority) {
-        return false;
-    }
-    const rootPath = root.path.replace(/\/+$/, '') || '/';
-    return uri.path === rootPath
-        || uri.path.startsWith(rootPath === '/' ? '/' : `${rootPath}/`);
 }
 
 async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
@@ -651,7 +640,7 @@ function _definitionEntry(
         uri: definition.uri,
         filepath: resource.fsPath || resource.path || definition.uri,
         line: definition.declarationLine,
-        workspace: _isUriWithinRoot(definition.uri, workspaceRootUri),
+        workspace: isSourceUriWithinRoot(definition.uri, workspaceRootUri),
     };
 }
 
@@ -688,10 +677,10 @@ function _deriveModuleScanResult(
     });
     const prioritizedDefinitions = [...indexedDefinitions].sort((left, right) => {
         const leftRoot = rootUris.findIndex(rootUri =>
-            _isUriWithinRoot(left.uri, rootUri)
+            isSourceUriWithinRoot(left.uri, rootUri)
         );
         const rightRoot = rootUris.findIndex(rootUri =>
-            _isUriWithinRoot(right.uri, rootUri)
+            isSourceUriWithinRoot(right.uri, rootUri)
         );
         const leftPriority = leftRoot >= 0 ? leftRoot : rootUris.length;
         const rightPriority = rightRoot >= 0 ? rightRoot : rootUris.length;
@@ -707,7 +696,7 @@ function _deriveModuleScanResult(
     }
     for (const definition of definitions) {
         const rootIndex = rootUris.findIndex(rootUri =>
-            _isUriWithinRoot(definition.uri, rootUri)
+            isSourceUriWithinRoot(definition.uri, rootUri)
         );
         const dirLabel = rootIndex >= 0
             ? rootLabels[rootIndex]

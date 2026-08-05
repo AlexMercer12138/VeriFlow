@@ -5,6 +5,7 @@ import {
     canonicalizeSourceUri,
     CompositeSourceMap,
     getPreprocessMetadataForWorker,
+    isSourceUriWithinRoot,
     preprocessForParsing,
 } from '../core/hdl/preprocessor';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
@@ -188,6 +189,26 @@ function testCanonicalSourceUrisRespectPlatformCaseSemantics(): void {
         canonicalizeSourceUri('NOT A URI\\RTL\\A.sv', 'linux'),
         'NOT A URI/RTL/A.sv'
     );
+}
+
+function testSourceUriContainmentRespectsPlatformCaseSemantics(): void {
+    const fileRoot = 'file:///D:/Software/VeriFlow';
+    const mixedCaseFile = 'file:///d:/software/veriflow/rtl/alu.sv';
+    assert.strictEqual(isSourceUriWithinRoot(mixedCaseFile, fileRoot, 'win32'), true);
+    assert.strictEqual(isSourceUriWithinRoot(mixedCaseFile, fileRoot, 'linux'), false);
+    assert.strictEqual(isSourceUriWithinRoot(mixedCaseFile, fileRoot, 'darwin'), false);
+    assert.strictEqual(
+        isSourceUriWithinRoot('file:///D:/Software/VeriFlow-other/alu.sv', fileRoot, 'win32'),
+        false
+    );
+
+    const remoteRoot = 'vscode-remote://ssh-host/Workspace/Project';
+    const sameCaseRemote = 'vscode-remote://ssh-host/Workspace/Project/rtl/alu.sv';
+    const mixedCaseRemote = 'vscode-remote://ssh-host/workspace/project/rtl/alu.sv';
+    for (const platform of ['win32', 'linux', 'darwin'] as NodeJS.Platform[]) {
+        assert.strictEqual(isSourceUriWithinRoot(sameCaseRemote, remoteRoot, platform), true);
+        assert.strictEqual(isSourceUriWithinRoot(mixedCaseRemote, remoteRoot, platform), false);
+    }
 }
 
 function testPreprocessorDiagnosticsAndRecursionGuards(): void {
@@ -782,6 +803,7 @@ async function main(): Promise<void> {
     testInactiveCommentsDoNotHideConditionalDirectives();
     testCompositeSourceMapBoundariesAndValidation();
     testCanonicalSourceUrisRespectPlatformCaseSemantics();
+    testSourceUriContainmentRespectsPlatformCaseSemantics();
     testPreprocessorDiagnosticsAndRecursionGuards();
     testUnterminatedConditionalAndUnexpandedMacroWarnings();
     await testDirectiveContinuationsAreConsumedAsOneLogicalDirective();
