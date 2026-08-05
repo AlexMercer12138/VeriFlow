@@ -67,6 +67,8 @@ export class DependencyAnalyzer {
         const definitionState = new Map<string, 'visiting' | 'done'>();
         const definitionsByName = new Map<string, HdlDefinitionSummary>();
         const fileState = new Map<string, 'visiting' | 'done'>();
+        const moduleMap = new Map<string, string>();
+        const dependencyGraph = new Map<string, string[]>();
 
         const addFile = (uri: string): void => {
             const state = fileState.get(uri);
@@ -98,10 +100,10 @@ export class DependencyAnalyzer {
             }
             definitionsByName.set(definition.name, definition);
             definitionState.set(definition.key, 'visiting');
-            result.moduleMap[definition.name] = indexedUriToPath(definition.uri);
+            moduleMap.set(definition.name, indexedUriToPath(definition.uri));
 
             const dependencyNames = [...new Set(definition.dependencies)].sort();
-            result.depGraph[definition.name] = dependencyNames;
+            dependencyGraph.set(definition.name, dependencyNames);
             for (const dependencyName of dependencyNames) {
                 const candidates = this.index.findDefinitions(dependencyName, 'module');
                 if (candidates.length === 0) {
@@ -130,6 +132,8 @@ export class DependencyAnalyzer {
         };
 
         visit(topDefinition);
+        result.moduleMap = Object.fromEntries(moduleMap);
+        result.depGraph = Object.fromEntries(dependencyGraph);
         return this.finalize(result, missing, ambiguous);
     }
 

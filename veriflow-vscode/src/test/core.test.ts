@@ -417,6 +417,30 @@ async function testDependencyAnalyzerRejectsReachableNameCollision(): Promise<vo
     }
 }
 
+async function testDependencyAnalyzerPreservesProtoNamedModule(): Promise<void> {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-proto-name-'));
+    const harness = await createDependencyHarness(projectDir, {
+        '__proto__.sv': 'module __proto__; endmodule\n',
+    });
+    try {
+        const definition = harness.index.findDefinitions('__proto__', 'module')[0];
+        const result = new DependencyAnalyzer(harness.index).resolve(definition.key);
+
+        assert.deepStrictEqual(Object.keys(result.moduleMap), ['__proto__']);
+        assert.deepStrictEqual(Object.keys(result.depGraph), ['__proto__']);
+        assert.strictEqual(
+            result.moduleMap.__proto__,
+            fileURLToPath(definition.uri)
+        );
+        assert.deepStrictEqual(result.depGraph.__proto__, []);
+        assert.strictEqual(Object.getPrototypeOf(result.moduleMap), Object.prototype);
+        assert.strictEqual(Object.getPrototypeOf(result.depGraph), Object.prototype);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call({}, '__proto__'), false);
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testDependencyAnalyzerIncludeOrderAndCycles(): Promise<void> {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-dep-order-'));
     const harness = await createDependencyHarness(projectDir, {
@@ -1548,6 +1572,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer missing and ambiguous modules', testDependencyAnalyzerMissingAndAmbiguousModules],
     ['dependency analyzer top identity', testDependencyAnalyzerTopIdentity],
     ['dependency analyzer rejects reachable name collision', testDependencyAnalyzerRejectsReachableNameCollision],
+    ['dependency analyzer preserves __proto__ named module', testDependencyAnalyzerPreservesProtoNamedModule],
     ['dependency analyzer include order and cycles', testDependencyAnalyzerIncludeOrderAndCycles],
     ['dependency analyzer non-file URI fallback', testDependencyAnalyzerNonFileUriFallback],
     ['dependency analyzer production wiring', testDependencyAnalyzerProductionWiring],

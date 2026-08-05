@@ -63,6 +63,14 @@ class FakeUri {
         );
     }
 
+    with(change: { path?: string }): FakeUri {
+        return new FakeUri(
+            this.scheme,
+            this.authority,
+            change.path ?? this.path
+        );
+    }
+
     get fsPath(): string {
         if (this.scheme === 'file' && /^\/[A-Za-z]:\//.test(this.path)) {
             return this.path.slice(1).replace(/\//g, '\\');
@@ -377,6 +385,46 @@ async function testDependencyPreparationIsSingleFlight(): Promise<void> {
     }
 }
 
+async function testConcurrentMatchingPreparationIsShared(): Promise<void> {
+    let releaseFirstScan!: () => void;
+    let firstScanStarted!: () => void;
+    const firstScan = new Promise<void>(resolve => { firstScanStarted = resolve; });
+    const release = new Promise<void>(resolve => { releaseFirstScan = resolve; });
+    let scanCount = 0;
+    const harness = createExtensionHarness({
+        async scan() {
+            scanCount++;
+            if (scanCount === 1) {
+                firstScanStarted();
+                await release;
+            }
+        },
+    });
+    try {
+        harness.settings.defines = { SAME: true };
+        const first = harness.analyze();
+        await firstScan;
+        const second = harness.analyze();
+        releaseFirstScan();
+        await Promise.all([first, second]);
+
+        assert.strictEqual(scanCount, 1);
+        assert.strictEqual(
+            harness.events.filter(event => event === 'resolve:SAME').length,
+            2
+        );
+
+        await harness.analyze();
+        assert.strictEqual(scanCount, 2);
+        assert.strictEqual(
+            harness.events.filter(event => event === 'resolve:SAME').length,
+            3
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testRejectedIndexLoadCanRetry(): Promise<void> {
     let loadNumber = 0;
     const harness = createExtensionHarness({
@@ -405,10 +453,6 @@ async function testRootIdentityControlsIndexLifetime(): Promise<void> {
 
         harness.settings.libDirs = ['/lib-b', '/lib-a'];
         await harness.analyze();
-        assert.strictEqual(FakeWorkspaceHdlIndex.instances.length, 1);
-
-        harness.folder.uri = FakeUri.parse('file:///workspace-b');
-        await harness.analyze();
         const second = FakeWorkspaceHdlIndex.instances[1];
         assert.strictEqual(FakeWorkspaceHdlIndex.instances.length, 2);
         assert.strictEqual(first.disposed, true);
@@ -417,10 +461,43 @@ async function testRootIdentityControlsIndexLifetime(): Promise<void> {
             second.options.parserFingerprint
         );
 
-        harness.settings.libDirs = ['/lib-b'];
+        harness.folder.uri = FakeUri.parse('file:///workspace-b');
         await harness.analyze();
+        const third = FakeWorkspaceHdlIndex.instances[2];
         assert.strictEqual(FakeWorkspaceHdlIndex.instances.length, 3);
         assert.strictEqual(second.disposed, true);
+        assert.notStrictEqual(
+            second.options.parserFingerprint,
+            third.options.parserFingerprint
+        );
+
+        harness.settings.libDirs = ['/lib-b'];
+        await harness.analyze();
+        assert.strictEqual(FakeWorkspaceHdlIndex.instances.length, 4);
+        assert.strictEqual(third.disposed, true);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testLibDirOrderControlsIncludePriority(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.settings.libDirs = ['z-lib', 'a-lib'];
+        harness.existingUris.add('file:///workspace/z-lib/defs.svh');
+        harness.existingUris.add('file:///workspace/a-lib/defs.svh');
+        await harness.analyze();
+
+        const resolved = await FakeWorkspaceHdlIndex.instances[0].options.resolveInclude(
+            'file:///workspace/src/top.sv',
+            'defs.svh'
+        );
+        assert.strictEqual(resolved, 'file:///workspace/z-lib/defs.svh');
+        assert.deepStrictEqual(FakeWorkspaceHdlIndex.instances[0].scannedRoots[0], [
+            'file:///workspace',
+            'file:///workspace/z-lib',
+            'file:///workspace/a-lib',
+        ]);
     } finally {
         await harness.dispose();
     }
@@ -438,6 +515,22 @@ async function testNonFileWorkspaceRootsPreserveUriIdentity(): Promise<void> {
         assert.deepStrictEqual(FakeWorkspaceHdlIndex.instances[0].scannedRoots[0], [
             'vscode-remote://ssh-remote+build/workspace/project',
             'vscode-remote://ssh-remote+build/workspace/shared',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testRemoteAbsoluteLibDirPreservesWorkspaceAuthority(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.folder.uri = FakeUri.parse('vscode-remote://ssh-host/workspace/project');
+        harness.settings.libDirs = ['/opt/hdl'];
+        await harness.analyze();
+
+        assert.deepStrictEqual(FakeWorkspaceHdlIndex.instances[0].scannedRoots[0], [
+            'vscode-remote://ssh-host/workspace/project',
+            'vscode-remote://ssh-host/opt/hdl',
         ]);
     } finally {
         await harness.dispose();
@@ -483,11 +576,28 @@ async function testAbsoluteUriInclude(): Promise<void> {
     );
 }
 
+async function testRemotePosixAbsoluteInclude(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        harness.folder.uri = FakeUri.parse('vscode-remote://ssh-host/workspace/project');
+        harness.existingUris.add('vscode-remote://ssh-host/opt/defs.svh');
+        await harness.analyze();
+        const resolved = await FakeWorkspaceHdlIndex.instances[0].options.resolveInclude(
+            'vscode-remote://ssh-host/workspace/project/src/top.sv',
+            '/opt/defs.svh'
+        );
+        assert.strictEqual(resolved, 'vscode-remote://ssh-host/opt/defs.svh');
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testAbsoluteIncludeReviewCases(): Promise<void> {
     const tests: Array<[string, () => Promise<void>]> = [
         ['Windows absolute include', testWindowsAbsoluteInclude],
         ['POSIX absolute include', testPosixAbsoluteInclude],
         ['absolute URI include', testAbsoluteUriInclude],
+        ['remote POSIX absolute include', testRemotePosixAbsoluteInclude],
     ];
     const failures: string[] = [];
     for (const [name, test] of tests) {
@@ -505,9 +615,12 @@ async function testAbsoluteIncludeReviewCases(): Promise<void> {
 async function main(): Promise<void> {
     await testRejectedIndexLoadCanRetry();
     await testDependencyPreparationIsSingleFlight();
+    await testConcurrentMatchingPreparationIsShared();
+    await testLibDirOrderControlsIncludePriority();
     await testRootIdentityControlsIndexLifetime();
     await testNonFileWorkspaceRootsPreserveUriIdentity();
     await testAbsoluteIncludeReviewCases();
+    await testRemoteAbsoluteLibDirPreservesWorkspaceAuthority();
     console.log('extension dependency index tests passed');
 }
 

@@ -64,6 +64,10 @@ let hdlIndex: WorkspaceHdlIndex | undefined;
 let hdlIndexLoad: Promise<void> | undefined;
 let hdlIndexIdentity: string | undefined;
 let hdlOperationTail: Promise<void> = Promise.resolve();
+let hdlPreparationInFlight: {
+    identity: string;
+    promise: Promise<DependencyAnalyzer>;
+} | undefined;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
 
@@ -210,6 +214,21 @@ function _joinRelativeUri(base: vscode.Uri, relativePath: string): vscode.Uri {
     return vscode.Uri.joinPath(base, ...segments);
 }
 
+function _absoluteUri(base: vscode.Uri, value: string): vscode.Uri | undefined {
+    if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')) {
+        return vscode.Uri.file(value);
+    }
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
+        return vscode.Uri.parse(value);
+    }
+    if (value.startsWith('/')) {
+        return base.scheme === 'file'
+            ? vscode.Uri.file(value)
+            : base.with({ path: path.posix.normalize(value) });
+    }
+    return undefined;
+}
+
 function _dependencyRootUris(root: string, libDirs: string[]): string[] {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri
         ?? vscode.Uri.file(root);
@@ -218,11 +237,10 @@ function _dependencyRootUris(root: string, libDirs: string[]): string[] {
         if (!libDir) {
             continue;
         }
-        roots.push(path.isAbsolute(libDir)
-            ? vscode.Uri.file(libDir)
-            : _joinRelativeUri(workspaceRoot, libDir));
+        roots.push(_absoluteUri(workspaceRoot, libDir)
+            ?? _joinRelativeUri(workspaceRoot, libDir));
     }
-    return [...new Set(roots.map(uri => uri.toString()))].sort();
+    return [...new Set(roots.map(uri => uri.toString()))];
 }
 
 async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
@@ -243,18 +261,6 @@ async function _findHdlFiles(root: vscode.Uri, files: string[]): Promise<void> {
             files.push(uri.toString());
         }
     }
-}
-
-function _absoluteIncludeUri(includePath: string): vscode.Uri | undefined {
-    if (/^[A-Za-z]:[\\/]/.test(includePath)
-        || includePath.startsWith('/')
-        || includePath.startsWith('\\\\')) {
-        return vscode.Uri.file(includePath);
-    }
-    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(includePath)) {
-        return vscode.Uri.parse(includePath);
-    }
-    return undefined;
 }
 
 async function _isFile(uri: vscode.Uri): Promise<boolean> {
@@ -308,7 +314,7 @@ function _createWorkspaceHdlIndex(
         },
         async resolveInclude(fromUri: string, includePath: string) {
             const source = vscode.Uri.parse(fromUri);
-            const absolute = _absoluteIncludeUri(includePath);
+            const absolute = _absoluteUri(source, includePath);
             const candidates = absolute ? [absolute] : [
                 _joinRelativeUri(vscode.Uri.joinPath(source, '..'), includePath),
                 ...rootUris.map(root => _joinRelativeUri(root, includePath)),
@@ -339,11 +345,9 @@ function _createWorkspaceHdlIndex(
 
 async function _getDependencyAnalyzer(
     context: vscode.ExtensionContext,
-    root: string,
-    settings: ExtensionSettings
+    rootUris: string[],
+    defines: Record<string, string | true>
 ): Promise<DependencyAnalyzer> {
-    const defines = _filterHdlDefines(settings.defines);
-    const rootUris = _dependencyRootUris(root, settings.libDirs);
     const rootIdentity = JSON.stringify(rootUris);
     if (hdlIndex && hdlIndexIdentity !== rootIdentity) {
         _resetDependencyIndex();
@@ -380,15 +384,51 @@ function _runDependencyOperation<T>(operation: () => Promise<T>): Promise<T> {
     return result;
 }
 
+function _prepareDependencyAnalyzer(
+    context: vscode.ExtensionContext,
+    rootUris: string[],
+    defines: Record<string, string | true>
+): Promise<DependencyAnalyzer> {
+    const identity = JSON.stringify([
+        rootUris,
+        Object.entries(defines).sort(([left], [right]) => left.localeCompare(right)),
+    ]);
+    if (hdlPreparationInFlight?.identity === identity) {
+        return hdlPreparationInFlight.promise;
+    }
+    const preparation = {
+        identity,
+        promise: _runDependencyOperation(async () => {
+            try {
+                return await _getDependencyAnalyzer(context, rootUris, defines);
+            } catch (error) {
+                _resetDependencyIndex();
+                throw error;
+            }
+        }),
+    };
+    hdlPreparationInFlight = preparation;
+    const clearPreparation = (): void => {
+        if (hdlPreparationInFlight === preparation) {
+            hdlPreparationInFlight = undefined;
+        }
+    };
+    void preparation.promise.then(clearPreparation, clearPreparation);
+    return preparation.promise;
+}
+
 function _resolveDependencies(
     context: vscode.ExtensionContext,
     root: string,
     settings: ExtensionSettings,
     topDefinitionKeyOrName: string
 ): Promise<DependencyResult> {
+    const rootUris = _dependencyRootUris(root, settings.libDirs);
+    const defines = _filterHdlDefines(settings.defines);
+    const preparation = _prepareDependencyAnalyzer(context, rootUris, defines);
     return _runDependencyOperation(async () => {
+        const analyzer = await preparation;
         try {
-            const analyzer = await _getDependencyAnalyzer(context, root, settings);
             return analyzer.resolve(
                 _definitionKeyOrName(hdlIndex!, topDefinitionKeyOrName)
             );
@@ -428,6 +468,7 @@ export async function deactivate(): Promise<void> {
     }
     await hdlOperationTail;
     hdlOperationTail = Promise.resolve();
+    hdlPreparationInFlight = undefined;
     _resetDependencyIndex();
     const parser = hdlParser;
     hdlParser = undefined;
