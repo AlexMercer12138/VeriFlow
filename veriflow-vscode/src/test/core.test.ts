@@ -5,6 +5,7 @@ import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
+import { toModuleInfo } from '../core/hdl/legacyModelAdapter';
 import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
 import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
 import { PortParser } from '../core/portParser';
@@ -1493,75 +1494,115 @@ function testModuleInstantiationFormatterWithoutPorts(): void {
     ].join('\n'));
 }
 
-function testModuleInstantiationChoices(): void {
-    const root = path.join(os.tmpdir(), 'veriflow-choice-root');
-    const workspaceAlu = path.join(root, 'rtl', 'alu.sv');
-    const libraryAlu = path.join(os.tmpdir(), 'veriflow-lib', 'alu.sv');
-    const fifo = path.join(root, 'rtl', 'fifo.sv');
+async function testModuleInstantiationChoices(): Promise<void> {
+    const root = process.cwd();
+    const harness = await createDependencyHarness(root, {
+        'vendor/alu.v': 'module alu #(parameter VENDOR_WIDTH = 4) (input [VENDOR_WIDTH-1:0] vendor_data); endmodule\n',
+        'rtl/fifo.sv': 'module fifo(input logic clk); endmodule\n',
+        'rtl/alu.sv': 'module alu #(parameter WIDTH = 8) (input logic clk, output logic [WIDTH-1:0] result); endmodule\n',
+    });
+    try {
+        const index = harness.index;
+        const choices = buildModuleInstantiationChoices(index.getAllDefinitions('module'));
 
-    const choices = buildModuleInstantiationChoices({
-        root,
-        libDirs: [path.dirname(libraryAlu)],
-        totalModules: 2,
-        modules: ['alu', 'fifo'],
-        workspaceModules: ['alu', 'fifo'],
-        definitions: [
+        assert.deepStrictEqual(choices.map(item => [item.moduleName, item.description]), [
+            ['alu', 'rtl/alu.sv'],
+            ['alu', 'vendor/alu.v'],
+            ['fifo', 'rtl/fifo.sv'],
+        ]);
+        assert.notStrictEqual(choices[0].definitionKey, choices[1].definitionKey);
+        assert.ok(index.getDefinition(choices[0].definitionKey));
+        assert.ok(index.getDefinition(choices[1].definitionKey));
+
+        const prototypeNamedDefinition = {
+            ...index.getAllDefinitions('module')[0],
+            key: 'module:file:///workspace/rtl/proto.sv:0',
+            name: '__proto__',
+            uri: 'file:///workspace/rtl/proto.sv',
+            declarationStart: 0,
+        };
+        assert.strictEqual(
+            buildModuleInstantiationChoices([prototypeNamedDefinition], '/workspace')[0].moduleName,
+            '__proto__'
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+function testModuleInstantiationLegacyModelAdapter(): void {
+    const filepath = path.join(process.cwd(), 'rtl', 'module_name.sv');
+    const moduleInfo = toModuleInfo({
+        key: `module:${pathToFileURL(filepath).toString()}:0`,
+        kind: 'module',
+        name: 'module_name',
+        uri: pathToFileURL(filepath).toString(),
+        declarationStart: 0,
+        declarationLine: 1,
+        parameters: [
+            { name: 'DEPTH', defaultExpression: '8' },
+            { name: 'DATA_WIDTH' },
+        ],
+        ports: [
             {
-                key: `module:file://${workspaceAlu}:0`,
-                name: 'alu',
-                uri: `file://${workspaceAlu}`,
-                filepath: workspaceAlu,
-                line: 1,
-                workspace: true,
+                name: 'clk',
+                direction: 'input',
+                width: { kind: 'known', bits: 1 },
             },
             {
-                key: `module:file://${libraryAlu}:0`,
-                name: 'alu',
-                uri: `file://${libraryAlu}`,
-                filepath: libraryAlu,
-                line: 5,
-                workspace: false,
-            },
-            {
-                key: `module:file://${fifo}:0`,
-                name: 'fifo',
-                uri: `file://${fifo}`,
-                filepath: fifo,
-                line: 1,
-                workspace: true,
+                name: 'reset_n',
+                direction: 'input',
+                packedRange: '[0:0]',
+                width: { kind: 'known', bits: 1 },
             },
         ],
-        modulesByDir: {},
-        moduleFiles: { alu: workspaceAlu, fifo },
-        duplicates: { alu: [workspaceAlu, libraryAlu] },
-        duplicatesWithLines: {
-            alu: [
-                { file: workspaceAlu, line: 1 },
-                { file: libraryAlu, line: 5 },
-            ],
-        },
+        dependencies: ['child'],
+        modelFingerprint: 'sha256:test',
     });
 
-    assert.deepStrictEqual(choices, [
-        {
-            label: 'alu',
-            description: path.join('rtl', 'alu.sv'),
-            moduleName: 'alu',
-            filepath: workspaceAlu,
-        },
-        {
-            label: 'alu',
-            description: libraryAlu,
-            moduleName: 'alu',
-            filepath: libraryAlu,
-        },
-        {
-            label: 'fifo',
-            description: path.join('rtl', 'fifo.sv'),
-            moduleName: 'fifo',
-            filepath: fifo,
-        },
-    ]);
+    assert.deepStrictEqual(moduleInfo, {
+        name: 'module_name',
+        parameters: [
+            { name: 'DEPTH', value: '8' },
+            { name: 'DATA_WIDTH', value: 'DATA_WIDTH' },
+        ],
+        ports: [
+            { name: 'clk', direction: 'input', width: undefined },
+            { name: 'reset_n', direction: 'input', width: '[0:0]' },
+        ],
+        filename: 'module_name.sv',
+        filepath,
+        dependencies: ['child'],
+        isTB: false,
+    });
+    assert.strictEqual(formatModuleInstantiation({
+        moduleName: moduleInfo.name,
+        instanceName: `u_${moduleInfo.name}`,
+        parameters: moduleInfo.parameters,
+        ports: moduleInfo.ports.map(port => ({ name: port.name, value: port.name })),
+    }), [
+        'module_name #(',
+        '    .DEPTH      ( 8          ),',
+        '    .DATA_WIDTH ( DATA_WIDTH ))',
+        'u_module_name (',
+        '    .clk     ( clk     ),',
+        '    .reset_n ( reset_n ));',
+    ].join('\n'));
+
+    const remote = toModuleInfo({
+        key: 'module:vscode-remote://ssh-remote+host/work/remote.sv:0',
+        kind: 'module',
+        name: 'remote',
+        uri: 'vscode-remote://ssh-remote+host/work/remote.sv',
+        declarationStart: 0,
+        declarationLine: 1,
+        parameters: [],
+        ports: [],
+        dependencies: [],
+        modelFingerprint: 'sha256:remote',
+    });
+    assert.strictEqual(remote.filename, 'remote.sv');
+    assert.strictEqual(remote.filepath, 'vscode-remote://ssh-remote+host/work/remote.sv');
 }
 
 function testModuleInstantiationManifestContribution(): void {
@@ -1587,6 +1628,26 @@ function testModuleInstantiationManifestContribution(): void {
         when: 'editorLangId == verilog || editorLangId == systemverilog',
         group: 'navigation@10',
     });
+}
+
+function testModuleInstantiationUsesWorkspaceIndex(): void {
+    const commandSource = fs.readFileSync(
+        path.join(repoRoot, 'veriflow-vscode', 'src', 'moduleInstantiationCommand.ts'),
+        'utf8'
+    );
+    const extensionSource = fs.readFileSync(
+        path.join(repoRoot, 'veriflow-vscode', 'src', 'extension.ts'),
+        'utf8'
+    );
+    assert.doesNotMatch(commandSource, /\bModuleScanResult\b/);
+    assert.doesNotMatch(commandSource, /\bPortParser\b/);
+    assert.match(commandSource, /getAllDefinitions\('module'\)/);
+    assert.match(commandSource, /getDefinition\(selected\.definitionKey\)/);
+    assert.doesNotMatch(extensionSource, /showModuleInstantiationPicker\(\s*result\b/);
+    assert.match(
+        extensionSource,
+        /showModuleInstantiationPicker\(\s*\(\) => [^\n]*hdlIndex/
+    );
 }
 
 const tests: Array<[string, () => void | Promise<void>]> = [
@@ -1627,7 +1688,9 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['module instantiation formatter without parameters', testModuleInstantiationFormatterWithoutParameters],
     ['module instantiation formatter without ports', testModuleInstantiationFormatterWithoutPorts],
     ['module instantiation choices', testModuleInstantiationChoices],
+    ['module instantiation normalized adapter', testModuleInstantiationLegacyModelAdapter],
     ['module instantiation manifest contribution', testModuleInstantiationManifestContribution],
+    ['module instantiation workspace index wiring', testModuleInstantiationUsesWorkspaceIndex],
 ];
 
 async function runTests(): Promise<void> {

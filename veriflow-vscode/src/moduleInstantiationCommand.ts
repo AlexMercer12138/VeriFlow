@@ -2,17 +2,26 @@ import * as vscode from 'vscode';
 import {
     buildModuleInstantiationChoices,
     formatModuleInstantiation,
-    ModuleInfo,
+    HdlDefinitionSummary,
     ModuleInstantiationChoice,
-    ModuleScanResult,
-    PortParser,
+    toModuleInfo,
+    WorkspaceHdlIndex,
 } from './core';
 
 type ModuleQuickPickItem = vscode.QuickPickItem & ModuleInstantiationChoice;
 type ActionQuickPickItem = vscode.QuickPickItem & { action: 'insert' | 'copy' };
+type ModuleInstantiationIndex = Pick<
+    WorkspaceHdlIndex,
+    'getAllDefinitions' | 'getDefinition'
+>;
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function isHdlEditor(editor: vscode.TextEditor): boolean {
+    return editor.document.languageId === 'verilog'
+        || editor.document.languageId === 'systemverilog';
 }
 
 async function insertAtCursor(
@@ -54,11 +63,31 @@ async function insertAtCursor(
     }
 }
 
+function getSelectedDefinition(
+    getCurrentIndex: () => ModuleInstantiationIndex | undefined,
+    initialIndex: ModuleInstantiationIndex,
+    selected: ModuleInstantiationChoice,
+    isCurrent: () => boolean
+): HdlDefinitionSummary | undefined {
+    if (!isCurrent() || getCurrentIndex() !== initialIndex) {
+        return undefined;
+    }
+    const definition = initialIndex.getDefinition(selected.definitionKey);
+    return definition?.kind === 'module' ? definition : undefined;
+}
+
 export async function showModuleInstantiationPicker(
-    result: ModuleScanResult,
-    isCurrent: () => boolean = () => true
+    getCurrentIndex: () => ModuleInstantiationIndex | undefined,
+    isCurrent: () => boolean = () => true,
+    workspaceRoot: string = process.cwd()
 ): Promise<void> {
-    const choices = buildModuleInstantiationChoices(result) as ModuleQuickPickItem[];
+    const initialIndex = getCurrentIndex();
+    if (!isCurrent() || !initialIndex) { return; }
+    const invocationEditor = vscode.window.activeTextEditor;
+    const choices = buildModuleInstantiationChoices(
+        initialIndex.getAllDefinitions('module'),
+        workspaceRoot
+    ) as ModuleQuickPickItem[];
     if (choices.length === 0) {
         vscode.window.showWarningMessage('No Verilog/SystemVerilog modules found.');
         return;
@@ -68,21 +97,12 @@ export async function showModuleInstantiationPicker(
         placeHolder: 'Select a module to instantiate',
         matchOnDescription: true,
     });
-    if (!isCurrent() || !selected) { return; }
-
-    let moduleInfo: ModuleInfo;
-    try {
-        moduleInfo = new PortParser().parseFile(selected.filepath, selected.moduleName);
-    } catch (error) {
-        vscode.window.showErrorMessage(
-            `Failed to read ${selected.filepath}: ${errorMessage(error)}`
-        );
-        return;
-    }
-    if (moduleInfo.name !== selected.moduleName) {
-        vscode.window.showErrorMessage(
-            `Module ${selected.moduleName} could not be parsed from ${selected.filepath}.`
-        );
+    if (!selected || !getSelectedDefinition(
+        getCurrentIndex,
+        initialIndex,
+        selected,
+        isCurrent
+    )) {
         return;
     }
 
@@ -92,31 +112,39 @@ export async function showModuleInstantiationPicker(
     ], {
         placeHolder: 'Choose where to place the module instantiation',
     });
-    if (!isCurrent() || !action) { return; }
+    if (!action) { return; }
+    const definition = getSelectedDefinition(
+        getCurrentIndex,
+        initialIndex,
+        selected,
+        isCurrent
+    );
+    if (!definition) { return; }
 
-    const instanceName = `u_${selected.moduleName}`;
-    const parameters = moduleInfo.parameters.map(parameter => ({
-        name: parameter.name,
-        value: parameter.name,
-    }));
+    const moduleInfo = toModuleInfo(definition);
+    const instanceName = `u_${moduleInfo.name}`;
     const ports = moduleInfo.ports.map(port => ({
         name: port.name,
         value: port.name,
     }));
+    const ownsInvocation = (): boolean => isCurrent()
+        && getCurrentIndex() === initialIndex
+        && initialIndex.getDefinition(selected.definitionKey) !== undefined;
 
     if (action.action === 'copy') {
+        if (!ownsInvocation()) { return; }
         const text = formatModuleInstantiation({
-            moduleName: selected.moduleName,
+            moduleName: moduleInfo.name,
             instanceName,
-            parameters,
+            parameters: moduleInfo.parameters,
             ports,
         });
         try {
             await vscode.env.clipboard.writeText(text);
-            if (!isCurrent()) { return; }
+            if (!ownsInvocation()) { return; }
             vscode.window.showInformationMessage('Module instantiation copied to clipboard.');
         } catch (error) {
-            if (!isCurrent()) { return; }
+            if (!ownsInvocation()) { return; }
             vscode.window.showErrorMessage(
                 `Failed to copy module instantiation: ${errorMessage(error)}`
             );
@@ -125,16 +153,17 @@ export async function showModuleInstantiationPicker(
     }
 
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-        vscode.window.showWarningMessage('No active editor for module instantiation.');
+    if (!editor || editor !== invocationEditor || !isHdlEditor(editor)) {
         return;
     }
     await insertAtCursor(
         editor,
-        selected.moduleName,
+        moduleInfo.name,
         instanceName,
-        parameters,
+        moduleInfo.parameters,
         ports,
-        isCurrent
+        () => ownsInvocation()
+            && vscode.window.activeTextEditor === editor
+            && isHdlEditor(editor)
     );
 }

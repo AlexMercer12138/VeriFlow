@@ -1801,15 +1801,17 @@ async function cmdScanModules(context: vscode.ExtensionContext): Promise<ModuleS
 async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
-    if (!getWorkspaceRoot()) {
+    const root = getWorkspaceRoot();
+    if (!root) {
         vscode.window.showWarningMessage('No workspace folder open.');
         return;
     }
     const result = await cmdScanModules(context);
     if (_isCurrentHdlLifecycle(lifecycleGeneration) && result) {
         await showModuleInstantiationPicker(
-            result,
-            () => _isCurrentHdlLifecycle(lifecycleGeneration)
+            () => _isCurrentHdlLifecycle(lifecycleGeneration) ? hdlIndex : undefined,
+            () => _isCurrentHdlLifecycle(lifecycleGeneration),
+            root
         );
     }
 }

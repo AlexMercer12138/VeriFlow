@@ -19,6 +19,7 @@ export type {
 export * from './workspaceIndexTypes';
 export { computeTreeEdit } from './treeEdit';
 export type { ParserTreeEdit } from './treeEdit';
+export { toModuleInfo } from './legacyModelAdapter';
 
 export type HdlParserExtensionContext = {
     extensionPath: string;

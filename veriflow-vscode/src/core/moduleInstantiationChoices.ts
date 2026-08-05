@@ -1,44 +1,51 @@
 import * as path from 'path';
-import { ModuleScanResult } from './types';
+import { fileURLToPath } from 'url';
+
+import type { HdlDefinitionSummary } from './hdl/workspaceIndexTypes';
 
 export interface ModuleInstantiationChoice {
     label: string;
     description: string;
     moduleName: string;
-    filepath: string;
+    definitionKey: string;
 }
 
-function describeFile(root: string, filepath: string): string {
+function localFilepath(uri: string): string | undefined {
+    try {
+        const parsed = new URL(uri);
+        return parsed.protocol === 'file:' ? fileURLToPath(parsed) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function describeDefinition(definition: HdlDefinitionSummary, root: string): string {
+    const filepath = localFilepath(definition.uri);
+    if (!filepath) {
+        return definition.uri;
+    }
     const relative = path.relative(root, filepath);
     const outsideRoot = relative === '..'
         || relative.startsWith(`..${path.sep}`)
         || path.isAbsolute(relative);
-    return relative && !outsideRoot ? relative : filepath;
+    if (!relative || outsideRoot) {
+        return filepath;
+    }
+    return relative.split(path.sep).join('/');
 }
 
 export function buildModuleInstantiationChoices(
-    result: ModuleScanResult
+    definitions: readonly HdlDefinitionSummary[],
+    workspaceRoot: string = process.cwd()
 ): ModuleInstantiationChoice[] {
-    const choices: ModuleInstantiationChoice[] = [];
-
-    for (const moduleName of result.modules) {
-        const duplicateEntries = result.duplicatesWithLines[moduleName];
-        const files = duplicateEntries && duplicateEntries.length > 0
-            ? duplicateEntries.map(entry => entry.file)
-            : [result.moduleFiles[moduleName]].filter((filepath): filepath is string => Boolean(filepath));
-        const seen = new Set<string>();
-
-        for (const filepath of files) {
-            if (seen.has(filepath)) { continue; }
-            seen.add(filepath);
-            choices.push({
-                label: moduleName,
-                description: describeFile(result.root, filepath),
-                moduleName,
-                filepath,
-            });
-        }
-    }
-
-    return choices;
+    return [...definitions]
+        .sort((left, right) => left.name.localeCompare(right.name)
+            || left.uri.localeCompare(right.uri)
+            || left.declarationStart - right.declarationStart)
+        .map(definition => ({
+            label: definition.name,
+            description: describeDefinition(definition, workspaceRoot),
+            moduleName: definition.name,
+            definitionKey: definition.key,
+        }));
 }
