@@ -75,6 +75,28 @@ function testExtensionNoLongerContainsLegacyModuleScanner(): void {
     assert.ok(!source.includes('_scanModulesInternal'));
 }
 
+function testAllStructuralConsumersUseWorkspaceIndex(): void {
+    const structuralConsumers = [
+        'src/extension.ts',
+        'src/core/dependencyAnalyzer.ts',
+        'src/moduleInstantiationCommand.ts',
+        'src/core/testbenchGenerator.ts',
+        'src/testbenchPanel.ts',
+    ];
+    for (const relativePath of structuralConsumers) {
+        const source = fs.readFileSync(path.join(extensionRoot, relativePath), 'utf8');
+        assert.ok(!source.includes('PortParser'), `${relativePath} still uses PortParser`);
+        assert.ok(!source.includes('MODULE_DECL_RE'), `${relativePath} still uses MODULE_DECL_RE`);
+    }
+    assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'core', 'portParser.ts')));
+
+    const typesSource = fs.readFileSync(path.join(extensionRoot, 'src', 'core', 'types.ts'), 'utf8');
+    const extensionSource = fs.readFileSync(path.join(extensionRoot, 'src', 'extension.ts'), 'utf8');
+    assert.ok(!typesSource.includes('modulesByDir'));
+    assert.ok(!typesSource.includes('moduleFiles'));
+    assert.ok(!extensionSource.includes('setModuleMap'));
+}
+
 function testDuplicateSummaryIsMergedAndHasNoPopup(): void {
     const runtime = require('../core/types') as {
         formatDuplicateSummary?: (
@@ -196,8 +218,6 @@ function testModuleTreeKeepsEveryExactDefinition(): void {
         workspaceModules: ['alu'],
         definitions,
         duplicates: { alu: definitions.map(definition => definition.uri) },
-        modulesByDir: { [root]: ['alu'] },
-        moduleFiles: { alu: definitions[0].filepath },
     });
 
     const roots = provider.getChildren();
@@ -478,10 +498,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let workspaceFoldersListener: (() => unknown) | undefined;
     let lastScanResult: {
         definitions: ModuleDefinitionEntry[];
-        moduleFiles: Record<string, string>;
         libDirs?: string[];
     } | undefined;
-    let testbenchModuleMap: Record<string, string> = {};
+    let testbenchDefinitions: Definition[] = [];
+    let testbenchRefreshCount = 0;
+    let testbenchDisposed = false;
     let persistedDependencyResult: unknown = null;
     let presentedAnalyzeResult: unknown = null;
     let presentedTop: TopModuleSelection | undefined;
@@ -730,7 +751,6 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         }
         setScanResult(result: {
             definitions: ModuleDefinitionEntry[];
-            moduleFiles: Record<string, string>;
             libDirs?: string[];
         } | null): void {
             treeWriteCount++;
@@ -751,10 +771,19 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     }
     class FakeTestbenchPanel {
         static readonly viewType = 'veriflow.testbench';
+        constructor(
+            _context: unknown,
+            private readonly getIndex: () => FakeIndex | undefined
+        ) {}
         setBeforeGenerate(): void {}
         setOnVisible(): void {}
-        setModuleMap(moduleMap: Record<string, string>): void {
-            testbenchModuleMap = { ...moduleMap };
+        refreshModules(): void {
+            testbenchRefreshCount++;
+            testbenchDefinitions = this.getIndex()?.getAllDefinitions('module') ?? [];
+        }
+        dispose(): void {
+            testbenchDisposed = true;
+            testbenchDefinitions = [];
         }
     }
     class FakeDependencyAnalyzer {
@@ -957,7 +986,6 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 return gate.release.then(() => result);
             }
         }, LogParser: class {},
-        MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         listVerilogFiles: () => [], readText: () => '',
         preprocessVerilog: (value: string) => value, removeComments: (value: string) => value,
         createHdlParserClient: () => {
@@ -1063,13 +1091,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(lastScanResult?.definitions.find(
             definition => definition.key === topDefinition.key
         )?.workspace);
-        const expectedWorkspaceAlu = FakeUri.parse(secondWorkspaceDefinition.uri).fsPath;
-        assert.strictEqual(lastScanResult?.moduleFiles.alu, expectedWorkspaceAlu);
-        assert.strictEqual(testbenchModuleMap.alu, expectedWorkspaceAlu);
-        assert.ok(Object.prototype.hasOwnProperty.call(
-            lastScanResult?.moduleFiles,
-            '__proto__'
-        ));
+        assert.deepStrictEqual(
+            testbenchDefinitions.map(definition => definition.key).sort(),
+            initialIndex.definitions.map(definition => definition.key).sort()
+        );
+        assert.ok(testbenchDefinitions.some(definition => definition.name === '__proto__'));
+        assert.ok(testbenchRefreshCount > 0);
         assert.deepStrictEqual(storedTop, { definitionKey: topDefinition.key, name: 'top' });
         const activePatterns = watcherRecords
             .filter(record => !record.disposed)
@@ -1226,7 +1253,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(!lastScanResult?.definitions.some(
             definition => definition.uri === unconfiguredWorkspaceUri
         ));
-        assert.ok(!Object.prototype.hasOwnProperty.call(testbenchModuleMap, 'rogue'));
+        assert.ok(!testbenchDefinitions.some(definition => definition.name === 'rogue'));
         assert.strictEqual(warnings.length, warningsBeforeForeignEvents);
 
         await withTimeout(
@@ -1421,7 +1448,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         })), 'persistent watcher construction failure recovery');
         const invalidatedScanResult = lastScanResult;
         assert.strictEqual(invalidatedScanResult, undefined);
-        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.deepStrictEqual(testbenchDefinitions, []);
         assert.strictEqual(FakeIndex.instances.at(-1)?.disposed, true);
 
         await withTimeout(
@@ -2152,7 +2179,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             affectsConfiguration: section => section === 'veriflow.libDirs',
         })), 'failed replacement roots scan');
         assert.strictEqual(lastScanResult, undefined);
-        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.deepStrictEqual(testbenchDefinitions, []);
         assert.strictEqual(storedTop, undefined);
         assert.strictEqual(persistedDependencyResult, null);
         assert.strictEqual(analyzeStatus, 'outdated');
@@ -2168,7 +2195,6 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             affectsConfiguration: section => section === 'veriflow.libDirs',
         })), 'replacement roots recovery scan');
         const retainedSameIdentityScan = lastScanResult;
-        const retainedSameIdentityModuleMap = { ...testbenchModuleMap };
         const retainedSameIdentityStatus = status.text;
         const sameIdentityRoots = JSON.stringify([
             workspaceRootUri,
@@ -2180,7 +2206,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             affectsConfiguration: section => section === 'veriflow.defines',
         })), 'same identity transient scan failure');
         assert.strictEqual(lastScanResult, retainedSameIdentityScan);
-        assert.deepStrictEqual(testbenchModuleMap, retainedSameIdentityModuleMap);
+        assert.deepStrictEqual(testbenchDefinitions, []);
         assert.strictEqual(status.text, retainedSameIdentityStatus);
         failedScanRoots.delete(sameIdentityRoots);
 
@@ -2219,7 +2245,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         const failedWatcherPlanResult = lastScanResult;
         assert.strictEqual(failedWatcherPlanIndex.disposed, true);
         assert.strictEqual(failedWatcherPlanResult, undefined);
-        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.deepStrictEqual(testbenchDefinitions, []);
         assert.notStrictEqual(status.text, retainedSameIdentityStatus);
         assert.ok(!watcherRecords.some(record =>
             !record.disposed
@@ -2292,7 +2318,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'last workspace removal'
         );
         assert.strictEqual(lastScanResult, undefined);
-        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.deepStrictEqual(testbenchDefinitions, []);
         assert.strictEqual(storedTop, undefined);
         assert.strictEqual(persistedDependencyResult, null);
         assert.strictEqual(analyzeStatus, 'outdated');
@@ -2302,10 +2328,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         removalGate.allow();
         await withTimeout(slowSameIdentityScan, 'stale scan after workspace removal');
         assert.strictEqual(lastScanResult, undefined);
-        assert.deepStrictEqual(testbenchModuleMap, {});
+        assert.deepStrictEqual(testbenchDefinitions, []);
 
         await withTimeout(extension.deactivate(), 'reset before deactivation race');
         extensionDeactivated = true;
+        assert.strictEqual(testbenchDisposed, true);
         workspaceFolders.push(folder, { uri: FakeUri.parse('file:///B-workspace') });
         storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
         persistedDependencyResult = null;
@@ -2518,6 +2545,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 async function main(): Promise<void> {
     const tests: Array<[string, () => void | Promise<void>]> = [
         ['legacy scanner removal', testExtensionNoLongerContainsLegacyModuleScanner],
+        ['all structural consumers use workspace index', testAllStructuralConsumersUseWorkspaceIndex],
         ['duplicate presentation', testDuplicateSummaryIsMergedAndHasNoPopup],
         ['exact module tree definitions', testModuleTreeKeepsEveryExactDefinition],
         ['exact top selection migration', testTopSelectionUsesExactIdentityAndMigratesLegacyNames],

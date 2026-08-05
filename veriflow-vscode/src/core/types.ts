@@ -86,9 +86,7 @@ export interface ModuleScanResult {
     workspaceModules: string[];
     definitions: ModuleDefinitionEntry[];
     duplicates: Record<string, string[]>;
-    modulesByDir: Record<string, string[]>;
-    moduleFiles: Record<string, string>;
-    /** Retained until the module instantiation picker migrates to exact definitions. */
+    /** Exact duplicate source locations for presentation and diagnostics. */
     duplicatesWithLines: Record<string, DuplicateEntry[]>;
 }
 

@@ -1,13 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { formatModuleInstantiation } from './moduleInstantiationFormatter';
-import { PortParser } from './portParser';
 import { Port, Parameter } from './types';
 
 export interface TbModuleConfig {
+    definitionKey: string;
     module_name: string;
     instance_name: string;
-    filepath: string;
+    ports: Port[];
+    parameters: Parameter[];
     port_signals: Record<string, string>;
     param_values: Record<string, string>;
 }
@@ -75,8 +76,6 @@ export interface TbConfig {
 }
 
 export class TestbenchGenerator {
-    private _parser = new PortParser();
-
     generate(config: TbConfig, outputDir: string): string {
         const name = config.name || 'tb_top';
         const timeUnit = config.time_unit || '1ns';
@@ -147,18 +146,19 @@ export class TestbenchGenerator {
         }
 
         const mergedSignals = new Map<string, { port: Port; paramMap: Record<string, string> }>();
-        const allParsed: { mod: TbModuleConfig; ports: Port[]; params: Parameter[] }[] = [];
+        const allParsed = modules.map(mod => ({
+            mod,
+            ports: mod.ports,
+            params: mod.parameters,
+        }));
 
-        for (const mod of modules) {
-            const filepath = mod.filepath || '';
-            const { ports, params } = this._parseModule(filepath, mod.module_name);
+        for (const { mod, ports, params } of allParsed) {
             // Build param value map for width resolution
             const paramValues = mod.param_values || {};
             const paramMap: Record<string, string> = {};
             for (const p of params) {
                 paramMap[p.name] = paramValues[p.name] || p.value;
             }
-            allParsed.push({ mod, ports, params });
             const portSignals = mod.port_signals || {};
             for (const port of ports) {
                 const sigName = portSignals[port.name] || port.name;
@@ -297,17 +297,5 @@ export class TestbenchGenerator {
             return resolvePortWidth(port.width, paramMap);
         }
         return port.width;
-    }
-
-    private _parseModule(filepath: string, moduleName: string): { ports: Port[]; params: Parameter[] } {
-        if (!filepath || !fs.existsSync(filepath)) {
-            return { ports: [], params: [] };
-        }
-        try {
-            const info = this._parser.parseFile(filepath, moduleName);
-            return { ports: info.ports, params: info.parameters };
-        } catch {
-            return { ports: [], params: [] };
-        }
     }
 }

@@ -307,7 +307,8 @@ function createExtensionHarness(
         static readonly viewType = 'veriflow.testbench';
         setBeforeGenerate(): void {}
         setOnVisible(): void {}
-        setModuleMap(): void {}
+        refreshModules(): void {}
+        dispose(): void {}
     }
 
     class MemoryWorkspaceIndexStore {
@@ -493,7 +494,6 @@ function createExtensionHarness(
         SimulationRunner: class {},
         LogParser: class {},
         formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
-        MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         listVerilogFiles: () => [],
         readText: () => '',
         preprocessVerilog: (value: string) => value,

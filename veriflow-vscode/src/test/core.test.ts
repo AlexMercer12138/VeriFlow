@@ -9,7 +9,6 @@ import { toModuleInfo } from '../core/hdl/legacyModelAdapter';
 import { defaultModuleInstanceIdentifier } from '../core/moduleInstantiationIdentifier';
 import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter';
 import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
-import { PortParser } from '../core/portParser';
 import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
 import { SimulationRunner } from '../core/simulationRunner';
@@ -508,135 +507,6 @@ function testDependencyAnalyzerProductionWiring(): void {
     );
 }
 
-function testPortParser(): void {
-    const projectDir = copyFixture();
-    const info = new PortParser().parseFile(path.join(projectDir, 'uart_tx.v'));
-
-    assert.strictEqual(info.name, 'uart_tx');
-    assert.deepStrictEqual(
-        info.parameters.map(p => [p.name, p.value]),
-        golden.uart_tx.parameters
-    );
-    assert.deepStrictEqual(
-        info.ports.map(p => [p.direction, p.name, p.width ?? null]),
-        golden.uart_tx.ports
-    );
-}
-
-function testPortParserSelectsNamedModule(): void {
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-multi-module-'));
-    const filepath = path.join(projectDir, 'combined.sv');
-    fs.writeFileSync(filepath, [
-        'module first(input logic wrong_port);',
-        'endmodule',
-        '',
-        'module selected #(',
-        '    parameter WIDTH = 16',
-        ') (',
-        '    input logic clk,',
-        '    output logic [WIDTH-1:0] data_o',
-        ');',
-        'endmodule',
-        '',
-    ].join('\n'), 'utf-8');
-
-    const info = new PortParser().parseFile(filepath, 'selected');
-
-    assert.strictEqual(info.name, 'selected');
-    assert.deepStrictEqual(info.parameters.map(parameter => parameter.name), ['WIDTH']);
-    assert.deepStrictEqual(info.ports.map(port => port.name), ['clk', 'data_o']);
-}
-
-function testPortParserConditionalCompilation(): void {
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-cond-'));
-    const filepath = path.join(projectDir, 'cond_ports.v');
-    fs.writeFileSync(filepath, [
-        '`define USE_WIDE',
-        'module cond_ports (',
-        '    input clk,',
-        '`ifdef USE_WIDE',
-        '    input [15:0] data_i,',
-        '`else',
-        '    input [7:0] data_i,',
-        '    input unused_else_i,',
-        '`endif',
-        '`ifndef DISABLE_READY',
-        '    output ready_o,',
-        '`endif',
-        '    output done_o',
-        ');',
-        'endmodule',
-        '',
-    ].join('\n'), 'utf-8');
-
-    const info = new PortParser().parseFile(filepath);
-
-    assert.deepStrictEqual(
-        info.ports.map(p => [p.direction, p.name, p.width ?? null]),
-        [
-            ['input', 'clk', null],
-            ['input', 'data_i', '[15:0]'],
-            ['output', 'ready_o', null],
-            ['output', 'done_o', null],
-        ]
-    );
-}
-
-function testPortParserSystemVerilogAndNonAnsi(): void {
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-sv-'));
-    const svFile = path.join(projectDir, 'sv_mod.sv');
-    const legacyFile = path.join(projectDir, 'legacy_mod.v');
-    fs.writeFileSync(svFile, [
-        'module sv_mod #(',
-        '    parameter int WIDTH = $clog2(DEPTH),',
-        '    parameter string MODE = "fast,still-one-value"',
-        ') (',
-        '    input logic signed [WIDTH-1:0] a_i, b_i,',
-        '    output var logic ready_o,',
-        '    inout wire pad_io',
-        ');',
-        'endmodule',
-        '',
-    ].join('\n'), 'utf-8');
-    fs.writeFileSync(legacyFile, [
-        'module legacy_mod (clk, rst_n, data_o);',
-        '    input wire clk;',
-        '    input rst_n;',
-        '    output reg [3:0] data_o;',
-        'endmodule',
-        '',
-    ].join('\n'), 'utf-8');
-
-    const parser = new PortParser();
-    const svInfo = parser.parseFile(svFile);
-    const legacyInfo = parser.parseFile(legacyFile);
-
-    assert.deepStrictEqual(
-        svInfo.parameters.map(p => [p.name, p.value]),
-        [
-            ['WIDTH', '$clog2(DEPTH)'],
-            ['MODE', '"fast,still-one-value"'],
-        ]
-    );
-    assert.deepStrictEqual(
-        svInfo.ports.map(p => [p.direction, p.name, p.width ?? null]),
-        [
-            ['input', 'a_i', '[WIDTH-1:0]'],
-            ['input', 'b_i', '[WIDTH-1:0]'],
-            ['output', 'ready_o', null],
-            ['inout', 'pad_io', null],
-        ]
-    );
-    assert.deepStrictEqual(
-        legacyInfo.ports.map(p => [p.direction, p.name, p.width ?? null]),
-        [
-            ['input', 'clk', null],
-            ['input', 'rst_n', null],
-            ['output', 'data_o', '[3:0]'],
-        ]
-    );
-}
-
 function testTestbenchGenerator(): void {
     const projectDir = copyFixture();
     const outputDir = path.join(projectDir, 'generated', 'tb');
@@ -650,9 +520,15 @@ function testTestbenchGenerator(): void {
         reset_duration: '100',
         modules: [
             {
+                definitionKey: 'module:file:///fixtures/uart_tx.v:0',
                 module_name: 'uart_tx',
                 instance_name: 'u_tx0',
-                filepath: path.join(projectDir, 'uart_tx.v'),
+                parameters: golden.uart_tx.parameters.map(([name, value]) => ({ name, value })),
+                ports: golden.uart_tx.ports.map(([direction, name, width]) => ({
+                    direction,
+                    name,
+                    width: width ?? undefined,
+                })),
                 port_signals: {
                     clk: 'clk',
                     rst_n: 'rst_n',
@@ -671,7 +547,20 @@ function testTestbenchGenerator(): void {
     const filepath = new TestbenchGenerator().generate(config, outputDir);
     assert.strictEqual(filepath, path.join(outputDir, `${tbSpec.name}.v`));
     const content = fs.readFileSync(filepath, 'utf-8');
-    assert.ok(content.includes(`module ${tbSpec.name};`));
+    assert.ok(content.includes([
+        `module ${tbSpec.name};`,
+        '',
+        '    reg clk = 0;',
+    ].join('\n')));
+    assert.ok(content.includes([
+        '    // ---- Shared DUT input signals (reg) ----',
+        '    reg [7:0] tx_payload;',
+        '    reg tx_valid;',
+        '',
+        '    // ---- Shared DUT output signals (wire) ----',
+        '    wire tx_ready;',
+        '    wire uart_tx;',
+    ].join('\n')));
     assert.ok(content.includes(`$dumpfile("${tbSpec.wave_file}");`));
     assert.ok(content.includes([
         '    uart_tx #(',
@@ -1774,10 +1663,6 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['dependency analyzer include order and cycles', testDependencyAnalyzerIncludeOrderAndCycles],
     ['dependency analyzer non-file URI fallback', testDependencyAnalyzerNonFileUriFallback],
     ['dependency analyzer production wiring', testDependencyAnalyzerProductionWiring],
-    ['port parser', testPortParser],
-    ['port parser selects named module', testPortParserSelectsNamedModule],
-    ['port parser conditional compilation', testPortParserConditionalCompilation],
-    ['port parser SystemVerilog and non-ANSI', testPortParserSystemVerilogAndNonAnsi],
     ['testbench generator', testTestbenchGenerator],
     ['log parser', testLogParser],
     ['simulation runner paths', testSimulationRunnerPathResolution],

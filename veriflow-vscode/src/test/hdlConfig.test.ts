@@ -98,7 +98,6 @@ async function testExtensionLifecycle(): Promise<void> {
         DependencyAnalyzer: class {},
         SimulationRunner: class {},
         LogParser: class {},
-        MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         createHdlParserClient: (_context: { extensionPath: string }) => {
             parserCreations++;
             const parser = new FakeParserClient();
@@ -133,6 +132,8 @@ async function testExtensionLifecycle(): Promise<void> {
                 static readonly viewType = 'veriflow.testbench';
                 setBeforeGenerate(): void {}
                 setOnVisible(): void {}
+                refreshModules(): void {}
+                dispose(): void {}
             },
         },
         './waveformEditorProvider': {

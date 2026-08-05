@@ -1,22 +1,32 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TestbenchGenerator, TbConfig, TbModuleConfig } from './core/testbenchGenerator';
-import { PortParser } from './core/portParser';
 import { Port, Parameter } from './core/types';
+import { toModuleInfo } from './core/hdl/legacyModelAdapter';
+import type { WorkspaceHdlIndex } from './core/hdl/workspaceHdlIndex';
+import type { HdlDefinitionSummary } from './core/hdl/workspaceIndexTypes';
+import { buildModuleInstantiationChoices } from './core/moduleInstantiationChoices';
+import { defaultModuleInstanceIdentifier } from './core/moduleInstantiationIdentifier';
 import { getSettings } from './config';
+
+type TestbenchModuleIndex = Pick<WorkspaceHdlIndex, 'getAllDefinitions' | 'getDefinition'>;
 
 export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'veriflow.testbench';
 
     private _view?: vscode.WebviewView;
-    private _moduleMap: Record<string, string> = {};
     private _moduleEntries: TbModuleEntry[] = [];
     private _generator = new TestbenchGenerator();
-    private _parser = new PortParser();
     private _beforeGenerate?: () => Promise<void>;
     private _onVisible?: () => Promise<void>;
+    private _viewDisposables: vscode.Disposable[] = [];
+    private _messageGeneration = 0;
+    private _disposed = false;
 
-    constructor(private readonly _context: vscode.ExtensionContext) {}
+    constructor(
+        private readonly _context: vscode.ExtensionContext,
+        private readonly _getIndex: () => TestbenchModuleIndex | undefined = () => undefined
+    ) {}
 
     setBeforeGenerate(callback: () => Promise<void>): void {
         this._beforeGenerate = callback;
@@ -31,7 +41,10 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         _context: vscode.WebviewViewResolveContext,
         _token: vscode.CancellationToken
     ): void {
+        if (this._disposed) { return; }
+        this._detachView();
         this._view = webviewView;
+        const generation = ++this._messageGeneration;
 
         webviewView.webview.options = {
             enableScripts: true,
@@ -39,19 +52,22 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         };
 
         webviewView.webview.html = this._getHtml();
-        webviewView.onDidChangeVisibility(() => {
-            if (webviewView.visible && this._onVisible) {
-                this._onVisible();
+        const visibilityDisposable = webviewView.onDidChangeVisibility(() => {
+            if (this._isCurrentMessageSource(webviewView, generation)
+                && webviewView.visible
+                && this._onVisible) {
+                void this._onVisible();
             }
         });
 
-        webviewView.webview.onDidReceiveMessage(async (message) => {
+        const messageDisposable = webviewView.webview.onDidReceiveMessage(async (message) => {
+            if (!this._isCurrentMessageSource(webviewView, generation)) { return; }
             switch (message.type) {
                 case 'getModules':
-                    this._postModules();
+                    this.refreshModules();
                     break;
                 case 'addModule':
-                    await this._addModule(message.moduleName);
+                    this._addModule(message.definitionKey);
                     break;
                 case 'removeModule':
                     this._removeModule(message.index);
@@ -75,19 +91,38 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
                     this._postMessage({ type: 'removeClockRow' });
                     break;
                 case 'generate':
-                    await this._generate(message.config);
+                    await this._generate(message.config, webviewView, generation);
                     break;
             }
         });
+        const disposeDisposable = webviewView.onDidDispose(() => {
+            if (this._isCurrentMessageSource(webviewView, generation)) {
+                this._detachView();
+            }
+        });
+        this._viewDisposables.push(
+            visibilityDisposable,
+            messageDisposable,
+            disposeDisposable
+        );
     }
 
-    setModuleMap(moduleMap: Record<string, string>): void {
-        this._moduleMap = { ...moduleMap };
+    refreshModules(): void {
+        if (this._disposed) { return; }
         this._postModules();
+        this._postModuleValidity();
+    }
+
+    dispose(): void {
+        if (this._disposed) { return; }
+        this._disposed = true;
+        this._detachView();
     }
 
     private _postModules(): void {
-        const modules = Object.keys(this._moduleMap).sort();
+        const definitions = this._getIndex()?.getAllDefinitions('module') ?? [];
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+        const modules = buildModuleInstantiationChoices(definitions, root);
         this._postMessage({
             type: 'modules',
             modules,
@@ -95,26 +130,29 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private async _addModule(baseName: string): Promise<void> {
+    private _addModule(definitionKey: string): void {
         if (this._moduleEntries.length >= 20) { return; }
-        if (!baseName || !this._moduleMap[baseName]) { return; }
-
-        const sameCount = this._moduleEntries.filter(e => e.verilogModuleName === baseName).length;
-        const displayName = sameCount > 0 ? `${baseName}_${sameCount}` : baseName;
-
-        const filepath = this._moduleMap[baseName];
-        const entry = new TbModuleEntry(displayName, filepath);
-        entry.verilogModuleName = baseName;
-
-        if (filepath) {
-            try {
-                const info = this._parser.parseFile(filepath);
-                entry.ports = info.ports;
-                entry.params = info.parameters;
-            } catch {
-                // ignore
-            }
+        const index = this._getIndex();
+        const definition = definitionKey ? index?.getDefinition(definitionKey) : undefined;
+        if (!definition || definition.kind !== 'module') {
+            this._reportError('The selected module definition is no longer available. Refresh and select it again.');
+            return;
         }
+
+        const sameCount = this._moduleEntries.filter(
+            entry => entry.verilogModuleName === definition.name
+        ).length;
+        const displayName = sameCount > 0 ? `${definition.name}_${sameCount}` : definition.name;
+        const choice = buildModuleInstantiationChoices(
+            index?.getAllDefinitions('module') ?? [definition],
+            vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()
+        ).find(item => item.definitionKey === definition.key);
+        const entry = new TbModuleEntry(
+            displayName,
+            definition,
+            choice?.description ?? definition.uri,
+            sameCount
+        );
 
         this._moduleEntries.push(entry);
         this._postMessage({
@@ -155,7 +193,12 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         this._moduleEntries[index].setParamValue(paramName, value.trim());
     }
 
-    private async _generate(config: any): Promise<void> {
+    private async _generate(
+        config: any,
+        sourceView: vscode.WebviewView,
+        generation: number
+    ): Promise<void> {
+        if (!this._isCurrentMessageSource(sourceView, generation)) { return; }
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!root) {
             vscode.window.showWarningMessage('No workspace folder open.');
@@ -171,12 +214,16 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         if (this._beforeGenerate) {
             await this._beforeGenerate();
         }
+        if (!this._isCurrentMessageSource(sourceView, generation)) { return; }
 
         if (this._moduleEntries.length === 0) {
             vscode.window.showWarningMessage('Add at least one DUT module before generating a testbench.');
             this._postMessage({ type: 'validation', message: 'Add at least one DUT module before generating.' });
             return;
         }
+
+        const modules = this._resolveModulesForGeneration();
+        if (!modules) { return; }
 
         const outputDirSetting = (config.output_dir || getSettings().testbenchOutputDir || '.').trim() || '.';
         const outputDir = path.isAbsolute(outputDirSetting)
@@ -190,13 +237,7 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             clocks_mhz: config.clocks_mhz || ['100'],
             reset_active_high: config.reset_active_high === true,
             reset_duration: config.reset_duration || '100',
-            modules: this._moduleEntries.map(e => ({
-                module_name: e.verilogModuleName,
-                instance_name: e.instanceName,
-                filepath: e.filepath,
-                port_signals: { ...e.portSignalOverrides },
-                param_values: { ...e.paramValueOverrides },
-            })),
+            modules,
             wave_file: config.wave_file || `${name}.vcd`,
             timeout: config.timeout || '1000000',
         };
@@ -204,7 +245,9 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
         try {
             const filepath = this._generator.generate(tbConfig, outputDir);
             const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filepath));
+            if (!this._isCurrentMessageSource(sourceView, generation)) { return; }
             await vscode.window.showTextDocument(doc);
+            if (!this._isCurrentMessageSource(sourceView, generation)) { return; }
             vscode.window.showInformationMessage(`Testbench generated: ${path.basename(filepath)}`);
             this._postMessage({ type: 'generated', filepath });
             if (this._beforeGenerate) {
@@ -217,8 +260,84 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
     }
 
     private _postMessage(msg: any): void {
-        if (this._view) {
+        if (!this._disposed && this._view) {
             this._view.webview.postMessage(msg);
+        }
+    }
+
+    private _resolveModulesForGeneration(): TbModuleConfig[] | undefined {
+        const index = this._getIndex();
+        const modules: TbModuleConfig[] = [];
+        for (const entry of this._moduleEntries) {
+            const resolution = this._resolveEntry(index, entry);
+            if (resolution.error || !resolution.definition) {
+                this._reportError(resolution.error ?? 'The selected module definition is unavailable.');
+                return undefined;
+            }
+            const info = toModuleInfo(resolution.definition);
+            modules.push({
+                definitionKey: entry.definitionKey,
+                module_name: info.name,
+                instance_name: entry.instanceName,
+                ports: info.ports,
+                parameters: info.parameters,
+                port_signals: { ...entry.portSignalOverrides },
+                param_values: { ...entry.paramValueOverrides },
+            });
+        }
+        return modules;
+    }
+
+    private _postModuleValidity(): void {
+        const index = this._getIndex();
+        this._postMessage({
+            type: 'moduleValidity',
+            entries: this._moduleEntries.map((entry, indexValue) => ({
+                index: indexValue,
+                error: this._resolveEntry(index, entry).error,
+            })),
+        });
+    }
+
+    private _resolveEntry(
+        index: TestbenchModuleIndex | undefined,
+        entry: TbModuleEntry
+    ): { definition?: HdlDefinitionSummary; error?: string } {
+        const definition = index?.getDefinition(entry.definitionKey);
+        if (!definition || definition.kind !== 'module') {
+            return {
+                error: `Module "${entry.verilogModuleName}" is no longer available at ${entry.sourceDescription}. Remove it and add it again.`,
+            };
+        }
+        if (definition.modelFingerprint !== entry.modelFingerprint) {
+            return {
+                error: `Module "${entry.verilogModuleName}" changed since it was added. Remove it and add it again before generating.`,
+            };
+        }
+        return { definition };
+    }
+
+    private _reportError(message: string): void {
+        vscode.window.showErrorMessage(message);
+        this._postMessage({ type: 'error', message });
+    }
+
+    private _isCurrentMessageSource(
+        view: vscode.WebviewView,
+        generation: number
+    ): boolean {
+        return !this._disposed
+            && this._view === view
+            && this._messageGeneration === generation;
+    }
+
+    private _detachView(): void {
+        this._messageGeneration++;
+        this._view = undefined;
+        const disposables = this._viewDisposables;
+        this._viewDisposables = [];
+        for (const disposable of disposables) {
+            disposable.dispose();
         }
     }
 
@@ -649,7 +768,9 @@ button.secondary:hover {
         moduleEntries.forEach((entry, i) => {
             const div = document.createElement('div');
             div.className = 'module-list-item' + (i === selectedModuleIndex ? ' selected' : '');
-            div.textContent = entry.moduleName + ' (' + entry.instanceName + ')';
+            const source = entry.sourceDescription ? ' - ' + entry.sourceDescription : '';
+            const invalid = entry.invalidReason ? ' - unavailable' : '';
+            div.textContent = entry.moduleName + source + ' (' + entry.instanceName + ')' + invalid;
             div.onclick = () => {
                 selectedModuleIndex = i;
                 renderModuleList();
@@ -728,7 +849,7 @@ button.secondary:hover {
     document.getElementById('btnAddModule').onclick = () => {
         const sel = document.getElementById('moduleSelect');
         setValidation('');
-        if (sel.value) post({ type: 'addModule', moduleName: sel.value });
+        if (sel.value) post({ type: 'addModule', definitionKey: sel.value });
     };
 
     document.getElementById('btnRemoveModule').onclick = () => {
@@ -768,7 +889,7 @@ button.secondary:hover {
             case 'modules':
                 modules = msg.modules;
                 const sel = document.getElementById('moduleSelect');
-                sel.innerHTML = modules.map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>').join('');
+                sel.innerHTML = modules.map(m => '<option value="' + escapeHtml(m.definitionKey) + '">' + escapeHtml(m.label + ' - ' + m.description) + '</option>').join('');
                 if (msg.outputDir && !document.getElementById('outputDir').value.trim()) {
                     document.getElementById('outputDir').value = msg.outputDir === '.' ? '' : msg.outputDir;
                 }
@@ -798,6 +919,16 @@ button.secondary:hover {
                 renderModuleList();
                 renderModuleDetail(msg.entry, msg.index);
                 break;
+            case 'moduleValidity':
+                msg.entries.forEach(item => {
+                    if (moduleEntries[item.index]) {
+                        moduleEntries[item.index].invalidReason = item.error || '';
+                    }
+                });
+                renderModuleList();
+                const invalidEntry = msg.entries.find(item => item.error);
+                setValidation(invalidEntry ? invalidEntry.error : '');
+                break;
             case 'addClockRow':
                 addClock();
                 break;
@@ -807,6 +938,7 @@ button.secondary:hover {
             case 'generated':
                 break;
             case 'error':
+                setValidation(msg.message || 'Failed to generate testbench.');
                 break;
             case 'validation':
                 setValidation(msg.message || '');
@@ -827,20 +959,35 @@ button.secondary:hover {
 }
 
 class TbModuleEntry {
+    definitionKey: string;
+    modelFingerprint: string;
     moduleName: string;
     verilogModuleName: string;
     filepath: string;
+    sourceDescription: string;
     instanceName: string;
     ports: Port[] = [];
     params: Parameter[] = [];
     portSignalOverrides: Record<string, string> = {};
     paramValueOverrides: Record<string, string> = {};
 
-    constructor(moduleName: string, filepath: string = '') {
+    constructor(
+        moduleName: string,
+        definition: HdlDefinitionSummary,
+        sourceDescription: string,
+        sameModuleCount: number
+    ) {
+        const info = toModuleInfo(definition);
+        this.definitionKey = definition.key;
+        this.modelFingerprint = definition.modelFingerprint;
         this.moduleName = moduleName;
-        this.verilogModuleName = moduleName;
-        this.filepath = filepath;
-        this.instanceName = `u_${moduleName}`;
+        this.verilogModuleName = definition.name;
+        this.filepath = info.filepath;
+        this.sourceDescription = sourceDescription;
+        this.instanceName = defaultModuleInstanceIdentifier(definition.name)
+            + (sameModuleCount > 0 ? `_${sameModuleCount}` : '');
+        this.ports = info.ports;
+        this.params = info.parameters;
     }
 
     setPortSignal(portName: string, signal: string): void {
@@ -853,9 +1000,12 @@ class TbModuleEntry {
 
     toJSON() {
         return {
+            definitionKey: this.definitionKey,
+            modelFingerprint: this.modelFingerprint,
             moduleName: this.moduleName,
             verilogModuleName: this.verilogModuleName,
             filepath: this.filepath,
+            sourceDescription: this.sourceDescription,
             instanceName: this.instanceName,
             ports: this.ports,
             params: this.params,

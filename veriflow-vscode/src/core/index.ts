@@ -1,5 +1,5 @@
 export * from './types';
-export { removeComments, preprocessVerilog, flattenParamBlocks, expandGenerateIfdef, VERILOG_KEYWORDS, MODULE_DECL_RE } from './verilogUtils';
+export { removeComments, preprocessVerilog, flattenParamBlocks, expandGenerateIfdef, VERILOG_KEYWORDS } from './verilogUtils';
 export { listVerilogFiles, readText, findFile } from './fileService';
 export { DependencyAnalyzer } from './dependencyAnalyzer';
 export { TemplateEngine } from './templateEngine';
@@ -7,7 +7,6 @@ export { runSync, spawnStreaming } from './processManager';
 export type { ProcessResult } from './processManager';
 export { LogParser } from './logParser';
 export { SimulationRunner } from './simulationRunner';
-export { PortParser } from './portParser';
 export { formatModuleInstantiation } from './moduleInstantiationFormatter';
 export type { NamedConnection, ModuleInstantiationOptions } from './moduleInstantiationFormatter';
 export { buildModuleInstantiationChoices } from './moduleInstantiationChoices';

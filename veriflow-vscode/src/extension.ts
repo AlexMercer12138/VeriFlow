@@ -174,7 +174,10 @@ export function activate(context: vscode.ExtensionContext): void {
         );
     }
     treeProvider = new ModuleTreeProvider();
-    tbPanelProvider = new TestbenchPanelProvider(context);
+    tbPanelProvider = new TestbenchPanelProvider(
+        context,
+        () => hdlStopping ? undefined : hdlIndex
+    );
 
     const treeView = vscode.window.createTreeView('veriflow.modules', {
         treeDataProvider: treeProvider,
@@ -589,6 +592,7 @@ function _resetDependencyIndex(): void {
     depAnalyzer = undefined;
     hdlIndexGeneration++;
     index?.dispose();
+    tbPanelProvider?.refreshModules();
     if (hdlStopping) {
         _disposeHdlWatchRegistry();
     } else if (hdlActiveContext) {
@@ -816,6 +820,7 @@ export async function deactivate(): Promise<void> {
     hdlTopIntentVersion++;
     hdlInstantiationIntentVersion++;
     hdlAbortController.abort();
+    tbPanelProvider?.dispose();
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
     hdlPresentationRootIdentity = undefined;
@@ -1404,7 +1409,7 @@ function _clearHdlPresentation(
     if (hdlStopping) { return; }
     treeProvider.setScanResult(null);
     treeProvider.setAnalyzeResult(null);
-    tbPanelProvider.setModuleMap({});
+    tbPanelProvider.refreshModules();
     if (!preserveTopSelection) {
         treeProvider.topModule = undefined;
         _clearPersistedTopModule(context);
@@ -1475,49 +1480,8 @@ function _deriveModuleScanResult(
         definition => _definitionEntry(definition, rootUris[0])
     );
     const duplicateGroups = _duplicateModuleGroups(indexedDefinitions);
-    const modulesByDir: Record<string, string[]> = {};
-    const moduleFiles: Record<string, string> = {};
     const duplicates: Record<string, string[]> = {};
     const duplicatesWithLines: Record<string, Array<{ file: string; line: number }>> = {};
-    const rootLabels = rootUris.map(uriValue => {
-        const uri = vscode.Uri.parse(uriValue);
-        return uri.fsPath || uri.path || uriValue;
-    });
-    const prioritizedDefinitions = [...indexedDefinitions].sort((left, right) => {
-        const leftRoot = rootUris.findIndex(rootUri =>
-            isSourceUriWithinRoot(left.uri, rootUri)
-        );
-        const rightRoot = rootUris.findIndex(rootUri =>
-            isSourceUriWithinRoot(right.uri, rootUri)
-        );
-        const leftPriority = leftRoot >= 0 ? leftRoot : rootUris.length;
-        const rightPriority = rightRoot >= 0 ? rightRoot : rootUris.length;
-        return leftPriority - rightPriority
-            || left.uri.localeCompare(right.uri)
-            || left.declarationStart - right.declarationStart;
-    });
-    for (const definition of prioritizedDefinitions) {
-        if (!Object.prototype.hasOwnProperty.call(moduleFiles, definition.name)) {
-            const entry = _definitionEntry(definition, rootUris[0]);
-            _setRecordValue(moduleFiles, entry.name, entry.filepath);
-        }
-    }
-    for (const definition of definitions) {
-        const rootIndex = rootUris.findIndex(rootUri =>
-            isSourceUriWithinRoot(definition.uri, rootUri)
-        );
-        const dirLabel = rootIndex >= 0
-            ? rootLabels[rootIndex]
-            : path.dirname(definition.filepath) || definition.uri;
-        const names = Object.prototype.hasOwnProperty.call(modulesByDir, dirLabel)
-            ? modulesByDir[dirLabel]
-            : [];
-        if (!names.includes(definition.name)) {
-            names.push(definition.name);
-            names.sort();
-        }
-        _setRecordValue(modulesByDir, dirLabel, names);
-    }
     for (const group of duplicateGroups) {
         _setRecordValue(
             duplicates,
@@ -1542,8 +1506,6 @@ function _deriveModuleScanResult(
             workspaceModules,
             definitions,
             duplicates,
-            modulesByDir,
-            moduleFiles,
             duplicatesWithLines,
         },
         duplicateGroups,
@@ -1588,7 +1550,7 @@ async function _presentScanResult(
         throw new HdlWatchPlanReconciliationError(error);
     }
     treeProvider.setScanResult(result);
-    tbPanelProvider.setModuleMap(result.moduleFiles);
+    tbPanelProvider.refreshModules();
     hdlPresentationRootIdentity = rootIdentity;
 
     const stored = hdlTopPersistencePending > 0
