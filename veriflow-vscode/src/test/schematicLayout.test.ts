@@ -8,8 +8,10 @@ import type {
 } from '../schematic/graphModel';
 import {
     autoLayout,
+    deriveFeedbackRoutes,
     mergeLayout,
     relayoutAll,
+    schematicNodeSize,
     SchematicLayout,
     SchematicLayoutStore,
 } from '../schematic/layoutStore';
@@ -178,6 +180,29 @@ function defaultLayout(): SchematicLayout {
     };
 }
 
+function assertNodePairSeparated(
+    graph: SchematicGraph,
+    layout: SchematicLayout,
+    firstId: string,
+    secondId: string
+): void {
+    const firstNode = graph.nodes.find(candidate => candidate.id === firstId)!;
+    const secondNode = graph.nodes.find(candidate => candidate.id === secondId)!;
+    const first = layout.nodes[firstId];
+    const second = layout.nodes[secondId];
+    const firstSize = schematicNodeSize(firstNode);
+    const secondSize = schematicNodeSize(secondNode);
+    const horizontalSeparation = Math.abs(first.x - second.x)
+        - (firstSize.width + secondSize.width) / 2;
+    const verticalSeparation = Math.abs(first.y - second.y)
+        - (firstSize.height + secondSize.height) / 2;
+    assert.ok(
+        horizontalSeparation >= 24 || verticalSeparation >= 24,
+        `${firstId} overlaps ${secondId}: horizontal=${horizontalSeparation}, `
+            + `vertical=${verticalSeparation}`
+    );
+}
+
 async function testRoundTripAndRematch(): Promise<void> {
     const graph = createGraph();
     const state = createMemoryMemento();
@@ -273,6 +298,13 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         viewport: { x: 0, y: 0, zoom: 99 },
         minimap: true,
         edges: { secret: [{ x: 1, y: 2 }] },
+        feedbackRoutes: [{
+            networkId: 'network:secret',
+            side: 'top',
+            lane: 0,
+            trunk: { x1: 0, x2: 10, y: -20 },
+            endpoints: [],
+        }],
     };
     await store.save(
         'file:///normalize.sv',
@@ -368,6 +400,53 @@ async function testStaleObjectCleanupAndClearFixed(): Promise<void> {
     );
 }
 
+async function testMergePreservesAllMatchedCoordinates(): Promise<void> {
+    const graph = createGraph();
+    graph.nodes.push(node('opaque:new', 'opaque'));
+    const persisted: SchematicLayout = {
+        nodes: {
+            'instance:u_child': { x: 456, y: 234, fixed: false },
+            'opaque:removed': { x: 800, y: 900, fixed: false },
+        },
+        viewport: { x: 1, y: 2, zoom: 1.5 },
+        minimap: false,
+    };
+
+    const merged = mergeLayout(graph, persisted);
+
+    assert.deepStrictEqual(merged.nodes['instance:u_child'], {
+        x: 456,
+        y: 234,
+        fixed: false,
+    });
+    assert.strictEqual('opaque:removed' in merged.nodes, false);
+    assert.ok(Number.isFinite(merged.nodes['opaque:new'].x));
+    assert.ok(Number.isFinite(merged.nodes['opaque:new'].y));
+}
+
+async function testMergePlacesNewNodesAroundMatchedNodes(): Promise<void> {
+    const graph = createGraph();
+    graph.nodes.push(node('opaque:new', 'opaque'));
+    const baseline = autoLayout(graph);
+    const persisted: SchematicLayout = {
+        ...defaultLayout(),
+        nodes: {
+            'instance:u_child': {
+                ...baseline.nodes['opaque:new'],
+                fixed: false,
+            },
+        },
+    };
+
+    const merged = mergeLayout(graph, persisted);
+
+    assert.deepStrictEqual(
+        merged.nodes['instance:u_child'],
+        persisted.nodes['instance:u_child']
+    );
+    assertNodePairSeparated(graph, merged, 'instance:u_child', 'opaque:new');
+}
+
 async function testClearFixedWaitsForPriorSave(): Promise<void> {
     const state = new DeferredMemoryMemento();
     const store = new SchematicLayoutStore(state);
@@ -438,6 +517,118 @@ async function testPartialAndFullRelayout(): Promise<void> {
     assert.deepStrictEqual(full.viewport, existing.viewport);
 }
 
+async function testPartialLayoutAvoidsFixedObstacles(): Promise<void> {
+    const empty: SchematicGraph = {
+        fileUri: 'file:///obstacles.sv',
+        moduleKey: 'module:obstacles:0',
+        moduleName: 'obstacles',
+        nodes: [],
+        networks: [],
+        diagnostics: [],
+    };
+    const fixedPortId = 'port:fixed-input';
+    const newPortId = 'port:new-input';
+    const outputPortId = 'port:output';
+    const fixedInteriorId = 'instance:fixed';
+    const newInteriorIds = ['opaque:new-a', 'opaque:new-b', 'opaque:new-c'];
+    const graph: SchematicGraph = {
+        ...empty,
+        nodes: [
+            node(fixedPortId, 'port', [
+                pin(fixedPortId, 'fixed-input', 'driver', 'right'),
+            ]),
+            node(newPortId, 'port', [
+                pin(newPortId, 'new-input', 'driver', 'right'),
+            ]),
+            node(outputPortId, 'port', [
+                pin(outputPortId, 'output', 'load', 'left'),
+            ]),
+            node(fixedInteriorId, 'instance'),
+            ...newInteriorIds.map(id => node(id, 'opaque')),
+        ],
+    };
+    const baseline = autoLayout(graph);
+    const existing: SchematicLayout = {
+        ...defaultLayout(),
+        nodes: {
+            [fixedPortId]: {
+                ...baseline.nodes[newPortId],
+                fixed: true,
+            },
+            [fixedInteriorId]: {
+                ...baseline.nodes[newInteriorIds[0]],
+                fixed: true,
+            },
+        },
+    };
+
+    const partial = autoLayout(graph, existing);
+
+    assert.deepStrictEqual(partial.nodes[fixedPortId], existing.nodes[fixedPortId]);
+    assert.deepStrictEqual(
+        partial.nodes[fixedInteriorId],
+        existing.nodes[fixedInteriorId]
+    );
+    assert.ok(partial.nodes[newPortId].x < partial.nodes[newInteriorIds[0]].x);
+    assert.ok(partial.nodes[outputPortId].x > partial.nodes[newInteriorIds[0]].x);
+    const movableIds = [newPortId, outputPortId, ...newInteriorIds];
+    const fixedIds = [fixedPortId, fixedInteriorId];
+    for (const fixedId of fixedIds) {
+        for (const movableId of movableIds) {
+            assertNodePairSeparated(graph, partial, fixedId, movableId);
+        }
+    }
+    for (let first = 0; first < movableIds.length; first += 1) {
+        for (let second = first + 1; second < movableIds.length; second += 1) {
+            assertNodePairSeparated(
+                graph,
+                partial,
+                movableIds[first],
+                movableIds[second]
+            );
+        }
+    }
+
+    const overlappingFixedGraph: SchematicGraph = {
+        ...empty,
+        nodes: [
+            node('opaque:fixed-a', 'opaque'),
+            node('opaque:fixed-b', 'opaque'),
+            node('opaque:new', 'opaque'),
+        ],
+    };
+    const overlappingBaseline = autoLayout(overlappingFixedGraph);
+    const overlappingCenter = overlappingBaseline.nodes['opaque:new'];
+    const overlappingFixed: SchematicLayout = {
+        ...defaultLayout(),
+        nodes: {
+            'opaque:fixed-a': { ...overlappingCenter, fixed: true },
+            'opaque:fixed-b': { ...overlappingCenter, fixed: true },
+        },
+    };
+    const avoided = autoLayout(overlappingFixedGraph, overlappingFixed);
+    assert.deepStrictEqual(
+        avoided.nodes['opaque:fixed-a'],
+        overlappingFixed.nodes['opaque:fixed-a']
+    );
+    assert.deepStrictEqual(
+        avoided.nodes['opaque:fixed-b'],
+        overlappingFixed.nodes['opaque:fixed-b']
+    );
+    assertNodePairSeparated(
+        overlappingFixedGraph,
+        avoided,
+        'opaque:fixed-a',
+        'opaque:new'
+    );
+    assertNodePairSeparated(
+        overlappingFixedGraph,
+        avoided,
+        'opaque:fixed-b',
+        'opaque:new'
+    );
+}
+
 async function testEmptyAndDisconnectedGraphs(): Promise<void> {
     const empty: SchematicGraph = {
         fileUri: 'file:///empty.sv',
@@ -489,15 +680,119 @@ async function testEmptyAndDisconnectedGraphs(): Promise<void> {
     );
 }
 
+async function testDeterministicFeedbackRoutes(): Promise<void> {
+    const nodeA = 'opaque:a';
+    const nodeB = 'opaque:b';
+    const nodeC = 'opaque:c';
+    const graph: SchematicGraph = {
+        fileUri: 'file:///feedback.sv',
+        moduleKey: 'module:feedback:0',
+        moduleName: 'feedback',
+        nodes: [
+            node(nodeA, 'opaque'),
+            node(nodeB, 'opaque'),
+            node(nodeC, 'opaque'),
+        ],
+        networks: [
+            {
+                id: 'network:forward',
+                name: 'forward',
+                width: { kind: 'known', bits: 1 },
+                endpoints: [
+                    { nodeId: nodeA, pinId: `${nodeA}:out`, role: 'driver' },
+                    { nodeId: nodeB, pinId: `${nodeB}:in`, role: 'load' },
+                ],
+            },
+            {
+                id: 'network:feedback-a',
+                name: 'feedback-a',
+                width: { kind: 'known', bits: 1 },
+                endpoints: [
+                    { nodeId: nodeB, pinId: `${nodeB}:out`, role: 'driver' },
+                    { nodeId: nodeA, pinId: `${nodeA}:in`, role: 'load' },
+                    { nodeId: nodeC, pinId: `${nodeC}:in`, role: 'load' },
+                ],
+            },
+            {
+                id: 'network:feedback-b',
+                name: 'feedback-b',
+                width: { kind: 'known', bits: 1 },
+                endpoints: [
+                    { nodeId: nodeC, pinId: `${nodeC}:out`, role: 'driver' },
+                    { nodeId: nodeB, pinId: `${nodeB}:in-2`, role: 'load' },
+                ],
+            },
+        ],
+        diagnostics: [],
+    };
+    const layout: SchematicLayout = {
+        ...defaultLayout(),
+        nodes: {
+            [nodeA]: { x: 100, y: 100, fixed: false },
+            [nodeB]: { x: 400, y: 100, fixed: false },
+            [nodeC]: { x: 700, y: 200, fixed: false },
+        },
+    };
+
+    const routes = deriveFeedbackRoutes(graph, layout);
+
+    assert.deepStrictEqual(routes.map(route => [
+        route.networkId,
+        route.side,
+        route.lane,
+    ]), [
+        ['network:feedback-a', 'top', 0],
+        ['network:feedback-b', 'bottom', 0],
+    ]);
+    const minNodeY = 100 - schematicNodeSize(graph.nodes[0]).height / 2;
+    const maxNodeY = 200 + schematicNodeSize(graph.nodes[2]).height / 2;
+    assert.ok(routes[0].trunk.y < minNodeY);
+    assert.ok(routes[1].trunk.y > maxNodeY);
+    assert.deepStrictEqual(routes[0].endpoints.map(endpoint => [
+        endpoint.nodeId,
+        endpoint.role,
+    ]), [
+        [nodeA, 'load'],
+        [nodeB, 'driver'],
+        [nodeC, 'load'],
+    ]);
+    for (const route of routes) {
+        assert.ok(route.trunk.x1 <= route.trunk.x2);
+        for (const endpoint of route.endpoints) {
+            const selectedNode = graph.nodes.find(candidate =>
+                candidate.id === endpoint.nodeId
+            )!;
+            const expectedY = layout.nodes[endpoint.nodeId].y
+                + (route.side === 'top' ? -1 : 1)
+                    * schematicNodeSize(selectedNode).height / 2;
+            assert.strictEqual(endpoint.y, expectedY);
+        }
+    }
+
+    const permutedGraph: SchematicGraph = {
+        ...graph,
+        nodes: [...graph.nodes].reverse(),
+        networks: [...graph.networks].reverse().map(network => ({
+            ...network,
+            endpoints: [...network.endpoints].reverse(),
+        })),
+    };
+    assert.deepStrictEqual(deriveFeedbackRoutes(permutedGraph, layout), routes);
+}
+
 async function main(): Promise<void> {
     await testRoundTripAndRematch();
     await testVersionValidationAndKeyIsolation();
     await testNormalizationAndNoEdgePersistence();
     await testStaleObjectCleanupAndClearFixed();
+    await testMergePreservesAllMatchedCoordinates();
+    await testMergePlacesNewNodesAroundMatchedNodes();
     await testClearFixedWaitsForPriorSave();
     await testDeterministicAutoLayoutAndColumns();
     await testPartialAndFullRelayout();
+    await testPartialLayoutAvoidsFixedObstacles();
     await testEmptyAndDisconnectedGraphs();
+    await testDeterministicFeedbackRoutes();
 
     console.log('Schematic layout tests passed');
 }
