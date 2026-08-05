@@ -422,6 +422,16 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             allow,
         };
     };
+    let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
+    let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
+    let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
+    let deferredQuickPickSelection: {
+        label: string;
+        description?: string;
+        definitionKey?: string;
+        name?: string;
+    } | undefined;
+    let runnerCalls = 0;
     let changeListener: ((uri: FakeUri) => unknown) | undefined;
     let createListener: ((uri: FakeUri) => unknown) | undefined;
     let deleteListener: ((uri: FakeUri) => unknown) | undefined;
@@ -431,6 +441,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let lastScanResult: {
         definitions: ModuleDefinitionEntry[];
         moduleFiles: Record<string, string>;
+        libDirs?: string[];
     } | undefined;
     let testbenchModuleMap: Record<string, string> = {};
     let persistedDependencyResult: unknown = null;
@@ -484,6 +495,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             this.indexedUris.add(uri);
             if (uri === unconfiguredWorkspaceUri) {
                 this.definitions.push(...unconfiguredWorkspaceDefinitions);
+            }
+            if (uri === topDefinition.uri
+                && !this.definitions.some(definition => definition.key === topDefinition.key)) {
+                this.definitions.push(topDefinition);
             }
         }
         async removeUri(uri: string): Promise<void> {
@@ -552,8 +567,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     }
     class FakeDependencyAnalyzer {
         constructor(readonly index: FakeIndex) {}
-        resolve(definitionKey: string) {
+        async resolve(definitionKey: string) {
             resolvedDefinitionKeys.push(definitionKey);
+            const gate = nextResolveGate;
+            nextResolveGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
             return {
                 topModule: 'top',
                 topDefinitionKey: definitionKey,
@@ -580,7 +601,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             showErrorMessage: async () => undefined,
             showQuickPick: async (items: Array<{ label: string; description?: string }>) => {
                 quickPickItems = items;
-                return undefined;
+                const gate = nextQuickPickGate;
+                nextQuickPickGate = undefined;
+                if (!gate) {
+                    return undefined;
+                }
+                gate.markStarted();
+                await gate.release;
+                return deferredQuickPickSelection;
             },
         },
         commands: {
@@ -655,7 +683,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         WorkspaceHdlIndex: FakeIndex,
         SimulationRunner: class {
             compileAndRun() {
-                return {
+                runnerCalls++;
+                const result = {
                     success: true,
                     exitCode: 0,
                     stdout: '',
@@ -663,6 +692,13 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                     elapsedTime: 0.01,
                     logEntries: [],
                 };
+                const gate = nextRunnerGate;
+                nextRunnerGate = undefined;
+                if (!gate) {
+                    return result;
+                }
+                gate.markStarted();
+                return gate.release.then(() => result);
             }
         }, LogParser: class {},
         MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
@@ -855,6 +891,155 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(Promise.all([staleScan, latestScan]), 'concurrent rescans');
         assert.deepStrictEqual(presentedLibDirs.at(-1), ['/latest-library']);
 
+        const forcedPreparationGate = createScanGate();
+        scanGates.set('file:///latest-library', forcedPreparationGate);
+        const instancesBeforeForcedPreparation = FakeIndex.instances.length;
+        const disposedPreparationIndex = FakeIndex.instances.at(-1)!;
+        const forcedPreparationScan = Promise.resolve(commands.get('veriflow.scanModules')!());
+        await withTimeout(forcedPreparationGate.started, 'preparation before workspace change');
+        workspaceFolders.push({ uri: FakeUri.parse('file:///secondary-workspace') });
+        const forcedWorkspaceRescan = Promise.resolve(workspaceFoldersListener!());
+        forcedPreparationGate.allow();
+        await withTimeout(
+            Promise.all([forcedPreparationScan, forcedWorkspaceRescan]),
+            'forced workspace preparation replacement'
+        );
+        assert.strictEqual(disposedPreparationIndex.disposed, true);
+        assert.ok(FakeIndex.instances.length > instancesBeforeForcedPreparation);
+        assert.deepStrictEqual(FakeIndex.instances.at(-1)?.scannedRoots.at(-1), [
+            workspaceRootUri,
+            'file:///latest-library',
+        ]);
+        assert.deepStrictEqual(lastScanResult?.libDirs, ['/latest-library']);
+
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'top migration before delayed picker root change'
+        );
+        const rootPickerGate = createScanGate();
+        nextQuickPickGate = rootPickerGate;
+        const delayedRootPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(rootPickerGate.started, 'delayed picker before root change');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        settings.libDirs = ['/picker-root'];
+        const pickerRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        rootPickerGate.allow();
+        await withTimeout(
+            Promise.all([delayedRootPicker, pickerRootChange]),
+            'delayed picker root invalidation'
+        );
+        assert.strictEqual(storedTop, undefined);
+
+        settings.libDirs = ['/latest-library'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'picker root recovery');
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'top migration before delayed picker deletion'
+        );
+        const deletionPickerGate = createScanGate();
+        nextQuickPickGate = deletionPickerGate;
+        const delayedDeletionPicker = Promise.resolve(commands.get('veriflow.selectTop')!());
+        await withTimeout(deletionPickerGate.started, 'delayed picker before definition deletion');
+        deferredQuickPickSelection = quickPickItems.find(item => item.label === 'top');
+        await withTimeout(
+            Promise.resolve(deleteListener!(FakeUri.parse(topDefinition.uri))),
+            'selected definition deletion'
+        );
+        deletionPickerGate.allow();
+        await withTimeout(delayedDeletionPicker, 'delayed picker deletion invalidation');
+        assert.strictEqual(storedTop, undefined);
+
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(createListener!(FakeUri.parse(topDefinition.uri))),
+            'selected definition restoration'
+        );
+
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'top migration before stale workflows'
+        );
+
+        const analyzeResolveGate = createScanGate();
+        nextResolveGate = analyzeResolveGate;
+        const staleAnalyze = Promise.resolve(commands.get('veriflow.analyze')!());
+        await withTimeout(analyzeResolveGate.started, 'stale analyze resolve');
+        settings.defines = { ASYNC_ANALYZE_INVALIDATED: true };
+        const analyzeConfigChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        }));
+        analyzeResolveGate.allow();
+        await withTimeout(
+            Promise.all([staleAnalyze, analyzeConfigChange]),
+            'stale analyze invalidation'
+        );
+        assert.notStrictEqual(analyzeStatus, 'completed');
+        assert.strictEqual(presentedAnalyzeResult, null);
+        assert.strictEqual(persistedDependencyResult, null);
+
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            'analysis before stale simulation resolve'
+        );
+        assert.strictEqual(analyzeStatus, 'completed');
+        const runnersBeforeStaleResolve = runnerCalls;
+        const simulateResolveGate = createScanGate();
+        nextResolveGate = simulateResolveGate;
+        const staleResolveSimulation = Promise.resolve(commands.get('veriflow.simulate')!());
+        await withTimeout(simulateResolveGate.started, 'stale simulation resolve');
+        settings.libDirs = ['/workflow-root'];
+        const simulationRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        simulateResolveGate.allow();
+        await withTimeout(
+            Promise.all([staleResolveSimulation, simulationRootChange]),
+            'stale simulation resolve invalidation'
+        );
+        assert.strictEqual(runnerCalls, runnersBeforeStaleResolve);
+        assert.notStrictEqual(simulateStatus, 'completed');
+        assert.strictEqual(persistedDependencyResult, null);
+
+        settings.libDirs = ['/latest-library'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'stale workflow root recovery');
+        storedTop = { definitionKey: '', name: 'top' };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'top migration after stale workflow root recovery'
+        );
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            'analysis before stale runner'
+        );
+        const runnerGate = createScanGate();
+        nextRunnerGate = runnerGate;
+        const staleRunnerSimulation = Promise.resolve(commands.get('veriflow.simulate')!());
+        await withTimeout(runnerGate.started, 'stale simulation runner');
+        settings.libDirs = ['/runner-root'];
+        const runnerRootChange = Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        }));
+        runnerGate.allow();
+        await withTimeout(
+            Promise.all([staleRunnerSimulation, runnerRootChange]),
+            'stale runner invalidation'
+        );
+        assert.strictEqual(simulateStatus, 'outdated');
+        assert.strictEqual(persistedDependencyResult, null);
+
+        settings.libDirs = ['/latest-library'];
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.libDirs',
+        })), 'post-workflow root recovery');
         storedTop = { definitionKey: '', name: 'top' };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.scanModules')!()),

@@ -66,6 +66,7 @@ let hdlParserExtensionPath: string | undefined;
 let hdlIndex: WorkspaceHdlIndex | undefined;
 let hdlIndexLoad: Promise<void> | undefined;
 let hdlIndexIdentity: string | undefined;
+let hdlIndexGeneration = 0;
 let hdlOperationTail: Promise<void> = Promise.resolve();
 let hdlPreparationInFlight: {
     identity: string;
@@ -77,8 +78,11 @@ let hdlScanInFlight: {
 } | undefined;
 let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
+let hdlWorkflowGeneration = 0;
 
 const HDL_PARSER_FINGERPRINT = 'tree-sitter-systemverilog-0.4.0';
+
+class HdlIndexPreparationInvalidatedError extends Error {}
 
 // 状态管理
 let _analyzeStatus: string = 'idle';
@@ -389,13 +393,29 @@ async function _getDependencyAnalyzer(
         depAnalyzer = new DependencyAnalyzer(index);
         hdlIndexLoad = index.load();
     }
-    return _finishDependencyIndexPreparation(
-        index,
-        depAnalyzer!,
-        hdlIndexLoad!,
-        rootUris,
-        defines
-    );
+    const analyzer = depAnalyzer!;
+    const load = hdlIndexLoad!;
+    const generation = hdlIndexGeneration;
+    try {
+        await _finishDependencyIndexPreparation(
+            index,
+            analyzer,
+            load,
+            rootUris,
+            defines
+        );
+        if (generation !== hdlIndexGeneration
+            || hdlIndex !== index
+            || hdlIndexIdentity !== rootIdentity) {
+            throw new HdlIndexPreparationInvalidatedError();
+        }
+        return analyzer;
+    } catch (error) {
+        if (generation === hdlIndexGeneration && hdlIndex === index) {
+            _resetDependencyIndex();
+        }
+        throw error;
+    }
 }
 
 function _resetDependencyIndex(): void {
@@ -404,6 +424,7 @@ function _resetDependencyIndex(): void {
     hdlIndexLoad = undefined;
     hdlIndexIdentity = undefined;
     depAnalyzer = undefined;
+    hdlIndexGeneration++;
     index?.dispose();
 }
 
@@ -427,14 +448,9 @@ function _prepareDependencyAnalyzer(
     }
     const preparation = {
         identity,
-        promise: _runDependencyOperation(async () => {
-            try {
-                return await _getDependencyAnalyzer(context, rootUris, defines);
-            } catch (error) {
-                _resetDependencyIndex();
-                throw error;
-            }
-        }),
+        promise: _runDependencyOperation(() =>
+            _getDependencyAnalyzer(context, rootUris, defines)
+        ),
     };
     hdlPreparationInFlight = preparation;
     const clearPreparation = (): void => {
@@ -490,6 +506,7 @@ export async function deactivate(): Promise<void> {
     hdlScanInFlight = undefined;
     hdlPresentationGeneration = 0;
     hdlPresentationRootIdentity = undefined;
+    hdlWorkflowGeneration = 0;
     _resetDependencyIndex();
     const parser = hdlParser;
     hdlParser = undefined;
@@ -641,6 +658,7 @@ function _duplicateModuleGroups(
 }
 
 function _invalidateDependencyPresentation(context: vscode.ExtensionContext): void {
+    hdlWorkflowGeneration++;
     _markOutdatedIfCompleted(context);
     treeProvider.setAnalyzeResult(null);
     void setDependencyResult(context, null);
@@ -648,6 +666,20 @@ function _invalidateDependencyPresentation(context: vscode.ExtensionContext): vo
     _pendingSimulateAfterAnalyze = false;
     _pendingWaveAfterAnalyze = false;
     _pendingWaveAfterSimulate = false;
+}
+
+function _isCurrentHdlWorkflow(generation: number): boolean {
+    return generation === hdlWorkflowGeneration;
+}
+
+function _isCurrentHdlPresentation(
+    generation: number,
+    rootIdentity: string | undefined,
+    index: WorkspaceHdlIndex | undefined
+): boolean {
+    return generation === hdlPresentationGeneration
+        && rootIdentity === hdlPresentationRootIdentity
+        && index === hdlIndex;
 }
 
 function _currentHdlRootIdentity(): string | undefined {
@@ -683,6 +715,7 @@ function _invalidateChangedHdlRootIdentity(
         return;
     }
     hdlPresentationGeneration++;
+    hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
     hdlPresentationRootIdentity = undefined;
     _resetDependencyIndex();
@@ -870,7 +903,14 @@ async function _scanModulesFromIndex(
         _filterHdlDefines(settings.defines)
     );
     return _runDependencyOperation(async () => {
-        await preparation;
+        try {
+            await preparation;
+        } catch (error) {
+            if (error instanceof HdlIndexPreparationInvalidatedError) {
+                return null;
+            }
+            throw error;
+        }
         const index = hdlIndex;
         if (!index) {
             return null;
@@ -920,7 +960,7 @@ async function _refreshIndexedUri(
     if (!admitted) {
         return;
     }
-    _markOutdatedIfCompleted(context);
+    _invalidateDependencyPresentation(context);
     const defines = _filterHdlDefines(settings.defines);
     const generation = ++hdlPresentationGeneration;
     await _runDependencyOperation(async () => {
@@ -1014,6 +1054,9 @@ async function cmdInstantiateModule(context: vscode.ExtensionContext): Promise<v
 
 async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     await cmdScanModules(context);
+    const generation = hdlPresentationGeneration;
+    const rootIdentity = hdlPresentationRootIdentity;
+    const index = hdlIndex;
     // 只从工作区目录的模块中选取
     const definitions = treeProvider.getWorkspaceDefinitions();
     if (definitions.length === 0) {
@@ -1036,24 +1079,39 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
         placeHolder: 'Select top module for simulation (workspace only)',
         matchOnDescription: true,
     });
-    if (selected) {
-        const selection: TopModuleSelection = {
-            definitionKey: selected.definitionKey,
-            name: selected.name,
-        };
-        treeProvider.topModule = selection;
-        await setTopModule(context, selection);
-        output.appendInfo(`Top module: ${selection.name}`);
+    if (!selected || !_isCurrentHdlPresentation(generation, rootIdentity, index)) {
+        return;
     }
+    const definition = index?.getDefinition(selected.definitionKey);
+    const workspaceDefinition = treeProvider.getWorkspaceDefinitions().find(candidate =>
+        candidate.workspace && candidate.key === definition?.key
+    );
+    if (!definition || !workspaceDefinition) {
+        return;
+    }
+    const selection: TopModuleSelection = {
+        definitionKey: definition.key,
+        name: definition.name,
+    };
+    await setTopModule(context, selection);
+    if (!_isCurrentHdlPresentation(generation, rootIdentity, index)) {
+        treeProvider.topModule = undefined;
+        await setTopModule(context, undefined);
+        return;
+    }
+    treeProvider.topModule = selection;
+    output.appendInfo(`Top module: ${selection.name}`);
 }
 
 async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+    const workflowGeneration = hdlWorkflowGeneration;
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
+        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1069,16 +1127,27 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo(`Analyzing: top=${topModule}, root=${root}`);
     statusBarItem.text = '$(search) VeriFlow: analyzing...';
 
-    const result = await _resolveDependencies(
-        context,
-        root,
-        settings,
-        topSelection.definitionKey
-    );
-    treeProvider.setAnalyzeResult(result);
+    let result: DependencyResult;
+    try {
+        result = await _resolveDependencies(
+            context,
+            root,
+            settings,
+            topSelection.definitionKey
+        );
+    } catch (error) {
+        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        throw error;
+    }
+    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
 
     // 保存结果和状态
     await setDependencyResult(context, result);
+    if (!_isCurrentHdlWorkflow(workflowGeneration)) {
+        await setDependencyResult(context, null);
+        return;
+    }
+    treeProvider.setAnalyzeResult(result);
     _saveDepFileHashes(context, result);
 
     const ambiguousNames = Object.keys(result.ambiguousModules);
@@ -1119,10 +1188,12 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
 async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+    const workflowGeneration = hdlWorkflowGeneration;
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
+        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1158,12 +1229,19 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo('========================================');
     statusBarItem.text = '$(run) VeriFlow: simulating...';
 
-    const depResult = await _resolveDependencies(
-        context,
-        root,
-        settings,
-        topSelection.definitionKey
-    );
+    let depResult: DependencyResult;
+    try {
+        depResult = await _resolveDependencies(
+            context,
+            root,
+            settings,
+            topSelection.definitionKey
+        );
+    } catch (error) {
+        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+        throw error;
+    }
+    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
     const ambiguousNames = Object.keys(depResult.ambiguousModules);
     if (depResult.missingModules.length > 0 || ambiguousNames.length > 0) {
         if (depResult.missingModules.length > 0) {
@@ -1183,9 +1261,11 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendLine('');
     const outFile = path.join(root, `${topModule}.out`);
 
-    const result = simRunner.compileAndRun(
+    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
+    const result = await Promise.resolve(simRunner.compileAndRun(
         depResult.files, outFile, simulator, root, topModule
-    );
+    ));
+    if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
 
     if (result.stdout) {
         for (const line of result.stdout.split('\n')) {
@@ -1215,7 +1295,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     // 如果有挂起的波形请求，继续执行
     if (_pendingWaveAfterSimulate) {
         _pendingWaveAfterSimulate = false;
-        if (result.success) {
+        if (result.success && _isCurrentHdlWorkflow(workflowGeneration)) {
             await _doOpenWave(context, root, topModule, settings);
         }
     }
@@ -1224,10 +1304,12 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
 async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
+    const workflowGeneration = hdlWorkflowGeneration;
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
         await cmdSelectTop(context);
+        if (!_isCurrentHdlWorkflow(workflowGeneration)) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -1256,7 +1338,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     }
 
     // 都已完成
-    if (fs.existsSync(waveFile)) {
+    if (fs.existsSync(waveFile) && _isCurrentHdlWorkflow(workflowGeneration)) {
         await _doOpenWave(context, root, topModule, settings);
         return;
     }
