@@ -1,0 +1,285 @@
+import * as assert from 'assert';
+import * as fs from 'fs';
+
+import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
+import { buildSchematicGraph } from '../schematic/graphBuilder';
+import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
+import { fixturePath } from './helpers/fixturePath';
+
+async function testGoldenGraph(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const document = await parseWithRealWorker(fixture, fs.readFileSync(fixture, 'utf8'));
+    const module = document.modules.find(item => item.name === 'top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+
+    assert.deepStrictEqual(graph.nodes.map(node => [node.kind, node.label]), [
+        ['port', 'clk'],
+        ['instance', 'u_child'],
+        ['expression', "1'b1"],
+        ['opaque', 'next_data'],
+        ['port', 'done'],
+    ]);
+    const child = graph.nodes.find(node => node.id === 'instance:u_child')!;
+    assert.strictEqual(child.subtitle, 'child');
+    assert.deepStrictEqual(child.pins.map(pin => [pin.name, pin.side]), [
+        ['clk', 'left'],
+        ['enable', 'left'],
+        ['done', 'right'],
+    ]);
+    assert.strictEqual(graph.networks.find(net => net.name === 'clk')?.endpoints.length, 2);
+    assert.strictEqual(graph.fileUri, document.uri);
+    assert.strictEqual(graph.moduleKey, module.id);
+}
+
+async function testStructuralEdgeCases(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const document = await parseWithRealWorker(fixture, fs.readFileSync(fixture, 'utf8'));
+    const module = document.modules.find(item => item.name === 'edge_top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+
+    const shared = graph.nodes.find(node => node.id === 'port:shared')!;
+    assert.strictEqual(shared.pins[0].direction, 'bidirectional');
+    assert.strictEqual(shared.pins[0].side, 'bottom');
+
+    const fanout = graph.networks.find(network => network.name === 'source')!;
+    const expressions = graph.nodes.filter(node =>
+        node.kind === 'expression' && node.label === 'source & shared'
+    );
+    assert.deepStrictEqual(fanout.endpoints, [
+        {
+            nodeId: 'port:source',
+            pinId: 'port:source:source',
+            role: 'driver',
+        },
+        {
+            nodeId: 'instance:u_fanout',
+            pinId: 'instance:u_fanout:clk',
+            role: 'load',
+        },
+        {
+            nodeId: 'instance:u_raw',
+            pinId: 'instance:u_raw:clk',
+            role: 'load',
+        },
+        {
+            nodeId: expressions[0].id,
+            pinId: `${expressions[0].id}:source`,
+            role: 'load',
+        },
+        {
+            nodeId: expressions[1].id,
+            pinId: `${expressions[1].id}:source`,
+            role: 'load',
+        },
+    ]);
+
+    const constant = graph.nodes.find(node =>
+        node.kind === 'constant' && node.label === "1'b0"
+    )!;
+    assert.ok(constant);
+    assert.strictEqual(constant.pins[0].direction, 'driver');
+    assert.ok(graph.networks.find(network => network.name === 'constant_out')
+        ?.endpoints.some(endpoint => endpoint.nodeId === constant.id));
+
+    assert.strictEqual(expressions.length, 2);
+    for (const expression of expressions) {
+        assert.deepStrictEqual(expression.pins.map(pin => [pin.name, pin.direction]), [
+            ['source', 'load'],
+            ['shared', 'load'],
+            ['value', 'driver'],
+        ]);
+    }
+
+    const unconnected = graph.nodes.find(node => node.id === 'instance:u_fanout')!
+        .pins.find(pin => pin.name === 'enable')!;
+    assert.ok(unconnected);
+    assert.ok(graph.networks.every(network =>
+        network.endpoints.every(endpoint => endpoint.pinId !== unconnected.id)
+    ));
+
+    assert.deepStrictEqual(
+        buildSchematicGraph(document, module, new Map()),
+        graph
+    );
+}
+
+async function testExternalDefinitionBinding(): Promise<void> {
+    const uri = 'memory:/external-top.sv';
+    const source = [
+        'module external_top(input logic a, output logic y);',
+        '    external_child u_external(.a(a), .y(y));',
+        '    external_child u_wildcard(.*);',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(uri, source);
+    const module = document.modules[0];
+    const definition: HdlDefinitionSummary = {
+        key: 'module:file:///lib/external-child.sv:17',
+        kind: 'module',
+        name: 'external_child',
+        uri: 'file:///lib/external-child.sv',
+        declarationStart: 17,
+        declarationLine: 2,
+        parameters: [],
+        ports: [
+            { name: 'a', direction: 'input', width: { kind: 'known', bits: 1 } },
+            { name: 'b', direction: 'input', width: { kind: 'known', bits: 1 } },
+            { name: 'y', direction: 'output', width: { kind: 'known', bits: 1 } },
+        ],
+        dependencies: [],
+        modelFingerprint: 'fixture',
+    };
+    const graph = buildSchematicGraph(document, module, new Map(
+        module.instances.map(instance => [instance.id, definition])
+    ));
+    const node = graph.nodes.find(candidate => candidate.id === 'instance:u_external')!;
+
+    assert.strictEqual(node.definitionKey, definition.key);
+    assert.deepStrictEqual(node.pins.map(pin => pin.name), ['a', 'b', 'y']);
+    assert.ok(graph.networks.every(network =>
+        network.endpoints.every(endpoint => endpoint.pinId !== 'instance:u_external:b')
+    ));
+    for (const pinName of ['a', 'y']) {
+        assert.ok(graph.networks.find(network => network.name === pinName)
+            ?.endpoints.some(endpoint =>
+                endpoint.pinId === `instance:u_wildcard:${pinName}`
+            ));
+    }
+    assert.ok(graph.networks.every(network =>
+        network.endpoints.every(endpoint => endpoint.pinId !== 'instance:u_wildcard:b')
+    ));
+
+    const firstInstance = module.instances[0];
+    const wrongBinding = { ...definition, name: 'different_child' };
+    const unboundGraph = buildSchematicGraph(
+        document,
+        module,
+        new Map([[firstInstance.id, wrongBinding]])
+    );
+    const unbound = unboundGraph.nodes.find(
+        candidate => candidate.id === 'instance:u_external'
+    )!;
+    assert.strictEqual(unbound.definitionKey, undefined);
+    assert.deepStrictEqual(unbound.pins, []);
+}
+
+async function testDuplicateLocalDefinitionIsUnbound(): Promise<void> {
+    const uri = 'memory:/duplicate-local.sv';
+    const source = [
+        'module duplicate(input logic first); endmodule',
+        'module duplicate(input logic second, output logic result); endmodule',
+        'module duplicate_top(input logic first, output logic result);',
+        '    duplicate u_duplicate(.first(first), .result(result));',
+        'endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(uri, source);
+    const module = document.modules.find(item => item.name === 'duplicate_top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+    const instance = graph.nodes.find(node => node.id === 'instance:u_duplicate')!;
+
+    assert.strictEqual(instance.definitionKey, undefined);
+    assert.deepStrictEqual(instance.pins, []);
+}
+
+async function testIncludedObjectsAreReadOnly(): Promise<void> {
+    const parent = fixturePath('hdl', 'schematic-includes.sv');
+    const ports = fixturePath('hdl', 'schematic-ports.svh');
+    const body = fixturePath('hdl', 'schematic-body.svh');
+    const item = fixturePath('hdl', 'schematic-instance-item.svh');
+    const child = fixturePath('hdl', 'schematic-child.svh');
+    const document = await parseWithRealWorker(parent, fs.readFileSync(parent, 'utf8'), {
+        defines: {},
+        resolvedIncludes: [
+            {
+                fromUri: parent,
+                rawPath: 'schematic-child.svh',
+                resolvedUri: child,
+                text: fs.readFileSync(child, 'utf8'),
+            },
+            {
+                fromUri: parent,
+                rawPath: 'schematic-ports.svh',
+                resolvedUri: ports,
+                text: fs.readFileSync(ports, 'utf8'),
+            },
+            {
+                fromUri: parent,
+                rawPath: 'schematic-body.svh',
+                resolvedUri: body,
+                text: fs.readFileSync(body, 'utf8'),
+            },
+            {
+                fromUri: parent,
+                rawPath: 'schematic-instance-item.svh',
+                resolvedUri: item,
+                text: fs.readFileSync(item, 'utf8'),
+            },
+        ],
+    });
+    const module = document.modules.find(item => item.name === 'include_top')!;
+    const graph = buildSchematicGraph(document, module, new Map());
+    const local = graph.nodes.find(node => node.id === 'port:local_clk')!;
+    const includedPort = graph.nodes.find(node => node.id === 'port:included_enable')!;
+    const includedInstance = graph.nodes.find(
+        node => node.id === 'instance:included_instance'
+    )!;
+
+    assert.strictEqual(local.readOnly, false);
+    assert.strictEqual(includedPort.readOnly, true);
+    assert.strictEqual(includedPort.pins[0].readOnly, true);
+    assert.strictEqual(includedPort.sourceSpan?.uri, ports);
+    assert.strictEqual(includedPort.sourceSpan?.compositeParts, undefined);
+    assert.strictEqual(includedInstance.readOnly, true);
+    assert.ok(includedInstance.pins.every(pin => pin.readOnly));
+    assert.strictEqual(includedInstance.sourceSpan?.uri, body);
+    assert.strictEqual(includedInstance.sourceSpan?.compositeParts, undefined);
+    assert.deepStrictEqual(
+        graph.nodes.filter(node => node.kind === 'instance').map(node => node.label),
+        [
+            'local_before',
+            'included_instance',
+            'local_after',
+            'foreign_instance',
+            'local_group_before',
+            'included_group',
+            'local_group_after',
+        ]
+    );
+    for (const localName of ['local_group_before', 'local_group_after']) {
+        assert.strictEqual(
+            graph.nodes.find(node => node.id === `instance:${localName}`)?.readOnly,
+            false
+        );
+    }
+    const includedGroup = graph.nodes.find(node => node.id === 'instance:included_group')!;
+    assert.strictEqual(includedGroup.readOnly, true);
+    assert.strictEqual(includedGroup.sourceSpan?.uri, item);
+    const foreignDefinition = document.modules.find(node => node.name === 'foreign_child')!;
+    assert.strictEqual(
+        graph.nodes.find(node => node.id === 'instance:foreign_instance')?.definitionKey,
+        `module:${child}:${foreignDefinition.declarationSpan.start}`
+    );
+    assert.ok(graph.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
+        && diagnostic.span?.uri === ports
+    ));
+    assert.ok(graph.diagnostics.some(diagnostic =>
+        diagnostic.code === 'HDL_FOREIGN_SOURCE_READ_ONLY'
+        && diagnostic.span?.uri === body
+    ));
+}
+
+async function main(): Promise<void> {
+    await testGoldenGraph();
+    await testStructuralEdgeCases();
+    await testExternalDefinitionBinding();
+    await testDuplicateLocalDefinitionIsUnbound();
+    await testIncludedObjectsAreReadOnly();
+
+    console.log('Schematic graph tests passed');
+}
+
+void main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
