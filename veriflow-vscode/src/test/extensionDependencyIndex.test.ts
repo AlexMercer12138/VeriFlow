@@ -2,6 +2,12 @@ import * as assert from 'assert';
 import Module = require('module');
 import * as path from 'path';
 
+import {
+    createHdlParserClient,
+    HdlParserClient,
+    WorkspaceHdlIndex as RealWorkspaceHdlIndex,
+} from '../core/hdl';
+
 type Defines = Record<string, string | boolean>;
 
 type Settings = {
@@ -171,12 +177,50 @@ class FakeWorkspaceHdlIndex {
 type ExtensionHarness = {
     events: string[];
     existingUris: Set<string>;
+    files: Map<string, string>;
     settings: Settings;
     hooks: IndexHooks;
     folder: { uri: FakeUri };
     analyze(): Promise<void>;
+    scan(): Promise<void>;
+    setFile(uri: string, text: string): void;
+    setNextCommitGate(gate: ScanGate): void;
+    failNextExactWatcher(filename: string, error: Error): void;
+    fireWatchEvent(kind: WatchEventKind, uri: string): Promise<void>;
+    getScanResult(): ModuleScanResult | null;
+    getRealIndex(): RealWorkspaceHdlIndex | undefined;
     dispose(): Promise<void>;
 };
+
+type ScanGate = {
+    started: Promise<void>;
+    markStarted(): void;
+    release: Promise<void>;
+    allow(): void;
+};
+
+type WatchEventKind = 'change' | 'create' | 'delete';
+
+type WatcherRecord = {
+    pattern: FakeRelativePattern;
+    disposed: boolean;
+    listeners: Partial<Record<WatchEventKind, (uri: FakeUri) => unknown>>;
+};
+
+type ModuleScanResult = {
+    definitions: Array<{ name: string }>;
+};
+
+function createScanGate(): ScanGate {
+    let markStarted!: () => void;
+    let allow!: () => void;
+    return {
+        started: new Promise<void>(resolve => { markStarted = resolve; }),
+        markStarted,
+        release: new Promise<void>(resolve => { allow = resolve; }),
+        allow,
+    };
+}
 
 function defaultSettings(): Settings {
     return {
@@ -192,17 +236,29 @@ function defaultSettings(): Settings {
     };
 }
 
-function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
+function createExtensionHarness(
+    hooks: IndexHooks = {},
+    useRealIndex = false
+): ExtensionHarness {
     const events: string[] = [];
     const existingUris = new Set<string>();
+    const files = new Map<string, string>();
+    const fileVersions = new Map<string, number>();
     const settings = defaultSettings();
     const folder = { uri: FakeUri.parse('file:///workspace') };
     const commands = new Map<string, () => Promise<void>>();
     const disposable = { dispose(): void {} };
     const workspaceState = new Map<string, unknown>();
+    const watcherRecords: WatcherRecord[] = [];
+    const realIndexes: RealWorkspaceHdlIndex[] = [];
+    let nextCommitGate: ScanGate | undefined;
+    let nextExactWatcherFailure: { filename: string; error: Error } | undefined;
+    let latestScanResult: ModuleScanResult | null = null;
     let workspaceReady = false;
     const context = {
-        extensionPath: path.join('D:', 'Extensions', 'VeriFlow'),
+        extensionPath: useRealIndex
+            ? path.resolve(__dirname, '..', '..')
+            : path.join('D:', 'Extensions', 'VeriFlow'),
         subscriptions: [] as unknown[],
         workspaceState: {
             get<T>(key: string, fallback?: T): T | undefined {
@@ -220,10 +276,13 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
     }
 
     class FakeDependencyAnalyzer {
-        constructor(private readonly index: FakeWorkspaceHdlIndex) {}
+        constructor(private readonly index: FakeWorkspaceHdlIndex | RealWorkspaceHdlIndex) {}
 
         resolve(top: string) {
-            events.push(`resolve:${Object.keys(this.index.currentDefines).sort().join('+')}`);
+            const defines = this.index instanceof FakeWorkspaceHdlIndex
+                ? this.index.currentDefines
+                : {};
+            events.push(`resolve:${Object.keys(defines).sort().join('+')}`);
             return {
                 topModule: top.replace(/^module:/, ''),
                 topDefinitionKey: top,
@@ -239,7 +298,7 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
     class FakeModuleTreeProvider {
         topModule = '';
         analyzeResult: unknown;
-        setScanResult(): void {}
+        setScanResult(result: ModuleScanResult | null): void { latestScanResult = result; }
         setAnalyzeResult(result: unknown): void { this.analyzeResult = result; }
         getWorkspaceModuleNames(): string[] { return ['top']; }
     }
@@ -250,6 +309,69 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
         setOnVisible(): void {}
         setModuleMap(): void {}
     }
+
+    class MemoryWorkspaceIndexStore {
+        load(): undefined { return undefined; }
+        async stage(): Promise<void> {
+            events.push('stage-index');
+            const gate = nextCommitGate;
+            nextCommitGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
+        }
+        async save(): Promise<void> { events.push('save-index'); }
+        async discardStaged(): Promise<void> { events.push('discard-staged-index'); }
+    }
+
+    const setFile = (uri: string, text: string): void => {
+        files.set(uri, text);
+        existingUris.add(uri);
+        fileVersions.set(uri, (fileVersions.get(uri) ?? 0) + 1);
+    };
+
+    const readDirectory = (directory: FakeUri): [string, number][] => {
+        const entries = new Map<string, number>();
+        const prefix = directory.path.endsWith('/') ? directory.path : `${directory.path}/`;
+        for (const uriValue of files.keys()) {
+            const uri = FakeUri.parse(uriValue);
+            if (uri.scheme !== directory.scheme
+                || uri.authority !== directory.authority
+                || !uri.path.startsWith(prefix)) {
+                continue;
+            }
+            const relative = uri.path.slice(prefix.length);
+            if (!relative) {
+                continue;
+            }
+            const [name, ...rest] = relative.split('/');
+            entries.set(name, rest.length === 0 ? 1 : 2);
+        }
+        return [...entries.entries()].sort(([left], [right]) => left.localeCompare(right));
+    };
+
+    const watcherMatches = (record: WatcherRecord, uri: FakeUri): boolean => {
+        const basePath = path.posix.normalize(record.pattern.baseUri.path);
+        const uriPath = path.posix.normalize(uri.path);
+        const prefix = basePath.endsWith('/') ? basePath : `${basePath}/`;
+        if (record.pattern.baseUri.scheme !== uri.scheme
+            || record.pattern.baseUri.authority !== uri.authority
+            || (uriPath !== basePath && !uriPath.startsWith(prefix))) {
+            return false;
+        }
+        const relative = uriPath === basePath ? '' : uriPath.slice(prefix.length);
+        if (record.pattern.pattern === '**/*.{v,sv,vh,svh}') {
+            return ['.v', '.sv', '.vh', '.svh'].includes(
+                path.posix.extname(relative).toLowerCase()
+            );
+        }
+        const literal = record.pattern.pattern
+            .replace(/\[\[]/g, '[')
+            .replace(/\[\]]/g, ']')
+            .replace(/\[([*?{}])\]/g, '$1');
+        return relative === literal;
+    };
 
     FakeWorkspaceHdlIndex.instances = [];
     const vscodeStub = {
@@ -277,23 +399,56 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
         workspace: {
             workspaceFolders: [folder],
             fs: {
-                async readDirectory(): Promise<[string, number][]> { return []; },
-                async readFile(): Promise<Uint8Array> { return new Uint8Array(); },
-                async stat(uri: FakeUri): Promise<{ type: number; mtime: number; size: number }> {
-                    if (existingUris.has(uri.toString())) {
-                        return { type: 1, mtime: 1, size: 1 };
+                async readDirectory(uri: FakeUri): Promise<[string, number][]> {
+                    return readDirectory(uri);
+                },
+                async readFile(uri: FakeUri): Promise<Uint8Array> {
+                    const text = files.get(uri.toString());
+                    if (text === undefined) {
+                        throw new Error(`not found: ${uri.toString()}`);
                     }
-                    throw new Error(`not found: ${uri.toString()}`);
+                    events.push(`read:${uri.toString()}:${fileVersions.get(uri.toString()) ?? 1}`);
+                    return Buffer.from(text);
+                },
+                async stat(uri: FakeUri): Promise<{ type: number; mtime: number; size: number }> {
+                    const uriValue = uri.toString();
+                    if (existingUris.has(uriValue)) {
+                        return {
+                            type: 1,
+                            mtime: fileVersions.get(uriValue) ?? 1,
+                            size: Buffer.byteLength(files.get(uriValue) ?? ''),
+                        };
+                    }
+                    throw new Error(`not found: ${uriValue}`);
                 },
             },
             onDidChangeConfiguration: () => disposable,
             onDidChangeWorkspaceFolders: () => disposable,
-            createFileSystemWatcher: () => ({
-                ...disposable,
-                onDidChange(): void {},
-                onDidCreate(): void {},
-                onDidDelete(): void {},
-            }),
+            createFileSystemWatcher(pattern: FakeRelativePattern) {
+                if (nextExactWatcherFailure?.filename === pattern.pattern) {
+                    const error = nextExactWatcherFailure.error;
+                    nextExactWatcherFailure = undefined;
+                    throw error;
+                }
+                const record: WatcherRecord = {
+                    pattern,
+                    disposed: false,
+                    listeners: {},
+                };
+                watcherRecords.push(record);
+                return {
+                    dispose(): void { record.disposed = true; },
+                    onDidChange(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.change = listener;
+                    },
+                    onDidCreate(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.create = listener;
+                    },
+                    onDidDelete(listener: (uri: FakeUri) => unknown): void {
+                        record.listeners.delete = listener;
+                    },
+                };
+            },
         },
     };
     const configStub = {
@@ -307,26 +462,53 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
         setSimulateStatus: async () => undefined,
         getDependencyResult: () => null,
         setDependencyResult: async () => undefined,
+        resolveTopModuleSelection: (
+            stored: { definitionKey: string; name: string } | undefined,
+            definitions: Array<{ key: string; name: string }>
+        ) => {
+            if (!stored) {
+                return undefined;
+            }
+            const selected = definitions.find(definition =>
+                definition.key === stored.definitionKey
+            ) ?? definitions.find(definition => definition.name === stored.name);
+            return selected
+                ? { definitionKey: selected.key, name: selected.name }
+                : undefined;
+        },
     };
+    class TrackingRealWorkspaceHdlIndex extends RealWorkspaceHdlIndex {
+        constructor(options: ConstructorParameters<typeof RealWorkspaceHdlIndex>[0]) {
+            super(options);
+            realIndexes.push(this);
+        }
+    }
     const coreStub = {
         DependencyAnalyzer: FakeDependencyAnalyzer,
-        WorkspaceHdlIndex: class extends FakeWorkspaceHdlIndex {
-            constructor(options: IndexOptions) { super(options, hooks, events); }
-        },
+        WorkspaceHdlIndex: useRealIndex
+            ? TrackingRealWorkspaceHdlIndex
+            : class extends FakeWorkspaceHdlIndex {
+                constructor(options: IndexOptions) { super(options, hooks, events); }
+            },
         SimulationRunner: class {},
         LogParser: class {},
+        formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
         MODULE_DECL_RE: /module\s+([A-Za-z_$][\w$]*)/g,
         listVerilogFiles: () => [],
         readText: () => '',
         preprocessVerilog: (value: string) => value,
         removeComments: (value: string) => value,
-        createHdlParserClient: () => new FakeParserClient(),
-        HdlParserClient: FakeParserClient,
+        createHdlParserClient: useRealIndex
+            ? createHdlParserClient
+            : () => new FakeParserClient(),
+        HdlParserClient: useRealIndex ? HdlParserClient : FakeParserClient,
     };
     const dependencyStubs: Record<string, unknown> = {
         './config': configStub,
         './core': coreStub,
-        './core/hdl/workspaceIndexStore': { WorkspaceIndexStore: class {} },
+        './core/hdl/workspaceIndexStore': {
+            WorkspaceIndexStore: useRealIndex ? MemoryWorkspaceIndexStore : class {},
+        },
         './moduleTreeProvider': { ModuleTreeProvider: FakeModuleTreeProvider },
         './moduleInstantiationCommand': { showModuleInstantiationPicker: async () => undefined },
         './testbenchPanel': { TestbenchPanelProvider: FakeTestbenchPanelProvider },
@@ -369,10 +551,29 @@ function createExtensionHarness(hooks: IndexHooks = {}): ExtensionHarness {
     return {
         events,
         existingUris,
+        files,
         settings,
         hooks,
         folder,
         analyze: () => commands.get('veriflow.analyze')!(),
+        scan: () => commands.get('veriflow.scanModules')!(),
+        setFile,
+        setNextCommitGate(gate: ScanGate): void { nextCommitGate = gate; },
+        failNextExactWatcher(filename: string, error: Error): void {
+            nextExactWatcherFailure = { filename, error };
+        },
+        async fireWatchEvent(kind: WatchEventKind, uriValue: string): Promise<void> {
+            const uri = FakeUri.parse(uriValue);
+            const matching = watcherRecords.filter(record =>
+                !record.disposed && watcherMatches(record, uri)
+            );
+            await Promise.all(matching.map(record =>
+                Promise.resolve(record.listeners[kind]?.(uri))
+            ));
+            await new Promise<void>(resolve => setImmediate(resolve));
+        },
+        getScanResult: () => latestScanResult,
+        getRealIndex: () => realIndexes.at(-1),
         async dispose(): Promise<void> {
             await extension.deactivate();
             delete require.cache[require.resolve('../extension')];
@@ -673,6 +874,126 @@ async function testRemoteUncAbsoluteInclude(): Promise<void> {
     }
 }
 
+async function testProvisionalIncludeWatchersCoverInitialScanWindow(): Promise<void> {
+    const topUri = 'file:///workspace/top.sv';
+    const localIncludeUri = 'file:///workspace/ports.inc';
+    const externalCandidateUri = 'file:///external/includes/future.inc';
+    const harness = createExtensionHarness({}, true);
+    const commitGate = createScanGate();
+    try {
+        harness.settings.libDirs = ['/external/includes'];
+        harness.setFile(topUri, [
+            'module top(',
+            '`include "ports.inc"',
+            ');',
+            'endmodule',
+            '`include "future.inc"',
+        ].join('\n'));
+        harness.setFile(localIncludeUri, 'input logic old_port');
+        harness.setNextCommitGate(commitGate);
+
+        const scan = harness.scan();
+        await commitGate.started;
+        assert.ok(harness.events.includes(`read:${localIncludeUri}:1`));
+
+        harness.setFile(localIncludeUri, 'input logic new_port');
+        harness.setFile(externalCandidateUri, '`define FUTURE_INCLUDE 1');
+        const localChange = harness.fireWatchEvent('change', localIncludeUri);
+        const externalCreate = harness.fireWatchEvent('create', externalCandidateUri);
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        commitGate.allow();
+        await Promise.all([scan, localChange, externalCreate]);
+
+        const top = harness.getRealIndex()?.findDefinitions('top', 'module').at(0);
+        assert.deepStrictEqual(top?.ports.map(port => port.name), ['new_port']);
+        assert.ok(harness.events.includes(`read:${localIncludeUri}:2`));
+        assert.ok(harness.events.includes(`read:${externalCandidateUri}:1`));
+        assert.deepStrictEqual(
+            harness.getRealIndex()?.getDependentsOfInclude(externalCandidateUri),
+            [topUri]
+        );
+    } finally {
+        commitGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testProvisionalResolvedExternalWatcherAdmitsPreCommitChange(): Promise<void> {
+    const topUri = 'file:///workspace/top.sv';
+    const externalIncludeUri = 'file:///outside/ports.inc';
+    const harness = createExtensionHarness({}, true);
+    const commitGate = createScanGate();
+    try {
+        harness.setFile(topUri, [
+            'module top(',
+            `\`include "${externalIncludeUri}"`,
+            ');',
+            'endmodule',
+        ].join('\n'));
+        harness.setFile(externalIncludeUri, 'input logic old_external_port');
+        harness.setNextCommitGate(commitGate);
+
+        const scan = harness.scan();
+        await commitGate.started;
+        assert.ok(harness.events.includes(`read:${externalIncludeUri}:1`));
+
+        harness.setFile(externalIncludeUri, 'input logic new_external_port');
+        const externalChange = harness.fireWatchEvent('change', externalIncludeUri);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        commitGate.allow();
+        await Promise.all([scan, externalChange]);
+
+        const top = harness.getRealIndex()?.findDefinitions('top', 'module').at(0);
+        assert.deepStrictEqual(
+            top?.ports.map(port => port.name),
+            ['new_external_port']
+        );
+        assert.ok(harness.events.includes(`read:${externalIncludeUri}:2`));
+    } finally {
+        commitGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testProvisionalWatcherFailureDisposesCandidateAndRetries(): Promise<void> {
+    const topUri = 'file:///workspace/top.sv';
+    const localIncludeUri = 'file:///workspace/ports.inc';
+    const harness = createExtensionHarness({}, true);
+    try {
+        harness.setFile(topUri, [
+            'module top(',
+            '`include "ports.inc"',
+            ');',
+            'endmodule',
+        ].join('\n'));
+        harness.setFile(localIncludeUri, 'input logic recovered_port');
+        harness.failNextExactWatcher(
+            'ports.inc',
+            new Error('provisional watcher construction failed')
+        );
+
+        await assert.rejects(
+            harness.scan(),
+            /provisional watcher construction failed/
+        );
+        assert.ok(!harness.events.includes('stage-index'));
+        const failedIndex = harness.getRealIndex()!;
+        assert.strictEqual(harness.getScanResult(), null);
+        await assert.rejects(
+            failedIndex.scan(['file:///workspace']),
+            /disposed/
+        );
+
+        await harness.scan();
+        assert.notStrictEqual(harness.getRealIndex(), failedIndex);
+        const top = harness.getRealIndex()?.findDefinitions('top', 'module').at(0);
+        assert.deepStrictEqual(top?.ports.map(port => port.name), ['recovered_port']);
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testAbsoluteIncludeReviewCases(): Promise<void> {
     const tests: Array<[string, () => Promise<void>]> = [
         ['Windows absolute include', testWindowsAbsoluteInclude],
@@ -698,6 +1019,9 @@ async function testAbsoluteIncludeReviewCases(): Promise<void> {
 
 async function main(): Promise<void> {
     await testRejectedIndexLoadCanRetry();
+    await testProvisionalWatcherFailureDisposesCandidateAndRetries();
+    await testProvisionalResolvedExternalWatcherAdmitsPreCommitChange();
+    await testProvisionalIncludeWatchersCoverInitialScanWindow();
     await testDependencyPreparationIsSingleFlight();
     await testConcurrentMatchingPreparationIsShared();
     await testLibDirOrderControlsIncludePriority();

@@ -114,6 +114,8 @@ type HdlWatchRegistry = {
     indexGeneration: number;
     index: WorkspaceHdlIndex | undefined;
     watchers: vscode.FileSystemWatcher[];
+    watcherPatternKeys: Set<string>;
+    provisionalIncludeUris: Set<string>;
     pendingEvents: Map<string, HdlWatchEvent>;
     flushScheduled: boolean;
 };
@@ -437,7 +439,8 @@ function _createWorkspaceHdlIndex(
         }
         return [...new Set(candidates.map(candidate => candidate.toString()))];
     };
-    return new WorkspaceHdlIndex({
+    let index!: WorkspaceHdlIndex;
+    index = new WorkspaceHdlIndex({
         parser: getHdlParser(context),
         store,
         parserFingerprint: `${HDL_PARSER_FINGERPRINT}:${crypto.createHash('sha256')
@@ -474,10 +477,22 @@ function _createWorkspaceHdlIndex(
             };
         },
         includeCandidates,
-        async resolveInclude(fromUri: string, includePath: string) {
+        onIncludeWatchUrisDiscovered(uris: string[]): void {
+            _addProvisionalHdlWatchers(
+                context,
+                index,
+                rootUris.map(root => root.toString()),
+                uris
+            );
+        },
+        async resolveInclude(
+            fromUri: string,
+            includePath: string,
+            candidates = includeCandidates(fromUri, includePath)
+        ) {
             _throwIfHdlLifecycleStopped(lifecycleGeneration);
             const seen = new Set<string>();
-            for (const candidateValue of includeCandidates(fromUri, includePath)) {
+            for (const candidateValue of candidates) {
                 _throwIfHdlLifecycleStopped(lifecycleGeneration);
                 const candidate = vscode.Uri.parse(candidateValue);
                 const exists = !seen.has(candidateValue) && await _isFile(candidate);
@@ -490,6 +505,7 @@ function _createWorkspaceHdlIndex(
             return undefined;
         },
     });
+    return index;
 }
 
 async function _getDependencyAnalyzer(
@@ -1155,6 +1171,74 @@ function _requeueHdlWatchEvent(
     return _queueHdlWatchEvent(context, currentRegistry, uri, remove);
 }
 
+type HdlWatchPatternValue = { base: vscode.Uri; pattern: string };
+
+function _hdlWatchPatternKey(patternValue: HdlWatchPatternValue): string {
+    return `${patternValue.base.toString()}\0${patternValue.pattern}`;
+}
+
+function _exactHdlWatchPattern(uriValue: string): HdlWatchPatternValue | undefined {
+    const uri = vscode.Uri.parse(uriValue);
+    const filename = path.posix.basename(uri.path);
+    return filename ? {
+        base: uri.with({ path: path.posix.dirname(uri.path) }),
+        pattern: filename.replace(/([*?{}\[\]])/g, '[$1]'),
+    } : undefined;
+}
+
+function _addHdlWatcher(
+    context: vscode.ExtensionContext,
+    registry: HdlWatchRegistry,
+    patternValue: HdlWatchPatternValue
+): void {
+    const patternKey = _hdlWatchPatternKey(patternValue);
+    if (registry.watcherPatternKeys.has(patternKey)) {
+        return;
+    }
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(patternValue.base, patternValue.pattern)
+    );
+    try {
+        watcher.onDidChange(uri => _queueHdlWatchEvent(context, registry, uri, false));
+        watcher.onDidCreate(uri => _queueHdlWatchEvent(context, registry, uri, false));
+        watcher.onDidDelete(uri => _queueHdlWatchEvent(context, registry, uri, true));
+    } catch (error) {
+        watcher.dispose();
+        throw error;
+    }
+    registry.watchers.push(watcher);
+    registry.watcherPatternKeys.add(patternKey);
+}
+
+function _addProvisionalHdlWatchers(
+    context: vscode.ExtensionContext,
+    index: WorkspaceHdlIndex,
+    rootUris: string[],
+    uriValues: string[]
+): void {
+    const registry = hdlWatchRegistry;
+    if (!registry
+        || registry.index !== index
+        || registry.rootIdentity !== JSON.stringify(rootUris)
+        || !_isCurrentHdlWatchRegistry(registry)) {
+        return;
+    }
+    for (const uriValue of [...new Set(uriValues)].sort()) {
+        const uri = vscode.Uri.parse(uriValue);
+        const coveredByBroadWatcher = _isHdlUri(uri) && rootUris.some(rootUri =>
+            isSourceUriWithinRoot(uriValue, rootUri)
+        );
+        if (coveredByBroadWatcher) {
+            continue;
+        }
+        const patternValue = _exactHdlWatchPattern(uriValue);
+        if (patternValue) {
+            _addHdlWatcher(context, registry, patternValue);
+            registry.provisionalIncludeUris.add(uriValue);
+        }
+    }
+}
+
 function _reconcileHdlWatchers(
     context: vscode.ExtensionContext,
     rootUris: string[],
@@ -1165,7 +1249,7 @@ function _reconcileHdlWatchers(
         return;
     }
     const rootIdentity = JSON.stringify(rootUris);
-    const patternValues: Array<{ base: vscode.Uri; pattern: string }> = rootUris.map(root => ({
+    const patternValues: HdlWatchPatternValue[] = rootUris.map(root => ({
         base: vscode.Uri.parse(root),
         pattern: HDL_WATCH_GLOB,
     }));
@@ -1175,22 +1259,15 @@ function _reconcileHdlWatchers(
             ...plan.resolvedExternalIncludeUris,
             ...plan.unresolvedExternalCandidateUris,
         ]) {
-            const uri = vscode.Uri.parse(uriValue);
-            const filename = path.posix.basename(uri.path);
-            if (filename) {
-                patternValues.push({
-                    base: uri.with({ path: path.posix.dirname(uri.path) }),
-                    pattern: filename.replace(/([*?{}\[\]])/g, '[$1]'),
-                });
+            const patternValue = _exactHdlWatchPattern(uriValue);
+            if (patternValue) {
+                patternValues.push(patternValue);
             }
         }
     }
-    const uniquePatterns = new Map<string, { base: vscode.Uri; pattern: string }>();
+    const uniquePatterns = new Map<string, HdlWatchPatternValue>();
     for (const patternValue of patternValues) {
-        uniquePatterns.set(
-            `${patternValue.base.toString()}\0${patternValue.pattern}`,
-            patternValue
-        );
+        uniquePatterns.set(_hdlWatchPatternKey(patternValue), patternValue);
     }
     const registry: HdlWatchRegistry = {
         version: hdlWatchRegistryVersion + 1,
@@ -1200,18 +1277,14 @@ function _reconcileHdlWatchers(
         indexGeneration: hdlIndexGeneration,
         index,
         watchers: [],
+        watcherPatternKeys: new Set(),
+        provisionalIncludeUris: new Set(),
         pendingEvents: new Map(),
         flushScheduled: false,
     };
     try {
         for (const patternValue of uniquePatterns.values()) {
-            const watcher = vscode.workspace.createFileSystemWatcher(
-                new vscode.RelativePattern(patternValue.base, patternValue.pattern)
-            );
-            watcher.onDidChange(uri => _queueHdlWatchEvent(context, registry, uri, false));
-            watcher.onDidCreate(uri => _queueHdlWatchEvent(context, registry, uri, false));
-            watcher.onDidDelete(uri => _queueHdlWatchEvent(context, registry, uri, true));
-            registry.watchers.push(watcher);
+            _addHdlWatcher(context, registry, patternValue);
         }
     } catch (error) {
         for (const watcher of registry.watchers) {
@@ -1579,7 +1652,8 @@ async function _refreshIndexedUri(
     let admitted = rootUris.some(rootUri =>
         isSourceUriWithinRoot(uriValue, rootUri)
     ) || currentIndex?.getFile(uriValue) !== undefined
-        || (currentIndex?.getDependentsOfInclude(uriValue).length ?? 0) > 0;
+        || (currentIndex?.getDependentsOfInclude(uriValue).length ?? 0) > 0
+        || watcherRegistry?.provisionalIncludeUris.has(uriValue) === true;
     if (!admitted && !remove && currentIndex) {
         admitted = await currentIndex.canResolveUnresolvedInclude(
             uriValue,

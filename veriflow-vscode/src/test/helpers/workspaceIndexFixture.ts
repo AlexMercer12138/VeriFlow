@@ -173,9 +173,13 @@ export function createWorkspaceIndexHarness(
             };
         },
         includeCandidates,
-        async resolveInclude(fromUri: string, includePath: string) {
+        async resolveInclude(
+            fromUri: string,
+            includePath: string,
+            candidates = includeCandidates(fromUri, includePath)
+        ) {
             includeResolveCalls.push({ fromUri, includePath });
-            return includeCandidates(fromUri, includePath).find(candidate => files.has(candidate));
+            return candidates.find(candidate => files.has(candidate));
         },
     });
     const harness: WorkspaceIndexHarness = {

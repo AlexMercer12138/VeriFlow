@@ -50,7 +50,12 @@ export type WorkspaceHdlIndexOptions = {
         size: number;
     }>;
     includeCandidates(fromUri: string, includePath: string): string[];
-    resolveInclude(fromUri: string, includePath: string): Promise<string | undefined>;
+    onIncludeWatchUrisDiscovered?(uris: string[]): void;
+    resolveInclude(
+        fromUri: string,
+        includePath: string,
+        candidates?: readonly string[]
+    ): Promise<string | undefined>;
 };
 
 function hash(value: unknown): string {
@@ -723,9 +728,14 @@ export class WorkspaceHdlIndex {
         for (const file of this.files.values()) {
             for (const include of file.unresolvedIncludes ?? []) {
                 this.checkpoint(signal);
-                const resolved = await this.options.resolveInclude(
+                const candidates = this.discoverIncludeWatchUris(
                     include.fromUri,
                     include.rawPath
+                );
+                const resolved = await this.options.resolveInclude(
+                    include.fromUri,
+                    include.rawPath,
+                    candidates
                 );
                 this.checkpoint(signal);
                 if (resolved
@@ -798,12 +808,20 @@ export class WorkspaceHdlIndex {
                     continue;
                 }
                 attempted.add(key);
-                const resolvedUri = await this.options.resolveInclude(fromUri, include.path);
+                const candidates = this.discoverIncludeWatchUris(fromUri, include.path);
+                const resolvedUri = await this.options.resolveInclude(
+                    fromUri,
+                    include.path,
+                    candidates
+                );
                 this.checkpoint(signal);
                 if (!resolvedUri) {
                     continue;
                 }
                 const canonicalResolvedUri = canonicalizeSourceUri(resolvedUri);
+                if (!candidates.includes(canonicalResolvedUri)) {
+                    this.options.onIncludeWatchUrisDiscovered?.([canonicalResolvedUri]);
+                }
                 if (excludedUris.has(canonicalResolvedUri)) {
                     continue;
                 }
@@ -820,6 +838,15 @@ export class WorkspaceHdlIndex {
                 return current;
             }
         }
+    }
+
+    private discoverIncludeWatchUris(fromUri: string, includePath: string): string[] {
+        const candidates = [...new Set(this.options.includeCandidates(fromUri, includePath)
+            .map(candidate => canonicalizeSourceUri(candidate)))];
+        if (candidates.length > 0) {
+            this.options.onIncludeWatchUrisDiscovered?.(candidates);
+        }
+        return candidates;
     }
 
     private async readFile(
