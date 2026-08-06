@@ -64,6 +64,7 @@ type ProviderHarness = {
     shownText: Array<{ uri: string; selection: { start: number; end: number } }>;
     completedTextEffects: string[];
     openedSchematics: string[];
+    focusEvents: string[];
     diagnostics: Array<{ uri: string; count: number }>;
     deletedDiagnosticUris: string[];
     parseCallCount(): number;
@@ -79,6 +80,7 @@ type ProviderHarness = {
     send(message: unknown): void;
     changeDocument(text: string, version: number): void;
     focusedTextUri(): string | undefined;
+    focusedSurface(): string | undefined;
     disposePanel(): void;
     dispose(): Promise<void>;
 };
@@ -123,6 +125,8 @@ async function createProviderHarness(
     const completedTextEffects: string[] = [];
     let focusedTextUri: string | undefined;
     const openedSchematics: string[] = [];
+    const focusEvents: string[] = [];
+    let focusedSurface: string | undefined;
     const diagnostics: ProviderHarness['diagnostics'] = [];
     const deletedDiagnosticUris: string[] = [];
     const disposable = { dispose(): void {} };
@@ -134,7 +138,10 @@ async function createProviderHarness(
     const panel = {
         active: true,
         viewColumn: 1,
-        reveal(): void {},
+        reveal(): void {
+            focusedSurface = `schematic:${resource.toString()}`;
+            focusEvents.push(focusedSurface);
+        },
         webview: {
             options: {},
             html: '',
@@ -236,6 +243,8 @@ async function createProviderHarness(
                 }
                 completedTextEffects.push(sourceUri);
                 focusedTextUri = sourceUri;
+                focusedSurface = `text:${sourceUri}`;
+                focusEvents.push(focusedSurface);
                 return {
                     selection: undefined as unknown,
                     revealRange(selection: { start: number; end: number }): void {
@@ -254,7 +263,10 @@ async function createProviderHarness(
             async executeCommand(command: string, ...args: unknown[]): Promise<void> {
                 await options?.executeCommand?.(command, ...args);
                 if (command === 'vscode.openWith' && args[0] instanceof FakeUri) {
-                    openedSchematics.push(args[0].toString());
+                    const openedUri = args[0].toString();
+                    openedSchematics.push(openedUri);
+                    focusedSurface = `schematic:${openedUri}`;
+                    focusEvents.push(focusedSurface);
                 }
             },
         },
@@ -376,6 +388,7 @@ async function createProviderHarness(
         shownText,
         completedTextEffects,
         openedSchematics,
+        focusEvents,
         diagnostics,
         deletedDiagnosticUris,
         parseCallCount(): number { return parseCalls; },
@@ -397,6 +410,7 @@ async function createProviderHarness(
             documentListener!({ document });
         },
         focusedTextUri(): string | undefined { return focusedTextUri; },
+        focusedSurface(): string | undefined { return focusedSurface; },
         disposePanel(): void { disposeListener!(); },
         async dispose(): Promise<void> {
             disposeListener?.();
@@ -404,6 +418,164 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+async function testWebviewSelectionRestoresFocusAfterInFlightTextEffect(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const firstUri = 'file:///workspace/first.sv';
+    const text = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(sourceUri, text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const firstGate = createGate();
+    try {
+        harness.setShowTextGate(firstUri, firstGate);
+        harness.send({
+            type: 'revealSource',
+            span: { uri: firstUri, start: 1, end: 2 },
+        });
+        await firstGate.started;
+
+        const secondKey = harness.moduleKeys[1];
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph' && event.graph.moduleKey === secondKey
+            ),
+            'newer selection graph before text effect completion'
+        );
+        firstGate.allow();
+        await waitFor(
+            () => harness.completedTextEffects.includes(firstUri),
+            'in-flight text effect completion'
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(harness.focusEvents, [
+            `text:${firstUri}`,
+            `schematic:${sourceUri}`,
+        ]);
+        assert.strictEqual(harness.focusedSurface(), `schematic:${sourceUri}`);
+        const latestGraph = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.strictEqual(latestGraph?.type, 'graph');
+        assert.strictEqual(latestGraph.graph.moduleKey, secondKey);
+    } finally {
+        firstGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testWebviewSelectionRestoresFocusAfterInFlightOpenEffect(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const targetUri = 'file:///workspace/target.sv';
+    const text = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(sourceUri, text);
+    const definition = indexedModule('target', targetUri, 0, 'a');
+    const openGate = createGate();
+    const harness = await createProviderHarness(
+        new Map([[text, document]]),
+        text,
+        undefined,
+        {
+            async executeCommand(_command, uri): Promise<void> {
+                if (uri instanceof FakeUri && uri.toString() === targetUri) {
+                    openGate.markStarted();
+                    await openGate.release;
+                }
+            },
+        }
+    );
+    try {
+        harness.setIndexDefinitions([definition]);
+        harness.send({ type: 'openDefinition', definitionKey: definition.key });
+        await openGate.started;
+
+        const secondKey = harness.moduleKeys[1];
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph' && event.graph.moduleKey === secondKey
+            ),
+            'newer selection graph before open effect completion'
+        );
+        openGate.allow();
+        await waitFor(
+            () => harness.openedSchematics.includes(targetUri),
+            'in-flight schematic open completion'
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(harness.focusEvents, [
+            `schematic:${targetUri}`,
+            `schematic:${sourceUri}`,
+        ]);
+        assert.strictEqual(harness.focusedSurface(), `schematic:${sourceUri}`);
+        const latestGraph = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.strictEqual(latestGraph?.type, 'graph');
+        assert.strictEqual(latestGraph.graph.moduleKey, secondKey);
+    } finally {
+        openGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testQueuedPanelSelectionReportsWhenNewerSelectionSkipsItsFocus(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const firstUri = 'file:///workspace/first.sv';
+    const text = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(sourceUri, text);
+    const navigation = new SchematicNavigationRegistry();
+    const harness = await createProviderHarness(
+        new Map([[text, document]]),
+        text,
+        undefined,
+        { navigation }
+    );
+    const firstGate = createGate();
+    try {
+        harness.setShowTextGate(firstUri, firstGate);
+        harness.send({
+            type: 'revealSource',
+            span: { uri: firstUri, start: 1, end: 2 },
+        });
+        await firstGate.started;
+
+        const [firstKey, secondKey] = harness.moduleKeys;
+        const skippedSelection = navigation.findPreferred(sourceUri)!.selectModule(secondKey);
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph' && event.graph.moduleKey === secondKey
+            ),
+            'queued target selection graph'
+        );
+        harness.send({ type: 'selectModule', moduleKey: firstKey });
+        await waitFor(
+            () => harness.messages.filter(event => event.type === 'graph').at(-1)
+                ?.graph.moduleKey === firstKey,
+            'newer target selection graph'
+        );
+        firstGate.allow();
+        const executed = await skippedSelection;
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.strictEqual(executed, false);
+        assert.deepStrictEqual(harness.focusEvents, [
+            `text:${firstUri}`,
+            `schematic:${sourceUri}`,
+        ]);
+        assert.strictEqual(harness.focusedSurface(), `schematic:${sourceUri}`);
+    } finally {
+        firstGate.allow();
+        await harness.dispose();
+    }
 }
 
 async function testInFlightTextEffectsCompleteInIntentOrder(): Promise<void> {
@@ -1509,7 +1681,10 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
     }
 }
 
-void testRejectedInFlightOpenDoesNotPoisonNewerIntent()
+void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
+    .then(testWebviewSelectionRestoresFocusAfterInFlightOpenEffect)
+    .then(testQueuedPanelSelectionReportsWhenNewerSelectionSkipsItsFocus)
+    .then(testRejectedInFlightOpenDoesNotPoisonNewerIntent)
     .then(testInFlightTextEffectsCompleteInIntentOrder)
     .then(testInFlightOpenEffectsCompleteInIntentOrder)
     .then(testPreCancelledTargetClearsPendingSelection)

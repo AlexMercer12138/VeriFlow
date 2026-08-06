@@ -476,20 +476,35 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 await publishSnapshot(snapshot);
             }
         };
+        const revealPanel = (): void => {
+            panel.reveal(panel.viewColumn);
+            this.navigation.markFocused(handle);
+        };
         const handle: SchematicPanelHandle = {
             uri,
             reveal: async () => {
                 const operation = beginNavigation();
+                let revealed = false;
                 await operation.runEffect(() => {
-                    panel.reveal(panel.viewColumn);
-                    this.navigation.markFocused(handle);
+                    revealPanel();
+                    revealed = true;
                 });
+                return revealed;
             },
             selectModule: async (definitionKey, options) => {
-                if (!options?.preserveNavigation) {
-                    invalidateNavigation();
+                if (options?.preserveNavigation) {
+                    await selectModule(definitionKey);
+                    return;
                 }
+                const operation = beginNavigation();
                 await selectModule(definitionKey);
+                let revealed = false;
+                await operation.runEffect(() => {
+                    if (options?.isCurrent && !options.isCurrent()) return;
+                    revealPanel();
+                    revealed = true;
+                });
+                return revealed;
             },
         };
         ensureRegistered = () => {

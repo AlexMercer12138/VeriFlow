@@ -139,11 +139,52 @@ async function testSameKeyRollbackKeepsNewerPendingInvocation(): Promise<void> {
     await secondOpen;
 }
 
+async function testSkippedAtomicPreferredSelectionDoesNotFallbackReveal(): Promise<void> {
+    const registry = new SchematicNavigationRegistry();
+    const source = panel('file:///workspace/source.sv');
+    const targetUri = 'file:///workspace/target.sv';
+    const definitionKey = `module:${targetUri}:0`;
+    const selected: Array<{ key: string; insideSourceEffect: boolean }> = [];
+    let revealCount = 0;
+    let insideSourceEffect = false;
+    const target: SchematicPanelHandle = {
+        uri: targetUri,
+        reveal(): void { revealCount += 1; },
+        selectModule(key: string): boolean {
+            selected.push({ key, insideSourceEffect });
+            return false;
+        },
+    };
+    registry.register(target);
+    registry.markFocused(target);
+
+    await openSchematicDefinition(source, definitionKey, registry, {
+        getDefinition: () => ({ key: definitionKey, uri: targetUri }),
+        async openSchematic(): Promise<void> {
+            throw new Error('preferred panel should handle navigation');
+        },
+    }, {
+        isCurrent: () => true,
+        async runEffect(effect): Promise<void> {
+            insideSourceEffect = true;
+            try {
+                await effect();
+            } finally {
+                insideSourceEffect = false;
+            }
+        },
+    });
+
+    assert.deepStrictEqual(selected, [{ key: definitionKey, insideSourceEffect: false }]);
+    assert.strictEqual(revealCount, 0);
+}
+
 testMostRecentlyFocusedLivePanelWins();
 testDisposedAndUnregisteredPanelsCannotBecomePreferred();
 testPendingModuleKeysAreExactAndOneShot();
 testPendingRollbackIsCompareProtected();
-void testSameKeyRollbackKeepsNewerPendingInvocation()
+void testSkippedAtomicPreferredSelectionDoesNotFallbackReveal()
+    .then(testSameKeyRollbackKeepsNewerPendingInvocation)
     .then(() => console.log('schematic navigation registry tests passed'))
     .catch(error => {
         console.error(error);

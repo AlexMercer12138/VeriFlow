@@ -2,11 +2,14 @@ import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
 
 export type SchematicPanelHandle = {
     uri: string;
-    reveal(): Promise<void> | void;
+    reveal(): boolean | void | Promise<boolean | void>;
     selectModule(
         definitionKey: string,
-        options?: { preserveNavigation?: boolean }
-    ): Promise<void> | void;
+        options?: {
+            preserveNavigation?: boolean;
+            isCurrent?: () => boolean;
+        }
+    ): boolean | void | Promise<boolean | void>;
 };
 
 export type SchematicSourceNavigationPorts<Document, Position> = {
@@ -95,19 +98,27 @@ export async function openSchematicDefinition(
         }
     };
     if (definition.uri === currentPanel.uri) {
-        await runEffect(() => currentPanel.selectModule(
-            definition.key,
-            { preserveNavigation: true }
-        ));
+        await runEffect(async () => {
+            await currentPanel.selectModule(
+                definition.key,
+                { preserveNavigation: true }
+            );
+        });
         return;
     }
     const preferred = registry.findPreferred(definition.uri);
     if (preferred) {
-        await runEffect(async () => {
+        if (operation) {
+            await operation.runEffect(() => undefined);
+            if (!operation.isCurrent()) return;
+        }
+        const selected = await preferred.selectModule(
+            definition.key,
+            operation ? { isCurrent: operation.isCurrent } : undefined
+        );
+        if (selected === undefined && (!operation || operation.isCurrent())) {
             await preferred.reveal();
-            if (operation && !operation.isCurrent()) return;
-            await preferred.selectModule(definition.key);
-        });
+        }
         return;
     }
     await runEffect(async () => {
