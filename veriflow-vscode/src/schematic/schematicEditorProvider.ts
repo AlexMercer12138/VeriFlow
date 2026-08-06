@@ -17,8 +17,10 @@ import {
     openSchematicDefinition,
     revealSchematicSource,
     SchematicDiagnosticPublisher,
+    type SchematicNavigationOperation,
     type SchematicNavigationRegistry,
     type SchematicPanelHandle,
+    type SchematicPendingNavigationLease,
 } from './navigationRegistry';
 import { parseWebviewCommand, type HostEvent } from './protocol';
 import {
@@ -199,13 +201,61 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const diagnosticOwner = {};
         const graphBuilds = new SchematicBuildGeneration<HdlDocument>();
-        let consumePendingSelection = true;
+        let pendingSelectionLease = this.navigation.pendingLease(uri);
         let registration: { dispose(): void } | undefined;
         let ensureRegistered = (): void => undefined;
         let refreshAbortController: AbortController | undefined;
         let publishGeneration = 0;
         let currentPublishSnapshot: SchematicPublishSnapshot | undefined;
+        let navigationGeneration = 0;
+        let activePendingLease: SchematicPendingNavigationLease | undefined;
         const layoutIntents = new Map<string, SchematicLayout>();
+
+        const clearPendingSelectionLease = (): void => {
+            if (!pendingSelectionLease) return;
+            this.navigation.clearPendingLease(pendingSelectionLease);
+            pendingSelectionLease = undefined;
+        };
+        const consumePendingSelectionLease = (): string | undefined => {
+            if (!pendingSelectionLease) return undefined;
+            const lease = pendingSelectionLease;
+            pendingSelectionLease = undefined;
+            return this.navigation.consumePendingLease(lease);
+        };
+        if (token.isCancellationRequested) {
+            clearPendingSelectionLease();
+        }
+        const clearActivePendingLease = (): void => {
+            if (!activePendingLease) return;
+            this.navigation.clearPendingLease(activePendingLease);
+            activePendingLease = undefined;
+        };
+        const invalidateNavigation = (): void => {
+            navigationGeneration += 1;
+            clearActivePendingLease();
+        };
+        const beginNavigation = (): SchematicNavigationOperation => {
+            invalidateNavigation();
+            const generation = navigationGeneration;
+            const isCurrent = (): boolean => generation === navigationGeneration
+                && !state.disposed
+                && !token.isCancellationRequested;
+            return {
+                isCurrent,
+                ownPendingLease: lease => {
+                    if (!isCurrent()) {
+                        this.navigation.clearPendingLease(lease);
+                        return;
+                    }
+                    activePendingLease = lease;
+                },
+                releasePendingLease: lease => {
+                    if (activePendingLease?.token === lease.token) {
+                        activePendingLease = undefined;
+                    }
+                },
+            };
+        };
 
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) {
@@ -363,10 +413,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     parsed.uri,
                     parsed.modules
                 );
-                const pending = consumePendingSelection
-                    ? this.navigation.consumePending(uri)
-                    : undefined;
-                consumePendingSelection = false;
+                const pending = consumePendingSelectionLease();
                 state.selectedModuleKey = selectSchematicModuleKey(
                     state.modules,
                     pending,
@@ -391,6 +438,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     && !token.isCancellationRequested
                     && generation === state.refreshGeneration
                 ) {
+                    clearPendingSelectionLease();
                     state.errorMessage = error instanceof Error
                         ? error.message
                         : String(error);
@@ -420,10 +468,16 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             uri,
             reveal: () => {
                 if (state.disposed) return;
+                invalidateNavigation();
                 panel.reveal(panel.viewColumn);
                 this.navigation.markFocused(handle);
             },
-            selectModule,
+            selectModule: async (definitionKey, options) => {
+                if (!options?.preserveNavigation) {
+                    invalidateNavigation();
+                }
+                await selectModule(definitionKey);
+            },
         };
         ensureRegistered = () => {
             if (state.disposed || token.isCancellationRequested || registration) return;
@@ -434,6 +488,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const tokenSubscription = token.onCancellationRequested(() => {
             refreshAbortController?.abort();
+            clearPendingSelectionLease();
+            invalidateNavigation();
         });
 
         const messageSubscription = panel.webview.onDidReceiveMessage(message => {
@@ -450,7 +506,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         }
                         return;
                     case 'selectModule':
-                        await selectModule(command.moduleKey);
+                        await handle.selectModule(command.moduleKey);
                         return;
                     case 'saveLayout':
                         if (!state.modules.some(module =>
@@ -492,61 +548,78 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         if (!isCurrentPublish(invocationGeneration)) return;
                         return;
                     }
-                    case 'revealSource':
-                        await revealSchematicSource(uri, command.span, {
-                            async openTextDocument(sourceUri) {
-                                const sourceDocument = await vscode.workspace.openTextDocument(
-                                    vscode.Uri.parse(sourceUri)
-                                );
-                                return {
-                                    document: sourceDocument,
-                                    positionAt: offset => sourceDocument.positionAt(offset),
-                                };
-                            },
-                            async showTextDocument(sourceDocument, selection) {
-                                const editor = await vscode.window.showTextDocument(
-                                    sourceDocument
-                                );
-                                editor.selection = new vscode.Selection(
-                                    selection.start,
-                                    selection.end
-                                );
-                                editor.revealRange(new vscode.Range(
-                                    selection.start,
-                                    selection.end
-                                ));
-                            },
-                        });
-                        return;
-                    case 'openDefinition':
-                        await openSchematicDefinition(
-                            handle,
-                            command.definitionKey,
-                            this.navigation,
-                            {
-                                getDefinition: async definitionKey => {
-                                    const live = state.modules.find(module =>
-                                        module.key === definitionKey
+                    case 'revealSource': {
+                        const operation = beginNavigation();
+                        try {
+                            await revealSchematicSource(uri, command.span, {
+                                async openTextDocument(sourceUri) {
+                                    const sourceDocument = await vscode.workspace.openTextDocument(
+                                        vscode.Uri.parse(sourceUri)
                                     );
-                                    if (live) {
-                                        return { key: live.key, uri };
-                                    }
-                                    const index = state.index ?? await this.services.getIndex(
-                                        document,
-                                        indexOwner
-                                    );
-                                    return index?.getDefinition(definitionKey);
+                                    return {
+                                        document: sourceDocument,
+                                        positionAt: offset => sourceDocument.positionAt(offset),
+                                    };
                                 },
-                                async openSchematic(sourceUri) {
-                                    await vscode.commands.executeCommand(
-                                        'vscode.openWith',
-                                        vscode.Uri.parse(sourceUri),
-                                        SchematicEditorProvider.viewType
+                                async showTextDocument(sourceDocument, selection) {
+                                    if (!operation.isCurrent()) return;
+                                    const editor = await vscode.window.showTextDocument(
+                                        sourceDocument
                                     );
+                                    if (!operation.isCurrent()) return;
+                                    editor.selection = new vscode.Selection(
+                                        selection.start,
+                                        selection.end
+                                    );
+                                    editor.revealRange(new vscode.Range(
+                                        selection.start,
+                                        selection.end
+                                    ));
                                 },
+                            }, operation);
+                        } catch (error) {
+                            if (operation.isCurrent()) {
+                                await reportError(error);
                             }
-                        );
+                        }
                         return;
+                    }
+                    case 'openDefinition': {
+                        const operation = beginNavigation();
+                        try {
+                            await openSchematicDefinition(
+                                handle,
+                                command.definitionKey,
+                                this.navigation,
+                                {
+                                    getDefinition: async definitionKey => {
+                                        const live = state.modules.find(module =>
+                                            module.key === definitionKey
+                                        );
+                                        if (live) {
+                                            return { key: live.key, uri };
+                                        }
+                                        const index = state.index
+                                            ?? await this.services.getIndex(document, indexOwner);
+                                        return index?.getDefinition(definitionKey);
+                                    },
+                                    async openSchematic(sourceUri) {
+                                        await vscode.commands.executeCommand(
+                                            'vscode.openWith',
+                                            vscode.Uri.parse(sourceUri),
+                                            SchematicEditorProvider.viewType
+                                        );
+                                    },
+                                },
+                                operation
+                            );
+                        } catch (error) {
+                            if (operation.isCurrent()) {
+                                await reportError(error);
+                            }
+                        }
+                        return;
+                    }
                     case 'search':
                         return;
                 }
@@ -574,6 +647,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             state.refreshGeneration++;
             publishGeneration++;
             refreshAbortController?.abort();
+            clearPendingSelectionLease();
+            invalidateNavigation();
             graphBuilds.invalidate();
             void this.diagnosticPublisher.clear(diagnosticOwner);
             registration?.dispose();

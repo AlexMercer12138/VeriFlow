@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import {
+    openSchematicDefinition,
     SchematicNavigationRegistry,
     SchematicPanelHandle,
 } from '../schematic/navigationRegistry';
@@ -9,6 +10,30 @@ function panel(uri: string): SchematicPanelHandle {
         uri,
         reveal(): void {},
         selectModule(): void {},
+    };
+}
+
+type Deferred = {
+    started: Promise<void>;
+    resolveStarted(): void;
+    pending: Promise<void>;
+    resolve(): void;
+    reject(error: Error): void;
+};
+
+function deferred(): Deferred {
+    let resolveStarted!: () => void;
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    return {
+        started: new Promise(done => { resolveStarted = done; }),
+        resolveStarted,
+        pending: new Promise((done, fail) => {
+            resolve = done;
+            reject = fail;
+        }),
+        resolve,
+        reject,
     };
 }
 
@@ -85,8 +110,42 @@ function testPendingRollbackIsCompareProtected(): void {
     assert.strictEqual(registry.consumePending(uri), second);
 }
 
+async function testSameKeyRollbackKeepsNewerPendingInvocation(): Promise<void> {
+    const registry = new SchematicNavigationRegistry();
+    const source = panel('file:///workspace/source.sv');
+    const targetUri = 'file:///workspace/target.sv';
+    const definitionKey = `module:${targetUri}:0`;
+    const first = deferred();
+    const second = deferred();
+    let invocation = 0;
+    const ports = {
+        getDefinition: () => ({ key: definitionKey, uri: targetUri }),
+        async openSchematic(): Promise<void> {
+            const gate = invocation++ === 0 ? first : second;
+            gate.resolveStarted();
+            await gate.pending;
+        },
+    };
+
+    const firstOpen = openSchematicDefinition(source, definitionKey, registry, ports);
+    await first.started;
+    const secondOpen = openSchematicDefinition(source, definitionKey, registry, ports);
+    await second.started;
+    first.reject(new Error('older open failed'));
+    await assert.rejects(firstOpen, /older open failed/);
+
+    assert.strictEqual(registry.consumePending(targetUri), definitionKey);
+    second.resolve();
+    await secondOpen;
+}
+
 testMostRecentlyFocusedLivePanelWins();
 testDisposedAndUnregisteredPanelsCannotBecomePreferred();
 testPendingModuleKeysAreExactAndOneShot();
 testPendingRollbackIsCompareProtected();
-console.log('schematic navigation registry tests passed');
+void testSameKeyRollbackKeepsNewerPendingInvocation()
+    .then(() => console.log('schematic navigation registry tests passed'))
+    .catch(error => {
+        console.error(error);
+        process.exitCode = 1;
+    });

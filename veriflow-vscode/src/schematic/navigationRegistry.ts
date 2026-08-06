@@ -3,7 +3,10 @@ import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
 export type SchematicPanelHandle = {
     uri: string;
     reveal(): void;
-    selectModule(definitionKey: string): Promise<void> | void;
+    selectModule(
+        definitionKey: string,
+        options?: { preserveNavigation?: boolean }
+    ): Promise<void> | void;
 };
 
 export type SchematicSourceNavigationPorts<Document, Position> = {
@@ -15,6 +18,12 @@ export type SchematicSourceNavigationPorts<Document, Position> = {
         document: Document,
         selection: { start: Position; end: Position }
     ): Promise<void>;
+};
+
+export type SchematicNavigationOperation = {
+    isCurrent(): boolean;
+    ownPendingLease?(lease: SchematicPendingNavigationLease): void;
+    releasePendingLease?(lease: SchematicPendingNavigationLease): void;
 };
 
 export function sourceNavigationTarget(
@@ -32,10 +41,13 @@ export function sourceNavigationTarget(
 export async function revealSchematicSource<Document, Position>(
     currentDocumentUri: string,
     span: SourceSpan,
-    ports: SchematicSourceNavigationPorts<Document, Position>
+    ports: SchematicSourceNavigationPorts<Document, Position>,
+    operation?: Pick<SchematicNavigationOperation, 'isCurrent'>
 ): Promise<void> {
+    if (operation && !operation.isCurrent()) return;
     const target = sourceNavigationTarget(currentDocumentUri, span);
     const opened = await ports.openTextDocument(target.uri);
+    if (operation && !operation.isCurrent()) return;
     await ports.showTextDocument(opened.document, {
         start: opened.positionAt(target.start),
         end: opened.positionAt(target.end),
@@ -51,18 +63,26 @@ export type SchematicDefinitionNavigationPorts = {
 
 export type SchematicDefinitionTarget = { key: string; uri: string };
 
+export type SchematicPendingNavigationLease = Readonly<{
+    uri: string;
+    definitionKey: string;
+    token: symbol;
+}>;
+
 export async function openSchematicDefinition(
     currentPanel: SchematicPanelHandle,
     definitionKey: string,
     registry: SchematicNavigationRegistry,
-    ports: SchematicDefinitionNavigationPorts
+    ports: SchematicDefinitionNavigationPorts,
+    operation?: SchematicNavigationOperation
 ): Promise<void> {
+    if (operation && !operation.isCurrent()) return;
     const definition = await ports.getDefinition(definitionKey);
-    if (!definition) {
+    if (!definition || (operation && !operation.isCurrent())) {
         return;
     }
     if (definition.uri === currentPanel.uri) {
-        await currentPanel.selectModule(definition.key);
+        await currentPanel.selectModule(definition.key, { preserveNavigation: true });
         return;
     }
     const preferred = registry.findPreferred(definition.uri);
@@ -71,12 +91,26 @@ export async function openSchematicDefinition(
         await preferred.selectModule(definition.key);
         return;
     }
-    registry.setPending(definition.uri, definition.key);
+    const lease = registry.setPending(definition.uri, definition.key);
+    operation?.ownPendingLease?.(lease);
+    if (operation && !operation.isCurrent()) {
+        registry.clearPendingLease(lease);
+        operation.releasePendingLease?.(lease);
+        return;
+    }
     try {
         await ports.openSchematic(definition.uri, definition.key);
     } catch (error) {
-        registry.clearPending(definition.uri, definition.key);
+        registry.clearPendingLease(lease);
+        operation?.releasePendingLease?.(lease);
+        if (operation && !operation.isCurrent()) return;
         throw error;
+    }
+    if (operation && !operation.isCurrent()) {
+        registry.clearPendingLease(lease);
+        operation.releasePendingLease?.(lease);
+    } else if (!registry.isPendingLease(lease)) {
+        operation?.releasePendingLease?.(lease);
     }
 }
 
@@ -180,7 +214,7 @@ export class SchematicDiagnosticPublisher {
 export class SchematicNavigationRegistry {
     private readonly panels = new Map<string, Set<SchematicPanelHandle>>();
     private readonly focusOrder = new Map<string, SchematicPanelHandle[]>();
-    private readonly pending = new Map<string, string>();
+    private readonly pending = new Map<string, SchematicPendingNavigationLease>();
 
     register(handle: SchematicPanelHandle): { dispose(): void } {
         let panelsForUri = this.panels.get(handle.uri);
@@ -231,21 +265,49 @@ export class SchematicNavigationRegistry {
         return undefined;
     }
 
-    setPending(uri: string, definitionKey: string): void {
-        this.pending.set(uri, definitionKey);
+    setPending(uri: string, definitionKey: string): SchematicPendingNavigationLease {
+        const lease = Object.freeze({
+            uri,
+            definitionKey,
+            token: Symbol('schematic-navigation'),
+        });
+        this.pending.set(uri, lease);
+        return lease;
     }
 
     clearPending(uri: string, expectedDefinitionKey: string): void {
-        if (this.pending.get(uri) === expectedDefinitionKey) {
+        if (this.pending.get(uri)?.definitionKey === expectedDefinitionKey) {
             this.pending.delete(uri);
         }
     }
 
+    pendingLease(uri: string): SchematicPendingNavigationLease | undefined {
+        return this.pending.get(uri);
+    }
+
+    isPendingLease(lease: SchematicPendingNavigationLease): boolean {
+        return this.pending.get(lease.uri)?.token === lease.token;
+    }
+
+    clearPendingLease(lease: SchematicPendingNavigationLease): void {
+        if (this.isPendingLease(lease)) {
+            this.pending.delete(lease.uri);
+        }
+    }
+
+    consumePendingLease(lease: SchematicPendingNavigationLease): string | undefined {
+        if (!this.isPendingLease(lease)) {
+            return undefined;
+        }
+        this.pending.delete(lease.uri);
+        return lease.definitionKey;
+    }
+
     consumePending(uri: string): string | undefined {
-        const definitionKey = this.pending.get(uri);
-        if (definitionKey !== undefined) {
+        const lease = this.pending.get(uri);
+        if (lease !== undefined) {
             this.pending.delete(uri);
         }
-        return definitionKey;
+        return lease?.definitionKey;
     }
 }

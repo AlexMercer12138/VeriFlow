@@ -61,10 +61,14 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 type ProviderHarness = {
     messages: HostEvent[];
     moduleKeys: string[];
+    shownText: Array<{ uri: string; selection: { start: number; end: number } }>;
+    openedSchematics: string[];
     diagnostics: Array<{ uri: string; count: number }>;
     deletedDiagnosticUris: string[];
     parseCallCount(): number;
     setParseGate(text: string, gate: Gate): void;
+    setOpenTextGate(uri: string, gate: Gate): void;
+    setDefinitionGate(definitionKey: string, gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
     setSaveGate(gate: Gate): void;
     setIndexDefinitions(definitions: HdlDefinitionSummary[]): void;
@@ -89,7 +93,8 @@ async function createProviderHarness(
         waitForInitialGraph?: boolean;
         resourceUri?: string;
         navigation?: SchematicNavigationRegistry;
-        executeCommand?(): Promise<void>;
+        cancelled?: boolean;
+        executeCommand?(command: string, ...args: unknown[]): Promise<void>;
     }
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
@@ -104,10 +109,14 @@ async function createProviderHarness(
         ? { text: initialParseRace.text, gate: initialParseRace.gate }
         : undefined;
     let saveGate: Gate | undefined;
+    const openTextGates = new Map<string, Gate>();
+    const definitionGates = new Map<string, Gate>();
     let indexInvalidationListener: ((index?: object) => void) | undefined;
     let indexDefinitions: HdlDefinitionSummary[] = [];
     let parseCalls = 0;
     const messages: HostEvent[] = [];
+    const shownText: ProviderHarness['shownText'] = [];
+    const openedSchematics: string[] = [];
     const diagnostics: ProviderHarness['diagnostics'] = [];
     const deletedDiagnosticUris: string[] = [];
     const disposable = { dispose(): void {} };
@@ -151,12 +160,15 @@ async function createProviderHarness(
         },
     };
     const token = {
-        isCancellationRequested: false,
+        isCancellationRequested: options?.cancelled ?? false,
         onCancellationRequested: () => disposable,
     };
     const vscodeStub = {
         Uri: FakeUri,
         Range: class {
+            constructor(readonly start: number, readonly end: number) {}
+        },
+        Selection: class {
             constructor(readonly start: number, readonly end: number) {}
         },
         Diagnostic: class {
@@ -194,15 +206,42 @@ async function createProviderHarness(
                 if (uri.toString() === options?.failingUri) {
                     throw new Error(`Cannot open diagnostic source ${uri.toString()}`);
                 }
-                return { positionAt: (offset: number) => offset };
+                const gate = openTextGates.get(uri.toString());
+                if (gate) {
+                    openTextGates.delete(uri.toString());
+                    gate.markStarted();
+                    await gate.release;
+                }
+                return { uri, positionAt: (offset: number) => offset };
             },
             onDidChangeTextDocument(listener: typeof documentListener) {
                 documentListener = listener;
                 return disposable;
             },
         },
+        window: {
+            async showTextDocument(sourceDocument: { uri: FakeUri }) {
+                return {
+                    selection: undefined as unknown,
+                    revealRange(selection: { start: number; end: number }): void {
+                        shownText.push({
+                            uri: sourceDocument.uri.toString(),
+                            selection: {
+                                start: selection.start,
+                                end: selection.end,
+                            },
+                        });
+                    },
+                };
+            },
+        },
         commands: {
-            executeCommand: options?.executeCommand ?? (async (): Promise<void> => {}),
+            async executeCommand(command: string, ...args: unknown[]): Promise<void> {
+                await options?.executeCommand?.(command, ...args);
+                if (command === 'vscode.openWith' && args[0] instanceof FakeUri) {
+                    openedSchematics.push(args[0].toString());
+                }
+            },
         },
     };
     const moduleLoader = Module as typeof Module & {
@@ -275,8 +314,15 @@ async function createProviderHarness(
         findDefinitions(name: string): HdlDefinitionSummary[] {
             return indexDefinitions.filter(definition => definition.name === name);
         },
-        getDefinition(key: string): HdlDefinitionSummary | undefined {
-            return indexDefinitions.find(definition => definition.key === key);
+        getDefinition(
+            key: string
+        ): HdlDefinitionSummary | undefined | Promise<HdlDefinitionSummary | undefined> {
+            const definition = indexDefinitions.find(candidate => candidate.key === key);
+            const gate = definitionGates.get(key);
+            if (!gate) return definition;
+            definitionGates.delete(key);
+            gate.markStarted();
+            return gate.release.then(() => definition);
         },
     };
     const provider = new SchematicEditorProvider(context, navigation, {
@@ -312,10 +358,16 @@ async function createProviderHarness(
     return {
         messages,
         moduleKeys,
+        shownText,
+        openedSchematics,
         diagnostics,
         deletedDiagnosticUris,
         parseCallCount(): number { return parseCalls; },
         setParseGate(text, gate): void { parseGate = { text, gate }; },
+        setOpenTextGate(uri, gate): void { openTextGates.set(uri, gate); },
+        setDefinitionGate(definitionKey, gate): void {
+            definitionGates.set(definitionKey, gate);
+        },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
         setIndexDefinitions(definitions): void { indexDefinitions = definitions; },
@@ -334,6 +386,215 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+async function testRapidRevealSourceStopsStaleNavigation(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const firstUri = 'file:///workspace/first.sv';
+    const secondUri = 'file:///workspace/second.sv';
+    const text = 'module top; endmodule';
+    const document = await parseWithRealWorker(sourceUri, text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const firstGate = createGate();
+    try {
+        harness.setOpenTextGate(firstUri, firstGate);
+        harness.send({
+            type: 'revealSource',
+            span: { uri: firstUri, start: 10, end: 20 },
+        });
+        await firstGate.started;
+
+        harness.send({
+            type: 'revealSource',
+            span: { uri: secondUri, start: 30, end: 40 },
+        });
+        await waitFor(
+            () => harness.shownText.some(item => item.uri === secondUri),
+            'newer source reveal'
+        );
+        firstGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(harness.shownText, [{
+            uri: secondUri,
+            selection: { start: 30, end: 40 },
+        }]);
+    } finally {
+        firstGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testRapidOpenDefinitionStopsStaleNavigation(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const firstUri = 'file:///workspace/first.sv';
+    const secondUri = 'file:///workspace/second.sv';
+    const text = 'module top; endmodule';
+    const document = await parseWithRealWorker(sourceUri, text);
+    const firstDefinition = indexedModule('first', firstUri, 0, 'a');
+    const secondDefinition = indexedModule('second', secondUri, 0, 'b');
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const firstGate = createGate();
+    try {
+        harness.setIndexDefinitions([firstDefinition, secondDefinition]);
+        harness.setDefinitionGate(firstDefinition.key, firstGate);
+        harness.send({ type: 'openDefinition', definitionKey: firstDefinition.key });
+        await firstGate.started;
+
+        harness.send({ type: 'openDefinition', definitionKey: secondDefinition.key });
+        await waitFor(
+            () => harness.openedSchematics.includes(secondUri),
+            'newer schematic definition open'
+        );
+        firstGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(harness.openedSchematics, [secondUri]);
+    } finally {
+        firstGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testDisposalStopsNavigationAfterOwnedAwait(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const revealUri = 'file:///workspace/reveal.sv';
+    const definitionUri = 'file:///workspace/definition.sv';
+    const text = 'module top; endmodule';
+    const document = await parseWithRealWorker(sourceUri, text);
+    const definition = indexedModule('definition', definitionUri, 0, 'a');
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const revealGate = createGate();
+    const definitionGate = createGate();
+    try {
+        harness.setIndexDefinitions([definition]);
+        harness.setOpenTextGate(revealUri, revealGate);
+        harness.send({
+            type: 'revealSource',
+            span: { uri: revealUri, start: 1, end: 2 },
+        });
+        await revealGate.started;
+
+        harness.setDefinitionGate(definition.key, definitionGate);
+        harness.send({ type: 'openDefinition', definitionKey: definition.key });
+        await definitionGate.started;
+        harness.disposePanel();
+        revealGate.allow();
+        definitionGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(
+            {
+                shownText: harness.shownText,
+                openedSchematics: harness.openedSchematics,
+                hostErrors: harness.messages.filter(event => event.type === 'hostError'),
+            },
+            { shownText: [], openedSchematics: [], hostErrors: [] }
+        );
+    } finally {
+        revealGate.allow();
+        definitionGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testWebviewSelectionSupersedesSlowReveal(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const revealUri = 'file:///workspace/reveal.sv';
+    const text = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(sourceUri, text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const revealGate = createGate();
+    try {
+        harness.setOpenTextGate(revealUri, revealGate);
+        harness.send({
+            type: 'revealSource',
+            span: { uri: revealUri, start: 1, end: 2 },
+        });
+        await revealGate.started;
+        harness.send({ type: 'selectModule', moduleKey: harness.moduleKeys[1] });
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph'
+                && event.graph.moduleKey === harness.moduleKeys[1]
+            ),
+            'newer Webview module selection'
+        );
+        revealGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(harness.shownText, []);
+    } finally {
+        revealGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testExternalPanelNavigationSupersedesSlowReveal(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const text = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker(sourceUri, text);
+
+    const revealNavigation = new SchematicNavigationRegistry();
+    const revealHarness = await createProviderHarness(
+        new Map([[text, document]]),
+        text,
+        undefined,
+        { navigation: revealNavigation }
+    );
+    const revealGate = createGate();
+    try {
+        const revealUri = 'file:///workspace/reveal.sv';
+        revealHarness.setOpenTextGate(revealUri, revealGate);
+        revealHarness.send({
+            type: 'revealSource',
+            span: { uri: revealUri, start: 1, end: 2 },
+        });
+        await revealGate.started;
+        revealNavigation.findPreferred(sourceUri)!.reveal();
+        revealGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+    } finally {
+        revealGate.allow();
+        await revealHarness.dispose();
+    }
+
+    const selectNavigation = new SchematicNavigationRegistry();
+    const selectHarness = await createProviderHarness(
+        new Map([[text, document]]),
+        text,
+        undefined,
+        { navigation: selectNavigation }
+    );
+    const selectGate = createGate();
+    try {
+        const selectUri = 'file:///workspace/select.sv';
+        selectHarness.setOpenTextGate(selectUri, selectGate);
+        selectHarness.send({
+            type: 'revealSource',
+            span: { uri: selectUri, start: 3, end: 4 },
+        });
+        await selectGate.started;
+        await selectNavigation.findPreferred(sourceUri)!.selectModule(
+            selectHarness.moduleKeys[1]
+        );
+        selectGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual({
+            revealed: revealHarness.shownText,
+            selected: selectHarness.shownText,
+        }, { revealed: [], selected: [] });
+    } finally {
+        selectGate.allow();
+        await selectHarness.dispose();
+    }
 }
 
 async function testDiagnosticSourceFailureDoesNotBlockGraph(): Promise<void> {
@@ -497,6 +758,131 @@ async function testFailedCrossFileOpenDoesNotRetainPendingSelection(): Promise<v
         assert.strictEqual(latest.graph.moduleName, 'first');
     } finally {
         await targetHarness.dispose();
+    }
+}
+
+async function testInitialTargetParseFailureClearsPendingSelection(): Promise<void> {
+    const targetUri = 'file:///workspace/target.sv';
+    const targetText = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const targetDocument = await parseWithRealWorker(targetUri, targetText);
+    const secondModule = targetDocument.modules.find(module => module.name === 'second')!;
+    const secondKey = `module:${targetUri}:${secondModule.declarationSpan.start}`;
+    const navigation = new SchematicNavigationRegistry();
+    navigation.setPending(targetUri, secondKey);
+
+    const failedHarness = await createProviderHarness(
+        new Map(),
+        targetText,
+        undefined,
+        {
+            resourceUri: targetUri,
+            navigation,
+            waitForInitialGraph: false,
+        }
+    );
+    const reopenedHarness = await createProviderHarness(
+        new Map([[targetText, targetDocument]]),
+        targetText,
+        undefined,
+        { resourceUri: targetUri, navigation }
+    );
+    try {
+        const latest = reopenedHarness.messages.filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph'
+        ).at(-1)!;
+        assert.strictEqual(latest.graph.moduleName, 'first');
+    } finally {
+        await reopenedHarness.dispose();
+        await failedHarness.dispose();
+    }
+}
+
+async function testPreCancelledTargetClearsPendingSelection(): Promise<void> {
+    const targetUri = 'file:///workspace/target.sv';
+    const targetText = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const targetDocument = await parseWithRealWorker(targetUri, targetText);
+    const secondModule = targetDocument.modules.find(module => module.name === 'second')!;
+    const secondKey = `module:${targetUri}:${secondModule.declarationSpan.start}`;
+    const navigation = new SchematicNavigationRegistry();
+    navigation.setPending(targetUri, secondKey);
+
+    const cancelledHarness = await createProviderHarness(
+        new Map([[targetText, targetDocument]]),
+        targetText,
+        undefined,
+        {
+            resourceUri: targetUri,
+            navigation,
+            cancelled: true,
+            waitForInitialGraph: false,
+        }
+    );
+    const reopenedHarness = await createProviderHarness(
+        new Map([[targetText, targetDocument]]),
+        targetText,
+        undefined,
+        { resourceUri: targetUri, navigation }
+    );
+    try {
+        const latest = reopenedHarness.messages.filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph'
+        ).at(-1)!;
+        assert.strictEqual(latest.graph.moduleName, 'first');
+    } finally {
+        await reopenedHarness.dispose();
+        await cancelledHarness.dispose();
+    }
+}
+
+async function testDisposedOldOpenCannotClearNewerSameKeyPending(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const targetUri = 'file:///workspace/target.sv';
+    const sourceText = 'module source; endmodule';
+    const sourceDocument = await parseWithRealWorker(sourceUri, sourceText);
+    const targetDefinition = indexedModule('target', targetUri, 0, 'a');
+    const navigation = new SchematicNavigationRegistry();
+    const openGate = createGate();
+    const sourceHarness = await createProviderHarness(
+        new Map([[sourceText, sourceDocument]]),
+        sourceText,
+        undefined,
+        {
+            navigation,
+            async executeCommand(): Promise<void> {
+                openGate.markStarted();
+                await openGate.release;
+                throw new Error('stale vscode.openWith failed');
+            },
+        }
+    );
+    try {
+        sourceHarness.setIndexDefinitions([targetDefinition]);
+        sourceHarness.send({
+            type: 'openDefinition',
+            definitionKey: targetDefinition.key,
+        });
+        await openGate.started;
+
+        navigation.setPending(targetUri, targetDefinition.key);
+        sourceHarness.disposePanel();
+        openGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.strictEqual(
+            navigation.consumePending(targetUri),
+            targetDefinition.key
+        );
+    } finally {
+        openGate.allow();
+        await sourceHarness.dispose();
     }
 }
 
@@ -975,7 +1361,15 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
     }
 }
 
-void testRapidSelectionStopsStalePublish()
+void testPreCancelledTargetClearsPendingSelection()
+    .then(testExternalPanelNavigationSupersedesSlowReveal)
+    .then(testWebviewSelectionSupersedesSlowReveal)
+    .then(testDisposedOldOpenCannotClearNewerSameKeyPending)
+    .then(testInitialTargetParseFailureClearsPendingSelection)
+    .then(testDisposalStopsNavigationAfterOwnedAwait)
+    .then(testRapidOpenDefinitionStopsStaleNavigation)
+    .then(testRapidRevealSourceStopsStaleNavigation)
+    .then(testRapidSelectionStopsStalePublish)
     .then(testFailedCrossFileOpenDoesNotRetainPendingSelection)
     .then(testDiagnosticSourceFailureDoesNotBlockGraph)
     .then(testInitialParseReplaysTargetedIndexInvalidation)
