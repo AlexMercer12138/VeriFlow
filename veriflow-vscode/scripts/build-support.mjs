@@ -93,6 +93,10 @@ function packageIdentity(packageNotice) {
     return `${packageNotice.name}\0${packageNotice.version}`;
 }
 
+function normalizeLineEndings(text) {
+    return text.replace(/\r\n?/g, '\n');
+}
+
 export function formatThirdPartyNotices(parserPackages, frontendPackages) {
     const frontendByIdentity = new Map();
     for (const packageNotice of frontendPackages) {
@@ -109,7 +113,7 @@ export function formatThirdPartyNotices(parserPackages, frontendPackages) {
             : '';
         return `## ${packageNotice.name} ${packageNotice.version}\n\n`
             + declaration
-            + `${packageNotice.licenseText.trim()}\n`;
+            + `${normalizeLineEndings(packageNotice.licenseText).trim()}\n`;
     });
     return `# Third-Party Notices\n\n${sections.join('\n')}`;
 }

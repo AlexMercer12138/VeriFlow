@@ -72,7 +72,7 @@ function testNoticeFormatting(support: BuildSupport): void {
         licenseText: string
     ): PackageNotice => ({ name, version, license: 'MIT', licenseText });
     const notices = support.formatThirdPartyNotices([
-        packageNotice('parser-two', '2.0.0', 'PARSER TWO'),
+        packageNotice('parser-two', '2.0.0', 'PARSER\r\nTWO\r\n'),
         packageNotice('parser-one', '1.0.0', 'PARSER ONE'),
     ], [
         packageNotice('zeta', '2.0.0', 'ZETA TWO'),
@@ -89,6 +89,8 @@ function testNoticeFormatting(support: BuildSupport): void {
         'zeta 2.0.0',
     ]);
     assert.strictEqual(notices.match(/## alpha 1\.0\.0/g)?.length, 1);
+    assert.ok(!notices.includes('\r'), 'notices must use deterministic LF endings');
+    assert.ok(notices.includes('PARSER\nTWO'));
     assert.ok(notices.includes('Declared license: MIT\n\nALPHA'));
     assert.ok(notices.endsWith('ZETA TWO\n'));
 }
@@ -259,7 +261,10 @@ async function testSchematicAssets(): Promise<void> {
     for (const bundledPackage of packages) {
         const heading = `## ${bundledPackage.name} ${bundledPackage.version}`;
         assert.ok(notices.includes(heading), `notices are missing ${heading}`);
-        assert.ok(notices.includes(bundledPackage.licenseText.trim()));
+        const normalizedLicense = bundledPackage.licenseText
+            .replace(/\r\n?/g, '\n')
+            .trim();
+        assert.ok(notices.includes(normalizedLicense));
     }
     const sortedIdentities = packages
         .map(item => `${item.name}@${item.version}`)
