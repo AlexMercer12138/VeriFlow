@@ -1377,7 +1377,7 @@ async function testLiveParseScopesIncludeWatchDiscoveryToOwnerSession(): Promise
 }
 
 async function testTransientRefreshDoesNotPersistLiveOnlyUri(): Promise<void> {
-    const includeUri = 'file:///dirty/live.svh';
+    const includeUri = 'file:///ws/generated/live.inc';
     const harness = createWorkspaceIndexHarness({
         [includeUri]: 'module live_only_include; endmodule',
     });

@@ -432,6 +432,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const schematicProvisionalExternalIncludeUri = 'file:///provisional/generated.svh';
     const dirtyLiveIncludeUri = 'file:///dirty/live.svh';
     const staleLiveIncludeUri = 'file:///dirty/stale.svh';
+    const rootDirtyLiveIncludeUri = 'file:///B-workspace/generated/live.inc';
+    const rootDiskIncludeUri = 'file:///B-workspace/generated/disk.inc';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const schematicChildUri = 'file:///B-workspace/rtl/child.sv';
     const schematicChildDefinition: Definition = {
@@ -640,6 +642,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             metacharExternalIncludeUri,
         ]);
         readonly refreshCalls: string[] = [];
+        readonly persistentRefreshCalls: string[] = [];
         readonly removeCalls: string[] = [];
         lastLiveParseToken?: object;
         disposed = false;
@@ -729,6 +732,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             events.push(`refresh:${uri}`);
             events.push(`refresh-defines:${this.currentDefinesKey}:${uri}`);
             if (mode === 'persistent') {
+                this.persistentRefreshCalls.push(uri);
                 this.indexedUris.add(uri);
             }
             if (uri === workspaceDefinition.uri) {
@@ -781,7 +785,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         getDependentsOfInclude(uri: string): string[] {
             const isConditionalInclude = uri === conditionalNonstandardIncludeUri
                 && this.currentDefinesKey === 'WATCHER_CONSTRUCTION_FAILURE';
-            return [externalNonstandardIncludeUri, localNonstandardIncludeUri].includes(uri)
+            return [
+                externalNonstandardIncludeUri,
+                localNonstandardIncludeUri,
+                rootDiskIncludeUri,
+            ].includes(uri)
                 || isConditionalInclude
                 ? [topDefinition.uri]
                 : [];
@@ -812,6 +820,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                     metacharExternalIncludeUri,
                     externalNonstandardIncludeUri,
                     localNonstandardIncludeUri,
+                    rootDiskIncludeUri,
                     ...conditionalIncludeUris,
                 ],
                 unresolvedExternalCandidateUris: [
@@ -1342,7 +1351,6 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             !record.disposed
             && watcherMatches(record, FakeUri.parse(staleLiveIncludeUri))
         ));
-        const workspaceBWatcherRecords = watcherRecords.slice(workspaceBWatcherStart);
         const dirtyProbeEventsBefore = events.filter(event =>
             event.endsWith(`:${dirtyLiveIncludeUri}`)
             && event.startsWith('probe-unresolved:')
@@ -1367,6 +1375,42 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         const schematicInvalidationSubscription = schematicOnDidInvalidate!(
             () => { schematicInvalidations++; }
         );
+        nextLiveIncludeWatchUris = [dirtyLiveIncludeUri, rootDirtyLiveIncludeUri];
+        await workspaceBIndex!.parseOpenDocument(
+            workspaceBResource.toString(),
+            4,
+            '`include "/dirty/live.svh"\n`include "../generated/live.inc"',
+            undefined,
+            workspaceBIndexOwner
+        );
+        assert.ok(watcherRecords.some(record =>
+            !record.disposed
+            && watcherMatches(record, FakeUri.parse(rootDirtyLiveIncludeUri))
+        ));
+        const persistentRefreshesBeforeLiveInclude =
+            workspaceBIndex!.persistentRefreshCalls.length;
+        await fireHdlWatchEvent('change', rootDirtyLiveIncludeUri);
+        assert.strictEqual(schematicInvalidations, 1);
+        assert.ok(workspaceBIndex!.refreshCalls.includes(rootDirtyLiveIncludeUri));
+        assert.strictEqual(
+            workspaceBIndex!.persistentRefreshCalls.length,
+            persistentRefreshesBeforeLiveInclude
+        );
+        assert.strictEqual(workspaceBIndex!.getFile(rootDirtyLiveIncludeUri), undefined);
+        const persistentRefreshesBeforeDiskInclude =
+            workspaceBIndex!.persistentRefreshCalls.length;
+        await fireHdlWatchEvent('change', rootDiskIncludeUri);
+        assert.strictEqual(schematicInvalidations, 2);
+        assert.strictEqual(
+            workspaceBIndex!.persistentRefreshCalls.length,
+            persistentRefreshesBeforeDiskInclude + 1
+        );
+        assert.strictEqual(
+            workspaceBIndex!.persistentRefreshCalls.at(-1),
+            rootDiskIncludeUri
+        );
+        const nonstandardInvalidations = schematicInvalidations;
+        const workspaceBWatcherRecords = watcherRecords.slice(workspaceBWatcherStart);
         assert.deepStrictEqual(workspaceBIndex!.scannedRoots.at(-1), [
             'file:///B-workspace',
             'file:///A-library',
@@ -1377,7 +1421,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             []
         );
         await fireHdlWatchEvent('create', schematicChildUri);
-        assert.strictEqual(schematicInvalidations, 1);
+        assert.strictEqual(schematicInvalidations, nonstandardInvalidations + 1);
         assert.deepStrictEqual(
             workspaceBIndex!.findDefinitions(schematicChildDefinition.name).map(
                 definition => definition.key
@@ -1385,10 +1429,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             [schematicChildDefinition.key]
         );
         await fireHdlWatchEvent('change', indexedExternalIncludeUri);
-        assert.strictEqual(schematicInvalidations, 2);
+        assert.strictEqual(schematicInvalidations, nonstandardInvalidations + 2);
         assert.ok(workspaceBIndex!.refreshCalls.includes(indexedExternalIncludeUri));
         await fireHdlWatchEvent('delete', schematicChildUri);
-        assert.strictEqual(schematicInvalidations, 3);
+        assert.strictEqual(schematicInvalidations, nonstandardInvalidations + 3);
         assert.deepStrictEqual(
             workspaceBIndex!.findDefinitions(schematicChildDefinition.name),
             []

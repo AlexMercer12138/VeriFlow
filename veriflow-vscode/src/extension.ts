@@ -1033,9 +1033,9 @@ async function _refreshSchematicIndexEntry(
     const uriValue = uri.toString();
     const canonicalUriValue = canonicalizeSourceUri(uriValue);
     const liveWatched = _schematicLiveWatchUris(entry).has(canonicalUriValue);
-    const indexed = entry.rootUris.some(rootUri =>
+    const indexed = (_isHdlUri(uri) && entry.rootUris.some(rootUri =>
         isSourceUriWithinRoot(uriValue, rootUri)
-    ) || entry.index.getFile(uriValue) !== undefined
+    )) || entry.index.getFile(uriValue) !== undefined
         || entry.index.getDependentsOfInclude(uriValue).length > 0;
     let transientLiveRefresh = liveWatched && !indexed;
     if (transientLiveRefresh) {
