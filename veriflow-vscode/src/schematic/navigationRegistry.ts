@@ -2,7 +2,7 @@ import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
 
 export type SchematicPanelHandle = {
     uri: string;
-    reveal(): void;
+    reveal(): Promise<void> | void;
     selectModule(
         definitionKey: string,
         options?: { preserveNavigation?: boolean }
@@ -22,6 +22,7 @@ export type SchematicSourceNavigationPorts<Document, Position> = {
 
 export type SchematicNavigationOperation = {
     isCurrent(): boolean;
+    runEffect(effect: () => Promise<void> | void): Promise<void>;
     ownPendingLease?(lease: SchematicPendingNavigationLease): void;
     releasePendingLease?(lease: SchematicPendingNavigationLease): void;
 };
@@ -42,16 +43,21 @@ export async function revealSchematicSource<Document, Position>(
     currentDocumentUri: string,
     span: SourceSpan,
     ports: SchematicSourceNavigationPorts<Document, Position>,
-    operation?: Pick<SchematicNavigationOperation, 'isCurrent'>
+    operation?: Pick<SchematicNavigationOperation, 'isCurrent' | 'runEffect'>
 ): Promise<void> {
     if (operation && !operation.isCurrent()) return;
     const target = sourceNavigationTarget(currentDocumentUri, span);
     const opened = await ports.openTextDocument(target.uri);
     if (operation && !operation.isCurrent()) return;
-    await ports.showTextDocument(opened.document, {
+    const show = (): Promise<void> => ports.showTextDocument(opened.document, {
         start: opened.positionAt(target.start),
         end: opened.positionAt(target.end),
     });
+    if (operation) {
+        await operation.runEffect(show);
+    } else {
+        await show();
+    }
 }
 
 export type SchematicDefinitionNavigationPorts = {
@@ -81,37 +87,47 @@ export async function openSchematicDefinition(
     if (!definition || (operation && !operation.isCurrent())) {
         return;
     }
+    const runEffect = async (effect: () => Promise<void> | void): Promise<void> => {
+        if (operation) {
+            await operation.runEffect(effect);
+        } else {
+            await effect();
+        }
+    };
     if (definition.uri === currentPanel.uri) {
-        await currentPanel.selectModule(definition.key, { preserveNavigation: true });
+        await runEffect(() => currentPanel.selectModule(
+            definition.key,
+            { preserveNavigation: true }
+        ));
         return;
     }
     const preferred = registry.findPreferred(definition.uri);
     if (preferred) {
-        preferred.reveal();
-        await preferred.selectModule(definition.key);
+        await runEffect(async () => {
+            await preferred.reveal();
+            if (operation && !operation.isCurrent()) return;
+            await preferred.selectModule(definition.key);
+        });
         return;
     }
-    const lease = registry.setPending(definition.uri, definition.key);
-    operation?.ownPendingLease?.(lease);
-    if (operation && !operation.isCurrent()) {
-        registry.clearPendingLease(lease);
-        operation.releasePendingLease?.(lease);
-        return;
-    }
-    try {
-        await ports.openSchematic(definition.uri, definition.key);
-    } catch (error) {
-        registry.clearPendingLease(lease);
-        operation?.releasePendingLease?.(lease);
+    await runEffect(async () => {
+        const lease = registry.setPending(definition.uri, definition.key);
+        operation?.ownPendingLease?.(lease);
         if (operation && !operation.isCurrent()) return;
-        throw error;
-    }
-    if (operation && !operation.isCurrent()) {
-        registry.clearPendingLease(lease);
-        operation.releasePendingLease?.(lease);
-    } else if (!registry.isPendingLease(lease)) {
-        operation?.releasePendingLease?.(lease);
-    }
+        try {
+            await ports.openSchematic(definition.uri, definition.key);
+        } catch (error) {
+            registry.clearPendingLease(lease);
+            operation?.releasePendingLease?.(lease);
+            throw error;
+        }
+        if (operation && !operation.isCurrent()) {
+            registry.clearPendingLease(lease);
+            operation.releasePendingLease?.(lease);
+        } else if (!registry.isPendingLease(lease)) {
+            operation?.releasePendingLease?.(lease);
+        }
+    });
 }
 
 export type SourceMappedSchematicDiagnostic = HdlDiagnostic & {

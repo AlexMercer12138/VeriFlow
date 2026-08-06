@@ -208,6 +208,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let publishGeneration = 0;
         let currentPublishSnapshot: SchematicPublishSnapshot | undefined;
         let navigationGeneration = 0;
+        let navigationEffectQueue: Promise<void> = Promise.resolve();
         let activePendingLease: SchematicPendingNavigationLease | undefined;
         const layoutIntents = new Map<string, SchematicLayout>();
 
@@ -242,6 +243,17 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 && !token.isCancellationRequested;
             return {
                 isCurrent,
+                runEffect: effect => {
+                    const result = navigationEffectQueue.then(async () => {
+                        if (!isCurrent()) return;
+                        await effect();
+                    });
+                    navigationEffectQueue = result.then(
+                        () => undefined,
+                        () => undefined
+                    );
+                    return result;
+                },
                 ownPendingLease: lease => {
                     if (!isCurrent()) {
                         this.navigation.clearPendingLease(lease);
@@ -466,11 +478,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         };
         const handle: SchematicPanelHandle = {
             uri,
-            reveal: () => {
-                if (state.disposed) return;
-                invalidateNavigation();
-                panel.reveal(panel.viewColumn);
-                this.navigation.markFocused(handle);
+            reveal: async () => {
+                const operation = beginNavigation();
+                await operation.runEffect(() => {
+                    panel.reveal(panel.viewColumn);
+                    this.navigation.markFocused(handle);
+                });
             },
             selectModule: async (definitionKey, options) => {
                 if (!options?.preserveNavigation) {
