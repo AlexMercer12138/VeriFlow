@@ -71,7 +71,6 @@ function evalExpr(expr: string, paramMap: Record<string, string>): number {
     // Handle $clog2() function
     expr = replaceClog2(expr);
     try {
-        // eslint-disable-next-line no-new-func
         return Math.floor(new Function('return (' + expr + ')')());
     } catch {
         return 1;

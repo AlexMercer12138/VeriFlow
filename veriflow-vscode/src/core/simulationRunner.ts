@@ -1,8 +1,20 @@
 import * as path from 'path';
 import * as cp from 'child_process';
-import { SimulatorConfig, WaveViewerConfig, SimulationResult, LogEntry } from './types';
+import { SimulatorConfig, WaveViewerConfig, SimulationResult } from './types';
 import { TemplateEngine } from './templateEngine';
 import { LogParser } from './logParser';
+
+type ExecSyncFailure = Error & {
+    status?: number;
+    stdout?: string;
+    stderr?: string;
+};
+
+function asExecSyncFailure(error: unknown): ExecSyncFailure {
+    return error instanceof Error
+        ? error as ExecSyncFailure
+        : new Error(String(error));
+}
 
 export class SimulationRunner {
     private _lastCompileCmd = '';
@@ -27,24 +39,24 @@ export class SimulationRunner {
         );
         this._lastCompileCmd = cmd;
 
-        const { execSync } = require('child_process');
         const start = Date.now();
         let exitCode = 0;
         let stdout = '';
         let stderr = '';
 
         try {
-            const result = execSync(cmd, {
+            const result = cp.execSync(cmd, {
                 cwd,
                 encoding: 'utf-8',
                 maxBuffer: 50 * 1024 * 1024,
                 windowsHide: true,
             });
             stdout = result || '';
-        } catch (err: any) {
-            exitCode = err.status ?? -1;
-            stdout = err.stdout || '';
-            stderr = err.stderr || '';
+        } catch (error: unknown) {
+            const failure = asExecSyncFailure(error);
+            exitCode = failure.status ?? -1;
+            stdout = failure.stdout || '';
+            stderr = failure.stderr || '';
         }
 
         const elapsed = (Date.now() - start) / 1000;
@@ -67,24 +79,24 @@ export class SimulationRunner {
         const cmd = TemplateEngine.renderRun(simulator.runCmd, output);
         this._lastRunCmd = cmd;
 
-        const { execSync } = require('child_process');
         const start = Date.now();
         let exitCode = 0;
         let stdout = '';
         let stderr = '';
 
         try {
-            const result = execSync(cmd, {
+            const result = cp.execSync(cmd, {
                 cwd,
                 encoding: 'utf-8',
                 maxBuffer: 50 * 1024 * 1024,
                 windowsHide: true,
             });
             stdout = result || '';
-        } catch (err: any) {
-            exitCode = err.status ?? -1;
-            stdout = err.stdout || '';
-            stderr = err.stderr || '';
+        } catch (error: unknown) {
+            const failure = asExecSyncFailure(error);
+            exitCode = failure.status ?? -1;
+            stdout = failure.stdout || '';
+            stderr = failure.stderr || '';
         }
 
         const elapsed = (Date.now() - start) / 1000;

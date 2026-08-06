@@ -169,7 +169,7 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
                 ? pending
                 : moduleKeys[0] ?? '';
             const messages: HostEvent[] = [];
-            let disposed = false;
+            const disposed = false;
             const panel = {
                 uri,
                 get selectedModuleKey(): string { return selectedModuleKey; },
@@ -202,7 +202,6 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
                 selectedModuleKey,
             });
             if (selectedModuleKey) await publishGraph(panel);
-            void disposed;
             return panel;
         },
         async dispatch(panel, command): Promise<void> {
@@ -210,7 +209,7 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
                 case 'selectModule':
                     await panel.selectModule(command.moduleKey);
                     return;
-                case 'saveLayout':
+                case 'saveLayout': {
                     if (!moduleKeysByPanel.get(panel)?.includes(command.moduleKey)) return;
                     let panelLayouts = layoutsByPanel.get(panel);
                     if (!panelLayouts) {
@@ -220,6 +219,7 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
                     panelLayouts.set(command.moduleKey, command.layout);
                     await layoutStore.save(panel.uri, command.moduleKey, command.layout);
                     return;
+                }
                 case 'ready':
                     return;
                 case 'revealSource':

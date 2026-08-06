@@ -14,7 +14,6 @@ import {
     SummaryRecord,
     SummaryRecordCodec,
     VcdIndexError,
-    normalizeLogicValue,
     packLogicValue,
     validateManifest,
 } from './vcdIndexFormat';

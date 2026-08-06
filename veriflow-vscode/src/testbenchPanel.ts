@@ -304,13 +304,14 @@ export class TestbenchPanelProvider implements vscode.WebviewViewProvider {
             if (this._beforeGenerate) {
                 await this._beforeGenerate();
             }
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to generate testbench: ${err.message}`);
-            this._postMessage({ type: 'error', message: err.message });
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to generate testbench: ${message}`);
+            this._postMessage({ type: 'error', message });
         }
     }
 
-    private _postMessage(msg: any): void {
+    private _postMessage(msg: unknown): void {
         if (!this._disposed && this._view) {
             this._view.webview.postMessage(msg);
         }

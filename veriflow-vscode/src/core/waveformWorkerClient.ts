@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { Worker } from 'worker_threads';
 
-export type WaveformWorkerMessage = Record<string, any> & {
+export type WaveformWorkerMessage = Record<string, unknown> & {
     type: string;
     generation: number;
     requestId?: string;

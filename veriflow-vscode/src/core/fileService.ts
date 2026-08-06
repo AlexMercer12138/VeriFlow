@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const VERILOG_PATTERNS = ['*.v', '*.sv', '*.vh', '*.svh'];
 const DEFAULT_ENCODINGS = ['utf-8', 'utf-8-sig', 'latin1'];
 
 export function listVerilogFiles(directory: string): string[] {

@@ -470,7 +470,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             layoutIntents.delete(command.moduleKey);
                         }
                         return;
-                    case 'relayoutAll':
+                    case 'relayoutAll': {
                         if (command.moduleKey !== state.selectedModuleKey
                             || !state.graph) {
                             return;
@@ -491,6 +491,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         await panel.webview.postMessage({ type: 'graph', graph, layout });
                         if (!isCurrentPublish(invocationGeneration)) return;
                         return;
+                    }
                     case 'revealSource':
                         await revealSchematicSource(uri, command.span, {
                             async openTextDocument(sourceUri) {

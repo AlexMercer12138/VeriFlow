@@ -43,6 +43,14 @@ function processExists(pid: number): boolean {
     }
 }
 
+function terminateProcess(pid: number): void {
+    try {
+        process.kill(pid);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+}
+
 async function waitForExit(child: ChildProcess): Promise<void> {
     if (child.exitCode !== null || child.signalCode !== null) return;
     await new Promise<void>((resolve, reject) => {
@@ -88,6 +96,7 @@ async function testBuildWatch(): Promise<void> {
     let parent: ChildProcess | undefined;
     let childPid: number | undefined;
     let output = '';
+    const testFailures: unknown[] = [];
 
     try {
         fs.mkdirSync(sourceRoot, { recursive: true });
@@ -167,16 +176,36 @@ await runWatch({
             () => !processExists(parent!.pid!) && !processExists(childPid!),
             'watch parent and typecheck child termination'
         );
-    } finally {
-        if (parent) await stopProcess(parent);
-        if (childPid && processExists(childPid)) {
-            try {
-                process.kill(childPid);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-            }
+    } catch (error) {
+        testFailures.push(error);
+    }
+
+    const cleanupFailures: unknown[] = [];
+    if (parent) {
+        try {
+            await stopProcess(parent);
+        } catch (error) {
+            cleanupFailures.push(error);
         }
+    }
+    if (childPid && processExists(childPid)) {
+        try {
+            terminateProcess(childPid);
+        } catch (error) {
+            cleanupFailures.push(error);
+        }
+    }
+    try {
         fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (error) {
+        cleanupFailures.push(error);
+    }
+
+    if (testFailures.length) {
+        throw testFailures[0];
+    }
+    if (cleanupFailures.length) {
+        throw cleanupFailures[0];
     }
 }
 

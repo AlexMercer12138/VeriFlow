@@ -20,8 +20,8 @@ import {
 } from './schematic';
 import * as output from './output';
 import {
-    DependencyAnalyzer, SimulationRunner, LogParser,
-    ModuleScanResult, ModuleDefinitionEntry, DependencyResult, SimulationResult,
+    DependencyAnalyzer, SimulationRunner,
+    ModuleScanResult, ModuleDefinitionEntry, DependencyResult,
     SimulatorConfig, WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
@@ -78,7 +78,7 @@ let tbPanelProvider: TestbenchPanelProvider;
 let statusBarItem: vscode.StatusBarItem;
 let simulateProcess: child_process.ChildProcess | null = null;
 let depAnalyzer: DependencyAnalyzer | undefined;
-let simRunner = new SimulationRunner();
+const simRunner = new SimulationRunner();
 let hdlParser: HdlParserClient | undefined;
 let hdlParserExtensionPath: string | undefined;
 let hdlIndex: WorkspaceHdlIndex | undefined;
@@ -295,14 +295,22 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
-    const cmds: [string, (...args: any[]) => any][] = [
+    const commandUri = (value: unknown): vscode.Uri | undefined =>
+        value instanceof vscode.Uri ? value : undefined;
+    const cmds: Array<[string, (...args: unknown[]) => unknown]> = [
         ['veriflow.selectTop', () => cmdSelectTop(context)],
         ['veriflow.analyze', () => cmdAnalyze(context)],
         ['veriflow.simulate', () => cmdSimulate(context)],
         ['veriflow.openWave', () => cmdOpenWave(context)],
-        ['veriflow.openVcdViewer', (uri?: vscode.Uri) => cmdOpenVcdViewer(uri)],
-        ['veriflow.openSchematic', (uri?: vscode.Uri) => cmdOpenSchematic(uri)],
-        ['veriflow.openSchematicFromExplorer', (uri?: vscode.Uri) => cmdOpenSchematic(uri)],
+        ['veriflow.openVcdViewer', (uri?: unknown) => cmdOpenVcdViewer(
+            commandUri(uri)
+        )],
+        ['veriflow.openSchematic', (uri?: unknown) => cmdOpenSchematic(
+            commandUri(uri)
+        )],
+        ['veriflow.openSchematicFromExplorer', (uri?: unknown) => cmdOpenSchematic(
+            commandUri(uri)
+        )],
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
         ['veriflow.showOutput', () => { if (!hdlStopping) { output.show(); } }],
@@ -540,8 +548,7 @@ function _createWorkspaceHdlIndex(
         }
         return [...new Set(candidates.map(candidate => candidate.toString()))];
     };
-    let index!: WorkspaceHdlIndex;
-    index = new WorkspaceHdlIndex({
+    const index = new WorkspaceHdlIndex({
         parser: getHdlParser(context),
         store,
         parserFingerprint: `${HDL_PARSER_FINGERPRINT}:${crypto.createHash('sha256')
@@ -1067,7 +1074,7 @@ async function _refreshSchematicIndexEntry(
                 transientLiveRefresh ? 'transient' : 'persistent'
             );
         }
-    } catch (error) {
+    } catch {
         _throwIfSchematicIndexInvalidated(entry);
         await entry.index.scan(entry.rootUris, entry.abortController.signal);
     }
@@ -1818,7 +1825,7 @@ function _exactHdlWatchPattern(uriValue: string): HdlWatchPatternValue | undefin
     const filename = path.posix.basename(uri.path);
     return filename ? {
         base: uri.with({ path: path.posix.dirname(uri.path) }),
-        pattern: filename.replace(/([*?{}\[\]])/g, '[$1]'),
+        pattern: filename.replace(/([*?{}[\]])/g, '[$1]'),
     } : undefined;
 }
 
@@ -2981,7 +2988,8 @@ async function _doOpenWave(
     try {
         simRunner.openWave(waveFile, viewer);
         output.appendSuccess(`Opened ${viewer.name}: ${waveFile}`);
-    } catch (err: any) {
-        output.appendError(`Failed to open ${viewer.name}: ${err.message}`);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendError(`Failed to open ${viewer.name}: ${message}`);
     }
 }

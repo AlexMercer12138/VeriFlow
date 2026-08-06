@@ -99,7 +99,6 @@ async function createProviderHarness(
     let messageListener: ((message: unknown) => void) | undefined;
     let documentListener: ((event: { document: typeof document }) => void) | undefined;
     let disposeListener: (() => void) | undefined;
-    let viewStateListener: ((event: { webviewPanel: typeof panel }) => void) | undefined;
     let postGate: { predicate: (event: HostEvent) => boolean; gate: Gate } | undefined;
     let parseGate: { text: string; gate: Gate } | undefined = initialParseRace
         ? { text: initialParseRace.text, gate: initialParseRace.gate }
@@ -141,8 +140,9 @@ async function createProviderHarness(
                 return disposable;
             },
         },
-        onDidChangeViewState(listener: typeof viewStateListener) {
-            viewStateListener = listener;
+        onDidChangeViewState(
+            _listener: (event: { webviewPanel: unknown }) => void
+        ) {
             return disposable;
         },
         onDidDispose(listener: () => void) {

@@ -1,11 +1,22 @@
 import * as cp from 'child_process';
-import * as path from 'path';
 
 export interface ProcessResult {
     exitCode: number;
     stdout: string;
     stderr: string;
     elapsedTime: number;
+}
+
+type ExecSyncFailure = Error & {
+    status?: number;
+    stdout?: string;
+    stderr?: string;
+};
+
+function asExecSyncFailure(error: unknown): ExecSyncFailure {
+    return error instanceof Error
+        ? error as ExecSyncFailure
+        : new Error(String(error));
 }
 
 export function runSync(
@@ -29,12 +40,13 @@ export function runSync(
             stderr: '',
             elapsedTime: elapsed,
         };
-    } catch (err: any) {
+    } catch (error: unknown) {
+        const failure = asExecSyncFailure(error);
         const elapsed = (Date.now() - start) / 1000;
         return {
-            exitCode: err.status ?? -1,
-            stdout: err.stdout || '',
-            stderr: err.stderr || err.message || '',
+            exitCode: failure.status ?? -1,
+            stdout: failure.stdout || '',
+            stderr: failure.stderr || failure.message,
             elapsedTime: elapsed,
         };
     }

@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { parentPort, workerData } from 'worker_threads';
 // The ESM export relies on import.meta.url, which is unavailable in this CJS worker bundle.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import TreeSitter = require('web-tree-sitter');
 
 import type { HdlDiagnostic, HdlDocument, SourceFileSpan, SourceSpan } from './model';
@@ -16,7 +17,6 @@ import type {
     PreprocessMacroCandidate,
 } from './preprocessor';
 import {
-    HdlParseOptions,
     ParseRequest,
     ParserWorkerRequest,
     ParserWorkerResponse,
@@ -391,14 +391,12 @@ async function pump(): Promise<void> {
             }
             tree = parsedTree;
 
-            let document: ReturnType<typeof adaptTree>;
-            let treeMacroUsages: TreeMacroUsageContext[];
-            document = adaptTree(tree, request, {
+            const document = adaptTree(tree, request, {
                 text: preprocessed.text,
                 sourceMap: preprocessed.sourceMap,
                 sourceTexts: preprocessed.sourceTexts,
             });
-            treeMacroUsages = classifyTreeMacroUsages(tree);
+            const treeMacroUsages: TreeMacroUsageContext[] = classifyTreeMacroUsages(tree);
             document.preprocessingFingerprint = fingerprint;
             const metadata = getPreprocessMetadataForWorker(preprocessed);
             document.directives = [...metadata.directives, ...document.directives];

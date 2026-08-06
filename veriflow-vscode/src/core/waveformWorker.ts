@@ -3,11 +3,45 @@ import { parentPort, workerData } from 'worker_threads';
 import { VcdIndexCancelled, VcdIndexReader } from './vcdIndex';
 import { WaveformCache } from './waveformCache';
 
-type WorkerRequest = Record<string, any> & {
-    type: string;
+type WorkerRequestBase = {
     generation: number;
     requestId?: string;
 };
+
+type SearchTarget = {
+    reference: string;
+    bitIndex?: number;
+    order?: number;
+};
+
+type WorkerRequest =
+    | (WorkerRequestBase & { type: 'openFile'; source: string })
+    | (WorkerRequestBase & {
+        type: 'windowRequest';
+        references: string[];
+        start: number;
+        end: number;
+        pixelWidth: number;
+    })
+    | (WorkerRequestBase & { type: 'valueRequest'; references: string[]; time: number })
+    | (WorkerRequestBase & {
+        type: 'searchRequest';
+        reference: string;
+        bitIndex?: number;
+        cursorTime: number;
+        direction: number;
+        mode: string;
+        query?: string;
+        targets?: SearchTarget[];
+    })
+    | (WorkerRequestBase & { type: 'cancelRequest' })
+    | (WorkerRequestBase & { type: 'cancelLoad' })
+    | (WorkerRequestBase & { type: 'dispose' });
+
+type OpenFileRequest = Extract<WorkerRequest, { type: 'openFile' }>;
+type WindowRequest = Extract<WorkerRequest, { type: 'windowRequest' }>;
+type ValueRequest = Extract<WorkerRequest, { type: 'valueRequest' }>;
+type SearchRequest = Extract<WorkerRequest, { type: 'searchRequest' }>;
 
 if (!parentPort) throw new Error('waveform worker requires a parent port');
 
@@ -32,12 +66,12 @@ function loadCancelled(generation: number): boolean {
     return cancelledLoads.has(generation) || generation !== activeGeneration;
 }
 
-function requestCancelled(message: WorkerRequest): boolean {
+function requestCancelled(message: WorkerRequestBase): boolean {
     return message.generation !== readerGeneration ||
         cancelledRequests.has(requestKey(message.generation, message.requestId));
 }
 
-async function openFile(message: WorkerRequest): Promise<void> {
+async function openFile(message: OpenFileRequest): Promise<void> {
     const generation = message.generation;
     if (activeGeneration && activeGeneration !== generation) cancelledLoads.add(activeGeneration);
     activeGeneration = generation;
@@ -88,7 +122,7 @@ async function openFile(message: WorkerRequest): Promise<void> {
     }
 }
 
-function requireReader(message: WorkerRequest): VcdIndexReader {
+function requireReader(message: WorkerRequestBase): VcdIndexReader {
     if (requestCancelled(message)) throw new VcdIndexCancelled();
     if (!reader || readerGeneration !== message.generation) {
         throw new Error('waveform index is not ready');
@@ -96,7 +130,7 @@ function requireReader(message: WorkerRequest): VcdIndexReader {
     return reader;
 }
 
-function windowRequest(message: WorkerRequest): void {
+function windowRequest(message: WindowRequest): void {
     const current = requireReader(message);
     const references = Array.isArray(message.references) ? message.references.slice(0, 256) : [];
     let pixelWidth = Math.max(1, Math.min(8192, Math.trunc(message.pixelWidth ?? 1)));
@@ -122,7 +156,7 @@ function windowRequest(message: WorkerRequest): void {
     }
 }
 
-function valueRequest(message: WorkerRequest): void {
+function valueRequest(message: ValueRequest): void {
     const current = requireReader(message);
     const references = Array.isArray(message.references) ? message.references : [];
     const values = current.valuesAt(references, message.time ?? 0);
@@ -131,12 +165,12 @@ function valueRequest(message: WorkerRequest): void {
     }
 }
 
-function searchRequest(message: WorkerRequest): void {
+function searchRequest(message: SearchRequest): void {
     const current = requireReader(message);
     const targets = Array.isArray(message.targets) && message.targets.length
         ? message.targets
         : [{ reference: message.reference, bitIndex: message.bitIndex, order: 0 }];
-    const matches = targets.flatMap((target: Record<string, any>) => {
+    const matches = targets.flatMap((target: SearchTarget) => {
         if (requestCancelled(message)) return [];
         const result = current.search(
             target.reference,

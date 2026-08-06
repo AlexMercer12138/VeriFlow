@@ -9,7 +9,6 @@ import {
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
-    type SchematicPoint,
     type SchematicRect,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
