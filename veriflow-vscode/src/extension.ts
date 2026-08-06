@@ -105,14 +105,18 @@ type SchematicIndexEntry = {
     abortController: AbortController;
     ready: boolean;
     preparation?: Promise<WorkspaceHdlIndex>;
-    watchers: vscode.FileSystemWatcher[];
-    watcherPatternKeys: Set<string>;
+    watchers: Map<string, vscode.FileSystemWatcher>;
     pendingEvents: Map<string, HdlWatchEvent>;
     flushScheduled: boolean;
     updateTail: Promise<void>;
+    owners: Set<object>;
 };
 const schematicIndexRegistry = new Map<string, SchematicIndexEntry>();
-const schematicIndexInvalidationListeners = new Set<() => void>();
+const schematicIndexOwners = new Map<object, SchematicIndexEntry>();
+const schematicIndexUpdateTails = new Set<Promise<void>>();
+const schematicIndexInvalidationListeners = new Set<(
+    index?: WorkspaceHdlIndex
+) => void>();
 type HdlScanOwnership = {
     lifecycleGeneration: number;
     rootGeneration: number;
@@ -246,7 +250,12 @@ export function activate(context: vscode.ExtensionContext): void {
         context,
         schematicNavigationRegistry,
         {
-            getIndex: document => _getSchematicIndex(context, document.uri),
+            getIndex: (document, owner) => _getSchematicIndex(
+                context,
+                document.uri,
+                owner
+            ),
+            releaseIndex: owner => _releaseSchematicIndex(owner),
             onDidInvalidate: listener => {
                 schematicIndexInvalidationListeners.add(listener);
                 return {
@@ -649,7 +658,8 @@ async function _getDependencyAnalyzer(
 
 async function _getSchematicIndex(
     context: vscode.ExtensionContext,
-    resource: vscode.Uri
+    resource: vscode.Uri,
+    owner?: object
 ): Promise<WorkspaceHdlIndex | undefined> {
     const settings = getSettings(resource);
     const resourceRoot = vscode.workspace.getWorkspaceFolder(resource)?.uri
@@ -682,11 +692,11 @@ async function _getSchematicIndex(
             load: index.load(),
             abortController: new AbortController(),
             ready: false,
-            watchers: [],
-            watcherPatternKeys: new Set(),
+            watchers: new Map(),
             pendingEvents: new Map(),
             flushScheduled: false,
             updateTail: Promise.resolve(),
+            owners: new Set(),
         };
         schematicIndexRegistry.set(identity, entry);
         try {
@@ -696,6 +706,9 @@ async function _getSchematicIndex(
             _disposeSchematicIndexEntry(entry);
             return undefined;
         }
+    }
+    if (owner) {
+        _acquireSchematicIndex(entry, owner);
     }
     if (entry.ready) {
         try {
@@ -772,11 +785,16 @@ function _isCurrentSchematicIndexEntry(entry: SchematicIndexEntry): boolean {
 
 function _disposeSchematicIndexEntry(entry: SchematicIndexEntry): void {
     entry.abortController.abort();
-    for (const watcher of entry.watchers) {
+    for (const watcher of entry.watchers.values()) {
         watcher.dispose();
     }
-    entry.watchers.length = 0;
-    entry.watcherPatternKeys.clear();
+    entry.watchers.clear();
+    for (const owner of entry.owners) {
+        if (schematicIndexOwners.get(owner) === entry) {
+            schematicIndexOwners.delete(owner);
+        }
+    }
+    entry.owners.clear();
     for (const event of entry.pendingEvents.values()) {
         event.resolve();
     }
@@ -784,17 +802,48 @@ function _disposeSchematicIndexEntry(entry: SchematicIndexEntry): void {
     entry.index.dispose();
 }
 
+function _acquireSchematicIndex(entry: SchematicIndexEntry, owner: object): void {
+    const previous = schematicIndexOwners.get(owner);
+    if (previous === entry) {
+        return;
+    }
+    if (previous) {
+        previous.owners.delete(owner);
+        if (previous.owners.size === 0
+            && schematicIndexRegistry.get(previous.identity) === previous) {
+            schematicIndexRegistry.delete(previous.identity);
+            _disposeSchematicIndexEntry(previous);
+        }
+    }
+    entry.owners.add(owner);
+    schematicIndexOwners.set(owner, entry);
+}
+
+function _releaseSchematicIndex(owner: object): void {
+    const entry = schematicIndexOwners.get(owner);
+    if (!entry) {
+        return;
+    }
+    schematicIndexOwners.delete(owner);
+    entry.owners.delete(owner);
+    if (entry.owners.size === 0
+        && schematicIndexRegistry.get(entry.identity) === entry) {
+        schematicIndexRegistry.delete(entry.identity);
+        _disposeSchematicIndexEntry(entry);
+    }
+}
+
 function _notifySchematicIndexInvalidated(entry: SchematicIndexEntry): void {
     if (!_isCurrentSchematicIndexEntry(entry)) {
         return;
     }
-    _emitSchematicIndexInvalidation();
+    _emitSchematicIndexInvalidation(entry.index);
 }
 
-function _emitSchematicIndexInvalidation(): void {
+function _emitSchematicIndexInvalidation(index?: WorkspaceHdlIndex): void {
     for (const listener of [...schematicIndexInvalidationListeners]) {
         try {
-            listener();
+            listener(index);
         } catch {
             // One panel must not prevent other open schematics from refreshing.
         }
@@ -806,7 +855,7 @@ function _addSchematicIndexWatcher(
     patternValue: HdlWatchPatternValue
 ): void {
     const patternKey = _hdlWatchPatternKey(patternValue);
-    if (entry.watcherPatternKeys.has(patternKey)) {
+    if (entry.watchers.has(patternKey)) {
         return;
     }
     const watcher = vscode.workspace.createFileSystemWatcher(
@@ -820,8 +869,7 @@ function _addSchematicIndexWatcher(
         watcher.dispose();
         throw error;
     }
-    entry.watchers.push(watcher);
-    entry.watcherPatternKeys.add(patternKey);
+    entry.watchers.set(patternKey, watcher);
 }
 
 function _reconcileSchematicIndexWatchers(entry: SchematicIndexEntry): void {
@@ -842,8 +890,17 @@ function _reconcileSchematicIndexWatchers(entry: SchematicIndexEntry): void {
             }
         }
     }
+    const desiredPatternKeys = new Set(patternValues.map(_hdlWatchPatternKey));
     for (const patternValue of patternValues) {
         _addSchematicIndexWatcher(entry, patternValue);
+    }
+    if (entry.ready) {
+        for (const [patternKey, watcher] of entry.watchers) {
+            if (!desiredPatternKeys.has(patternKey)) {
+                watcher.dispose();
+                entry.watchers.delete(patternKey);
+            }
+        }
     }
 }
 
@@ -909,7 +966,10 @@ async function _flushSchematicIndexWatchEvents(entry: SchematicIndexEntry): Prom
             }
         }
     });
-    entry.updateTail = work.catch(() => undefined);
+    const trackedWork = work.catch(() => undefined);
+    entry.updateTail = trackedWork;
+    schematicIndexUpdateTails.add(trackedWork);
+    void trackedWork.then(() => schematicIndexUpdateTails.delete(trackedWork));
     await work;
 }
 
@@ -1164,14 +1224,17 @@ async function _drainHdlWork(): Promise<void> {
         const operationTail = hdlOperationTail;
         const topPersistenceTail = hdlTopPersistenceTail;
         const dependencyPersistenceTail = hdlDependencyPersistenceTail;
+        const schematicUpdateTails = [...schematicIndexUpdateTails];
         await Promise.all([
             operationTail,
             topPersistenceTail,
             dependencyPersistenceTail,
+            ...schematicUpdateTails,
         ]);
         if (operationTail === hdlOperationTail
             && topPersistenceTail === hdlTopPersistenceTail
-            && dependencyPersistenceTail === hdlDependencyPersistenceTail) {
+            && dependencyPersistenceTail === hdlDependencyPersistenceTail
+            && schematicIndexUpdateTails.size === 0) {
             return;
         }
     }
@@ -1654,12 +1717,15 @@ function _addProvisionalHdlWatchers(
     uriValues: string[]
 ): void {
     const registry = hdlWatchRegistry;
-    if (!registry
-        || registry.index !== index
-        || registry.rootIdentity !== JSON.stringify(rootUris)
-        || !_isCurrentHdlWatchRegistry(registry)) {
-        return;
-    }
+    const ownsGlobalRegistry = registry?.index === index
+        && registry.rootIdentity === JSON.stringify(rootUris)
+        && _isCurrentHdlWatchRegistry(registry);
+    const schematicEntry = [...schematicIndexRegistry.values()].find(candidate =>
+        candidate.index === index
+        && candidate.rootUris.length === rootUris.length
+        && candidate.rootUris.every((root, position) => root === rootUris[position])
+        && _isCurrentSchematicIndexEntry(candidate)
+    );
     for (const uriValue of [...new Set(uriValues)].sort()) {
         const uri = vscode.Uri.parse(uriValue);
         const coveredByBroadWatcher = _isHdlUri(uri) && rootUris.some(rootUri =>
@@ -1670,8 +1736,13 @@ function _addProvisionalHdlWatchers(
         }
         const patternValue = _exactHdlWatchPattern(uriValue);
         if (patternValue) {
-            _addHdlWatcher(context, registry, patternValue);
-            registry.provisionalIncludeUris.add(uriValue);
+            if (ownsGlobalRegistry && registry) {
+                _addHdlWatcher(context, registry, patternValue);
+                registry.provisionalIncludeUris.add(uriValue);
+            }
+            if (schematicEntry) {
+                _addSchematicIndexWatcher(schematicEntry, patternValue);
+            }
         }
     }
 }

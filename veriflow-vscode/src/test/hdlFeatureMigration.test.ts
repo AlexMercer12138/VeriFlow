@@ -429,6 +429,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const rogueNonstandardIncludeUri = 'file:///external/generated/rogue.inc';
     const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
     const racingUnresolvedIncludeUri = 'file:///B-workspace/shared/racing.svh';
+    const schematicProvisionalExternalIncludeUri = 'file:///provisional/generated.svh';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const schematicChildUri = 'file:///B-workspace/rtl/child.sv';
     const schematicChildDefinition: Definition = {
@@ -470,6 +471,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     };
     let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
     let nextScanGate: ReturnType<typeof createScanGate> | undefined;
+    let nextScanIncludeWatchUris: string[] | undefined;
+    let gatedSchematicRemove: {
+        index: FakeIndex;
+        gate: ReturnType<typeof createScanGate>;
+    } | undefined;
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
@@ -499,8 +505,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let instantiationPickerCalls = 0;
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
-    let schematicGetIndex: ((document: { uri: FakeUri }) => Promise<FakeIndex | undefined>)
-        | undefined;
+    let schematicGetIndex: ((
+        document: { uri: FakeUri },
+        owner?: object
+    ) => Promise<FakeIndex | undefined>) | undefined;
+    let schematicReleaseIndex: ((owner: object) => void) | undefined;
     let schematicOnDidInvalidate: ((listener: () => void) => { dispose(): void })
         | undefined;
     const settingsResourceScopes: Array<string | undefined> = [];
@@ -630,7 +639,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         disposed = false;
         workspaceIndexedRevision = 0;
         currentDefinesKey = '';
-        constructor(readonly options: unknown) { FakeIndex.instances.push(this); }
+        constructor(readonly options: {
+            findFiles?(roots: string[]): Promise<string[]>;
+            onIncludeWatchUrisDiscovered?(uris: string[]): void;
+        }) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
         async updateConfiguration(defines: Record<string, string | true>): Promise<void> {
             this.currentDefinesKey = Object.keys(defines).sort().join('+');
@@ -639,7 +651,13 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         async scan(roots: string[]): Promise<void> {
             this.scannedRoots.push([...roots]);
             events.push('scan');
+            await this.options.findFiles?.(roots);
             const workspaceRevisionAtRead = workspaceSourceRevision;
+            const includeWatchUris = nextScanIncludeWatchUris;
+            nextScanIncludeWatchUris = undefined;
+            if (includeWatchUris) {
+                this.options.onIncludeWatchUrisDiscovered?.(includeWatchUris);
+            }
             const gate = nextScanGate ?? roots.map(root => scanGates.get(root)).find(Boolean);
             nextScanGate = undefined;
             if (gate) {
@@ -695,6 +713,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             }
         }
         async removeUri(uri: string): Promise<void> {
+            if (gatedSchematicRemove?.index === this) {
+                const gate = gatedSchematicRemove.gate;
+                gatedSchematicRemove = undefined;
+                gate.markStarted();
+                await gate.release;
+            }
             this.removeCalls.push(uri);
             events.push(`remove:${uri}`);
             if ([externalNonstandardIncludeUri, localNonstandardIncludeUri].includes(uri)) {
@@ -724,7 +748,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 await gate.release;
             }
             return uri === unresolvedExternalIncludeUri
-                || uri === racingUnresolvedIncludeUri;
+                || uri === racingUnresolvedIncludeUri
+                || uri === schematicProvisionalExternalIncludeUri;
         }
         getWatchPlan(): {
             resolvedExternalIncludeUris: string[];
@@ -1082,11 +1107,16 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                     _context: unknown,
                     _navigation: unknown,
                     services: {
-                        getIndex(document: { uri: FakeUri }): Promise<FakeIndex | undefined>;
+                        getIndex(
+                            document: { uri: FakeUri },
+                            owner?: object
+                        ): Promise<FakeIndex | undefined>;
+                        releaseIndex(owner: object): void;
                         onDidInvalidate(listener: () => void): { dispose(): void };
                     }
                 ) {
                     schematicGetIndex = services.getIndex;
+                    schematicReleaseIndex = services.releaseIndex;
                     schematicOnDidInvalidate = services.onDidInvalidate;
                 }
             },
@@ -1201,7 +1231,38 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.deepStrictEqual(popupWarnings, []);
 
         assert.ok(schematicGetIndex);
+        assert.ok(schematicReleaseIndex);
         assert.ok(schematicOnDidInvalidate);
+        const schematicPreparationGate = createScanGate();
+        nextScanGate = schematicPreparationGate;
+        nextScanIncludeWatchUris = [schematicProvisionalExternalIncludeUri];
+        const workspaceBResource = FakeUri.parse('file:///B-workspace/rtl/top.sv');
+        const workspaceBIndexOwner = {};
+        const workspaceBWatcherStart = watcherRecords.length;
+        const workspaceBPreparation = schematicGetIndex!(
+            { uri: workspaceBResource },
+            workspaceBIndexOwner
+        );
+        await schematicPreparationGate.started;
+        const preparingWorkspaceBIndex = FakeIndex.instances.at(-1)!;
+        const provisionalIncludeCreate = fireHdlWatchEvent(
+            'create',
+            schematicProvisionalExternalIncludeUri
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+        schematicPreparationGate.allow();
+        const workspaceBIndex = await workspaceBPreparation;
+        await provisionalIncludeCreate;
+        assert.ok(workspaceBIndex);
+        assert.strictEqual(workspaceBIndex, preparingWorkspaceBIndex);
+        assert.ok(workspaceBIndex!.refreshCalls.includes(
+            schematicProvisionalExternalIncludeUri
+        ));
+        assert.ok(watcherRecords.filter(record =>
+            watcherMatches(record, FakeUri.parse(schematicProvisionalExternalIncludeUri))
+        ).every(record => record.disposed));
+        const workspaceBWatcherRecords = watcherRecords.slice(workspaceBWatcherStart);
+
         let schematicInvalidations = 0;
         const throwingSchematicInvalidationSubscription = schematicOnDidInvalidate!(
             () => { throw new Error('panel listener failed'); }
@@ -1209,9 +1270,6 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         const schematicInvalidationSubscription = schematicOnDidInvalidate!(
             () => { schematicInvalidations++; }
         );
-        const workspaceBResource = FakeUri.parse('file:///B-workspace/rtl/top.sv');
-        const workspaceBIndex = await schematicGetIndex!({ uri: workspaceBResource });
-        assert.ok(workspaceBIndex);
         assert.deepStrictEqual(workspaceBIndex!.scannedRoots.at(-1), [
             'file:///B-workspace',
             'file:///A-library',
@@ -1239,6 +1297,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             []
         );
         assert.ok(workspaceBIndex!.removeCalls.includes(schematicChildUri));
+        schematicReleaseIndex!(workspaceBIndexOwner);
+        assert.strictEqual(workspaceBIndex!.disposed, true);
+        assert.ok(workspaceBWatcherRecords.every(record => record.disposed));
         const workspaceAResource = FakeUri.parse(`${workspaceRootUri}/rtl/top.sv`);
         const restoredWorkspaceAIndex = await schematicGetIndex!({ uri: workspaceAResource });
         assert.ok(restoredWorkspaceAIndex);
@@ -2574,7 +2635,32 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'instantiation picker before lifecycle replacement'
         );
         const sideEffectsBeforeLifecycleReplacement = instantiationPickerSideEffects;
-        await withTimeout(extension.deactivate(), 'deactivate with open VCD dialog');
+        const drainOwner = {};
+        const drainIndex = await schematicGetIndex!({
+            uri: FakeUri.parse(`${workspaceRootUri}/rtl/drain-top.sv`),
+        }, drainOwner);
+        assert.ok(drainIndex);
+        const schematicRemoveGate = createScanGate();
+        gatedSchematicRemove = { index: drainIndex!, gate: schematicRemoveGate };
+        const schematicRemove = fireHdlWatchEvent(
+            'delete',
+            `${workspaceRootUri}/rtl/drain-child.sv`
+        );
+        await withTimeout(
+            schematicRemoveGate.started,
+            'schematic remove before lifecycle replacement'
+        );
+        let schematicDrainSettled = false;
+        const schematicDrainDeactivation = extension.deactivate().then(() => {
+            schematicDrainSettled = true;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(schematicDrainSettled, false);
+        schematicRemoveGate.allow();
+        await withTimeout(
+            Promise.all([schematicRemove, schematicDrainDeactivation]),
+            'deactivate with schematic remove and open VCD dialog'
+        );
         extensionDeactivated = true;
 
         extension.activate(context);

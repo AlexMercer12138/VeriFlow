@@ -65,6 +65,7 @@ type ProviderHarness = {
     setSaveGate(gate: Gate): void;
     setIndexDefinitions(definitions: HdlDefinitionSummary[]): void;
     invalidateIndex(): void;
+    invalidateUnrelatedIndex(): void;
     send(message: unknown): void;
     changeDocument(text: string, version: number): void;
     disposePanel(): void;
@@ -86,7 +87,7 @@ async function createProviderHarness(
     let postGate: { predicate: (event: HostEvent) => boolean; gate: Gate } | undefined;
     let parseGate: { text: string; gate: Gate } | undefined;
     let saveGate: Gate | undefined;
-    let indexInvalidationListener: (() => void) | undefined;
+    let indexInvalidationListener: ((index?: object) => void) | undefined;
     let indexDefinitions: HdlDefinitionSummary[] = [];
     const messages: HostEvent[] = [];
     const disposable = { dispose(): void {} };
@@ -211,7 +212,7 @@ async function createProviderHarness(
     };
     const provider = new SchematicEditorProvider(context, navigation, {
         getIndex: async () => index,
-        onDidInvalidate(listener: () => void) {
+        onDidInvalidate(listener: (invalidatedIndex?: object) => void) {
             indexInvalidationListener = listener;
             return {
                 dispose(): void {
@@ -242,7 +243,8 @@ async function createProviderHarness(
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
         setIndexDefinitions(definitions): void { indexDefinitions = definitions; },
-        invalidateIndex(): void { indexInvalidationListener!(); },
+        invalidateIndex(): void { indexInvalidationListener!(index); },
+        invalidateUnrelatedIndex(): void { indexInvalidationListener!({}); },
         send(message): void { messageListener!(message); },
         changeDocument(text, version): void {
             documentText = text;
@@ -462,6 +464,12 @@ async function testIndexInvalidationRefreshesAndSupersedesInFlightConfiguration(
     const documents = new Map<string, HdlDocument>([[source, initial]]);
     const harness = await createProviderHarness(documents, source);
     try {
+        const unrelatedStart = harness.messages.length;
+        harness.invalidateUnrelatedIndex();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.deepStrictEqual(harness.messages.slice(unrelatedStart), []);
+
         const gate = createGate();
         harness.setParseGate(source, gate);
         documents.set(source, featureA);

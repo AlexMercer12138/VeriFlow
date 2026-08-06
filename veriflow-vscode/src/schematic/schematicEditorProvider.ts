@@ -29,9 +29,13 @@ import { buildSchematicWebviewHtml } from './webviewSupport';
 
 export type SchematicEditorServices = {
     getIndex(
-        document: vscode.TextDocument
+        document: vscode.TextDocument,
+        owner?: object
     ): WorkspaceHdlIndex | undefined | Promise<WorkspaceHdlIndex | undefined>;
-    onDidInvalidate?(listener: () => void): { dispose(): void };
+    releaseIndex?(owner: object): void;
+    onDidInvalidate?(
+        listener: (index?: WorkspaceHdlIndex) => void
+    ): { dispose(): void };
 };
 
 type SelectableModule = SelectableSchematicModule<ModuleModel>;
@@ -46,6 +50,7 @@ type PanelState = {
     graph?: ReturnType<typeof buildSchematicGraph>;
     layout?: SchematicLayout;
     errorMessage?: string;
+    index?: WorkspaceHdlIndex;
 };
 
 type SchematicPublishSnapshot = {
@@ -135,6 +140,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         token: vscode.CancellationToken
     ): Promise<void> {
         const uri = canonicalizeSourceUri(document.uri.toString());
+        const indexOwner = {};
         const assetRoot = vscode.Uri.joinPath(
             this.context.extensionUri,
             'media',
@@ -203,7 +209,10 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             }
             const parsedDocument = state.parsedDocument;
             const build = graphBuilds.begin(parsedDocument, selected.key);
-            const index = preparedIndex ?? await this.services.getIndex(document);
+            const index = preparedIndex ?? await this.services.getIndex(
+                document,
+                indexOwner
+            );
             if (!isCurrentPublish(generation) || !graphBuilds.isCurrent(
                 build,
                 state.parsedDocument,
@@ -263,7 +272,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             const documentVersion = document.version;
             const documentText = document.getText();
             try {
-                const index = await this.services.getIndex(document);
+                const index = await this.services.getIndex(document, indexOwner);
                 if (!isCurrentSchematicRefresh(
                     generation,
                     state.refreshGeneration,
@@ -290,6 +299,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     return;
                 }
                 state.errorMessage = undefined;
+                state.index = index;
                 state.parsedDocument = parsed;
                 state.modules = selectableSchematicModules(
                     uri,
@@ -428,9 +438,13 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 void refreshDocument();
             }
         });
-        const indexInvalidationSubscription = this.services.onDidInvalidate?.(() => {
-            void refreshDocument();
-        });
+        const indexInvalidationSubscription = this.services.onDidInvalidate?.(
+            invalidatedIndex => {
+                if (invalidatedIndex === undefined || invalidatedIndex === state.index) {
+                    void refreshDocument();
+                }
+            }
+        );
         const focusSubscription = panel.onDidChangeViewState(event => {
             if (event.webviewPanel.active) {
                 this.navigation.markFocused(handle);
@@ -443,6 +457,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             refreshAbortController?.abort();
             graphBuilds.invalidate();
             registration?.dispose();
+            this.services.releaseIndex?.(indexOwner);
             messageSubscription.dispose();
             documentSubscription.dispose();
             indexInvalidationSubscription?.dispose();

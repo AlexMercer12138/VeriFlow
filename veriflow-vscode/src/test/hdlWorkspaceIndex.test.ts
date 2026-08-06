@@ -48,6 +48,12 @@ class DeferredMemento {
         assert.ok(resolve, 'expected a pending memento update');
         resolve();
     }
+
+    resolveAll(): void {
+        while (this.pending.length > 0) {
+            this.resolveNext();
+        }
+    }
 }
 
 function isCommittedWorkspaceIndexKey(key: string): boolean {
@@ -237,6 +243,23 @@ async function testClearRemovesPersistedIndex(): Promise<void> {
     assert.strictEqual(store.load(value.parserFingerprint), undefined);
 }
 
+async function testClearDoesNotResurrectLegacySnapshot(): Promise<void> {
+    const memento = new MemoryMemento();
+    const value: PersistedWorkspaceIndex = {
+        schemaVersion: 1,
+        parserFingerprint: 'parser:legacy',
+        files: [],
+    };
+    memento.set('veriflow.hdlWorkspaceIndex.v1', value);
+    const store = new WorkspaceIndexStore(memento);
+    assert.deepStrictEqual(store.load(value.parserFingerprint), value);
+    await store.save(value);
+
+    await store.clear();
+
+    assert.strictEqual(store.load(value.parserFingerprint), undefined);
+}
+
 async function testStoreWaitsForMementoUpdates(): Promise<void> {
     const memento = new DeferredMemento();
     const store = new WorkspaceIndexStore(memento);
@@ -256,7 +279,7 @@ async function testStoreWaitsForMementoUpdates(): Promise<void> {
     const clear = store.clear().then(() => { clearComplete = true; });
     await Promise.resolve();
     assert.strictEqual(clearComplete, false);
-    memento.resolveNext();
+    memento.resolveAll();
     await clear;
 }
 
@@ -1380,6 +1403,7 @@ async function main(): Promise<void> {
     await testLoadRejectsSchemaMismatch();
     await testLoadRejectsMalformedCurrentSchema();
     await testClearRemovesPersistedIndex();
+    await testClearDoesNotResurrectLegacySnapshot();
     await testStoreWaitsForMementoUpdates();
     await testStagedWorkspaceSnapshotIsIgnoredByLoad();
     await testStoreNamespacesConcurrentRootSnapshots();

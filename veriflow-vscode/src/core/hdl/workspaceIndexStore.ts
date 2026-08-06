@@ -165,6 +165,11 @@ export class WorkspaceIndexStore {
     }
 
     async clear(): Promise<void> {
-        await this.state.update(this.committedKey, undefined);
+        await Promise.all([
+            this.state.update(this.committedKey, undefined),
+            ...(this.committedKey === KEY
+                ? []
+                : [this.state.update(KEY, undefined)]),
+        ]);
     }
 }
