@@ -13,7 +13,9 @@ export type { HdlParseOptions, ParsePriority } from './protocol';
 export { WorkspaceHdlIndex } from './workspaceHdlIndex';
 export type {
     DuplicateDefinitionGroup,
+    WorkspaceHdlIncludeWatchContext,
     WorkspaceHdlIndexOptions,
+    WorkspaceHdlRefreshMode,
     WorkspaceIndexInvalidation,
 } from './workspaceHdlIndex';
 export * from './workspaceIndexTypes';

@@ -37,6 +37,14 @@ export type WorkspaceHdlWatchPlan = {
     unresolvedExternalCandidateUris: string[];
 };
 
+export type WorkspaceHdlIncludeWatchContext = {
+    owner: object;
+    parseToken: object;
+    reset: boolean;
+};
+
+export type WorkspaceHdlRefreshMode = 'persistent' | 'transient';
+
 export type WorkspaceHdlIndexOptions = {
     parser: HdlParserClient;
     store: WorkspaceIndexStore;
@@ -50,7 +58,10 @@ export type WorkspaceHdlIndexOptions = {
         size: number;
     }>;
     includeCandidates(fromUri: string, includePath: string): string[];
-    onIncludeWatchUrisDiscovered?(uris: string[]): void;
+    onIncludeWatchUrisDiscovered?(
+        uris: string[],
+        context?: WorkspaceHdlIncludeWatchContext
+    ): void;
     resolveInclude(
         fromUri: string,
         includePath: string,
@@ -242,9 +253,20 @@ export class WorkspaceHdlIndex {
         });
     }
 
-    async refreshUri(uri: string, signal?: AbortSignal): Promise<void> {
+    async refreshUri(
+        uri: string,
+        signal?: AbortSignal,
+        mode: WorkspaceHdlRefreshMode = 'persistent'
+    ): Promise<void> {
         signal?.throwIfAborted();
         const canonicalUri = canonicalizeSourceUri(uri);
+        if (mode === 'transient') {
+            return this.runExclusive(async () => {
+                this.checkpoint(signal);
+                this.options.parser.invalidate(canonicalUri);
+                this.checkpoint(signal);
+            });
+        }
         return this.runExclusive(async () => {
             const unresolvedOwners = await this.getNewlyResolvedOwners(
                 canonicalUri,
@@ -332,18 +354,32 @@ export class WorkspaceHdlIndex {
         uri: string,
         version: number,
         text: string,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        watchOwner?: object
     ): Promise<HdlDocument> {
         const canonicalUri = canonicalizeSourceUri(uri);
         this.checkpoint(signal);
         const batch = this.createBatch();
         const defines = { ...this.defines };
+        const watchContext = watchOwner ? {
+            owner: watchOwner,
+            parseToken: {},
+            reset: false,
+        } : undefined;
+        if (watchContext) {
+            this.options.onIncludeWatchUrisDiscovered?.([], {
+                ...watchContext,
+                reset: true,
+            });
+        }
         const resolvedIncludes = await this.resolveIncludes(
             canonicalUri,
             text,
             batch,
             defines,
-            signal
+            signal,
+            new Set(),
+            watchContext
         );
         this.checkpoint(signal);
         const document = await this.options.parser.parse(
@@ -814,7 +850,8 @@ export class WorkspaceHdlIndex {
         batch: BatchState,
         defines: Record<string, string | true>,
         signal?: AbortSignal,
-        excludedUris: ReadonlySet<string> = new Set()
+        excludedUris: ReadonlySet<string> = new Set(),
+        watchContext?: WorkspaceHdlIncludeWatchContext
     ): Promise<ResolvedIncludeInput[]> {
         const resolved = new Map<string, ResolvedIncludeInput>();
         const attempted = new Set<string>();
@@ -842,7 +879,11 @@ export class WorkspaceHdlIndex {
                     continue;
                 }
                 attempted.add(key);
-                const candidates = this.discoverIncludeWatchUris(fromUri, include.path);
+                const candidates = this.discoverIncludeWatchUris(
+                    fromUri,
+                    include.path,
+                    watchContext
+                );
                 const resolvedUri = await this.options.resolveInclude(
                     fromUri,
                     include.path,
@@ -854,7 +895,10 @@ export class WorkspaceHdlIndex {
                 }
                 const canonicalResolvedUri = canonicalizeSourceUri(resolvedUri);
                 if (!candidates.includes(canonicalResolvedUri)) {
-                    this.options.onIncludeWatchUrisDiscovered?.([canonicalResolvedUri]);
+                    this.options.onIncludeWatchUrisDiscovered?.(
+                        [canonicalResolvedUri],
+                        watchContext
+                    );
                 }
                 if (excludedUris.has(canonicalResolvedUri)) {
                     continue;
@@ -874,11 +918,15 @@ export class WorkspaceHdlIndex {
         }
     }
 
-    private discoverIncludeWatchUris(fromUri: string, includePath: string): string[] {
+    private discoverIncludeWatchUris(
+        fromUri: string,
+        includePath: string,
+        watchContext?: WorkspaceHdlIncludeWatchContext
+    ): string[] {
         const candidates = [...new Set(this.options.includeCandidates(fromUri, includePath)
             .map(candidate => canonicalizeSourceUri(candidate)))];
         if (candidates.length > 0) {
-            this.options.onIncludeWatchUrisDiscovered?.(candidates);
+            this.options.onIncludeWatchUrisDiscovered?.(candidates, watchContext);
         }
         return candidates;
     }

@@ -18,6 +18,15 @@ type PersistCall = {
     writeNumber: number;
 };
 
+type IncludeWatchDiscovery = {
+    uris: string[];
+    context?: {
+        owner: object;
+        parseToken: object;
+        reset: boolean;
+    };
+};
+
 type ParserHooks = {
     onDispatch?: (call: ParserCall) => void;
     afterParse?: (call: ParserCall) => void | Promise<void>;
@@ -105,6 +114,7 @@ export type WorkspaceIndexHarness = {
     includeMappings: Map<string, string>;
     includeResolveCalls: Array<{ fromUri: string; includePath: string }>;
     includeCandidateCalls: Array<{ fromUri: string; includePath: string }>;
+    includeWatchDiscoveries: IncludeWatchDiscovery[];
     parserCalls: Array<{ uri: string; priority: 'interactive' | 'background' }>;
     parserOptions: HdlParseOptions[];
     persistedWrites: unknown[];
@@ -124,6 +134,7 @@ export function createWorkspaceIndexHarness(
     const includeMappings = new Map<string, string>();
     const includeResolveCalls: Array<{ fromUri: string; includePath: string }> = [];
     const includeCandidateCalls: Array<{ fromUri: string; includePath: string }> = [];
+    const includeWatchDiscoveries: IncludeWatchDiscovery[] = [];
     const parserCalls: ParserCall[] = [];
     const parserOptions: HdlParseOptions[] = [];
     const hooks: ParserHooks = {};
@@ -174,6 +185,12 @@ export function createWorkspaceIndexHarness(
             };
         },
         includeCandidates,
+        onIncludeWatchUrisDiscovered(uris: string[], context?: IncludeWatchDiscovery['context']) {
+            includeWatchDiscoveries.push({
+                uris: [...uris],
+                ...(context ? { context } : {}),
+            });
+        },
         async resolveInclude(
             fromUri: string,
             includePath: string,
@@ -189,6 +206,7 @@ export function createWorkspaceIndexHarness(
         includeMappings,
         includeResolveCalls,
         includeCandidateCalls,
+        includeWatchDiscoveries,
         parserCalls,
         parserOptions,
         persistedWrites: memento.writes,

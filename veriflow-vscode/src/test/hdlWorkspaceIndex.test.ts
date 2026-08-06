@@ -1331,6 +1331,70 @@ async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void>
     }
 }
 
+async function testLiveParseScopesIncludeWatchDiscoveryToOwnerSession(): Promise<void> {
+    const uri = 'file:///ws/live.sv';
+    const includeUri = 'file:///dirty/live.svh';
+    const source = [
+        '`include "live.svh"',
+        'module live(input logic included_i); endmodule',
+    ].join('\n');
+    const harness = createWorkspaceIndexHarness({
+        [uri]: source,
+        [includeUri]: '`define LIVE_INCLUDE 1',
+    });
+    const owner = {};
+    harness.includeMappings.set('live.svh', includeUri);
+    try {
+        await harness.index.parseOpenDocument(uri, 2, source, undefined, owner);
+
+        const reset = harness.includeWatchDiscoveries[0];
+        assert.deepStrictEqual(reset.uris, []);
+        assert.strictEqual(reset.context?.owner, owner);
+        assert.strictEqual(reset.context?.reset, true);
+        assert.ok(reset.context?.parseToken);
+        const liveDiscovery = harness.includeWatchDiscoveries.find(discovery =>
+            discovery.uris.includes(includeUri)
+        );
+        assert.strictEqual(liveDiscovery?.context?.owner, owner);
+        assert.strictEqual(
+            liveDiscovery?.context?.parseToken,
+            reset.context?.parseToken
+        );
+        assert.strictEqual(liveDiscovery?.context?.reset, false);
+
+        harness.includeWatchDiscoveries.length = 0;
+        await harness.index.scan(['file:///ws']);
+        assert.ok(harness.includeWatchDiscoveries.some(discovery =>
+            discovery.uris.includes(includeUri)
+        ));
+        assert.ok(harness.includeWatchDiscoveries.every(discovery =>
+            discovery.context === undefined
+        ));
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
+async function testTransientRefreshDoesNotPersistLiveOnlyUri(): Promise<void> {
+    const includeUri = 'file:///dirty/live.svh';
+    const harness = createWorkspaceIndexHarness({
+        [includeUri]: 'module live_only_include; endmodule',
+    });
+    try {
+        const writesBefore = harness.persistedWrites.length;
+
+        await harness.index.refreshUri(includeUri, undefined, 'transient');
+
+        assert.strictEqual(harness.index.getFile(includeUri), undefined);
+        assert.strictEqual(harness.index.findDefinitions('live_only_include').length, 0);
+        assert.strictEqual(harness.persistedWrites.length, writesBefore);
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
     for (let attempt = 0; attempt < 200; attempt++) {
         if (predicate()) return;
@@ -1430,6 +1494,8 @@ async function main(): Promise<void> {
     await testPersistedResolveUsesTheExactDefinitionKey();
     await testResolveRefreshesStalePersistedSummary();
     await testIndexPrioritiesAndInteractiveQueuePrecedence();
+    await testLiveParseScopesIncludeWatchDiscoveryToOwnerSession();
+    await testTransientRefreshDoesNotPersistLiveOnlyUri();
     await testBackgroundDiskParsesDoNotCancelDirtyLiveParse();
 
     console.log('HDL workspace index tests passed');

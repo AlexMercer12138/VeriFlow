@@ -430,6 +430,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
     const racingUnresolvedIncludeUri = 'file:///B-workspace/shared/racing.svh';
     const schematicProvisionalExternalIncludeUri = 'file:///provisional/generated.svh';
+    const dirtyLiveIncludeUri = 'file:///dirty/live.svh';
+    const staleLiveIncludeUri = 'file:///dirty/stale.svh';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
     const schematicChildUri = 'file:///B-workspace/rtl/child.sv';
     const schematicChildDefinition: Definition = {
@@ -472,6 +474,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
     let nextScanGate: ReturnType<typeof createScanGate> | undefined;
     let nextScanIncludeWatchUris: string[] | undefined;
+    let nextLiveIncludeWatchUris: string[] | undefined;
     let nextSchematicUpdateConfigurationGate: ReturnType<typeof createScanGate>
         | undefined;
     let gatedSchematicRemove: {
@@ -638,12 +641,20 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         ]);
         readonly refreshCalls: string[] = [];
         readonly removeCalls: string[] = [];
+        lastLiveParseToken?: object;
         disposed = false;
         workspaceIndexedRevision = 0;
         currentDefinesKey = '';
         constructor(readonly options: {
             findFiles?(roots: string[]): Promise<string[]>;
-            onIncludeWatchUrisDiscovered?(uris: string[]): void;
+            onIncludeWatchUrisDiscovered?(
+                uris: string[],
+                context?: {
+                    owner: object;
+                    parseToken: object;
+                    reset: boolean;
+                }
+            ): void;
         }) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
         async updateConfiguration(defines: Record<string, string | true>): Promise<void> {
@@ -681,17 +692,45 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             this.workspaceIndexedRevision = workspaceRevisionAtRead;
             events.push(`scan-commit:${workspaceRevisionAtRead}`);
         }
-        async parseOpenDocument(uri: string): Promise<{ uri: string }> {
+        async parseOpenDocument(
+            uri: string,
+            _version?: number,
+            _text?: string,
+            _signal?: AbortSignal,
+            owner?: object
+        ): Promise<{ uri: string }> {
             if (this.disposed) {
                 throw new Error('Workspace HDL index is disposed');
             }
+            if (owner) {
+                const parseToken = {};
+                this.lastLiveParseToken = parseToken;
+                this.options.onIncludeWatchUrisDiscovered?.([], {
+                    owner,
+                    parseToken,
+                    reset: true,
+                });
+                const includeWatchUris = nextLiveIncludeWatchUris ?? [];
+                nextLiveIncludeWatchUris = undefined;
+                this.options.onIncludeWatchUrisDiscovered?.(includeWatchUris, {
+                    owner,
+                    parseToken,
+                    reset: false,
+                });
+            }
             return { uri };
         }
-        async refreshUri(uri: string): Promise<void> {
+        async refreshUri(
+            uri: string,
+            _signal?: AbortSignal,
+            mode: 'persistent' | 'transient' = 'persistent'
+        ): Promise<void> {
             this.refreshCalls.push(uri);
             events.push(`refresh:${uri}`);
             events.push(`refresh-defines:${this.currentDefinesKey}:${uri}`);
-            this.indexedUris.add(uri);
+            if (mode === 'persistent') {
+                this.indexedUris.add(uri);
+            }
             if (uri === workspaceDefinition.uri) {
                 this.workspaceIndexedRevision = workspaceSourceRevision;
                 events.push(`refresh-revision:${workspaceSourceRevision}`);
@@ -1269,7 +1308,57 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.ok(watcherRecords.filter(record =>
             watcherMatches(record, FakeUri.parse(schematicProvisionalExternalIncludeUri))
         ).every(record => record.disposed));
+        nextLiveIncludeWatchUris = [dirtyLiveIncludeUri];
+        await workspaceBIndex!.parseOpenDocument(
+            workspaceBResource.toString(),
+            2,
+            '`include "/dirty/live.svh"',
+            undefined,
+            workspaceBIndexOwner
+        );
+        assert.ok(watcherRecords.some(record =>
+            !record.disposed
+            && watcherMatches(record, FakeUri.parse(dirtyLiveIncludeUri))
+        ));
+        const supersededParseToken = workspaceBIndex!.lastLiveParseToken!;
+        nextLiveIncludeWatchUris = [dirtyLiveIncludeUri];
+        await workspaceBIndex!.parseOpenDocument(
+            workspaceBResource.toString(),
+            3,
+            '`include "/dirty/live.svh"',
+            undefined,
+            workspaceBIndexOwner
+        );
+        assert.notStrictEqual(
+            workspaceBIndex!.lastLiveParseToken,
+            supersededParseToken
+        );
+        workspaceBIndex!.options.onIncludeWatchUrisDiscovered?.([staleLiveIncludeUri], {
+            owner: workspaceBIndexOwner,
+            parseToken: supersededParseToken,
+            reset: false,
+        });
+        assert.ok(!watcherRecords.some(record =>
+            !record.disposed
+            && watcherMatches(record, FakeUri.parse(staleLiveIncludeUri))
+        ));
         const workspaceBWatcherRecords = watcherRecords.slice(workspaceBWatcherStart);
+        const dirtyProbeEventsBefore = events.filter(event =>
+            event.endsWith(`:${dirtyLiveIncludeUri}`)
+            && event.startsWith('probe-unresolved:')
+        ).length;
+        await fireHdlWatchEvent('change', dirtyLiveIncludeUri);
+        assert.ok(workspaceBIndex!.refreshCalls.includes(dirtyLiveIncludeUri));
+        assert.strictEqual(workspaceBIndex!.getFile(dirtyLiveIncludeUri), undefined);
+        assert.strictEqual(events.filter(event =>
+            event.endsWith(`:${dirtyLiveIncludeUri}`)
+            && event.startsWith('probe-unresolved:')
+        ).length, dirtyProbeEventsBefore);
+        await fireHdlWatchEvent('change', indexedExternalIncludeUri);
+        assert.ok(watcherRecords.some(record =>
+            !record.disposed
+            && watcherMatches(record, FakeUri.parse(dirtyLiveIncludeUri))
+        ));
 
         let schematicInvalidations = 0;
         const throwingSchematicInvalidationSubscription = schematicOnDidInvalidate!(

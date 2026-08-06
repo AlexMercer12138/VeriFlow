@@ -60,6 +60,7 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 type ProviderHarness = {
     messages: HostEvent[];
     moduleKeys: string[];
+    parseCallCount(): number;
     setParseGate(text: string, gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
     setSaveGate(gate: Gate): void;
@@ -74,7 +75,12 @@ type ProviderHarness = {
 
 async function createProviderHarness(
     documentsByText: Map<string, HdlDocument>,
-    initialText: string
+    initialText: string,
+    initialParseRace?: {
+        text: string;
+        gate: Gate;
+        replacement: HdlDocument;
+    }
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
     const resource = FakeUri.parse('file:///workspace/design.sv');
@@ -85,10 +91,13 @@ async function createProviderHarness(
     let disposeListener: (() => void) | undefined;
     let viewStateListener: ((event: { webviewPanel: typeof panel }) => void) | undefined;
     let postGate: { predicate: (event: HostEvent) => boolean; gate: Gate } | undefined;
-    let parseGate: { text: string; gate: Gate } | undefined;
+    let parseGate: { text: string; gate: Gate } | undefined = initialParseRace
+        ? { text: initialParseRace.text, gate: initialParseRace.gate }
+        : undefined;
     let saveGate: Gate | undefined;
     let indexInvalidationListener: ((index?: object) => void) | undefined;
     let indexDefinitions: HdlDefinitionSummary[] = [];
+    let parseCalls = 0;
     const messages: HostEvent[] = [];
     const disposable = { dispose(): void {} };
     const document = {
@@ -196,14 +205,20 @@ async function createProviderHarness(
             _version: number,
             text: string
         ): Promise<HdlDocument> {
+            parseCalls++;
+            const parsed = documentsByText.get(text);
+            if (!parsed) throw new Error(`No parsed fixture for ${text}`);
             const pending = parseGate;
             if (pending?.text === text) {
                 parseGate = undefined;
                 pending.gate.markStarted();
+                if (initialParseRace?.text === text) {
+                    documentsByText.set(text, initialParseRace.replacement);
+                    indexInvalidationListener!(index);
+                    initialParseRace = undefined;
+                }
                 await pending.gate.release;
             }
-            const parsed = documentsByText.get(text);
-            if (!parsed) throw new Error(`No parsed fixture for ${text}`);
             return parsed;
         },
         findDefinitions(name: string): HdlDefinitionSummary[] {
@@ -239,6 +254,7 @@ async function createProviderHarness(
     return {
         messages,
         moduleKeys,
+        parseCallCount(): number { return parseCalls; },
         setParseGate(text, gate): void { parseGate = { text, gate }; },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
@@ -258,6 +274,38 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+async function testInitialParseReplaysTargetedIndexInvalidation(): Promise<void> {
+    const source = 'module top(input logic selected_i); endmodule';
+    const oldDocument = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        'module top(input logic old_include_i); endmodule'
+    );
+    const newDocument = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        'module top(input logic new_include_i); endmodule'
+    );
+    const documents = new Map<string, HdlDocument>([[source, oldDocument]]);
+    const gate = createGate();
+    const harnessPromise = createProviderHarness(documents, source, {
+        text: source,
+        gate,
+        replacement: newDocument,
+    });
+    await gate.started;
+    gate.allow();
+    const harness = await harnessPromise;
+    try {
+        const latest = harness.messages.filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        ).at(-1)!;
+        assert.ok(latest.graph.nodes.some(node => node.id === 'port:new_include_i'));
+        assert.ok(!latest.graph.nodes.some(node => node.id === 'port:old_include_i'));
+        assert.ok(harness.parseCallCount() >= 2);
+    } finally {
+        await harness.dispose();
+    }
 }
 
 function indexedModule(
@@ -751,6 +799,7 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
 }
 
 void testRapidSelectionStopsStalePublish()
+    .then(testInitialParseReplaysTargetedIndexInvalidation)
     .then(testRapidRefreshStopsStalePublish)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)

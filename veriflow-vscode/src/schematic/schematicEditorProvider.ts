@@ -284,11 +284,13 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 if (!index) {
                     throw new Error('HDL workspace index is unavailable');
                 }
+                state.index = index;
                 const parsed = await index.parseOpenDocument(
                     documentUri,
                     documentVersion,
                     documentText,
-                    refreshController.signal
+                    refreshController.signal,
+                    indexOwner
                 );
                 if (!isCurrentSchematicRefresh(
                     generation,
@@ -299,7 +301,6 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     return;
                 }
                 state.errorMessage = undefined;
-                state.index = index;
                 state.parsedDocument = parsed;
                 state.modules = selectableSchematicModules(
                     uri,

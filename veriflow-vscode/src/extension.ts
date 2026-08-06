@@ -25,8 +25,14 @@ import {
     SimulatorConfig, WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
-import type { HdlDefinitionSummary } from './core';
-import { isSourceUriWithinRoot } from './core/hdl/preprocessor';
+import type {
+    HdlDefinitionSummary,
+    WorkspaceHdlIncludeWatchContext,
+} from './core';
+import {
+    canonicalizeSourceUri,
+    isSourceUriWithinRoot,
+} from './core/hdl/preprocessor';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
@@ -110,6 +116,10 @@ type SchematicIndexEntry = {
     flushScheduled: boolean;
     updateTail: Promise<void>;
     owners: Set<object>;
+    liveWatchSessions: Map<object, {
+        parseToken: object;
+        uris: Set<string>;
+    }>;
 };
 const schematicIndexRegistry = new Map<string, SchematicIndexEntry>();
 const schematicIndexOwners = new Map<object, SchematicIndexEntry>();
@@ -568,7 +578,14 @@ function _createWorkspaceHdlIndex(
             };
         },
         includeCandidates,
-        onIncludeWatchUrisDiscovered(uris: string[]): void {
+        onIncludeWatchUrisDiscovered(
+            uris: string[],
+            watchContext?: WorkspaceHdlIncludeWatchContext
+        ): void {
+            if (watchContext) {
+                _recordSchematicLiveIncludeWatchUris(index, uris, watchContext);
+                return;
+            }
             _addProvisionalHdlWatchers(
                 context,
                 index,
@@ -707,6 +724,7 @@ async function _getSchematicIndex(
             flushScheduled: false,
             updateTail: Promise.resolve(),
             owners: new Set(),
+            liveWatchSessions: new Map(),
         };
         schematicIndexRegistry.set(identity, entry);
         try {
@@ -813,6 +831,7 @@ function _disposeSchematicIndexEntry(entry: SchematicIndexEntry): void {
         }
     }
     entry.owners.clear();
+    entry.liveWatchSessions.clear();
     for (const event of entry.pendingEvents.values()) {
         event.resolve();
     }
@@ -845,10 +864,13 @@ function _acquireSchematicIndex(entry: SchematicIndexEntry, owner: object): void
     }
     if (previous) {
         previous.owners.delete(owner);
+        previous.liveWatchSessions.delete(owner);
         if (previous.owners.size === 0
             && schematicIndexRegistry.get(previous.identity) === previous) {
             schematicIndexRegistry.delete(previous.identity);
             _retireSchematicIndexEntry(previous);
+        } else if (_isCurrentSchematicIndexEntry(previous)) {
+            _reconcileSchematicIndexWatchers(previous);
         }
     }
     entry.owners.add(owner);
@@ -862,10 +884,13 @@ function _releaseSchematicIndex(owner: object): void {
     }
     schematicIndexOwners.delete(owner);
     entry.owners.delete(owner);
+    entry.liveWatchSessions.delete(owner);
     if (entry.owners.size === 0
         && schematicIndexRegistry.get(entry.identity) === entry) {
         schematicIndexRegistry.delete(entry.identity);
         _retireSchematicIndexEntry(entry);
+    } else if (_isCurrentSchematicIndexEntry(entry)) {
+        _reconcileSchematicIndexWatchers(entry);
     }
 }
 
@@ -908,12 +933,68 @@ function _addSchematicIndexWatcher(
     entry.watchers.set(patternKey, watcher);
 }
 
+function _schematicLiveWatchUris(entry: SchematicIndexEntry): Set<string> {
+    const uris = new Set<string>();
+    for (const session of entry.liveWatchSessions.values()) {
+        for (const uri of session.uris) {
+            uris.add(uri);
+        }
+    }
+    return uris;
+}
+
+function _recordSchematicLiveIncludeWatchUris(
+    index: WorkspaceHdlIndex,
+    uriValues: string[],
+    context: WorkspaceHdlIncludeWatchContext
+): void {
+    const entry = schematicIndexOwners.get(context.owner);
+    if (!entry || entry.index !== index || !_isCurrentSchematicIndexEntry(entry)) {
+        return;
+    }
+    if (context.reset) {
+        entry.liveWatchSessions.set(context.owner, {
+            parseToken: context.parseToken,
+            uris: new Set(),
+        });
+        _reconcileSchematicIndexWatchers(entry);
+        return;
+    }
+    const session = entry.liveWatchSessions.get(context.owner);
+    if (!session || session.parseToken !== context.parseToken) {
+        return;
+    }
+    let changed = false;
+    const canonicalUriValues = uriValues.map(uriValue => canonicalizeSourceUri(uriValue));
+    for (const uriValue of [...new Set(canonicalUriValues)].sort()) {
+        const uri = vscode.Uri.parse(uriValue);
+        const coveredByBroadWatcher = _isHdlUri(uri) && entry.rootUris.some(rootUri =>
+            isSourceUriWithinRoot(uriValue, rootUri)
+        );
+        if (!coveredByBroadWatcher
+            && _exactHdlWatchPattern(uriValue)
+            && !session.uris.has(uriValue)) {
+            session.uris.add(uriValue);
+            changed = true;
+        }
+    }
+    if (changed) {
+        _reconcileSchematicIndexWatchers(entry);
+    }
+}
+
 function _reconcileSchematicIndexWatchers(entry: SchematicIndexEntry): void {
     _throwIfSchematicIndexInvalidated(entry);
     const patternValues: HdlWatchPatternValue[] = entry.rootUris.map(root => ({
         base: vscode.Uri.parse(root),
         pattern: HDL_WATCH_GLOB,
     }));
+    for (const uriValue of _schematicLiveWatchUris(entry)) {
+        const patternValue = _exactHdlWatchPattern(uriValue);
+        if (patternValue) {
+            patternValues.push(patternValue);
+        }
+    }
     if (entry.ready) {
         const plan = entry.index.getWatchPlan(entry.rootUris);
         for (const uriValue of [
@@ -950,10 +1031,22 @@ async function _refreshSchematicIndexEntry(
     }
     _throwIfSchematicIndexInvalidated(entry);
     const uriValue = uri.toString();
-    let admitted = entry.rootUris.some(rootUri =>
+    const canonicalUriValue = canonicalizeSourceUri(uriValue);
+    const liveWatched = _schematicLiveWatchUris(entry).has(canonicalUriValue);
+    const indexed = entry.rootUris.some(rootUri =>
         isSourceUriWithinRoot(uriValue, rootUri)
     ) || entry.index.getFile(uriValue) !== undefined
         || entry.index.getDependentsOfInclude(uriValue).length > 0;
+    let transientLiveRefresh = liveWatched && !indexed;
+    if (transientLiveRefresh) {
+        const plan = entry.index.getWatchPlan(entry.rootUris);
+        const diskWatchUris = new Set([
+            ...plan.resolvedExternalIncludeUris,
+            ...plan.unresolvedExternalCandidateUris,
+        ].map(candidate => canonicalizeSourceUri(candidate)));
+        transientLiveRefresh = !diskWatchUris.has(canonicalUriValue);
+    }
+    let admitted = indexed || liveWatched;
     if (!admitted && !remove) {
         admitted = await entry.index.canResolveUnresolvedInclude(
             uriValue,
@@ -968,7 +1061,11 @@ async function _refreshSchematicIndexEntry(
         if (remove) {
             await entry.index.removeUri(uriValue);
         } else {
-            await entry.index.refreshUri(uriValue, entry.abortController.signal);
+            await entry.index.refreshUri(
+                uriValue,
+                entry.abortController.signal,
+                transientLiveRefresh ? 'transient' : 'persistent'
+            );
         }
     } catch (error) {
         _throwIfSchematicIndexInvalidated(entry);
