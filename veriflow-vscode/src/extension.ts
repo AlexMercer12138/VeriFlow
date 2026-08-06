@@ -113,6 +113,8 @@ type SchematicIndexEntry = {
 };
 const schematicIndexRegistry = new Map<string, SchematicIndexEntry>();
 const schematicIndexOwners = new Map<object, SchematicIndexEntry>();
+const schematicIndexRetirements = new Map<string, Promise<void>>();
+const schematicIndexPreparationTails = new Set<Promise<void>>();
 const schematicIndexUpdateTails = new Set<Promise<void>>();
 const schematicIndexInvalidationListeners = new Set<(
     index?: WorkspaceHdlIndex
@@ -679,6 +681,14 @@ async function _getSchematicIndex(
         rootUris,
         Object.entries(defines).sort(([left], [right]) => left.localeCompare(right)),
     ]);
+    const settingsGeneration = hdlWatchSettingsGeneration;
+    const retirement = schematicIndexRetirements.get(identity);
+    if (retirement) {
+        await retirement;
+        if (hdlStopping || settingsGeneration !== hdlWatchSettingsGeneration) {
+            return undefined;
+        }
+    }
     let entry = schematicIndexRegistry.get(identity);
     if (!entry) {
         const index = _createWorkspaceHdlIndex(context, defines, rootIdentity);
@@ -737,6 +747,14 @@ async function _getSchematicIndex(
         return entry.index;
     })();
     entry.preparation = preparation;
+    const trackedPreparation = preparation.then(
+        () => undefined,
+        () => undefined
+    );
+    schematicIndexPreparationTails.add(trackedPreparation);
+    void trackedPreparation.then(() =>
+        schematicIndexPreparationTails.delete(trackedPreparation)
+    );
     const clearPreparation = (): void => {
         if (entry.preparation === preparation) {
             entry.preparation = undefined;
@@ -750,7 +768,7 @@ async function _getSchematicIndex(
         clearPreparation();
         if (schematicIndexRegistry.get(identity) === entry) {
             schematicIndexRegistry.delete(identity);
-            _disposeSchematicIndexEntry(entry);
+            _retireSchematicIndexEntry(entry);
         }
         return undefined;
     }
@@ -769,7 +787,7 @@ function _resetSchematicIndexes(notify = false): void {
     const entries = [...schematicIndexRegistry.values()];
     schematicIndexRegistry.clear();
     for (const entry of entries) {
-        _disposeSchematicIndexEntry(entry);
+        _retireSchematicIndexEntry(entry);
     }
     if (notify) {
         _emitSchematicIndexInvalidation();
@@ -802,6 +820,24 @@ function _disposeSchematicIndexEntry(entry: SchematicIndexEntry): void {
     entry.index.dispose();
 }
 
+function _retireSchematicIndexEntry(entry: SchematicIndexEntry): void {
+    const previousRetirement = schematicIndexRetirements.get(entry.identity);
+    const ownRetirement = Promise.all([
+        entry.preparation?.catch(() => undefined) ?? Promise.resolve(),
+        entry.updateTail,
+    ]).then(() => undefined);
+    const retirement = previousRetirement
+        ? Promise.all([previousRetirement, ownRetirement]).then(() => undefined)
+        : ownRetirement;
+    schematicIndexRetirements.set(entry.identity, retirement);
+    void retirement.then(() => {
+        if (schematicIndexRetirements.get(entry.identity) === retirement) {
+            schematicIndexRetirements.delete(entry.identity);
+        }
+    });
+    _disposeSchematicIndexEntry(entry);
+}
+
 function _acquireSchematicIndex(entry: SchematicIndexEntry, owner: object): void {
     const previous = schematicIndexOwners.get(owner);
     if (previous === entry) {
@@ -812,7 +848,7 @@ function _acquireSchematicIndex(entry: SchematicIndexEntry, owner: object): void
         if (previous.owners.size === 0
             && schematicIndexRegistry.get(previous.identity) === previous) {
             schematicIndexRegistry.delete(previous.identity);
-            _disposeSchematicIndexEntry(previous);
+            _retireSchematicIndexEntry(previous);
         }
     }
     entry.owners.add(owner);
@@ -829,7 +865,7 @@ function _releaseSchematicIndex(owner: object): void {
     if (entry.owners.size === 0
         && schematicIndexRegistry.get(entry.identity) === entry) {
         schematicIndexRegistry.delete(entry.identity);
-        _disposeSchematicIndexEntry(entry);
+        _retireSchematicIndexEntry(entry);
     }
 }
 
@@ -1224,16 +1260,19 @@ async function _drainHdlWork(): Promise<void> {
         const operationTail = hdlOperationTail;
         const topPersistenceTail = hdlTopPersistenceTail;
         const dependencyPersistenceTail = hdlDependencyPersistenceTail;
+        const schematicPreparationTails = [...schematicIndexPreparationTails];
         const schematicUpdateTails = [...schematicIndexUpdateTails];
         await Promise.all([
             operationTail,
             topPersistenceTail,
             dependencyPersistenceTail,
+            ...schematicPreparationTails,
             ...schematicUpdateTails,
         ]);
         if (operationTail === hdlOperationTail
             && topPersistenceTail === hdlTopPersistenceTail
             && dependencyPersistenceTail === hdlDependencyPersistenceTail
+            && schematicIndexPreparationTails.size === 0
             && schematicIndexUpdateTails.size === 0) {
             return;
         }

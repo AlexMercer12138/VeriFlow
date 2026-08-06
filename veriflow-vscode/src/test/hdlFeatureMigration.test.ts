@@ -472,6 +472,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextResolveGate: ReturnType<typeof createScanGate> | undefined;
     let nextScanGate: ReturnType<typeof createScanGate> | undefined;
     let nextScanIncludeWatchUris: string[] | undefined;
+    let nextSchematicUpdateConfigurationGate: ReturnType<typeof createScanGate>
+        | undefined;
     let gatedSchematicRemove: {
         index: FakeIndex;
         gate: ReturnType<typeof createScanGate>;
@@ -645,6 +647,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         }) { FakeIndex.instances.push(this); }
         async load(): Promise<void> { events.push('load'); }
         async updateConfiguration(defines: Record<string, string | true>): Promise<void> {
+            const gate = nextSchematicUpdateConfigurationGate;
+            nextSchematicUpdateConfigurationGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
             this.currentDefinesKey = Object.keys(defines).sort().join('+');
             events.push(`update:${this.currentDefinesKey}`);
         }
@@ -1297,9 +1305,38 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             []
         );
         assert.ok(workspaceBIndex!.removeCalls.includes(schematicChildUri));
+        const retirementGate = createScanGate();
+        gatedSchematicRemove = { index: workspaceBIndex!, gate: retirementGate };
+        const retiringRemove = fireHdlWatchEvent(
+            'delete',
+            'file:///B-workspace/rtl/retiring-child.sv'
+        );
+        await withTimeout(retirementGate.started, 'last-owner schematic remove');
         schematicReleaseIndex!(workspaceBIndexOwner);
         assert.strictEqual(workspaceBIndex!.disposed, true);
         assert.ok(workspaceBWatcherRecords.every(record => record.disposed));
+        const replacementOwner = {};
+        let replacementSettled = false;
+        const replacementIndexPromise = schematicGetIndex!(
+            { uri: workspaceBResource },
+            replacementOwner
+        ).then(index => {
+            replacementSettled = true;
+            return index;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        try {
+            assert.strictEqual(replacementSettled, false);
+        } finally {
+            retirementGate.allow();
+        }
+        const [, replacementIndex] = await withTimeout(
+            Promise.all([retiringRemove, replacementIndexPromise]),
+            'last-owner retirement before replacement index'
+        );
+        assert.ok(replacementIndex);
+        assert.notStrictEqual(replacementIndex, workspaceBIndex);
+        schematicReleaseIndex!(replacementOwner);
         const workspaceAResource = FakeUri.parse(`${workspaceRootUri}/rtl/top.sv`);
         const restoredWorkspaceAIndex = await schematicGetIndex!({ uri: workspaceAResource });
         assert.ok(restoredWorkspaceAIndex);
@@ -2620,6 +2657,37 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         await withTimeout(rootInstantiation, 'stale root instantiation');
         assert.strictEqual(instantiationPickerSideEffects, sideEffectsBeforeRootReplacement);
         storedTop = { definitionKey: topDefinition.key, name: topDefinition.name };
+
+        const preparationDrainGate = createScanGate();
+        nextSchematicUpdateConfigurationGate = preparationDrainGate;
+        const preparationDrain = schematicGetIndex!({
+            uri: FakeUri.parse(`${workspaceRootUri}/rtl/preparation-drain.sv`),
+        }, {});
+        await withTimeout(
+            preparationDrainGate.started,
+            'schematic preparation before lifecycle replacement'
+        );
+        let preparationDrainSettled = false;
+        const preparationDrainDeactivation = extension.deactivate().then(() => {
+            preparationDrainSettled = true;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        try {
+            assert.strictEqual(preparationDrainSettled, false);
+        } finally {
+            preparationDrainGate.allow();
+        }
+        await withTimeout(
+            Promise.all([preparationDrain, preparationDrainDeactivation]),
+            'deactivate with schematic preparation'
+        );
+        extensionDeactivated = true;
+        extension.activate(context);
+        extensionDeactivated = false;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan after schematic preparation lifecycle replacement'
+        );
 
         const staleDialogGate = createScanGate();
         nextOpenDialogGate = staleDialogGate;
