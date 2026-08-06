@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import type { PersistedWorkspaceIndex } from './workspaceIndexTypes';
 
 type MementoLike = {
@@ -7,6 +9,11 @@ type MementoLike = {
 
 const KEY = 'veriflow.hdlWorkspaceIndex.v1';
 const PENDING_KEY = 'veriflow.hdlWorkspaceIndex.v1.pending';
+
+function fingerprintKey(parserFingerprint: string, pending = false): string {
+    const digest = createHash('sha256').update(parserFingerprint).digest('hex');
+    return `${KEY}.${digest}${pending ? '.pending' : ''}`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -125,28 +132,39 @@ function isPersistedWorkspaceIndex(value: unknown): value is PersistedWorkspaceI
 }
 
 export class WorkspaceIndexStore {
+    private committedKey = KEY;
+    private stagedKey: string | undefined;
+
     constructor(private readonly state: MementoLike) {}
 
     load(parserFingerprint: string): PersistedWorkspaceIndex | undefined {
-        const value = this.state.get<unknown>(KEY);
+        this.committedKey = fingerprintKey(parserFingerprint);
+        const value = this.state.get<unknown>(this.committedKey)
+            ?? this.state.get<unknown>(KEY);
         return isPersistedWorkspaceIndex(value) && value.parserFingerprint === parserFingerprint
             ? value
             : undefined;
     }
 
     async save(value: PersistedWorkspaceIndex): Promise<void> {
-        await this.state.update(KEY, value);
+        this.committedKey = fingerprintKey(value.parserFingerprint);
+        await this.state.update(this.committedKey, value);
     }
 
     async stage(value: PersistedWorkspaceIndex): Promise<void> {
-        await this.state.update(PENDING_KEY, value);
+        this.stagedKey = fingerprintKey(value.parserFingerprint, true);
+        await this.state.update(this.stagedKey, value);
     }
 
     async discardStaged(): Promise<void> {
-        await this.state.update(PENDING_KEY, undefined);
+        const key = this.stagedKey ?? PENDING_KEY;
+        await this.state.update(key, undefined);
+        if (this.stagedKey === key) {
+            this.stagedKey = undefined;
+        }
     }
 
     async clear(): Promise<void> {
-        await this.state.update(KEY, undefined);
+        await this.state.update(this.committedKey, undefined);
     }
 }

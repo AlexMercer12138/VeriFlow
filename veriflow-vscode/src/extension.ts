@@ -105,8 +105,14 @@ type SchematicIndexEntry = {
     abortController: AbortController;
     ready: boolean;
     preparation?: Promise<WorkspaceHdlIndex>;
+    watchers: vscode.FileSystemWatcher[];
+    watcherPatternKeys: Set<string>;
+    pendingEvents: Map<string, HdlWatchEvent>;
+    flushScheduled: boolean;
+    updateTail: Promise<void>;
 };
 const schematicIndexRegistry = new Map<string, SchematicIndexEntry>();
+const schematicIndexInvalidationListeners = new Set<() => void>();
 type HdlScanOwnership = {
     lifecycleGeneration: number;
     rootGeneration: number;
@@ -241,6 +247,12 @@ export function activate(context: vscode.ExtensionContext): void {
         schematicNavigationRegistry,
         {
             getIndex: document => _getSchematicIndex(context, document.uri),
+            onDidInvalidate: listener => {
+                schematicIndexInvalidationListeners.add(listener);
+                return {
+                    dispose: () => schematicIndexInvalidationListeners.delete(listener),
+                };
+            },
         }
     );
     context.subscriptions.push(
@@ -285,7 +297,7 @@ export function activate(context: vscode.ExtensionContext): void {
             const rootsChanged = e.affectsConfiguration('veriflow.libDirs');
             if (definesChanged || rootsChanged) {
                 hdlWatchSettingsGeneration++;
-                _resetSchematicIndexes();
+                _resetSchematicIndexes(true);
                 try {
                     _reconcileHdlWatchersForCurrentRoots(context);
                 } catch {
@@ -310,7 +322,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             if (hdlStopping) { return; }
             hdlWatchSettingsGeneration++;
-            _resetSchematicIndexes();
+            _resetSchematicIndexes(true);
             try {
                 _reconcileHdlWatchersForCurrentRoots(context);
             } catch {
@@ -670,8 +682,20 @@ async function _getSchematicIndex(
             load: index.load(),
             abortController: new AbortController(),
             ready: false,
+            watchers: [],
+            watcherPatternKeys: new Set(),
+            pendingEvents: new Map(),
+            flushScheduled: false,
+            updateTail: Promise.resolve(),
         };
         schematicIndexRegistry.set(identity, entry);
+        try {
+            _reconcileSchematicIndexWatchers(entry);
+        } catch {
+            schematicIndexRegistry.delete(identity);
+            _disposeSchematicIndexEntry(entry);
+            return undefined;
+        }
     }
     if (entry.ready) {
         try {
@@ -696,6 +720,7 @@ async function _getSchematicIndex(
         await entry.index.scan(entry.rootUris, entry.abortController.signal);
         _throwIfSchematicIndexInvalidated(entry);
         entry.ready = true;
+        _reconcileSchematicIndexWatchers(entry);
         return entry.index;
     })();
     entry.preparation = preparation;
@@ -712,8 +737,7 @@ async function _getSchematicIndex(
         clearPreparation();
         if (schematicIndexRegistry.get(identity) === entry) {
             schematicIndexRegistry.delete(identity);
-            entry.abortController.abort();
-            entry.index.dispose();
+            _disposeSchematicIndexEntry(entry);
         }
         return undefined;
     }
@@ -728,13 +752,194 @@ function _throwIfSchematicIndexInvalidated(entry: SchematicIndexEntry): void {
     }
 }
 
-function _resetSchematicIndexes(): void {
+function _resetSchematicIndexes(notify = false): void {
     const entries = [...schematicIndexRegistry.values()];
     schematicIndexRegistry.clear();
     for (const entry of entries) {
-        entry.abortController.abort();
-        entry.index.dispose();
+        _disposeSchematicIndexEntry(entry);
     }
+    if (notify) {
+        _emitSchematicIndexInvalidation();
+    }
+}
+
+function _isCurrentSchematicIndexEntry(entry: SchematicIndexEntry): boolean {
+    return !hdlStopping
+        && entry.lifecycleGeneration === hdlLifecycleGeneration
+        && entry.settingsGeneration === hdlWatchSettingsGeneration
+        && schematicIndexRegistry.get(entry.identity) === entry;
+}
+
+function _disposeSchematicIndexEntry(entry: SchematicIndexEntry): void {
+    entry.abortController.abort();
+    for (const watcher of entry.watchers) {
+        watcher.dispose();
+    }
+    entry.watchers.length = 0;
+    entry.watcherPatternKeys.clear();
+    for (const event of entry.pendingEvents.values()) {
+        event.resolve();
+    }
+    entry.pendingEvents.clear();
+    entry.index.dispose();
+}
+
+function _notifySchematicIndexInvalidated(entry: SchematicIndexEntry): void {
+    if (!_isCurrentSchematicIndexEntry(entry)) {
+        return;
+    }
+    _emitSchematicIndexInvalidation();
+}
+
+function _emitSchematicIndexInvalidation(): void {
+    for (const listener of [...schematicIndexInvalidationListeners]) {
+        try {
+            listener();
+        } catch {
+            // One panel must not prevent other open schematics from refreshing.
+        }
+    }
+}
+
+function _addSchematicIndexWatcher(
+    entry: SchematicIndexEntry,
+    patternValue: HdlWatchPatternValue
+): void {
+    const patternKey = _hdlWatchPatternKey(patternValue);
+    if (entry.watcherPatternKeys.has(patternKey)) {
+        return;
+    }
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(patternValue.base, patternValue.pattern)
+    );
+    try {
+        watcher.onDidChange(uri => _queueSchematicIndexWatchEvent(entry, uri, false));
+        watcher.onDidCreate(uri => _queueSchematicIndexWatchEvent(entry, uri, false));
+        watcher.onDidDelete(uri => _queueSchematicIndexWatchEvent(entry, uri, true));
+    } catch (error) {
+        watcher.dispose();
+        throw error;
+    }
+    entry.watchers.push(watcher);
+    entry.watcherPatternKeys.add(patternKey);
+}
+
+function _reconcileSchematicIndexWatchers(entry: SchematicIndexEntry): void {
+    _throwIfSchematicIndexInvalidated(entry);
+    const patternValues: HdlWatchPatternValue[] = entry.rootUris.map(root => ({
+        base: vscode.Uri.parse(root),
+        pattern: HDL_WATCH_GLOB,
+    }));
+    if (entry.ready) {
+        const plan = entry.index.getWatchPlan(entry.rootUris);
+        for (const uriValue of [
+            ...plan.resolvedExternalIncludeUris,
+            ...plan.unresolvedExternalCandidateUris,
+        ]) {
+            const patternValue = _exactHdlWatchPattern(uriValue);
+            if (patternValue) {
+                patternValues.push(patternValue);
+            }
+        }
+    }
+    for (const patternValue of patternValues) {
+        _addSchematicIndexWatcher(entry, patternValue);
+    }
+}
+
+async function _refreshSchematicIndexEntry(
+    entry: SchematicIndexEntry,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    if (entry.preparation) {
+        await entry.preparation;
+    }
+    _throwIfSchematicIndexInvalidated(entry);
+    const uriValue = uri.toString();
+    let admitted = entry.rootUris.some(rootUri =>
+        isSourceUriWithinRoot(uriValue, rootUri)
+    ) || entry.index.getFile(uriValue) !== undefined
+        || entry.index.getDependentsOfInclude(uriValue).length > 0;
+    if (!admitted && !remove) {
+        admitted = await entry.index.canResolveUnresolvedInclude(
+            uriValue,
+            entry.abortController.signal
+        );
+        _throwIfSchematicIndexInvalidated(entry);
+    }
+    if (!admitted) {
+        return;
+    }
+    try {
+        if (remove) {
+            await entry.index.removeUri(uriValue);
+        } else {
+            await entry.index.refreshUri(uriValue, entry.abortController.signal);
+        }
+    } catch (error) {
+        _throwIfSchematicIndexInvalidated(entry);
+        await entry.index.scan(entry.rootUris, entry.abortController.signal);
+    }
+    _throwIfSchematicIndexInvalidated(entry);
+    _reconcileSchematicIndexWatchers(entry);
+    _notifySchematicIndexInvalidated(entry);
+}
+
+async function _flushSchematicIndexWatchEvents(entry: SchematicIndexEntry): Promise<void> {
+    entry.flushScheduled = false;
+    const events = [...entry.pendingEvents.values()];
+    entry.pendingEvents.clear();
+    const work = entry.updateTail.then(async () => {
+        for (const event of events) {
+            try {
+                if (_isCurrentSchematicIndexEntry(entry)) {
+                    await _refreshSchematicIndexEntry(entry, event.uri, event.remove);
+                }
+            } catch (error) {
+                if (_isCurrentSchematicIndexEntry(entry)) {
+                    output.appendError(
+                        `Schematic HDL index refresh failed: ${
+                            error instanceof Error ? error.message : String(error)
+                        }`
+                    );
+                }
+            } finally {
+                event.resolve();
+            }
+        }
+    });
+    entry.updateTail = work.catch(() => undefined);
+    await work;
+}
+
+function _queueSchematicIndexWatchEvent(
+    entry: SchematicIndexEntry,
+    uri: vscode.Uri,
+    remove: boolean
+): Promise<void> {
+    if (!_isCurrentSchematicIndexEntry(entry)) {
+        return Promise.resolve();
+    }
+    const key = uri.toString();
+    const pending = entry.pendingEvents.get(key);
+    if (pending) {
+        pending.remove = remove;
+        return pending.promise;
+    }
+    let resolve!: () => void;
+    const event: HdlWatchEvent = {
+        uri,
+        remove,
+        promise: new Promise<void>(settled => { resolve = settled; }),
+        resolve: () => resolve(),
+    };
+    entry.pendingEvents.set(key, event);
+    if (!entry.flushScheduled) {
+        entry.flushScheduled = true;
+        queueMicrotask(() => { void _flushSchematicIndexWatchEvents(entry); });
+    }
+    return event.promise;
 }
 
 function _resetDependencyIndex(): void {

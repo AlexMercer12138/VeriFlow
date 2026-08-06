@@ -430,6 +430,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const unresolvedExternalIncludeUri = 'file:///B-workspace/shared/defs.svh';
     const racingUnresolvedIncludeUri = 'file:///B-workspace/shared/racing.svh';
     const rogueExternalUri = 'file:///B-workspace/rogue.sv';
+    const schematicChildUri = 'file:///B-workspace/rtl/child.sv';
+    const schematicChildDefinition: Definition = {
+        ...workspaceDefinition,
+        key: `module:${schematicChildUri}:0`,
+        name: 'schematic_child',
+        uri: schematicChildUri,
+        modelFingerprint: 'schematic-child',
+    };
     const definitions = [
         workspaceDefinition,
         secondWorkspaceDefinition,
@@ -492,6 +500,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
     let schematicGetIndex: ((document: { uri: FakeUri }) => Promise<FakeIndex | undefined>)
+        | undefined;
+    let schematicOnDidInvalidate: ((listener: () => void) => { dispose(): void })
         | undefined;
     const settingsResourceScopes: Array<string | undefined> = [];
     type WatchEventKind = 'change' | 'create' | 'delete';
@@ -615,6 +625,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             indexedExternalIncludeUri,
             metacharExternalIncludeUri,
         ]);
+        readonly refreshCalls: string[] = [];
+        readonly removeCalls: string[] = [];
         disposed = false;
         workspaceIndexedRevision = 0;
         currentDefinesKey = '';
@@ -650,6 +662,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             return { uri };
         }
         async refreshUri(uri: string): Promise<void> {
+            this.refreshCalls.push(uri);
             events.push(`refresh:${uri}`);
             events.push(`refresh-defines:${this.currentDefinesKey}:${uri}`);
             this.indexedUris.add(uri);
@@ -674,8 +687,15 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 && !this.definitions.some(definition => definition.key === topDefinition.key)) {
                 this.definitions.push(topDefinition);
             }
+            if (uri === schematicChildUri
+                && !this.definitions.some(
+                    definition => definition.key === schematicChildDefinition.key
+                )) {
+                this.definitions.push(schematicChildDefinition);
+            }
         }
         async removeUri(uri: string): Promise<void> {
+            this.removeCalls.push(uri);
             events.push(`remove:${uri}`);
             if ([externalNonstandardIncludeUri, localNonstandardIncludeUri].includes(uri)) {
                 events.push(`remove-owner:${topDefinition.uri}`);
@@ -1063,9 +1083,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                     _navigation: unknown,
                     services: {
                         getIndex(document: { uri: FakeUri }): Promise<FakeIndex | undefined>;
+                        onDidInvalidate(listener: () => void): { dispose(): void };
                     }
                 ) {
                     schematicGetIndex = services.getIndex;
+                    schematicOnDidInvalidate = services.onDidInvalidate;
                 }
             },
         },
@@ -1179,6 +1201,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         assert.deepStrictEqual(popupWarnings, []);
 
         assert.ok(schematicGetIndex);
+        assert.ok(schematicOnDidInvalidate);
+        let schematicInvalidations = 0;
+        const throwingSchematicInvalidationSubscription = schematicOnDidInvalidate!(
+            () => { throw new Error('panel listener failed'); }
+        );
+        const schematicInvalidationSubscription = schematicOnDidInvalidate!(
+            () => { schematicInvalidations++; }
+        );
         const workspaceBResource = FakeUri.parse('file:///B-workspace/rtl/top.sv');
         const workspaceBIndex = await schematicGetIndex!({ uri: workspaceBResource });
         assert.ok(workspaceBIndex);
@@ -1187,7 +1217,28 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'file:///A-library',
         ]);
         assert.ok(settingsResourceScopes.includes(workspaceBResource.toString()));
-
+        assert.deepStrictEqual(
+            workspaceBIndex!.findDefinitions(schematicChildDefinition.name),
+            []
+        );
+        await fireHdlWatchEvent('create', schematicChildUri);
+        assert.strictEqual(schematicInvalidations, 1);
+        assert.deepStrictEqual(
+            workspaceBIndex!.findDefinitions(schematicChildDefinition.name).map(
+                definition => definition.key
+            ),
+            [schematicChildDefinition.key]
+        );
+        await fireHdlWatchEvent('change', indexedExternalIncludeUri);
+        assert.strictEqual(schematicInvalidations, 2);
+        assert.ok(workspaceBIndex!.refreshCalls.includes(indexedExternalIncludeUri));
+        await fireHdlWatchEvent('delete', schematicChildUri);
+        assert.strictEqual(schematicInvalidations, 3);
+        assert.deepStrictEqual(
+            workspaceBIndex!.findDefinitions(schematicChildDefinition.name),
+            []
+        );
+        assert.ok(workspaceBIndex!.removeCalls.includes(schematicChildUri));
         const workspaceAResource = FakeUri.parse(`${workspaceRootUri}/rtl/top.sv`);
         const restoredWorkspaceAIndex = await schematicGetIndex!({ uri: workspaceAResource });
         assert.ok(restoredWorkspaceAIndex);
@@ -1485,9 +1536,16 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 
         const resolvesBeforeConfigOpen = resolvedDefinitionKeys.length;
         settings.defines = { CONFIG_CHANGED: true };
+        const schematicInvalidationsBeforeConfig = schematicInvalidations;
         await withTimeout(Promise.resolve(configListener!({
             affectsConfiguration: section => section === 'veriflow.defines',
         })), 'completed-state defines change');
+        assert.strictEqual(
+            schematicInvalidations,
+            schematicInvalidationsBeforeConfig + 1
+        );
+        throwingSchematicInvalidationSubscription.dispose();
+        schematicInvalidationSubscription.dispose();
         assert.strictEqual(analyzeStatus, 'outdated');
         assert.strictEqual(simulateStatus, 'outdated');
         assert.strictEqual(persistedDependencyResult, null);

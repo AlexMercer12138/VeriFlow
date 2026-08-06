@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import type { HdlDocument, ModuleModel } from '../core/hdl/model';
 import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
+import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { buildSchematicGraph, type InstanceDefinitionBinding } from './graphBuilder';
 import {
     mergeLayout,
@@ -30,6 +31,7 @@ export type SchematicEditorServices = {
     getIndex(
         document: vscode.TextDocument
     ): WorkspaceHdlIndex | undefined | Promise<WorkspaceHdlIndex | undefined>;
+    onDidInvalidate?(listener: () => void): { dispose(): void };
 };
 
 type SelectableModule = SelectableSchematicModule<ModuleModel>;
@@ -54,16 +56,60 @@ type SchematicPublishSnapshot = {
 };
 
 function instanceBindings(
+    document: HdlDocument,
     module: ModuleModel,
     index: WorkspaceHdlIndex | undefined
 ): Map<string, InstanceDefinitionBinding> {
     const bindings = new Map<string, InstanceDefinitionBinding>();
-    if (!index) return bindings;
+    const documentUri = canonicalizeSourceUri(document.uri);
+    const liveDefinitions = document.modules
+        .filter(candidate => canonicalizeSourceUri(
+            candidate.nameSpan.uri ?? document.uri
+        ) === documentUri)
+        .map((candidate): HdlDefinitionSummary => ({
+            key: `module:${documentUri}:${candidate.declarationSpan.start}`,
+            kind: 'module',
+            name: candidate.name,
+            uri: documentUri,
+            declarationStart: candidate.declarationSpan.start,
+            declarationLine: candidate.declarationLine,
+            parameters: candidate.parameters.map(parameter => ({
+                name: parameter.name,
+                ...(parameter.defaultExpression === undefined
+                    ? {}
+                    : { defaultExpression: parameter.defaultExpression }),
+            })),
+            ports: candidate.ports.map(port => ({
+                name: port.name,
+                direction: port.direction,
+                ...(port.packedRange === undefined
+                    ? {}
+                    : { packedRange: port.packedRange }),
+                width: port.width,
+            })),
+            dependencies: [...new Set(candidate.instances.map(
+                instance => instance.moduleName
+            ))].sort(),
+            modelFingerprint: `live:${documentUri}:${candidate.declarationSpan.start}`,
+        }));
     for (const instance of module.instances) {
-        const definitions = index.findDefinitions(instance.moduleName, 'module');
-        if (definitions.length === 1) {
-            bindings.set(instance.id, definitions[0]);
-        } else if (definitions.length > 1) {
+        const definitions = new Map<string, HdlDefinitionSummary>();
+        for (const definition of index?.findDefinitions(
+            instance.moduleName,
+            'module'
+        ) ?? []) {
+            if (canonicalizeSourceUri(definition.uri) !== documentUri) {
+                definitions.set(definition.key, definition);
+            }
+        }
+        for (const definition of liveDefinitions) {
+            if (definition.name === instance.moduleName) {
+                definitions.set(definition.key, definition);
+            }
+        }
+        if (definitions.size === 1) {
+            bindings.set(instance.id, [...definitions.values()][0]);
+        } else if (definitions.size > 1) {
             bindings.set(instance.id, null);
         }
     }
@@ -113,7 +159,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let refreshAbortController: AbortController | undefined;
         let publishGeneration = 0;
         let currentPublishSnapshot: SchematicPublishSnapshot | undefined;
-        let layoutIntent: { moduleKey: string; layout: SchematicLayout } | undefined;
+        const layoutIntents = new Map<string, SchematicLayout>();
 
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) {
@@ -169,13 +215,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 ...buildSchematicGraph(
                     parsedDocument,
                     selected.model,
-                    instanceBindings(selected.model, index)
+                    instanceBindings(parsedDocument, selected.model, index)
                 ),
                 moduleKey: selected.key,
             };
-            const intendedLayout = layoutIntent?.moduleKey === selected.key
-                ? layoutIntent.layout
-                : this.layoutStore.load(uri, selected.key);
+            const intendedLayout = layoutIntents.get(selected.key)
+                ?? this.layoutStore.load(uri, selected.key);
             const layout = mergeLayout(
                 graph,
                 intendedLayout
@@ -343,11 +388,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                     case 'saveLayout':
                         if (command.moduleKey !== state.selectedModuleKey) return;
                         state.layout = command.layout;
-                        layoutIntent = {
-                            moduleKey: command.moduleKey,
-                            layout: command.layout,
-                        };
+                        layoutIntents.set(command.moduleKey, command.layout);
+                        currentPublishSnapshot = capturePublishSnapshot(publishGeneration);
                         await this.layoutStore.save(uri, command.moduleKey, command.layout);
+                        if (layoutIntents.get(command.moduleKey) === command.layout) {
+                            layoutIntents.delete(command.moduleKey);
+                        }
                         return;
                     case 'relayoutAll':
                         if (command.moduleKey !== state.selectedModuleKey
@@ -358,11 +404,14 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         const graph = state.graph;
                         const layout = relayoutAll(graph, state.layout);
                         state.layout = layout;
-                        layoutIntent = { moduleKey: command.moduleKey, layout };
+                        layoutIntents.set(command.moduleKey, layout);
                         currentPublishSnapshot = capturePublishSnapshot(
                             invocationGeneration
                         );
                         await this.layoutStore.save(uri, command.moduleKey, layout);
+                        if (layoutIntents.get(command.moduleKey) === layout) {
+                            layoutIntents.delete(command.moduleKey);
+                        }
                         if (!isCurrentPublish(invocationGeneration)) return;
                         await panel.webview.postMessage({ type: 'graph', graph, layout });
                         if (!isCurrentPublish(invocationGeneration)) return;
@@ -379,6 +428,9 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 void refreshDocument();
             }
         });
+        const indexInvalidationSubscription = this.services.onDidInvalidate?.(() => {
+            void refreshDocument();
+        });
         const focusSubscription = panel.onDidChangeViewState(event => {
             if (event.webviewPanel.active) {
                 this.navigation.markFocused(handle);
@@ -393,6 +445,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             registration?.dispose();
             messageSubscription.dispose();
             documentSubscription.dispose();
+            indexInvalidationSubscription?.dispose();
             focusSubscription.dispose();
             tokenSubscription.dispose();
             panelSubscription.dispose();

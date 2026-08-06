@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import type { HdlDocument } from '../core/hdl/model';
 import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceIndexInvalidation } from '../core/hdl/workspaceHdlIndex';
 import { WorkspaceIndexStore } from '../core/hdl/workspaceIndexStore';
@@ -25,6 +26,10 @@ class MemoryMemento {
     set(key: string, value: unknown): void {
         this.values.set(key, value);
     }
+
+    keys(): string[] {
+        return [...this.values.keys()];
+    }
 }
 
 class DeferredMemento {
@@ -43,6 +48,10 @@ class DeferredMemento {
         assert.ok(resolve, 'expected a pending memento update');
         resolve();
     }
+}
+
+function isCommittedWorkspaceIndexKey(key: string): boolean {
+    return key.startsWith('veriflow.hdlWorkspaceIndex.v1') && !key.endsWith('.pending');
 }
 
 async function testRoundTripPersistence(): Promise<void> {
@@ -271,6 +280,39 @@ async function testStagedWorkspaceSnapshotIsIgnoredByLoad(): Promise<void> {
 
     await store.discardStaged();
     assert.deepStrictEqual(store.load('parser:a'), committed);
+}
+
+async function testStoreNamespacesConcurrentRootSnapshots(): Promise<void> {
+    const memento = new MemoryMemento();
+    const firstStore = new WorkspaceIndexStore(memento);
+    const secondStore = new WorkspaceIndexStore(memento);
+    const first: PersistedWorkspaceIndex = {
+        schemaVersion: 1,
+        parserFingerprint: 'parser:root-a',
+        files: [],
+    };
+    const second: PersistedWorkspaceIndex = {
+        schemaVersion: 1,
+        parserFingerprint: 'parser:root-b',
+        files: [],
+    };
+
+    await Promise.all([firstStore.stage(first), secondStore.stage(second)]);
+    assert.strictEqual(
+        memento.keys().filter(key => key.endsWith('.pending')).length,
+        2
+    );
+    await Promise.all([firstStore.save(first), secondStore.save(second)]);
+    await Promise.all([firstStore.discardStaged(), secondStore.discardStaged()]);
+
+    assert.deepStrictEqual(
+        new WorkspaceIndexStore(memento).load(first.parserFingerprint),
+        first
+    );
+    assert.deepStrictEqual(
+        new WorkspaceIndexStore(memento).load(second.parserFingerprint),
+        second
+    );
 }
 
 async function testDefinitionsExposeOneBasedDeclarationLines(): Promise<void> {
@@ -983,7 +1025,7 @@ async function testAbortAfterFormalCommitPointCompletesConsistently(): Promise<v
         events.length = 0;
         harness.files.set(uri, 'module formal_new; endmodule');
         harness.hooks.beforePersist = call => {
-            if (call.key === 'veriflow.hdlWorkspaceIndex.v1') {
+            if (isCommittedWorkspaceIndexKey(call.key)) {
                 controller.abort();
             }
         };
@@ -1014,7 +1056,7 @@ async function testFormalSaveFailureDoesNotCommitMemory(): Promise<void> {
         events.length = 0;
         harness.files.set(uri, 'module failure_new; endmodule');
         harness.hooks.beforePersist = call => {
-            if (call.key === 'veriflow.hdlWorkspaceIndex.v1') {
+            if (isCommittedWorkspaceIndexKey(call.key)) {
                 throw new Error('formal save failed');
             }
         };
@@ -1266,6 +1308,72 @@ async function testIndexPrioritiesAndInteractiveQueuePrecedence(): Promise<void>
     }
 }
 
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt++) {
+        if (predicate()) return;
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function testBackgroundDiskParsesDoNotCancelDirtyLiveParse(): Promise<void> {
+    const uri = 'file:///ws/shared.sv';
+    const diskText = 'module shared(input logic disk_i); endmodule';
+    const harness = createWorkspaceIndexHarness({ [uri]: diskText });
+    let dirtyLive: Promise<HdlDocument> | undefined;
+    harness.hooks.onDispatch = call => {
+        if (call.uri === uri && call.priority === 'background' && !dirtyLive) {
+            dirtyLive = harness.index.parseOpenDocument(
+                uri,
+                2,
+                'module shared(input logic dirty_i); endmodule'
+            );
+        }
+    };
+    try {
+        const scan = harness.index.scan(['file:///ws']);
+        await waitUntil(() => dirtyLive !== undefined, 'dirty live parse during scan');
+        await Promise.all([scan, dirtyLive!]);
+
+        const summary = harness.index.findDefinitions('shared')[0];
+        const reloaded = harness.createIndex();
+        try {
+            await reloaded.load();
+            dirtyLive = undefined;
+            harness.hooks.onDispatch = call => {
+                if (call.uri === uri && call.priority === 'background' && !dirtyLive) {
+                    dirtyLive = reloaded.parseOpenDocument(
+                        uri,
+                        3,
+                        'module shared(input logic newer_dirty_i); endmodule'
+                    );
+                }
+            };
+            const resolve = reloaded.resolveDefinition(summary.key);
+            await waitUntil(() => dirtyLive !== undefined, 'dirty live parse during resolve');
+            await Promise.all([resolve, dirtyLive!]);
+        } finally {
+            reloaded.dispose();
+        }
+
+        const sameUriCalls = harness.parserCalls.flatMap((call, index) =>
+            call.uri === uri ? [{
+                priority: call.priority,
+                cacheMode: harness.parserOptions[index].cacheMode ?? 'document',
+            }] : []
+        );
+        assert.deepStrictEqual(sameUriCalls, [
+            { priority: 'background', cacheMode: 'ephemeral' },
+            { priority: 'interactive', cacheMode: 'document' },
+            { priority: 'background', cacheMode: 'ephemeral' },
+            { priority: 'interactive', cacheMode: 'document' },
+        ]);
+    } finally {
+        harness.index.dispose();
+        await harness.dispose();
+    }
+}
+
 async function main(): Promise<void> {
     await testRoundTripPersistence();
     await testLoadRejectsFingerprintMismatch();
@@ -1274,6 +1382,7 @@ async function main(): Promise<void> {
     await testClearRemovesPersistedIndex();
     await testStoreWaitsForMementoUpdates();
     await testStagedWorkspaceSnapshotIsIgnoredByLoad();
+    await testStoreNamespacesConcurrentRootSnapshots();
     await testDefinitionsExposeOneBasedDeclarationLines();
     await testCompositeDefinitionsUseTheirOriginalDeclarationLines();
     await testInitialScanDuplicatesAndRefresh();
@@ -1297,6 +1406,7 @@ async function main(): Promise<void> {
     await testPersistedResolveUsesTheExactDefinitionKey();
     await testResolveRefreshesStalePersistedSummary();
     await testIndexPrioritiesAndInteractiveQueuePrecedence();
+    await testBackgroundDiskParsesDoNotCancelDirtyLiveParse();
 
     console.log('HDL workspace index tests passed');
 }

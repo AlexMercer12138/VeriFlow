@@ -3,6 +3,7 @@ import Module = require('module');
 import * as path from 'path';
 
 import type { HdlDocument } from '../core/hdl/model';
+import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import type { HostEvent } from '../schematic/protocol';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
 
@@ -62,6 +63,8 @@ type ProviderHarness = {
     setParseGate(text: string, gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
     setSaveGate(gate: Gate): void;
+    setIndexDefinitions(definitions: HdlDefinitionSummary[]): void;
+    invalidateIndex(): void;
     send(message: unknown): void;
     changeDocument(text: string, version: number): void;
     disposePanel(): void;
@@ -83,6 +86,8 @@ async function createProviderHarness(
     let postGate: { predicate: (event: HostEvent) => boolean; gate: Gate } | undefined;
     let parseGate: { text: string; gate: Gate } | undefined;
     let saveGate: Gate | undefined;
+    let indexInvalidationListener: (() => void) | undefined;
+    let indexDefinitions: HdlDefinitionSummary[] = [];
     const messages: HostEvent[] = [];
     const disposable = { dispose(): void {} };
     const document = {
@@ -200,10 +205,22 @@ async function createProviderHarness(
             if (!parsed) throw new Error(`No parsed fixture for ${text}`);
             return parsed;
         },
-        findDefinitions: () => [],
+        findDefinitions(name: string): HdlDefinitionSummary[] {
+            return indexDefinitions.filter(definition => definition.name === name);
+        },
     };
     const provider = new SchematicEditorProvider(context, navigation, {
         getIndex: async () => index,
+        onDidInvalidate(listener: () => void) {
+            indexInvalidationListener = listener;
+            return {
+                dispose(): void {
+                    if (indexInvalidationListener === listener) {
+                        indexInvalidationListener = undefined;
+                    }
+                },
+            };
+        },
     });
     await provider.resolveCustomTextEditor(document, panel, token);
     assert.ok(messageListener);
@@ -224,6 +241,8 @@ async function createProviderHarness(
         setParseGate(text, gate): void { parseGate = { text, gate }; },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
+        setIndexDefinitions(definitions): void { indexDefinitions = definitions; },
+        invalidateIndex(): void { indexInvalidationListener!(); },
         send(message): void { messageListener!(message); },
         changeDocument(text, version): void {
             documentText = text;
@@ -237,6 +256,240 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+function indexedModule(
+    name: string,
+    uri: string,
+    declarationStart: number,
+    portName: string
+): HdlDefinitionSummary {
+    return {
+        key: `module:${uri}:${declarationStart}`,
+        kind: 'module',
+        name,
+        uri,
+        declarationStart,
+        declarationLine: 1,
+        parameters: [],
+        ports: [{
+            name: portName,
+            direction: 'input',
+            width: { kind: 'known', bits: 1 },
+        }],
+        dependencies: [],
+        modelFingerprint: `${name}:${portName}`,
+    };
+}
+
+async function testUnsavedLocalDefinitionPreservesExternalAmbiguity(): Promise<void> {
+    const initialText = [
+        'module top(input logic a);',
+        '    added_child u_child(.a(a));',
+        'endmodule',
+    ].join('\n');
+    const updatedText = [
+        initialText,
+        'module added_child(input logic a); endmodule',
+    ].join('\n');
+    const documents = new Map<string, HdlDocument>([
+        [initialText, await parseWithRealWorker('file:///workspace/design.sv', initialText)],
+        [updatedText, await parseWithRealWorker('file:///workspace/design.sv', updatedText)],
+    ]);
+    const harness = await createProviderHarness(documents, initialText);
+    try {
+        harness.setIndexDefinitions([
+            indexedModule('added_child', 'file:///library/added_child.sv', 0, 'a'),
+        ]);
+        const start = harness.messages.length;
+        harness.changeDocument(updatedText, 2);
+        await waitFor(
+            () => harness.messages.slice(start).some(event => event.type === 'graph'),
+            'graph after unsaved local module addition'
+        );
+
+        const graph = harness.messages.slice(start).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        const instance = graph.graph.nodes.find(node => node.id === 'instance:u_child')!;
+        assert.strictEqual(instance.definitionKey, undefined);
+        assert.deepStrictEqual(instance.pins, []);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testUnsavedSameDocumentRenameUsesLiveDefinition(): Promise<void> {
+    const initialText = [
+        'module top(input logic a);',
+        '    old_child u_child(.a(a));',
+        'endmodule',
+        'module old_child(input logic a); endmodule',
+    ].join('\n');
+    const updatedText = initialText.replace(/old_child/g, 'new_child');
+    const updatedDocument = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        updatedText
+    );
+    const documents = new Map<string, HdlDocument>([
+        [initialText, await parseWithRealWorker('file:///workspace/design.sv', initialText)],
+        [updatedText, updatedDocument],
+    ]);
+    const harness = await createProviderHarness(documents, initialText);
+    try {
+        const start = harness.messages.length;
+        harness.changeDocument(updatedText, 2);
+        await waitFor(
+            () => harness.messages.slice(start).some(event => event.type === 'graph'),
+            'graph after unsaved same-document rename'
+        );
+
+        const graph = harness.messages.slice(start).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        const instance = graph.graph.nodes.find(node => node.id === 'instance:u_child')!;
+        const live = updatedDocument.modules.find(module => module.name === 'new_child')!;
+        assert.strictEqual(
+            instance.definitionKey,
+            `module:file:///workspace/design.sv:${live.declarationSpan.start}`
+        );
+        assert.deepStrictEqual(instance.pins.map(pin => pin.name), ['a']);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testLayoutIntentRemainsScopedToItsModuleWhileSaveIsPending(): Promise<void> {
+    const text = [
+        'module first(input logic first_i); endmodule',
+        'module second(input logic second_i); endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('file:///workspace/design.sv', text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const firstSaveGate = createGate();
+    try {
+        const [firstKey, secondKey] = harness.moduleKeys;
+        const firstGraph = harness.messages.find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.graph.moduleKey === firstKey
+        )!;
+        const firstLayout = {
+            ...firstGraph.layout,
+            nodes: Object.fromEntries(Object.entries(firstGraph.layout.nodes).map(
+                ([id, node]) => [id, { ...node, x: node.x + 777, fixed: true }]
+            )),
+        };
+        harness.setSaveGate(firstSaveGate);
+        harness.send({ type: 'saveLayout', moduleKey: firstKey, layout: firstLayout });
+        await firstSaveGate.started;
+
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages).at(-1) === secondKey,
+            'second module selection'
+        );
+        harness.send({ type: 'relayoutAll', moduleKey: secondKey });
+
+        const start = harness.messages.length;
+        harness.send({ type: 'selectModule', moduleKey: firstKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages.slice(start)).includes(firstKey),
+            'first module reselection while its save is pending'
+        );
+        const reselected = harness.messages.slice(start).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.graph.moduleKey === firstKey
+        )!;
+        assert.deepStrictEqual(reselected.layout, firstLayout);
+    } finally {
+        firstSaveGate.allow();
+        await harness.dispose();
+    }
+}
+
+async function testRepeatedReadyPublishesLatestAcceptedLayout(): Promise<void> {
+    const text = 'module top(input logic a); endmodule';
+    const document = await parseWithRealWorker('file:///workspace/design.sv', text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    try {
+        const moduleKey = harness.moduleKeys[0];
+        const initial = harness.messages.find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        const accepted = {
+            ...initial.layout,
+            viewport: { x: 321, y: 654, zoom: 1.75 },
+            minimap: !initial.layout.minimap,
+        };
+        harness.send({ type: 'saveLayout', moduleKey, layout: accepted });
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        const start = harness.messages.length;
+        harness.send({ type: 'ready' });
+        await waitFor(
+            () => harness.messages.slice(start).some(event => event.type === 'graph'),
+            'repeated ready graph publication'
+        );
+        const replayed = harness.messages.slice(start).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        assert.deepStrictEqual(replayed.layout, accepted);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testIndexInvalidationRefreshesAndSupersedesInFlightConfiguration(): Promise<void> {
+    const source = [
+        '`ifdef FEATURE_A',
+        'module top(input logic feature_a_i); endmodule',
+        '`else',
+        'module top(input logic feature_b_i); endmodule',
+        '`endif',
+    ].join('\n');
+    const initial = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        'module top(input logic initial_i); endmodule'
+    );
+    const featureA = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        'module top(input logic feature_a_i); endmodule'
+    );
+    const featureB = await parseWithRealWorker(
+        'file:///workspace/design.sv',
+        'module top(input logic feature_b_i); endmodule'
+    );
+    const documents = new Map<string, HdlDocument>([[source, initial]]);
+    const harness = await createProviderHarness(documents, source);
+    try {
+        const gate = createGate();
+        harness.setParseGate(source, gate);
+        documents.set(source, featureA);
+        const start = harness.messages.length;
+        harness.invalidateIndex();
+        await gate.started;
+
+        documents.set(source, featureB);
+        harness.invalidateIndex();
+        await waitFor(
+            () => harness.messages.slice(start).some(event =>
+                event.type === 'graph'
+                && event.graph.nodes.some(node => node.id === 'port:feature_b_i')
+            ),
+            'new configuration graph after index invalidation'
+        );
+        gate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        const published = harness.messages.slice(start).filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        );
+        assert.strictEqual(published.length, 1);
+        assert.ok(published[0].graph.nodes.some(node => node.id === 'port:feature_b_i'));
+        assert.ok(!published[0].graph.nodes.some(node => node.id === 'port:feature_a_i'));
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testSelectionDuringRefreshPublishesRefreshedIntent(): Promise<void> {
@@ -495,6 +748,11 @@ void testRapidSelectionStopsStalePublish()
     .then(testRelayoutSaveCannotPublishNewerMutableState)
     .then(testRelayoutDuringRefreshPublishesRefreshedGraph)
     .then(testSelectionDuringRefreshPublishesRefreshedIntent)
+    .then(testIndexInvalidationRefreshesAndSupersedesInFlightConfiguration)
+    .then(testUnsavedLocalDefinitionPreservesExternalAmbiguity)
+    .then(testUnsavedSameDocumentRenameUsesLiveDefinition)
+    .then(testLayoutIntentRemainsScopedToItsModuleWhileSaveIsPending)
+    .then(testRepeatedReadyPublishesLatestAcceptedLayout)
     .then(() => console.log('schematic editor provider tests passed'))
     .catch(error => {
         console.error(error);

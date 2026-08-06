@@ -464,7 +464,11 @@ export class WorkspaceHdlIndex {
                         summary.uri,
                         prepared.input.version,
                         prepared.input.text,
-                        { defines: this.defines, resolvedIncludes: prepared.resolvedIncludes },
+                        {
+                            defines: this.defines,
+                            resolvedIncludes: prepared.resolvedIncludes,
+                            cacheMode: 'ephemeral',
+                        },
                         'background'
                     );
                     this.documents.set(summary.uri, {
@@ -633,7 +637,7 @@ export class WorkspaceHdlIndex {
             uri,
             prepared.input.version,
             prepared.input.text,
-            { defines, resolvedIncludes: prepared.resolvedIncludes },
+            { defines, resolvedIncludes: prepared.resolvedIncludes, cacheMode: 'ephemeral' },
             'background'
         );
         this.checkpoint(signal);
