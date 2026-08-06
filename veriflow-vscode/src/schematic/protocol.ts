@@ -169,7 +169,7 @@ function normalizeSourceSpan(value: unknown): SourceSpan | undefined {
     }
     if (parts !== undefined) {
         const normalizedParts: NonNullable<SourceSpan['compositeParts']> = [];
-        let previous: NonNullable<SourceSpan['compositeParts']>[number] | undefined;
+        const previousEndByUri = new Map<string, number>();
         for (let index = 0; index < partCount; index += 1) {
             if (!Object.prototype.propertyIsEnumerable.call(parts, index)) {
                 return undefined;
@@ -185,12 +185,12 @@ function normalizeSourceSpan(value: unknown): SourceSpan | undefined {
                 || !sourceOffset(partStart)
                 || !sourceOffset(partEnd)
                 || partStart > partEnd
-                || (previous?.uri === partUri && partStart < previous.end)) {
+                || partStart < (previousEndByUri.get(partUri) ?? 0)) {
                 return undefined;
             }
             const part = { uri: partUri, start: partStart, end: partEnd };
             normalizedParts.push(part);
-            previous = part;
+            previousEndByUri.set(partUri, partEnd);
         }
         span.compositeParts = normalizedParts;
     }

@@ -14,6 +14,9 @@ import {
     type SchematicLayout,
 } from './layoutStore';
 import {
+    openSchematicDefinition,
+    revealSchematicSource,
+    SchematicDiagnosticPublisher,
     type SchematicNavigationRegistry,
     type SchematicPanelHandle,
 } from './navigationRegistry';
@@ -51,6 +54,7 @@ type PanelState = {
     layout?: SchematicLayout;
     errorMessage?: string;
     index?: WorkspaceHdlIndex;
+    diagnosticCounts: { errors: number; warnings: number };
 };
 
 type SchematicPublishSnapshot = {
@@ -58,6 +62,7 @@ type SchematicPublishSnapshot = {
     initialize: Extract<HostEvent, { type: 'initialize' }>;
     graph?: ReturnType<typeof buildSchematicGraph>;
     layout?: SchematicLayout;
+    diagnostics: Extract<HostEvent, { type: 'diagnostics' }>;
 };
 
 function instanceBindings(
@@ -125,6 +130,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
     static readonly viewType = 'veriflow.schematicEditor';
 
     private readonly layoutStore: SchematicLayoutStore;
+    private readonly diagnosticPublisher: SchematicDiagnosticPublisher;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -132,6 +138,38 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         private readonly services: SchematicEditorServices
     ) {
         this.layoutStore = new SchematicLayoutStore(context.workspaceState);
+        const collection = vscode.languages?.createDiagnosticCollection?.(
+            'veriflow-schematic'
+        );
+        if (collection) {
+            context.subscriptions?.push(collection);
+        }
+        this.diagnosticPublisher = new SchematicDiagnosticPublisher({
+            set: async (uri, diagnostics) => {
+                if (!collection) return;
+                const sourceUri = vscode.Uri.parse(uri);
+                const sourceDocument = await vscode.workspace.openTextDocument(sourceUri);
+                collection.set(sourceUri, diagnostics.map(item => {
+                    const severity = item.severity === 'error'
+                        ? vscode.DiagnosticSeverity.Error
+                        : item.severity === 'warning'
+                            ? vscode.DiagnosticSeverity.Warning
+                            : vscode.DiagnosticSeverity.Information;
+                    const diagnostic = new vscode.Diagnostic(
+                        new vscode.Range(
+                            sourceDocument.positionAt(item.start),
+                            sourceDocument.positionAt(item.end)
+                        ),
+                        item.message,
+                        severity
+                    );
+                    diagnostic.code = item.code;
+                    diagnostic.source = 'VeriFlow Schematic';
+                    return diagnostic;
+                }));
+            },
+            delete: uri => collection?.delete(vscode.Uri.parse(uri)),
+        });
     }
 
     async resolveCustomTextEditor(
@@ -157,7 +195,9 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             ready: false,
             refreshGeneration: 0,
             modules: [],
+            diagnosticCounts: { errors: 0, warnings: 0 },
         };
+        const diagnosticOwner = {};
         const graphBuilds = new SchematicBuildGeneration<HdlDocument>();
         let consumePendingSelection = true;
         let registration: { dispose(): void } | undefined;
@@ -190,6 +230,10 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             ...(state.graph && state.layout
                 ? { graph: state.graph, layout: state.layout }
                 : {}),
+            diagnostics: {
+                type: 'diagnostics',
+                ...state.diagnosticCounts,
+            },
         });
         const buildSelectedGraph = async (
             generation: number,
@@ -202,6 +246,11 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 graphBuilds.invalidate();
                 state.graph = undefined;
                 state.layout = undefined;
+                state.diagnosticCounts = await this.diagnosticPublisher.publish(
+                    diagnosticOwner,
+                    uri,
+                    []
+                );
                 if (!isCurrentPublish(generation)) return undefined;
                 const snapshot = capturePublishSnapshot(generation);
                 currentPublishSnapshot = snapshot;
@@ -235,6 +284,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 intendedLayout
             );
             if (!isCurrentPublish(generation)) return undefined;
+            state.diagnosticCounts = await this.diagnosticPublisher.publish(
+                diagnosticOwner,
+                uri,
+                graph.diagnostics
+            );
+            if (!isCurrentPublish(generation)) return undefined;
             state.graph = graph;
             state.layout = layout;
             const snapshot = capturePublishSnapshot(generation);
@@ -255,6 +310,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 });
                 if (!isCurrentPublish(snapshot.generation)) return;
             }
+            await panel.webview.postMessage(snapshot.diagnostics);
         };
         const reportError = async (error: unknown): Promise<void> => {
             await post({
@@ -397,10 +453,18 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         await selectModule(command.moduleKey);
                         return;
                     case 'saveLayout':
-                        if (command.moduleKey !== state.selectedModuleKey) return;
-                        state.layout = command.layout;
+                        if (!state.modules.some(module =>
+                            module.key === command.moduleKey
+                        )) {
+                            return;
+                        }
                         layoutIntents.set(command.moduleKey, command.layout);
-                        currentPublishSnapshot = capturePublishSnapshot(publishGeneration);
+                        if (command.moduleKey === state.selectedModuleKey) {
+                            state.layout = command.layout;
+                            currentPublishSnapshot = capturePublishSnapshot(
+                                publishGeneration
+                            );
+                        }
                         await this.layoutStore.save(uri, command.moduleKey, command.layout);
                         if (layoutIntents.get(command.moduleKey) === command.layout) {
                             layoutIntents.delete(command.moduleKey);
@@ -428,7 +492,54 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         if (!isCurrentPublish(invocationGeneration)) return;
                         return;
                     case 'revealSource':
+                        await revealSchematicSource(uri, command.span, {
+                            async openTextDocument(sourceUri) {
+                                const sourceDocument = await vscode.workspace.openTextDocument(
+                                    vscode.Uri.parse(sourceUri)
+                                );
+                                return {
+                                    document: sourceDocument,
+                                    positionAt: offset => sourceDocument.positionAt(offset),
+                                };
+                            },
+                            async showTextDocument(sourceDocument, selection) {
+                                const editor = await vscode.window.showTextDocument(
+                                    sourceDocument
+                                );
+                                editor.selection = new vscode.Selection(
+                                    selection.start,
+                                    selection.end
+                                );
+                                editor.revealRange(new vscode.Range(
+                                    selection.start,
+                                    selection.end
+                                ));
+                            },
+                        });
+                        return;
                     case 'openDefinition':
+                        await openSchematicDefinition(
+                            handle,
+                            command.definitionKey,
+                            this.navigation,
+                            {
+                                getDefinition: async definitionKey => {
+                                    const index = state.index ?? await this.services.getIndex(
+                                        document,
+                                        indexOwner
+                                    );
+                                    return index?.getDefinition(definitionKey);
+                                },
+                                async openSchematic(sourceUri) {
+                                    await vscode.commands.executeCommand(
+                                        'vscode.openWith',
+                                        vscode.Uri.parse(sourceUri),
+                                        SchematicEditorProvider.viewType
+                                    );
+                                },
+                            }
+                        );
+                        return;
                     case 'search':
                         return;
                 }
@@ -457,6 +568,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             publishGeneration++;
             refreshAbortController?.abort();
             graphBuilds.invalidate();
+            void this.diagnosticPublisher.clear(diagnosticOwner);
             registration?.dispose();
             this.services.releaseIndex?.(indexOwner);
             messageSubscription.dispose();

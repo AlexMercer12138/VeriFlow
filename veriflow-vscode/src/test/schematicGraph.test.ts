@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 
+import type { HdlDiagnostic } from '../core/hdl/model';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { buildSchematicGraph } from '../schematic/graphBuilder';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
@@ -561,6 +562,38 @@ async function testIncludedObjectsAreReadOnly(): Promise<void> {
     ));
 }
 
+async function testGraphPreservesDiagnosticSourceDetails(): Promise<void> {
+    const fixture = fixturePath('hdl', 'schematic-readonly.sv');
+    const included = fixturePath('hdl', 'schematic-ports.svh');
+    const document = await parseWithRealWorker(
+        fixture,
+        fs.readFileSync(fixture, 'utf8')
+    );
+    const module = document.modules.find(item => item.name === 'top')!;
+    const diagnostic = {
+        severity: 'warning',
+        code: 'TEST_COMPOSITE_DIAGNOSTIC',
+        message: 'Diagnostic details must survive graph construction.',
+        span: {
+            start: 100,
+            end: 140,
+            compositeParts: [
+                { uri: included, start: 8, end: 14 },
+                { uri: fixture, start: 120, end: 140 },
+            ],
+        },
+    } satisfies HdlDiagnostic;
+
+    const graph = buildSchematicGraph(
+        { ...document, diagnostics: [diagnostic] },
+        module,
+        new Map()
+    );
+
+    assert.strictEqual(graph.diagnostics[0], diagnostic);
+    assert.deepStrictEqual(graph.diagnostics[0], diagnostic);
+}
+
 async function main(): Promise<void> {
     await testGoldenGraph();
     await testStructuralEdgeCases();
@@ -571,6 +604,7 @@ async function main(): Promise<void> {
     await testDuplicateLocalDefinitionIsUnbound();
     await testWorkspaceAmbiguitySuppressesLocalFallback();
     await testIncludedObjectsAreReadOnly();
+    await testGraphPreservesDiagnosticSourceDetails();
 
     console.log('Schematic graph tests passed');
 }

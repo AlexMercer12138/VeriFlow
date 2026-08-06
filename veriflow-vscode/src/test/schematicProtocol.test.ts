@@ -231,7 +231,7 @@ function testSourceSpanValidation(): void {
                     { uri: 'file:///main.sv', start: 0, end: 5, ignored: true },
                     { uri: 'file:///main.sv', start: 5, end: 10 },
                     { uri: 'file:///include.svh', start: 100, end: 110 },
-                    { uri: 'file:///main.sv', start: 1, end: 2 },
+                    { uri: 'file:///main.sv', start: 10, end: 15 },
                 ],
                 ignored: true,
             },
@@ -246,7 +246,7 @@ function testSourceSpanValidation(): void {
                     { uri: 'file:///main.sv', start: 0, end: 5 },
                     { uri: 'file:///main.sv', start: 5, end: 10 },
                     { uri: 'file:///include.svh', start: 100, end: 110 },
-                    { uri: 'file:///main.sv', start: 1, end: 2 },
+                    { uri: 'file:///main.sv', start: 10, end: 15 },
                 ],
             },
         }
@@ -278,6 +278,15 @@ function testSourceSpanValidation(): void {
             end: 10,
             compositeParts: [
                 { uri: 'file:///a.sv', start: 0, end: 5 },
+                { uri: 'file:///a.sv', start: 4, end: 8 },
+            ],
+        },
+        {
+            start: 0,
+            end: 10,
+            compositeParts: [
+                { uri: 'file:///a.sv', start: 0, end: 5 },
+                { uri: 'file:///include.svh', start: 20, end: 25 },
                 { uri: 'file:///a.sv', start: 4, end: 8 },
             ],
         },
