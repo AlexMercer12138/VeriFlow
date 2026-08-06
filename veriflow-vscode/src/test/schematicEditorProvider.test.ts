@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import type { HdlDocument } from '../core/hdl/model';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
+import { SchematicNavigationRegistry } from '../schematic/navigationRegistry';
 import type { HostEvent } from '../schematic/protocol';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
 
@@ -83,13 +84,16 @@ async function createProviderHarness(
         gate: Gate;
         replacement: HdlDocument;
     },
-    diagnosticOptions?: {
+    options?: {
         failingUri?: string;
         waitForInitialGraph?: boolean;
+        resourceUri?: string;
+        navigation?: SchematicNavigationRegistry;
+        executeCommand?(): Promise<void>;
     }
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
-    const resource = FakeUri.parse('file:///workspace/design.sv');
+    const resource = FakeUri.parse(options?.resourceUri ?? 'file:///workspace/design.sv');
     let documentText = initialText;
     let documentVersion = 1;
     let messageListener: ((message: unknown) => void) | undefined;
@@ -187,7 +191,7 @@ async function createProviderHarness(
         },
         workspace: {
             async openTextDocument(uri: FakeUri) {
-                if (uri.toString() === diagnosticOptions?.failingUri) {
+                if (uri.toString() === options?.failingUri) {
                     throw new Error(`Cannot open diagnostic source ${uri.toString()}`);
                 }
                 return { positionAt: (offset: number) => offset };
@@ -196,6 +200,9 @@ async function createProviderHarness(
                 documentListener = listener;
                 return disposable;
             },
+        },
+        commands: {
+            executeCommand: options?.executeCommand ?? (async (): Promise<void> => {}),
         },
     };
     const moduleLoader = Module as typeof Module & {
@@ -242,11 +249,7 @@ async function createProviderHarness(
             }
         }(),
     };
-    const navigation = {
-        consumePending: () => undefined,
-        register: () => disposable,
-        markFocused(): void {},
-    };
+    const navigation = options?.navigation ?? new SchematicNavigationRegistry();
     const index = {
         async parseOpenDocument(
             _uri: string,
@@ -292,14 +295,14 @@ async function createProviderHarness(
     await provider.resolveCustomTextEditor(document, panel, token);
     assert.ok(messageListener);
     messageListener!({ type: 'ready' });
-    if (diagnosticOptions?.waitForInitialGraph !== false) {
+    if (options?.waitForInitialGraph !== false) {
         await waitFor(
             () => messages.some(event => event.type === 'graph'),
             'initial graph publication'
         );
     }
     const initialize = messages.find(event => event.type === 'initialize');
-    if (diagnosticOptions?.waitForInitialGraph !== false) {
+    if (options?.waitForInitialGraph !== false) {
         assert.ok(initialize && initialize.type === 'initialize');
     }
     const moduleKeys = initialize?.type === 'initialize'
@@ -441,6 +444,60 @@ function indexedModule(
         dependencies: [],
         modelFingerprint: `${name}:${portName}`,
     };
+}
+
+async function testFailedCrossFileOpenDoesNotRetainPendingSelection(): Promise<void> {
+    const sourceUri = 'file:///workspace/design.sv';
+    const targetUri = 'file:///workspace/target.sv';
+    const sourceText = 'module source; endmodule';
+    const targetText = [
+        'module first; endmodule',
+        'module second; endmodule',
+    ].join('\n');
+    const sourceDocument = await parseWithRealWorker(sourceUri, sourceText);
+    const targetDocument = await parseWithRealWorker(targetUri, targetText);
+    const targetModule = targetDocument.modules.find(module => module.name === 'second')!;
+    const targetKey = `module:${targetUri}:${targetModule.declarationSpan.start}`;
+    const navigation = new SchematicNavigationRegistry();
+    const sourceHarness = await createProviderHarness(
+        new Map([[sourceText, sourceDocument]]),
+        sourceText,
+        undefined,
+        {
+            navigation,
+            async executeCommand(): Promise<void> {
+                throw new Error('vscode.openWith failed');
+            },
+        }
+    );
+    try {
+        sourceHarness.setIndexDefinitions([
+            indexedModule('second', targetUri, targetModule.declarationSpan.start, 'a'),
+        ]);
+        sourceHarness.send({ type: 'openDefinition', definitionKey: targetKey });
+        await waitFor(
+            () => sourceHarness.messages.some(event => event.type === 'hostError'),
+            'failed cross-file schematic open'
+        );
+    } finally {
+        await sourceHarness.dispose();
+    }
+
+    const targetHarness = await createProviderHarness(
+        new Map([[targetText, targetDocument]]),
+        targetText,
+        undefined,
+        { resourceUri: targetUri, navigation }
+    );
+    try {
+        const latest = targetHarness.messages.filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph'
+        ).at(-1)!;
+        assert.strictEqual(latest.graph.moduleName, 'first');
+    } finally {
+        await targetHarness.dispose();
+    }
 }
 
 async function testUnsavedLocalDefinitionPreservesExternalAmbiguity(): Promise<void> {
@@ -919,6 +976,7 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
 }
 
 void testRapidSelectionStopsStalePublish()
+    .then(testFailedCrossFileOpenDoesNotRetainPendingSelection)
     .then(testDiagnosticSourceFailureDoesNotBlockGraph)
     .then(testInitialParseReplaysTargetedIndexInvalidation)
     .then(testRapidRefreshStopsStalePublish)

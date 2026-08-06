@@ -5,6 +5,7 @@ import {
     buildSchematicWebviewHtml,
     DebouncedLayoutSaveScheduler,
     formatSchematicDiagnosticDetails,
+    mergeSchematicWebviewLayouts,
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
@@ -76,6 +77,23 @@ function layout(x: number): SchematicLayout {
     };
 }
 
+function testSynchronousWebviewLayoutSnapshot(): void {
+    const previous = layout(5);
+    const current = layout(10);
+    const merged = mergeSchematicWebviewLayouts(
+        { 'module:previous': previous },
+        'module:current',
+        current
+    );
+    previous.nodes.node.x = 500;
+    current.nodes.node.x = 1_000;
+
+    assert.deepStrictEqual(merged, {
+        'module:previous': layout(5),
+        'module:current': layout(10),
+    });
+}
+
 async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
     let nextHandle = 0;
     const pending = new Map<number, () => void>();
@@ -126,10 +144,27 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
         layout: layout(50),
     });
 
-    scheduler.schedule('module:a', layout(60));
+    const flushedA = layout(60);
+    scheduler.schedule('module:a', flushedA);
+    flushedA.nodes.node.x = 600;
     scheduler.schedule('module:b', layout(70));
+    scheduler.flush();
+    assert.strictEqual(pending.size, 0);
+    assert.deepStrictEqual(saves.slice(-2), [{
+        moduleKey: 'module:a',
+        layout: layout(60),
+    }, {
+        moduleKey: 'module:b',
+        layout: layout(70),
+    }]);
+    const saveCountAfterFlush = saves.length;
+    runPending();
+    assert.strictEqual(saves.length, saveCountAfterFlush);
+
+    scheduler.schedule('module:a', layout(80));
     scheduler.dispose();
     assert.strictEqual(pending.size, 0);
+    assert.strictEqual(saves.length, saveCountAfterFlush);
 }
 
 function testExactCellNavigationCommands(): void {
@@ -237,6 +272,7 @@ function testNetworkLabelPlacementAvoidsNodes(): void {
 void Promise.resolve()
     .then(testSecureSchematicWebviewHtml)
     .then(testDiagnosticDetailFormatting)
+    .then(testSynchronousWebviewLayoutSnapshot)
     .then(testNonLabelSegmentSkipsPlacementScan)
     .then(testNetworkLabelPlacementAvoidsNodes)
     .then(testSelectionStatusSummary)

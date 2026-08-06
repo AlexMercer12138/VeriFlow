@@ -268,8 +268,22 @@ export function cloneSchematicLayout(layout: SchematicLayout): SchematicLayout {
     };
 }
 
+export function mergeSchematicWebviewLayouts(
+    layouts: Readonly<Record<string, SchematicLayout>> | undefined,
+    moduleKey: string,
+    layout: SchematicLayout
+): Record<string, SchematicLayout> {
+    return Object.fromEntries([
+        ...Object.entries(layouts ?? {}).filter(([key]) => key !== moduleKey),
+        [moduleKey, layout] as const,
+    ].map(([key, value]) => [key, cloneSchematicLayout(value)]));
+}
+
 export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
-    private readonly pending = new Map<string, { handle?: Handle }>();
+    private readonly pending = new Map<string, {
+        handle?: Handle;
+        layout: SchematicLayout;
+    }>();
 
     constructor(
         private readonly delayMs: number,
@@ -282,14 +296,19 @@ export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
         const previous = this.pending.get(moduleKey);
         if (previous?.handle !== undefined) this.timers.clear(previous.handle);
 
-        const snapshot = cloneSchematicLayout(layout);
-        const pending: { handle?: Handle } = {};
+        const pending: { handle?: Handle; layout: SchematicLayout } = {
+            layout: cloneSchematicLayout(layout),
+        };
         this.pending.set(moduleKey, pending);
         pending.handle = this.timers.set(() => {
-            if (this.pending.get(moduleKey) !== pending) return;
-            this.pending.delete(moduleKey);
-            this.save(moduleKey, snapshot);
+            this.commit(moduleKey, pending);
         }, this.delayMs);
+    }
+
+    flush(): void {
+        for (const [moduleKey, pending] of [...this.pending]) {
+            this.commit(moduleKey, pending);
+        }
     }
 
     dispose(): void {
@@ -297,5 +316,15 @@ export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
             if (pending.handle !== undefined) this.timers.clear(pending.handle);
         }
         this.pending.clear();
+    }
+
+    private commit(
+        moduleKey: string,
+        pending: { handle?: Handle; layout: SchematicLayout }
+    ): void {
+        if (this.pending.get(moduleKey) !== pending) return;
+        if (pending.handle !== undefined) this.timers.clear(pending.handle);
+        this.pending.delete(moduleKey);
+        this.save(moduleKey, pending.layout);
     }
 }

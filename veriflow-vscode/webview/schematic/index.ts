@@ -38,6 +38,7 @@ import {
     cloneSchematicLayout,
     DebouncedLayoutSaveScheduler,
     formatSchematicDiagnosticDetails,
+    mergeSchematicWebviewLayouts,
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
@@ -585,22 +586,23 @@ function post(message: WebviewCommand): void {
 
 const layoutSaveScheduler = new DebouncedLayoutSaveScheduler(
     SAVE_DELAY_MS,
-    (moduleKey, layout) => {
-        const priorLayouts = vscode.getState()?.layouts ?? {};
-        vscode.setState({
-            layouts: Object.fromEntries([
-                ...Object.entries(priorLayouts)
-                    .filter(([key]) => key !== moduleKey),
-                [moduleKey, layout],
-            ]),
-        });
-        post({ type: 'saveLayout', moduleKey, layout });
-    }
+    (moduleKey, layout) => post({ type: 'saveLayout', moduleKey, layout })
 );
 
 function scheduleLayoutSave(): void {
     if (!currentLayout || !currentGraph || applyingLayout) return;
-    layoutSaveScheduler.schedule(currentGraph.moduleKey, currentLayout);
+    const moduleKey = currentGraph.moduleKey;
+    const layouts = mergeSchematicWebviewLayouts(
+        vscode.getState()?.layouts,
+        moduleKey,
+        currentLayout
+    );
+    vscode.setState({ layouts });
+    layoutSaveScheduler.schedule(moduleKey, layouts[moduleKey]);
+}
+
+function flushLayoutSaves(): void {
+    layoutSaveScheduler.flush();
 }
 
 function setCanvasState(message?: string): void {
@@ -854,6 +856,7 @@ function runSearch(query: string, notifyHost: boolean): void {
 }
 
 function clearSchematicState(): void {
+    layoutSaveScheduler.flush();
     layoutSaveScheduler.dispose();
     applyingLayout = true;
     selection.clean();
@@ -1066,6 +1069,9 @@ const resizeObserver = new ResizeObserver(() => {
     updateMinimapAvailability();
 });
 resizeObserver.observe(dom.canvasRegion);
+
+window.addEventListener('pagehide', flushLayoutSaves);
+window.addEventListener('beforeunload', flushLayoutSaves);
 
 window.addEventListener('message', event => {
     if (!event.data || typeof event.data !== 'object') return;

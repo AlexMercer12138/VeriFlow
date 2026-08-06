@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import { preprocessForParsing } from '../core/hdl/preprocessor';
 import { parseWebviewCommand } from '../schematic/protocol';
 
 function assertRejected(value: unknown): void {
@@ -273,23 +274,6 @@ function testSourceSpanValidation(): void {
         { start: 0, end: 1, compositeParts: [{ uri: '', start: 0, end: 1 }] },
         { start: 0, end: 1, compositeParts: [{ uri: 'file:///a.sv', start: 2, end: 1 }] },
         { start: 0, end: 1, compositeParts: [{ uri: 'file:///a.sv', start: 0, end: 0.5 }] },
-        {
-            start: 0,
-            end: 10,
-            compositeParts: [
-                { uri: 'file:///a.sv', start: 0, end: 5 },
-                { uri: 'file:///a.sv', start: 4, end: 8 },
-            ],
-        },
-        {
-            start: 0,
-            end: 10,
-            compositeParts: [
-                { uri: 'file:///a.sv', start: 0, end: 5 },
-                { uri: 'file:///include.svh', start: 20, end: 25 },
-                { uri: 'file:///a.sv', start: 4, end: 8 },
-            ],
-        },
     ];
     for (const span of invalidSpans) {
         assertRejected({ type: 'revealSource', span });
@@ -329,6 +313,44 @@ function testCompositePartsBreadthLimit(): void {
         type: 'revealSource',
         span: { start: 0, end: 1, compositeParts: new Array(1) },
     });
+}
+
+function testRepeatedIncludeSourceSpanRoundTrip(): void {
+    const topUri = 'file:///workspace/repeated.sv';
+    const sharedUri = 'file:///workspace/shared.svh';
+    const shared = 'wire shared_signal;\n';
+    const source = [
+        'module repeated;',
+        '`include "shared.svh"',
+        'wire middle_signal;',
+        '`include "shared.svh"',
+        'endmodule',
+    ].join('\n');
+    const preprocessed = preprocessForParsing(topUri, source, {
+        defines: {},
+        resolvedIncludes: [{
+            fromUri: topUri,
+            rawPath: 'shared.svh',
+            resolvedUri: sharedUri,
+            text: shared,
+        }],
+    });
+    const span = preprocessed.sourceMap.mapSpan(
+        preprocessed.text.indexOf('module repeated'),
+        preprocessed.text.indexOf('endmodule') + 'endmodule'.length
+    );
+    assert.deepStrictEqual(span.compositeParts?.map(part => part.uri), [
+        topUri,
+        sharedUri,
+        topUri,
+        sharedUri,
+        topUri,
+    ]);
+
+    assert.deepStrictEqual(
+        parseWebviewCommand({ type: 'revealSource', span }),
+        { type: 'revealSource', span }
+    );
 }
 
 function testHostileInputs(): void {
@@ -485,6 +507,7 @@ async function main(): Promise<void> {
     testLayoutBreadthLimit();
     testSourceSpanValidation();
     testCompositePartsBreadthLimit();
+    testRepeatedIncludeSourceSpanRoundTrip();
     testHostileInputs();
 
     console.log('Schematic protocol tests passed');

@@ -72,7 +72,12 @@ export async function openSchematicDefinition(
         return;
     }
     registry.setPending(definition.uri, definition.key);
-    await ports.openSchematic(definition.uri, definition.key);
+    try {
+        await ports.openSchematic(definition.uri, definition.key);
+    } catch (error) {
+        registry.clearPending(definition.uri, definition.key);
+        throw error;
+    }
 }
 
 export type SourceMappedSchematicDiagnostic = HdlDiagnostic & {
@@ -228,6 +233,12 @@ export class SchematicNavigationRegistry {
 
     setPending(uri: string, definitionKey: string): void {
         this.pending.set(uri, definitionKey);
+    }
+
+    clearPending(uri: string, expectedDefinitionKey: string): void {
+        if (this.pending.get(uri) === expectedDefinitionKey) {
+            this.pending.delete(uri);
+        }
     }
 
     consumePending(uri: string): string | undefined {

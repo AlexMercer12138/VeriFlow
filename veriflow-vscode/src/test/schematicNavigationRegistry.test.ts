@@ -69,7 +69,24 @@ function testPendingModuleKeysAreExactAndOneShot(): void {
     );
 }
 
+function testPendingRollbackIsCompareProtected(): void {
+    const registry = new SchematicNavigationRegistry();
+    const uri = 'file:///workspace/design.sv';
+    const first = 'module:file:///workspace/design.sv:10';
+    const second = 'module:file:///workspace/design.sv:20';
+
+    registry.setPending(uri, first);
+    registry.clearPending(uri, first);
+    assert.strictEqual(registry.consumePending(uri), undefined);
+
+    registry.setPending(uri, first);
+    registry.setPending(uri, second);
+    registry.clearPending(uri, first);
+    assert.strictEqual(registry.consumePending(uri), second);
+}
+
 testMostRecentlyFocusedLivePanelWins();
 testDisposedAndUnregisteredPanelsCannotBecomePreferred();
 testPendingModuleKeysAreExactAndOneShot();
+testPendingRollbackIsCompareProtected();
 console.log('schematic navigation registry tests passed');

@@ -181,6 +181,24 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(webviewSource, /function nodeDimensions\(/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
     assert.doesNotMatch(webviewSource, /\bsaveTimer\b/);
+    assert.match(
+        webviewSource,
+        /function scheduleLayoutSave\(\): void[^]*vscode\.setState\([^]*layoutSaveScheduler\.schedule\(/,
+        'layout changes must reach webview state before the debounced host save'
+    );
+    assert.match(
+        webviewSource,
+        /function clearSchematicState\(\): void\s*{\s*layoutSaveScheduler\.flush\(\);\s*layoutSaveScheduler\.dispose\(\);/,
+        'empty-state reset must flush pending host saves before disposal'
+    );
+    assert.match(
+        webviewSource,
+        /window\.addEventListener\('pagehide',\s*flushLayoutSaves\)/
+    );
+    assert.match(
+        webviewSource,
+        /window\.addEventListener\('beforeunload',\s*flushLayoutSaves\)/
+    );
     assert.match(webviewSource, /function clearSchematicState\(\): void/);
     for (const resetOperation of [
         'graph.clearCells()',
