@@ -524,6 +524,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             this.navigation,
                             {
                                 getDefinition: async definitionKey => {
+                                    const live = state.modules.find(module =>
+                                        module.key === definitionKey
+                                    );
+                                    if (live) {
+                                        return { key: live.key, uri };
+                                    }
                                     const index = state.index ?? await this.services.getIndex(
                                         document,
                                         indexOwner

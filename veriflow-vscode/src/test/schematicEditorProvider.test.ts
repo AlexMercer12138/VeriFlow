@@ -60,6 +60,8 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 type ProviderHarness = {
     messages: HostEvent[];
     moduleKeys: string[];
+    diagnostics: Array<{ uri: string; count: number }>;
+    deletedDiagnosticUris: string[];
     parseCallCount(): number;
     setParseGate(text: string, gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
@@ -80,6 +82,10 @@ async function createProviderHarness(
         text: string;
         gate: Gate;
         replacement: HdlDocument;
+    },
+    diagnosticOptions?: {
+        failingUri?: string;
+        waitForInitialGraph?: boolean;
     }
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
@@ -99,6 +105,8 @@ async function createProviderHarness(
     let indexDefinitions: HdlDefinitionSummary[] = [];
     let parseCalls = 0;
     const messages: HostEvent[] = [];
+    const diagnostics: ProviderHarness['diagnostics'] = [];
+    const deletedDiagnosticUris: string[] = [];
     const disposable = { dispose(): void {} };
     const document = {
         uri: resource,
@@ -144,7 +152,46 @@ async function createProviderHarness(
     };
     const vscodeStub = {
         Uri: FakeUri,
+        Range: class {
+            constructor(readonly start: number, readonly end: number) {}
+        },
+        Diagnostic: class {
+            code?: string;
+            source?: string;
+
+            constructor(
+                readonly range: unknown,
+                readonly message: string,
+                readonly severity: number
+            ) {}
+        },
+        DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2 },
+        languages: {
+            createDiagnosticCollection() {
+                return {
+                    set(uri: FakeUri, items: unknown[]): void {
+                        const value = uri.toString();
+                        const next = diagnostics.filter(record => record.uri !== value);
+                        next.push({ uri: value, count: items.length });
+                        diagnostics.splice(0, diagnostics.length, ...next);
+                    },
+                    delete(uri: FakeUri): void {
+                        const value = uri.toString();
+                        deletedDiagnosticUris.push(value);
+                        const next = diagnostics.filter(record => record.uri !== value);
+                        diagnostics.splice(0, diagnostics.length, ...next);
+                    },
+                    dispose(): void {},
+                };
+            },
+        },
         workspace: {
+            async openTextDocument(uri: FakeUri) {
+                if (uri.toString() === diagnosticOptions?.failingUri) {
+                    throw new Error(`Cannot open diagnostic source ${uri.toString()}`);
+                }
+                return { positionAt: (offset: number) => offset };
+            },
             onDidChangeTextDocument(listener: typeof documentListener) {
                 documentListener = listener;
                 return disposable;
@@ -176,6 +223,7 @@ async function createProviderHarness(
     };
     const context = {
         extensionUri: FakeUri.file(extensionRoot),
+        subscriptions: [] as Array<{ dispose(): void }>,
         workspaceState: new class {
             private readonly values = new Map<string, unknown>();
 
@@ -224,6 +272,9 @@ async function createProviderHarness(
         findDefinitions(name: string): HdlDefinitionSummary[] {
             return indexDefinitions.filter(definition => definition.name === name);
         },
+        getDefinition(key: string): HdlDefinitionSummary | undefined {
+            return indexDefinitions.find(definition => definition.key === key);
+        },
     };
     const provider = new SchematicEditorProvider(context, navigation, {
         getIndex: async () => index,
@@ -241,19 +292,25 @@ async function createProviderHarness(
     await provider.resolveCustomTextEditor(document, panel, token);
     assert.ok(messageListener);
     messageListener!({ type: 'ready' });
-    await waitFor(
-        () => messages.some(event => event.type === 'graph'),
-        'initial graph publication'
-    );
+    if (diagnosticOptions?.waitForInitialGraph !== false) {
+        await waitFor(
+            () => messages.some(event => event.type === 'graph'),
+            'initial graph publication'
+        );
+    }
     const initialize = messages.find(event => event.type === 'initialize');
-    assert.ok(initialize && initialize.type === 'initialize');
-    const moduleKeys = initialize.type === 'initialize'
+    if (diagnosticOptions?.waitForInitialGraph !== false) {
+        assert.ok(initialize && initialize.type === 'initialize');
+    }
+    const moduleKeys = initialize?.type === 'initialize'
         ? initialize.modules.map(module => module.key)
         : [];
 
     return {
         messages,
         moduleKeys,
+        diagnostics,
+        deletedDiagnosticUris,
         parseCallCount(): number { return parseCalls; },
         setParseGate(text, gate): void { parseGate = { text, gate }; },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
@@ -274,6 +331,60 @@ async function createProviderHarness(
             delete require.cache[require.resolve('../schematic/schematicEditorProvider')];
         },
     };
+}
+
+async function testDiagnosticSourceFailureDoesNotBlockGraph(): Promise<void> {
+    const text = 'module top(input logic a); endmodule';
+    const uri = 'file:///workspace/design.sv';
+    const includedUri = 'file:///workspace/diagnostics.svh';
+    const parsed = await parseWithRealWorker(uri, text);
+    const document: HdlDocument = {
+        ...parsed,
+        diagnostics: [{
+            severity: 'error',
+            code: 'TEST_CURRENT',
+            message: 'Current source diagnostic',
+            span: { start: 1, end: 3 },
+        }, {
+            severity: 'warning',
+            code: 'TEST_INCLUDED',
+            message: 'Included source diagnostic',
+            span: {
+                start: 10,
+                end: 20,
+                compositeParts: [{ uri: includedUri, start: 4, end: 8 }],
+            },
+        }],
+    };
+    const harness = await createProviderHarness(
+        new Map([[text, document]]),
+        text,
+        undefined,
+        { failingUri: includedUri, waitForInitialGraph: false }
+    );
+    try {
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph' || event.type === 'hostError'
+            ),
+            'graph or diagnostic host error'
+        );
+
+        assert.ok(harness.messages.some(event => event.type === 'initialize'));
+        assert.ok(harness.messages.some(event => event.type === 'graph'));
+        assert.deepStrictEqual(
+            harness.messages.filter(event => event.type === 'diagnostics').at(-1),
+            { type: 'diagnostics', errors: 1, warnings: 1 }
+        );
+        assert.deepStrictEqual(
+            harness.messages.filter(event => event.type === 'hostError'),
+            []
+        );
+        assert.deepStrictEqual(harness.diagnostics, [{ uri, count: 1 }]);
+        assert.ok(harness.deletedDiagnosticUris.includes(includedUri));
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testInitialParseReplaysTargetedIndexInvalidation(): Promise<void> {
@@ -404,6 +515,15 @@ async function testUnsavedSameDocumentRenameUsesLiveDefinition(): Promise<void> 
             `module:file:///workspace/design.sv:${live.declarationSpan.start}`
         );
         assert.deepStrictEqual(instance.pins.map(pin => pin.name), ['a']);
+
+        const liveDefinitionKey = instance.definitionKey!;
+        const navigationStart = harness.messages.length;
+        harness.send({ type: 'openDefinition', definitionKey: liveDefinitionKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages.slice(navigationStart))
+                .includes(liveDefinitionKey),
+            'live same-file definition selection'
+        );
     } finally {
         await harness.dispose();
     }
@@ -799,6 +919,7 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
 }
 
 void testRapidSelectionStopsStalePublish()
+    .then(testDiagnosticSourceFailureDoesNotBlockGraph)
     .then(testInitialParseReplaysTargetedIndexInvalidation)
     .then(testRapidRefreshStopsStalePublish)
     .then(testDisposalStopsPublishAfterAwait)

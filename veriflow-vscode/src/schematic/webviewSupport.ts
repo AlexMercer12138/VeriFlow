@@ -1,4 +1,4 @@
-import type { SourceSpan } from '../core/hdl/model';
+import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
 import type { SchematicLayout } from './layoutStore';
 import type { WebviewCommand } from './protocol';
 
@@ -78,6 +78,14 @@ export type SchematicSelectionSummary = {
     selectedObjectId?: string;
     statusText: string;
 };
+
+export function formatSchematicDiagnosticDetails(
+    diagnostics: readonly HdlDiagnostic[]
+): string {
+    return diagnostics.map(diagnostic =>
+        `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`
+    ).join('\n');
+}
 
 export type SchematicPoint = { x: number; y: number };
 export type SchematicRect = SchematicPoint & { width: number; height: number };

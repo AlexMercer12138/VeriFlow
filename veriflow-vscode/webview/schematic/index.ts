@@ -37,6 +37,7 @@ import type { HostEvent, WebviewCommand } from '../../src/schematic/protocol';
 import {
     cloneSchematicLayout,
     DebouncedLayoutSaveScheduler,
+    formatSchematicDiagnosticDetails,
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
@@ -619,13 +620,26 @@ function setGraphControls(enabled: boolean): void {
     dom.searchButton.disabled = !enabled;
 }
 
-function updateDiagnostics(nextErrors: number, nextWarnings: number): void {
+function updateDiagnostics(
+    nextErrors: number,
+    nextWarnings: number,
+    diagnostics?: SchematicGraph['diagnostics']
+): void {
     errors = Math.max(0, Math.trunc(nextErrors));
     warnings = Math.max(0, Math.trunc(nextWarnings));
     dom.errorCount.textContent = `E ${errors}`;
     dom.warningCount.textContent = `W ${warnings}`;
-    dom.diagnosticStatus.textContent = `${errors} error${errors === 1 ? '' : 's'}, `
+    const countText = `${errors} error${errors === 1 ? '' : 's'}, `
         + `${warnings} warning${warnings === 1 ? '' : 's'}`;
+    dom.diagnosticStatus.textContent = countText;
+    if (diagnostics !== undefined) {
+        dom.diagnosticStatus.title = formatSchematicDiagnosticDetails(diagnostics);
+    }
+    const detailText = dom.diagnosticStatus.title;
+    dom.diagnosticStatus.setAttribute(
+        'aria-label',
+        detailText ? `${countText}. ${detailText.replace(/\n/g, '. ')}` : countText
+    );
 }
 
 function cellData(cell: Cell): CellData | undefined {
@@ -756,7 +770,7 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     setCanvasState(model.nodes.length === 0 ? 'No schematic objects' : undefined);
     const graphErrors = model.diagnostics.filter(item => item.severity === 'error').length;
     const graphWarnings = model.diagnostics.filter(item => item.severity === 'warning').length;
-    updateDiagnostics(graphErrors, graphWarnings);
+    updateDiagnostics(graphErrors, graphWarnings, model.diagnostics);
     updateMinimapAvailability();
     runSearch(dom.searchInput.value, false);
 }
@@ -868,7 +882,7 @@ function clearSchematicState(): void {
     dom.minimapButton.disabled = true;
     dom.minimapButton.setAttribute('aria-pressed', 'false');
     setGraphControls(false);
-    updateDiagnostics(0, 0);
+    updateDiagnostics(0, 0, []);
 }
 
 function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {

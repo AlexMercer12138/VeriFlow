@@ -1,5 +1,4 @@
 import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
-import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 
 export type SchematicPanelHandle = {
     uri: string;
@@ -46,9 +45,11 @@ export async function revealSchematicSource<Document, Position>(
 export type SchematicDefinitionNavigationPorts = {
     getDefinition(
         definitionKey: string
-    ): HdlDefinitionSummary | undefined | Promise<HdlDefinitionSummary | undefined>;
+    ): SchematicDefinitionTarget | undefined | Promise<SchematicDefinitionTarget | undefined>;
     openSchematic(uri: string, definitionKey: string): Promise<void>;
 };
+
+export type SchematicDefinitionTarget = { key: string; uri: string };
 
 export async function openSchematicDefinition(
     currentPanel: SchematicPanelHandle,
@@ -155,10 +156,18 @@ export class SchematicDiagnosticPublisher {
             }
         }
         const diagnostics = [...unique.values()];
-        if (diagnostics.length === 0) {
-            await this.sink.delete(uri);
-        } else {
-            await this.sink.set(uri, diagnostics);
+        try {
+            if (diagnostics.length === 0) {
+                await this.sink.delete(uri);
+            } else {
+                await this.sink.set(uri, diagnostics);
+            }
+        } catch {
+            try {
+                await this.sink.delete(uri);
+            } catch {
+                // DiagnosticCollection updates are a best-effort side channel.
+            }
         }
     }
 }

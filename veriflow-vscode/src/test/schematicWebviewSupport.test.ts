@@ -4,6 +4,7 @@ import type { SchematicLayout } from '../schematic/layoutStore';
 import {
     buildSchematicWebviewHtml,
     DebouncedLayoutSaveScheduler,
+    formatSchematicDiagnosticDetails,
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
@@ -11,6 +12,23 @@ import {
     type SchematicRect,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
+
+function testDiagnosticDetailFormatting(): void {
+    assert.strictEqual(formatSchematicDiagnosticDetails([]), '');
+    assert.strictEqual(formatSchematicDiagnosticDetails([{
+        severity: 'error',
+        code: 'HDL_BROKEN',
+        message: 'Broken <declaration> & connection',
+        span: { start: 1, end: 4 },
+    }, {
+        severity: 'warning',
+        code: 'HDL_INCLUDED',
+        message: 'Included source is read-only',
+    }]), [
+        'ERROR HDL_BROKEN: Broken <declaration> & connection',
+        'WARNING HDL_INCLUDED: Included source is read-only',
+    ].join('\n'));
+}
 
 function testSecureSchematicWebviewHtml(): void {
     const shell = [
@@ -218,6 +236,7 @@ function testNetworkLabelPlacementAvoidsNodes(): void {
 
 void Promise.resolve()
     .then(testSecureSchematicWebviewHtml)
+    .then(testDiagnosticDetailFormatting)
     .then(testNonLabelSegmentSkipsPlacementScan)
     .then(testNetworkLabelPlacementAvoidsNodes)
     .then(testSelectionStatusSummary)
