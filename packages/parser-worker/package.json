@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run typecheck"
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/src/*.test.js"
   },
   "dependencies": {
     "web-tree-sitter": "0.26.11"
