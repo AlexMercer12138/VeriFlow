@@ -103,7 +103,7 @@ type WaveCore = {
     signalMatchesSelectedScope(signalScope: string, selectedScope: string): boolean;
 };
 
-const waveCore = require('../../media/waveform/viewer-core.js') as WaveCore;
+const waveCore = require('../../../packages/waveform-webview/src/viewer-core.js') as WaveCore;
 
 type Golden = {
     top_module: string;
