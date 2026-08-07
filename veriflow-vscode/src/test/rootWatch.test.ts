@@ -164,6 +164,7 @@ async function run(): Promise<void> {
         await waitUntil(() => {
             if (watchError) throw watchError;
             return buildCount > previousBuildCount
+                && fs.existsSync(waveformMedia)
                 && fs.readFileSync(waveformMedia, 'utf8').includes('updated-waveform');
         }, 'waveform source change propagation');
 
