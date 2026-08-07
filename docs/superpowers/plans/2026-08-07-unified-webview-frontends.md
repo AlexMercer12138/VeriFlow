@@ -316,7 +316,7 @@ same `rootDir: "."` and `outDir: "dist-test"` convention as the HDL packages.
 
 Run: `npm test --workspace @veriflow/schematic-webview`
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Expected: protocol, graph, layout, navigation, provider, and integration tests pass.
 
@@ -419,7 +419,7 @@ The Playwright test loads `basic`, waits for `ready`, asserts three `[data-cell-
 
 - [ ] **Step 7: Run schematic host and visual tests**
 
-Run: `npm run build:web && npm test --workspace @veriflow/schematic-webview && npm test --workspace @veriflow/vscode`
+Run: `npm run build:web && npm test --workspace @veriflow/schematic-webview && npm test --workspace veriflow-vscode`
 
 Run: `npm run test:webview -- tests/webview/schematic.spec.ts`
 
@@ -524,7 +524,7 @@ for (const name of ['index.html', 'index.css', 'index.js']) {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/testbenchAssets.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/testbenchAssets.test.js`
 
 Expected: FAIL because the provider still embeds all source.
 
@@ -542,7 +542,7 @@ Load the basic fixture, add/remove/select two DUT entries, edit an instance, map
 
 - [ ] **Step 6: Run Testbench host and browser tests**
 
-Run: `npm run build:vscode && npm test --workspace @veriflow/vscode`
+Run: `npm run build:vscode && npm test --workspace veriflow-vscode`
 
 Run: `npm run test:webview -- tests/webview/testbench.spec.ts`
 
@@ -787,7 +787,7 @@ The VS Code asset test applies the same assertion to `waveformEditorProvider.ts`
 
 Run: `python -m pytest tests/test_web_assets.py -v`
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/waveformAssets.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/waveformAssets.test.js`
 
 Expected: both fail on current inline/string replacement.
 
@@ -805,7 +805,7 @@ Keep all existing Qt smoke interactions and pixel thresholds. Update asset names
 
 - [ ] **Step 6: Run VS Code, Python, and Qt waveform verification**
 
-Run: `npm run build:vscode && npm test --workspace @veriflow/vscode`
+Run: `npm run build:vscode && npm test --workspace veriflow-vscode`
 
 Run: `python -m pytest tests/test_web_assets.py tests/test_core_services.py -v`
 
@@ -876,7 +876,7 @@ Run: `npm test --workspace @veriflow/testbench-webview`
 
 Run: `npm test --workspace @veriflow/waveform-webview`
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Run: `python -m pytest`
 

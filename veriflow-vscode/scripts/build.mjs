@@ -5,6 +5,7 @@ import {
     rm,
     writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -21,34 +22,31 @@ const workerRoot = path.join(distRoot, 'workers');
 const parserRoot = path.join(extensionRoot, 'media', 'parsers');
 const schematicSourceRoot = path.join(extensionRoot, 'webview', 'schematic');
 const schematicRoot = path.join(extensionRoot, 'media', 'schematic');
+const workspaceRequire = createRequire(import.meta.url);
+const grammarPackageRoot = path.dirname(workspaceRequire.resolve(
+    'tree-sitter-systemverilog/tree-sitter-systemverilog.wasm'
+));
+const webTreeSitterPackageRoot = path.dirname(workspaceRequire.resolve(
+    'web-tree-sitter/web-tree-sitter.wasm'
+));
 
 const parserAssets = [
     {
         name: 'tree-sitter-systemverilog',
         version: '0.4.0',
-        source: path.join(
-            extensionRoot,
-            'node_modules',
-            'tree-sitter-systemverilog',
-            'tree-sitter-systemverilog.wasm'
-        ),
+        source: path.join(grammarPackageRoot, 'tree-sitter-systemverilog.wasm'),
         destination: path.join(parserRoot, 'tree-sitter-systemverilog.wasm'),
         licenseDeclaration: 'MIT',
-        licensePath: path.join(extensionRoot, 'node_modules', 'tree-sitter-systemverilog', 'LICENSE'),
+        licensePath: path.join(grammarPackageRoot, 'LICENSE'),
         sha256: 'e193719c5f0406e87be1ec1d7977f19aae39cf14fabc1d2c7b1e50b4e467a87d',
     },
     {
         name: 'web-tree-sitter',
         version: '0.26.11',
-        source: path.join(
-            extensionRoot,
-            'node_modules',
-            'web-tree-sitter',
-            'web-tree-sitter.wasm'
-        ),
+        source: path.join(webTreeSitterPackageRoot, 'web-tree-sitter.wasm'),
         destination: path.join(parserRoot, 'web-tree-sitter.wasm'),
         licenseDeclaration: 'MIT',
-        licensePath: path.join(extensionRoot, 'node_modules', 'web-tree-sitter', 'LICENSE'),
+        licensePath: path.join(webTreeSitterPackageRoot, 'LICENSE'),
         sha256: '715cae35f31b7b03a13592bc5ac9039d5c6d2c2bda9f9e0c2b8abab77b3f64cc',
     },
 ];
@@ -176,7 +174,7 @@ async function runWatchMode() {
         typecheck: {
             command: process.execPath,
             args: [
-                path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
+                workspaceRequire.resolve('typescript/bin/tsc'),
                 '--watch', '-p', './',
             ],
             stdio: 'inherit',

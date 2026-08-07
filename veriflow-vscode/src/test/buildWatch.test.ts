@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import { createRequire } from 'module';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
@@ -16,6 +17,31 @@ const manifest = JSON.parse(
     scripts: { watch: string };
 };
 const timeoutMs = 15_000;
+
+function testWatchTypeScriptCliResolvesFromWorkspace(): void {
+    const buildScript = path.join(extensionRoot, 'scripts', 'build.mjs');
+    const nestedTypeScriptCli = path.join(
+        extensionRoot,
+        'node_modules',
+        'typescript',
+        'bin',
+        'tsc'
+    );
+    const resolvedTypeScriptCli = createRequire(buildScript).resolve('typescript/bin/tsc');
+    const buildSource = fs.readFileSync(buildScript, 'utf8');
+
+    assert.strictEqual(fs.existsSync(nestedTypeScriptCli), false);
+    assert.ok(fs.existsSync(resolvedTypeScriptCli));
+    assert.notStrictEqual(resolvedTypeScriptCli, nestedTypeScriptCli);
+    assert.doesNotMatch(
+        buildSource,
+        /path\.join\(extensionRoot,\s*'node_modules',\s*'typescript',\s*'bin',\s*'tsc'\)/
+    );
+    assert.match(
+        buildSource,
+        /workspaceRequire\.resolve\(\s*'typescript\/bin\/tsc'\s*\)/
+    );
+}
 
 const delay = (milliseconds: number): Promise<void> => new Promise(
     resolve => setTimeout(resolve, milliseconds)
@@ -81,6 +107,7 @@ async function stopProcess(child: ChildProcess): Promise<void> {
 }
 
 async function testBuildWatch(): Promise<void> {
+    testWatchTypeScriptCliResolvesFromWorkspace();
     assert.strictEqual(manifest.main, './dist/extension.js');
     assert.strictEqual(manifest.scripts.watch, 'node ./scripts/build.mjs --watch');
 

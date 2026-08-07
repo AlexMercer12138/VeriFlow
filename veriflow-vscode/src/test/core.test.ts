@@ -128,11 +128,35 @@ type Golden = {
     };
 };
 
-const repoRoot = path.resolve(__dirname, '..', '..', '..');
-const fixtureDir = path.join(repoRoot, 'tests', 'project_test');
+const repositoryRoot = path.resolve(__dirname, '../../..');
+const fixtureDir = path.join(repositoryRoot, 'tests', 'project_test');
 const golden: Golden = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, 'tests', 'golden_uart.json'), 'utf-8')
+    fs.readFileSync(path.join(repositoryRoot, 'tests', 'golden_uart.json'), 'utf-8')
 );
+
+function testRootNpmWorkspaceShape(): void {
+    const rootPackage = JSON.parse(fs.readFileSync(
+        path.join(repositoryRoot, 'package.json'),
+        'utf8'
+    )) as { private?: boolean; workspaces?: string[] };
+    const extensionPackage = JSON.parse(fs.readFileSync(
+        path.join(repositoryRoot, 'veriflow-vscode', 'package.json'),
+        'utf8'
+    )) as {
+        name?: string;
+        publisher?: string;
+        scripts?: { package?: string; publish?: string };
+    };
+
+    assert.strictEqual(rootPackage.private, true);
+    assert.deepStrictEqual(rootPackage.workspaces, ['packages/*', 'veriflow-vscode']);
+    assert.strictEqual(extensionPackage.name, 'veriflow');
+    assert.strictEqual(extensionPackage.publisher, 'Vikai-mercer');
+    assert.strictEqual(extensionPackage.scripts?.package, 'vsce package --no-dependencies');
+    assert.strictEqual(extensionPackage.scripts?.publish, 'vsce publish --no-dependencies');
+    assert.ok(fs.existsSync(path.join(repositoryRoot, 'package-lock.json')));
+    assert.ok(!fs.existsSync(path.join(repositoryRoot, 'veriflow-vscode', 'package-lock.json')));
+}
 
 function copyFixture(): string {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-vscode-'));
@@ -486,11 +510,11 @@ async function testDependencyAnalyzerNonFileUriFallback(): Promise<void> {
 
 function testDependencyAnalyzerProductionWiring(): void {
     const analyzerSource = fs.readFileSync(
-        path.join(repoRoot, 'veriflow-vscode', 'src', 'core', 'dependencyAnalyzer.ts'),
+        path.join(repositoryRoot, 'veriflow-vscode', 'src', 'core', 'dependencyAnalyzer.ts'),
         'utf8'
     );
     const extensionSource = fs.readFileSync(
-        path.join(repoRoot, 'veriflow-vscode', 'src', 'extension.ts'),
+        path.join(repositoryRoot, 'veriflow-vscode', 'src', 'extension.ts'),
         'utf8'
     );
 
@@ -1723,7 +1747,7 @@ function testModuleInstantiationLegacyModelAdapter(): void {
 
 function testModuleInstantiationManifestContribution(): void {
     const manifest = JSON.parse(fs.readFileSync(
-        path.join(repoRoot, 'veriflow-vscode', 'package.json'),
+        path.join(repositoryRoot, 'veriflow-vscode', 'package.json'),
         'utf-8'
     ));
     const command = manifest.contributes.commands.find(
@@ -1748,11 +1772,11 @@ function testModuleInstantiationManifestContribution(): void {
 
 function testModuleInstantiationUsesWorkspaceIndex(): void {
     const commandSource = fs.readFileSync(
-        path.join(repoRoot, 'veriflow-vscode', 'src', 'moduleInstantiationCommand.ts'),
+        path.join(repositoryRoot, 'veriflow-vscode', 'src', 'moduleInstantiationCommand.ts'),
         'utf8'
     );
     const extensionSource = fs.readFileSync(
-        path.join(repoRoot, 'veriflow-vscode', 'src', 'extension.ts'),
+        path.join(repositoryRoot, 'veriflow-vscode', 'src', 'extension.ts'),
         'utf8'
     );
     assert.doesNotMatch(commandSource, /\bModuleScanResult\b/);
@@ -1768,6 +1792,7 @@ function testModuleInstantiationUsesWorkspaceIndex(): void {
 }
 
 const tests: Array<[string, () => void | Promise<void>]> = [
+    ['root npm workspace shape', testRootNpmWorkspaceShape],
     ['dependency analyzer', testDependencyAnalyzer],
     ['dependency analyzer indexed topological order', testDependencyAnalyzerIndexedTopologicalOrder],
     ['dependency analyzer conditional compilation', testDependencyAnalyzerConditionalCompilation],

@@ -306,19 +306,27 @@ and includes `src/**/*.js` because its TypeScript conversion happens in plan 4.
 
 - [ ] **Step 5: Make the extension a workspace package and generate the root lock**
 
-Rename the extension package to `@veriflow/vscode`, retain its product `displayName`, and replace direct root commands with workspace-safe scripts:
+Preserve the extension package name `veriflow` and its product `displayName`; VSCE uses the manifest name as the Marketplace identity and rejects scoped names. Replace direct root commands with workspace-safe scripts:
 
 ```json
 {
-  "name": "@veriflow/vscode",
+  "name": "veriflow",
   "scripts": {
     "compile:ts": "tsc -p ./",
     "bundle": "node ./scripts/build.mjs",
     "compile": "npm run compile:ts && npm run bundle",
-    "test": "npm run compile && node ./scripts/run-tests.mjs"
+    "test": "npm run compile && node ./scripts/run-tests.mjs",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies"
   }
 }
 ```
+
+The extension bundles runtime JavaScript with esbuild and copies its workers,
+parser WASM, and static assets explicitly. Package and publish with
+`--no-dependencies`; VSCE dependency traversal is unnecessary and, under the
+root npm workspace, would include hoisted repository dependencies and parent
+files.
 
 Run: `git rm veriflow-vscode/package-lock.json`
 
@@ -332,7 +340,7 @@ In `.github/workflows/ci.yml`, set Node to `24.14.1`, cache `package-lock.json`,
 
 ```yaml
 - name: Test extension core
-  run: npm test --workspace @veriflow/vscode
+  run: npm test --workspace veriflow-vscode
 ```
 
 - [ ] **Step 7: Verify workspace installation and existing extension tests**
@@ -341,7 +349,7 @@ Run: `npm ci`
 
 Expected: exit 0 with no nested extension lockfile.
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Expected: all existing extension tests pass.
 
@@ -389,7 +397,7 @@ run().then(() => console.log('root build tests passed'));
 
 - [ ] **Step 2: Run the focused test to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/rootBuild.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/rootBuild.test.js`
 
 Expected: FAIL because `scripts/lib/build-config.mjs` is missing.
 
@@ -473,7 +481,7 @@ execFileSync('git', ['diff', '--exit-code', '--', 'web-dist'], {
 
 Add `rootBuild.test.js` to `veriflow-vscode/scripts/run-tests.mjs` in the deterministic test list.
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/rootBuild.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/rootBuild.test.js`
 
 Expected: PASS and print `root build tests passed`.
 
@@ -533,7 +541,7 @@ console.log('canonical web asset tests passed');
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/webDistAssets.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/webDistAssets.test.js`
 
 Expected: FAIL because `web-dist` does not exist.
 
@@ -684,7 +692,7 @@ Run: `python -m pytest tests/test_web_assets.py tests/test_core_services.py -v`
 
 Expected: PASS.
 
-Run: `npm run build:vscode && npm test --workspace @veriflow/vscode`
+Run: `npm run build:vscode && npm test --workspace veriflow-vscode`
 
 Expected: PASS; generated media exists and current waveform/schematic tests retain behavior.
 
@@ -1064,7 +1072,7 @@ Run: `python scripts/build_parser_probe_wheel.py`
 
 Run: `python -m pytest`
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Run: `pyinstaller ParserProbe.spec --noconfirm && dist/parser-probe.exe`
 
@@ -1086,7 +1094,7 @@ git status --short
 npm run verify:generated
 node scripts/smoke-parser-probe.mjs
 python -m pytest
-npm test --workspace @veriflow/vscode
+npm test --workspace veriflow-vscode
 dist/parser-probe.exe
 ```
 

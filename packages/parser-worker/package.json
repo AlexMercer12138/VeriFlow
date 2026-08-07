@@ -1,0 +1,13 @@
+{
+  "name": "@veriflow/parser-worker",
+  "version": "1.3.2",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run typecheck"
+  },
+  "dependencies": {
+    "web-tree-sitter": "0.26.11"
+  }
+}

@@ -13,8 +13,8 @@ htmlcov/
 ## Python GUI
 src/presentation/gui/__pycache__/
 
-# VS Code extension
-veriflow-vscode/node_modules/
+# Node workspace and VS Code extension
+node_modules/
 veriflow-vscode/out/
 veriflow-vscode/dist/
 veriflow-vscode/media/schematic/

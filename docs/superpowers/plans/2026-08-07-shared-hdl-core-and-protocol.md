@@ -86,7 +86,7 @@ console.log('HDL package boundary tests passed');
 
 - [ ] **Step 2: Run the focused test to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
 
 Expected: FAIL because the three package source directories do not exist.
 
@@ -112,7 +112,7 @@ Expected: FAIL because the three package source directories do not exist.
 }
 ```
 
-`@veriflow/hdl-runtime` depends on `@veriflow/hdl-core` and `web-tree-sitter`; `@veriflow/hdl-protocol` depends only on `@veriflow/hdl-core`. None of the three packages depends on `@veriflow/vscode`.
+`@veriflow/hdl-runtime` depends on `@veriflow/hdl-core` and `web-tree-sitter`; `@veriflow/hdl-protocol` depends only on `@veriflow/hdl-core`. None of the three packages depends on the `veriflow` extension workspace.
 
 - [ ] **Step 4: Add strict build and test TypeScript configurations**
 
@@ -137,7 +137,7 @@ Each `tsconfig.test.json` includes both `src/**/*.ts` and `test/**/*.ts`, sets `
 
 Create `src/index.ts` in all three packages with `export {};`, register `hdlPackageBoundaries.test.js` in the extension test runner, then run:
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
 
 Expected: PASS.
 
@@ -328,7 +328,7 @@ Expected: all adapter golden cases pass, including ANSI/non-ANSI ports, includes
 
 - [ ] **Step 6: Run affected extension schematic tests**
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Expected: PASS using the single moved fixture set.
 
@@ -552,7 +552,7 @@ Expected: all moved indexing, invalidation, include, duplicate, persistence,
 dependency graph, ambiguous binding, missing module, and deterministic
 compile-order tests pass.
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Expected: existing dependency index and schematic integration tests pass.
 
@@ -791,7 +791,7 @@ async function testSharedEnvelope(): Promise<void> {
 
 - [ ] **Step 2: Run the focused test to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/hdlSharedProtocol.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/hdlSharedProtocol.test.js`
 
 Expected: FAIL because the client still posts the legacy `parse` message.
 
@@ -821,11 +821,11 @@ Keep the worker bundle output at `dist/workers/hdlParserWorker.js`. esbuild foll
 
 - [ ] **Step 6: Run client, worker, parser asset, and full extension tests**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/hdlParserClient.test.js && node veriflow-vscode/out/test/hdlSharedProtocol.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/hdlParserClient.test.js && node veriflow-vscode/out/test/hdlSharedProtocol.test.js`
 
 Expected: PASS for lazy startup, cache hits, invalidation, cancellation, disposal, worker failure, and shared envelopes.
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Expected: all extension regressions pass.
 
@@ -891,7 +891,7 @@ for (const file of walkTypeScriptFiles(extensionSource)) {
 
 - [ ] **Step 2: Run the scan to verify it fails**
 
-Run: `npm run compile:ts --workspace @veriflow/vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
+Run: `npm run compile:ts --workspace veriflow-vscode && node veriflow-vscode/out/test/hdlPackageBoundaries.test.js`
 
 Expected: FAIL and list current deep imports.
 
@@ -935,7 +935,7 @@ Run: `npm run typecheck --workspace @veriflow/hdl-core && npm run typecheck --wo
 
 Run: `npm test --workspace @veriflow/hdl-core && npm test --workspace @veriflow/hdl-runtime && npm test --workspace @veriflow/hdl-protocol`
 
-Run: `npm test --workspace @veriflow/vscode`
+Run: `npm test --workspace veriflow-vscode`
 
 Run: `npm run verify:generated`
 
@@ -957,7 +957,7 @@ npm ci
 npm test --workspace @veriflow/hdl-core
 npm test --workspace @veriflow/hdl-runtime
 npm test --workspace @veriflow/hdl-protocol
-npm test --workspace @veriflow/vscode
+npm test --workspace veriflow-vscode
 npm run build:vscode
 npm run verify:generated
 git status --short
