@@ -19,13 +19,46 @@ const expectedRuntimeEntries = [
     'extension/media/waveform/viewer-transport.js',
 ];
 
-function generatedMediaPath(name: 'waveform' | 'schematic'): string {
-    const candidate = path.resolve(mediaRoot, name);
-    const relative = path.relative(mediaRoot, candidate);
-    assert.strictEqual(path.dirname(candidate), mediaRoot);
+function exactBuildPath(parent: string, name: string): string {
+    const resolvedParent = path.resolve(parent);
+    const candidate = path.resolve(resolvedParent, name);
+    const relative = path.relative(resolvedParent, candidate);
+    assert.strictEqual(path.dirname(candidate), resolvedParent);
+    assert.strictEqual(path.basename(candidate), name);
     assert.ok(relative && !path.isAbsolute(relative));
     assert.ok(relative !== '..' && !relative.startsWith(`..${path.sep}`));
     return candidate;
+}
+
+const buildTargets = [
+    exactBuildPath(extensionRoot, 'dist'),
+    exactBuildPath(repositoryRoot, 'web-dist'),
+    exactBuildPath(mediaRoot, 'waveform'),
+    exactBuildPath(mediaRoot, 'schematic'),
+];
+
+type SavedBuildTarget = {
+    target: string;
+    backup: string;
+    existed: boolean;
+};
+
+function saveBuildTargets(temporaryRoot: string): SavedBuildTarget[] {
+    const backupRoot = path.join(temporaryRoot, 'saved-build-state');
+    fs.mkdirSync(backupRoot, { recursive: true });
+    return buildTargets.map((target, index) => {
+        const backup = path.join(backupRoot, String(index));
+        const existed = fs.existsSync(target);
+        if (existed) fs.cpSync(target, backup, { recursive: true });
+        return { target, backup, existed };
+    });
+}
+
+function restoreBuildTargets(savedTargets: SavedBuildTarget[]): void {
+    for (const { target, backup, existed } of savedTargets) {
+        fs.rmSync(target, { recursive: true, force: true });
+        if (existed) fs.cpSync(backup, target, { recursive: true });
+    }
 }
 
 function zipCentralDirectoryEntries(archive: Buffer): string[] {
@@ -102,13 +135,15 @@ function run(): void {
     assert.ok(npmExecPath, 'npm_execpath is required to invoke the active npm CLI');
     assert.ok(path.isAbsolute(npmExecPath), `npm_execpath must be absolute: ${npmExecPath}`);
 
-    for (const name of ['waveform', 'schematic'] as const) {
-        fs.rmSync(generatedMediaPath(name), { recursive: true, force: true });
-    }
-
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-vsix-packaging-'));
     const vsixPath = path.join(temporaryRoot, 'veriflow-clean-checkout.vsix');
+    let savedTargets: SavedBuildTarget[] | undefined;
     try {
+        savedTargets = saveBuildTargets(temporaryRoot);
+        for (const target of buildTargets) {
+            fs.rmSync(target, { recursive: true, force: true });
+        }
+
         const result = spawnSync(process.execPath, [
             npmExecPath,
             'run',
@@ -127,6 +162,10 @@ function run(): void {
         assert.ok(fs.existsSync(vsixPath), `${vsixPath} was not created`);
 
         const entries = zipCentralDirectoryEntries(fs.readFileSync(vsixPath));
+        assert.ok(
+            entries.includes('extension/dist/extension.js'),
+            'VSIX is missing the extension/dist/extension.js main bundle'
+        );
         const runtimeEntries = entries.filter(entry => (
             entry.startsWith('extension/media/waveform/')
             || entry.startsWith('extension/media/schematic/')
@@ -156,6 +195,7 @@ function run(): void {
             );
         }
     } finally {
+        if (savedTargets) restoreBuildTargets(savedTargets);
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
 }
