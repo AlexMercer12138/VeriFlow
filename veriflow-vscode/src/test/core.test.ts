@@ -1252,14 +1252,9 @@ function testWaveWindowHardening(): void {
 }
 
 function testWaveformTransportAdapters(): void {
-    const transportModule = require(path.join(
-        __dirname,
-        '..',
-        '..',
-        'media',
-        'waveform',
-        'viewer-transport.js'
-    ));
+    const transportModule = require(
+        '../../../packages/waveform-webview/src/viewer-transport.js'
+    );
     const vscodeSent: any[] = [];
     let state: any = null;
     const vscodeTransport = transportModule.createWaveformTransport({
