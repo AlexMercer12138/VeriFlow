@@ -433,3 +433,26 @@ python scripts/run_release.py -a 1.2.0
 ## 贡献
 
 欢迎贡献！请随时提交 issues 和 pull requests。
+
+---
+
+## Developer build commands
+
+Run the generated-asset and parser feasibility builds from the repository root:
+
+```bash
+npm ci
+npm test --workspace @veriflow/parser-worker
+npm run build:web
+npm run verify:generated
+npm run build:vscode
+npm run build:parser
+node scripts/smoke-parser-probe.mjs
+python -m pip install build==1.5.0 setuptools==82.0.1 wheel==0.46.3 pyinstaller==6.19.0 pytest==9.0.3 PyYAML==6.0.3
+python scripts/build_parser_probe_wheel.py
+```
+
+The Windows x64 feasibility sequence runs the parser source suite before the
+SEA, wheel, and PyInstaller checks, using the pinned packaging tools above. See
+[HDL runtime feasibility evidence](docs/architecture/hdl-runtime-feasibility.md)
+for the pinned inputs, checksums, provenance contract, and stop conditions.

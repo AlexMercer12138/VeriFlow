@@ -8,18 +8,21 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import struct
 import subprocess
 import sys
 import sysconfig
 import time
 import zipfile
+from copy import deepcopy
 from ctypes import wintypes
 from pathlib import Path
 from types import ModuleType
 from typing import List, Tuple
 
 import pytest
+import yaml
 
 from scripts import build_parser_probe_wheel as wheel_builder
 from scripts.worker_wheel_provenance import (
@@ -27,13 +30,262 @@ from scripts.worker_wheel_provenance import (
 )
 
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Parser worker packaging and Windows process checks require Windows",
+)
+
+
 ROOT = Path(__file__).resolve().parents[1]
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+README_SOURCE = ROOT / "README.md"
+PYPROJECT_SOURCE = ROOT / "pyproject.toml"
+FEASIBILITY_DOC = ROOT / "docs" / "architecture" / "hdl-runtime-feasibility.md"
+PARSER_SOURCE_TEST = ROOT / "packages" / "parser-worker" / "src" / "probe.test.ts"
+SEA_SMOKE_SOURCE = ROOT / "scripts" / "smoke-parser-probe.mjs"
 PACKAGE_ROOT = ROOT / "python-packages" / "veriflow-hdl-worker"
 RUNTIME_SOURCE = PACKAGE_ROOT / "src" / "veriflow_hdl_worker" / "runtime.py"
 ENTRY_SOURCE = ROOT / "scripts" / "parser_probe_entry.py"
 PROVENANCE_SOURCE = ROOT / "scripts" / "worker_wheel_provenance.py"
 PYINSTALLER_SPEC = ROOT / "ParserProbe.spec"
 REQUIRE_WORKER_ENV = "VERIFLOW_REQUIRE_INSTALLED_WORKER"
+
+
+def test_windows_ci_runs_real_worker_before_python_tests() -> None:
+    workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    wheel_install_command = (
+        "python -m pip install --force-reinstall --no-deps $wheelPath"
+    )
+    packaging_tool_pins = (
+        "build==1.5.0",
+        "setuptools==82.0.1",
+        "wheel==0.46.3",
+        "pyinstaller==6.19.0",
+        "pytest==9.0.3",
+        "PyYAML==6.0.3",
+    )
+
+    def named_steps(job: dict) -> Tuple[List[dict], List[str], dict]:
+        steps = job["steps"]
+        assert all(isinstance(step, dict) and "name" in step for step in steps)
+        step_names = [step["name"] for step in steps]
+        step_by_name = {step["name"]: step for step in steps}
+        assert len(step_by_name) == len(steps)
+        return steps, step_names, step_by_name
+
+    def run_lines(step: dict) -> List[str]:
+        run = step["run"]
+        assert isinstance(run, str)
+        return [line.strip() for line in run.splitlines() if line.strip()]
+
+    def assert_contract(document: dict) -> None:
+        jobs = document["jobs"]
+        assert jobs["python"]["runs-on"] == "ubuntu-latest"
+        windows_job = jobs["hdl-runtime-feasibility"]
+        steps, step_names, step_by_name = named_steps(windows_job)
+
+        assert windows_job["runs-on"] == "windows-latest"
+        assert step_by_name["Set up Node"]["uses"] == "actions/setup-node@v4"
+        assert step_by_name["Set up Node"]["with"]["node-version"] == "24.14.1"
+        assert step_by_name["Set up Python"]["uses"] == "actions/setup-python@v5"
+        assert step_by_name["Set up Python"]["with"]["python-version"] == "3.11"
+        assert step_by_name["Install workspace dependencies"]["run"] == "npm ci"
+        assert (
+            step_by_name["Test parser worker source"]["run"]
+            == "npm test --workspace @veriflow/parser-worker"
+        )
+        assert step_by_name["Build parser SEA probe"]["run"] == "npm run build:parser"
+        assert (
+            step_by_name["Smoke real parser SEA probe"]["run"]
+            == "node scripts/smoke-parser-probe.mjs"
+        )
+
+        worker_wheel_step = step_by_name["Build and install worker wheel"]
+        worker_wheel_source = worker_wheel_step["run"]
+        worker_wheel_commands = run_lines(worker_wheel_step)
+        assert ["python", "-m", "pip", "install", *packaging_tool_pins] in [
+            shlex.split(command)
+            for command in worker_wheel_commands
+            if command.startswith("python -m pip install")
+        ]
+        assert "python scripts/build_parser_probe_wheel.py" in worker_wheel_commands
+        assert wheel_install_command in worker_wheel_commands
+        worker_wheel_sequence = (
+            "python scripts/build_parser_probe_wheel.py",
+            'Resolve-Path "python-packages/veriflow-hdl-worker/dist"',
+            "$wheelPath = [System.IO.Path]::GetFullPath($wheels[0].FullName)",
+            "$wheelSha256 = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256)",
+            '"VERIFLOW_HDL_WORKER_WHEEL_PATH=$wheelPath" | Out-File',
+            '"VERIFLOW_HDL_WORKER_WHEEL_SHA256=$wheelSha256" | Out-File',
+            '"VERIFLOW_REQUIRE_INSTALLED_WORKER=1" | Out-File',
+            wheel_install_command,
+        )
+        assert all(command in worker_wheel_source for command in worker_wheel_sequence)
+        assert [
+            worker_wheel_source.index(command) for command in worker_wheel_sequence
+        ] == sorted(
+            worker_wheel_source.index(command) for command in worker_wheel_sequence
+        )
+        assert (
+            "python -m pytest tests/test_parser_probe_package.py "
+            "tests/test_worker_wheel_provenance.py -v"
+            in run_lines(step_by_name["Run worker package tests"])
+        )
+
+        required_order = [
+            "Install workspace dependencies",
+            "Test parser worker source",
+            "Build parser SEA probe",
+            "Smoke real parser SEA probe",
+            "Build and install worker wheel",
+            "Run worker package tests",
+            "Verify PyInstaller collection",
+        ]
+        assert [step_names.index(name) for name in required_order] == sorted(
+            step_names.index(name) for name in required_order
+        )
+
+        pyinstaller_commands = run_lines(step_by_name["Verify PyInstaller collection"])
+        assert step_names[-1] == "Verify PyInstaller collection"
+        assert "python -m PyInstaller --clean --noconfirm ParserProbe.spec" in (
+            pyinstaller_commands
+        )
+        assert '$probePath = (Resolve-Path "dist/parser-probe.exe").Path' in (
+            pyinstaller_commands
+        )
+        assert "& $probePath" in pyinstaller_commands
+
+        _vscode_steps, vscode_names, _vscode_by_name = named_steps(jobs["vscode"])
+        assert vscode_names.index(
+            "Install workspace dependencies"
+        ) < vscode_names.index("Build generated extension assets")
+        assert vscode_names.index("Build generated extension assets") < vscode_names.index(
+            "Test extension core"
+        )
+
+    assert_contract(workflow)
+
+    smoke_reordered = deepcopy(workflow)
+    smoke_steps = smoke_reordered["jobs"]["hdl-runtime-feasibility"]["steps"]
+    smoke_names = [step["name"] for step in smoke_steps]
+    build_index = smoke_names.index("Build parser SEA probe")
+    smoke_index = smoke_names.index("Smoke real parser SEA probe")
+    smoke_steps[build_index], smoke_steps[smoke_index] = (
+        smoke_steps[smoke_index],
+        smoke_steps[build_index],
+    )
+    with pytest.raises(AssertionError):
+        assert_contract(smoke_reordered)
+
+    pyinstaller_removed = deepcopy(workflow)
+    pyinstaller_step = next(
+        step
+        for step in pyinstaller_removed["jobs"]["hdl-runtime-feasibility"]["steps"]
+        if step["name"] == "Verify PyInstaller collection"
+    )
+    pyinstaller_step["run"] = pyinstaller_step["run"].replace(
+        "python -m PyInstaller --clean --noconfirm ParserProbe.spec",
+        "python -m removed-pyinstaller-command",
+    )
+    with pytest.raises(AssertionError):
+        assert_contract(pyinstaller_removed)
+
+    wheel_install_removed = deepcopy(workflow)
+    wheel_step = next(
+        step
+        for step in wheel_install_removed["jobs"]["hdl-runtime-feasibility"]["steps"]
+        if step["name"] == "Build and install worker wheel"
+    )
+    wheel_step["run"] = wheel_step["run"].replace(wheel_install_command, "")
+    with pytest.raises(AssertionError):
+        assert_contract(wheel_install_removed)
+
+    source_test_removed = deepcopy(workflow)
+    source_test_step = next(
+        step
+        for step in source_test_removed["jobs"]["hdl-runtime-feasibility"]["steps"]
+        if step["name"] == "Test parser worker source"
+    )
+    source_test_step["run"] = "npm run removed-parser-worker-source-test"
+    with pytest.raises(AssertionError):
+        assert_contract(source_test_removed)
+
+
+def test_feasibility_docs_match_pinned_ci_gate() -> None:
+    pyproject_source = PYPROJECT_SOURCE.read_text(encoding="utf-8")
+    readme_source = README_SOURCE.read_text(encoding="utf-8")
+    feasibility_source = FEASIBILITY_DOC.read_text(encoding="utf-8")
+    developer_source = readme_source.split("## Developer build commands", 1)[1]
+
+    assert '"PyYAML==6.0.3"' in pyproject_source
+
+    packaging_prerequisites = (
+        "python -m pip install build==1.5.0 setuptools==82.0.1 wheel==0.46.3 "
+        "pyinstaller==6.19.0 pytest==9.0.3 PyYAML==6.0.3"
+    )
+    readme_sequence = (
+        "npm ci",
+        "npm test --workspace @veriflow/parser-worker",
+        "npm run build:parser",
+        "node scripts/smoke-parser-probe.mjs",
+        packaging_prerequisites,
+        "python scripts/build_parser_probe_wheel.py",
+    )
+    assert all(command in developer_source for command in readme_sequence)
+    assert [developer_source.index(command) for command in readme_sequence] == sorted(
+        developer_source.index(command) for command in readme_sequence
+    )
+    assert "Windows x64" in developer_source
+    assert "feasibility" in developer_source
+
+    documented_gate_order = (
+        "npm ci",
+        "npm test --workspace @veriflow/parser-worker",
+        "npm run build:parser",
+        "node scripts/smoke-parser-probe.mjs",
+    )
+    assert all(command in feasibility_source for command in documented_gate_order)
+    assert [
+        feasibility_source.index(command) for command in documented_gate_order
+    ] == sorted(feasibility_source.index(command) for command in documented_gate_order)
+    assert "PyInstaller` | 6.19.0" in feasibility_source
+
+
+def test_feasibility_probes_use_canonical_packaged_module() -> None:
+    canonical_source = "module packaged; endmodule"
+    javascript_source = f"source: '{canonical_source}'"
+
+    assert javascript_source in PARSER_SOURCE_TEST.read_text(encoding="utf-8")
+    assert javascript_source in SEA_SMOKE_SOURCE.read_text(encoding="utf-8")
+
+    def function_strings(path: Path, function_name: str) -> List[str]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        )
+        return [
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        ]
+
+    assert canonical_source in function_strings(
+        Path(wheel_builder.__file__), "_smoke_packaged_worker"
+    )
+    assert canonical_source in function_strings(
+        Path(__file__), "test_real_worker_starts_without_a_visible_window"
+    )
+
+    entry_tree = ast.parse(ENTRY_SOURCE.read_text(encoding="utf-8"))
+    entry_strings = [
+        node.value
+        for node in ast.walk(entry_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assert canonical_source in entry_strings
 
 
 @pytest.fixture()
@@ -529,7 +781,7 @@ def test_real_worker_starts_without_a_visible_window(
             "protocolVersion": 1,
             "requestId": "python-hidden-window",
             "type": "probe",
-            "payload": {"source": "module hidden_window; endmodule"},
+            "payload": {"source": "module packaged; endmodule"},
         }
         stdout, stderr = process.communicate(json.dumps(request) + "\n", timeout=10)
 

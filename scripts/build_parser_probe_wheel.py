@@ -300,7 +300,7 @@ def _smoke_packaged_worker() -> None:
         "protocolVersion": 1,
         "requestId": "wheel-build-probe",
         "type": "probe",
-        "payload": {"source": "module wheel_build; endmodule"},
+        "payload": {"source": "module packaged; endmodule"},
     }
     process = subprocess.Popen(
         [str(PACKAGE_BIN / "parser-worker.exe")],

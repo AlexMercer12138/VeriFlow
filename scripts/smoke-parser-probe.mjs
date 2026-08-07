@@ -9,7 +9,7 @@ const request = {
     requestId: 'smoke-1',
     type: 'probe',
     payload: {
-        source: 'module top; endmodule',
+        source: 'module packaged; endmodule',
     },
 };
 

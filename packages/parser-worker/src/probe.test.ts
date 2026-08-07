@@ -73,6 +73,22 @@ test('parses a SystemVerilog module with the pinned WASM language', async () => 
     assert.equal(response.payload.languageAbi, 15);
 });
 
+test('parses the canonical packaged feasibility module', async () => {
+    const response = await handleProbeRequest({
+        protocolVersion: 1,
+        requestId: 'packaged-feasibility',
+        type: 'probe',
+        payload: {
+            source: 'module packaged; endmodule',
+        },
+    }, probeAssets());
+
+    assert.equal(response.ok, true);
+    assert.equal(response.payload.rootType, 'source_file');
+    assert.equal(response.payload.containsModule, true);
+    assert.equal(response.payload.languageAbi, 15);
+});
+
 test('deletes the parser when setLanguage throws', { concurrency: false }, async () => {
     const originalSetLanguage = Parser.prototype.setLanguage;
     const originalDelete = Parser.prototype.delete;
