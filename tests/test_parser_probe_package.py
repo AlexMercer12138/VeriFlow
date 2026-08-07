@@ -812,6 +812,7 @@ def test_parser_probe_entry_uses_the_installed_worker(
     result = subprocess.run(
         [sys.executable, "-I", str(ENTRY_SOURCE)],
         cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
