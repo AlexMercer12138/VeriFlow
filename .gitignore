@@ -22,6 +22,8 @@ veriflow-vscode/media/waveform/
 veriflow-vscode/media/schematic/
 veriflow-vscode/*.vsix
 .artifacts/
+python-packages/veriflow-hdl-worker/src/veriflow_hdl_worker/bin/*
+!python-packages/veriflow-hdl-worker/src/veriflow_hdl_worker/bin/.gitkeep
 
 # Simulation outputs
 *.vks
