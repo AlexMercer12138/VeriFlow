@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const testRoot = path.join(process.cwd(), 'out', 'test');
-const registeredTests = ['rootBuild.test.js'];
+const registeredTests = ['rootBuild.test.js', 'webDistAssets.test.js'];
 const files = [...new Set([
     ...(await readdir(testRoot)).filter(name => name.endsWith('.test.js')),
     ...registeredTests,

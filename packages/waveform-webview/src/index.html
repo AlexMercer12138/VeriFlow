@@ -1,0 +1,88 @@
+<div class="app">
+    <div class="toolbar">
+        <div class="file-title" id="fileTitle">No waveform loaded</div>
+        <div class="tool-group" aria-label="Waveform navigation">
+            <button class="icon-button" id="goStart" title="Go to start (Home)" aria-label="Go to start">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><line x1="4" y1="4" x2="4" y2="16"/><polygon points="15,4 15,16 6,10"/></svg>
+            </button>
+            <button class="icon-button" id="goEnd" title="Go to end (End)" aria-label="Go to end">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><line x1="16" y1="4" x2="16" y2="16"/><polygon points="5,4 5,16 14,10"/></svg>
+            </button>
+            <button class="icon-button" id="prevPage" title="Previous page (Page Up)" aria-label="Previous page">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="10,4 10,16 3.5,10"/><polygon points="16.5,4 16.5,16 10,10"/></svg>
+            </button>
+            <button class="icon-button" id="nextPage" title="Next page (Page Down)" aria-label="Next page">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="3.5,4 3.5,16 10,10"/><polygon points="10,4 10,16 16.5,10"/></svg>
+            </button>
+            <button class="icon-button" id="prevChange" title="Previous change (Left)" aria-label="Previous change">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="14,4 14,16 5,10"/></svg>
+            </button>
+            <button class="icon-button" id="nextChange" title="Next change (Right)" aria-label="Next change">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="6,4 6,16 15,10"/></svg>
+            </button>
+            <button class="icon-button" id="zoomOut" title="Zoom out (O or -)" aria-label="Zoom out">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><line x1="11.8" y1="11.8" x2="16" y2="16"/><line x1="5.5" y1="8" x2="10.5" y2="8"/></svg>
+            </button>
+            <button class="icon-button" id="zoomIn" title="Zoom in (I or +)" aria-label="Zoom in">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><line x1="11.8" y1="11.8" x2="16" y2="16"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="8" y1="5.5" x2="8" y2="10.5"/></svg>
+            </button>
+            <button class="icon-button" id="fit" title="Fit to full range (F or Space)" aria-label="Fit to full range">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="4" width="12" height="12"/><line x1="7" y1="13" x2="13" y2="7"/><line x1="13" y1="7" x2="10.5" y2="7"/><line x1="13" y1="7" x2="13" y2="9.5"/><line x1="7" y1="13" x2="7" y2="10.5"/><line x1="7" y1="13" x2="9.5" y2="13"/></svg>
+            </button>
+        </div>
+        <div class="tool-group cursor-controls" aria-label="Waveform cursors">
+            <button class="cursor-toggle" id="cursorA" title="Activate cursor A (A)" aria-label="Activate cursor A" aria-pressed="true">A</button>
+            <button class="cursor-toggle" id="cursorB" title="Activate cursor B (B)" aria-label="Activate cursor B" aria-pressed="false">B</button>
+        </div>
+        <div class="change-search" aria-label="Waveform condition search">
+            <select id="changeSearchMode" title="Change search condition" aria-label="Change search condition">
+                <option value="change">Any change</option>
+                <option value="rising">Rising edge</option>
+                <option value="falling">Falling edge</option>
+                <option value="value">Exact value</option>
+                <option value="xz">Any X/Z</option>
+            </select>
+            <input id="changeSearchValue" type="text" placeholder="value" aria-label="Exact waveform value" disabled />
+        </div>
+        <button id="goToTime">Go to</button>
+        <input id="timeInput" type="text" placeholder="time" />
+    </div>
+    <div class="main">
+        <aside class="sidebar">
+            <div class="search">
+                <input id="searchInput" type="text" placeholder="Search signals" />
+                <select id="scopeSelect"></select>
+            </div>
+            <div class="signal-list" id="signalList"></div>
+        </aside>
+        <div class="resize-handle main-resize" id="mainResize" title="Resize signal library"></div>
+        <main class="wave-wrap" id="waveWrap">
+            <div class="wave-name-header">Time:</div>
+            <div class="wave-name-list" id="waveNameList"></div>
+            <div class="resize-handle wave-name-resize" id="waveNameResize" title="Resize waveform signal names"></div>
+            <div class="wave-canvas-pane" id="waveCanvasPane">
+                <canvas id="waveCanvas"></canvas>
+                <div class="selection-box" id="selectionBox"></div>
+                <div class="empty" id="emptyState">Open a VCD file to preview waveforms.</div>
+            </div>
+            <div class="index-overlay" id="indexOverlay" hidden aria-live="polite">
+                <div class="index-overlay-content">
+                    <div class="index-overlay-text" id="indexOverlayText">Preparing waveform</div>
+                    <div class="index-progress indeterminate" id="indexProgress">
+                        <span id="indexProgressText">Starting index</span>
+                        <div class="index-progress-track" role="progressbar" aria-label="Waveform indexing progress" aria-valuemin="0" aria-valuemax="100"><div class="index-progress-fill" id="indexProgressFill"></div></div>
+                        <div class="index-progress-actions"><button class="status-icon-button" id="cancelIndex" title="Cancel waveform indexing" aria-label="Cancel waveform indexing">&#x2715;</button><button class="status-command" id="retryIndex" hidden>Retry</button></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <div class="status">
+        <div class="status-primary">
+            <div id="statusText">Ready</div>
+        </div>
+        <div id="cursorMeasureText">A: - | B: - | Delta: - | Frequency: -</div>
+        <div id="rangeText">Range: -</div>
+    </div>
+    <div class="context-menu" id="contextMenu"></div>
+</div>

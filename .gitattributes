@@ -3,3 +3,7 @@ veriflow-vscode/src/test/fixtures/hdl/** text eol=lf
 
 # The build regenerates this file from licenses with mixed source line endings.
 veriflow-vscode/THIRD_PARTY_NOTICES.md text eol=lf
+
+# Canonical web assets and their package sources use stable line endings.
+web-dist/** text eol=lf
+packages/*/src/** text eol=lf

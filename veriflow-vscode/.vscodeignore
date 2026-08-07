@@ -10,3 +10,15 @@ tsconfig.json
 .gitignore
 **/*.ts
 **/*.map
+
+# Generated web assets are required in the packaged extension.
+media/waveform/**
+!media/waveform/index.html
+!media/waveform/index.css
+!media/waveform/index.js
+!media/waveform/viewer-core.js
+!media/waveform/viewer-transport.js
+media/schematic/**
+!media/schematic/index.html
+!media/schematic/index.css
+!media/schematic/index.js

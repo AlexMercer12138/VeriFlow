@@ -1,9 +1,10 @@
 import * as assert from 'assert';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { build } from 'esbuild';
+import { build, type BuildOptions } from 'esbuild';
 
 type PackageNotice = {
     name: string;
@@ -23,23 +24,60 @@ type BuildSupport = {
     ): string;
 };
 
+type BrowserBuildConfig = {
+    browserBuildOptions(): BuildOptions;
+};
+
 const extensionRoot = path.resolve(__dirname, '..', '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
-const mediaRoot = path.join(extensionRoot, 'media', 'schematic');
+const schematicSourceRoot = path.join(
+    repositoryRoot,
+    'packages',
+    'schematic-webview',
+    'src'
+);
+const webDistRoot = path.join(repositoryRoot, 'web-dist', 'schematic');
 const loadEsmModule = new Function(
     'specifier',
     'return import(specifier);'
-) as (specifier: string) => Promise<BuildSupport>;
+) as <T>(specifier: string) => Promise<T>;
+
+function sha256(value: Uint8Array): string {
+    return createHash('sha256').update(value).digest('hex');
+}
 
 function ignored(patterns: string, relativePath: string): boolean {
     const normalized = relativePath.replace(/\\/g, '/');
-    return patterns.split(/\r?\n/).some(line => {
-        const pattern = line.trim();
-        if (!pattern || pattern.startsWith('#')) return false;
-        if (pattern === 'webview/**') return normalized.startsWith('webview/');
-        if (pattern === 'media/schematic/**') return normalized.startsWith('media/schematic/');
-        if (pattern === '**/*.map') return normalized.endsWith('.map');
-        return pattern === normalized;
+    let result = false;
+    for (const line of patterns.split(/\r?\n/)) {
+        const rawPattern = line.trim();
+        if (!rawPattern || rawPattern.startsWith('#')) continue;
+        const negated = rawPattern.startsWith('!');
+        const pattern = negated ? rawPattern.slice(1) : rawPattern;
+        let matches = false;
+        if (pattern === 'webview/**') {
+            matches = normalized.startsWith('webview/');
+        } else if (pattern === 'media/waveform/**') {
+            matches = normalized.startsWith('media/waveform/');
+        } else if (pattern === 'media/schematic/**') {
+            matches = normalized.startsWith('media/schematic/');
+        } else if (pattern === '**/*.ts') {
+            matches = normalized.endsWith('.ts');
+        } else if (pattern === '**/*.map') {
+            matches = normalized.endsWith('.map');
+        } else {
+            matches = pattern === normalized;
+        }
+        if (matches) result = !negated;
+    }
+    return result;
+}
+
+function typeScriptFiles(root: string): string[] {
+    return fs.readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+        const entryPath = path.join(root, entry.name);
+        if (entry.isDirectory()) return typeScriptFiles(entryPath);
+        return entry.isFile() && entry.name.endsWith('.ts') ? [entryPath] : [];
     });
 }
 
@@ -96,31 +134,31 @@ function testNoticeFormatting(support: BuildSupport): void {
 }
 
 async function testSchematicAssets(): Promise<void> {
-    const support = await loadEsmModule(pathToFileURL(
+    const support = await loadEsmModule<BuildSupport>(pathToFileURL(
         path.join(extensionRoot, 'scripts', 'build-support.mjs')
     ).href);
     await testLicenseFailure(support);
     testNoticeFormatting(support);
 
     for (const relative of [
-        'media/schematic/index.js',
-        'media/schematic/styles.css',
-        'media/schematic/index.html',
+        'index.js',
+        'index.css',
+        'index.html',
     ]) {
         assert.ok(
-            fs.statSync(path.join(extensionRoot, relative)).size > 100,
+            fs.statSync(path.join(webDistRoot, relative)).size > 100,
             `${relative} is missing`
         );
     }
-    assert.ok(fs.statSync(path.join(mediaRoot, 'index.js')).size > 50_000);
-    assert.ok(!fs.existsSync(path.join(mediaRoot, 'index.js.map')));
-    assert.deepStrictEqual(fs.readdirSync(mediaRoot).sort(), [
+    assert.ok(fs.statSync(path.join(webDistRoot, 'index.js')).size > 50_000);
+    assert.ok(!fs.existsSync(path.join(webDistRoot, 'index.js.map')));
+    assert.deepStrictEqual(fs.readdirSync(webDistRoot).sort(), [
+        'index.css',
         'index.html',
         'index.js',
-        'styles.css',
     ]);
     for (const sourceName of ['index.ts', 'styles.ts', 'index.html.ts']) {
-        assert.ok(!fs.existsSync(path.join(mediaRoot, sourceName)));
+        assert.ok(!fs.existsSync(path.join(webDistRoot, sourceName)));
     }
 
     const vscodeIgnore = fs.readFileSync(
@@ -128,7 +166,29 @@ async function testSchematicAssets(): Promise<void> {
         'utf8'
     );
     assert.ok(ignored(vscodeIgnore, 'webview/schematic/index.ts'));
-    assert.ok(!ignored(vscodeIgnore, 'media/schematic/index.js'));
+    assert.doesNotMatch(vscodeIgnore, /^!media\/(?:waveform|schematic)\/\*\*$/m);
+    const runtimeMediaPaths = [
+        'media/waveform/index.html',
+        'media/waveform/index.css',
+        'media/waveform/index.js',
+        'media/waveform/viewer-core.js',
+        'media/waveform/viewer-transport.js',
+        'media/schematic/index.html',
+        'media/schematic/index.css',
+        'media/schematic/index.js',
+    ];
+    for (const runtimeMediaPath of runtimeMediaPaths) {
+        assert.ok(vscodeIgnore.includes(`!${runtimeMediaPath}`));
+        assert.ok(!ignored(vscodeIgnore, runtimeMediaPath));
+    }
+    for (const excludedMediaPath of [
+        'media/waveform/stray.ts',
+        'media/waveform/index.js.map',
+        'media/schematic/stray.ts',
+        'media/schematic/index.js.map',
+    ]) {
+        assert.ok(ignored(vscodeIgnore, excludedMediaPath));
+    }
     const gitignore = fs.readFileSync(path.join(repositoryRoot, '.gitignore'), 'utf8');
     assert.match(gitignore.replace(/\\/g, '/'), /veriflow-vscode\/media\/schematic\//);
     const manifest = JSON.parse(
@@ -138,7 +198,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.strictEqual(manifest.dependencies['@dagrejs/dagre'], '3.1.0');
     assert.strictEqual(manifest.dependencies.lucide, '1.28.0');
 
-    const html = fs.readFileSync(path.join(mediaRoot, 'index.html'), 'utf8');
+    const html = fs.readFileSync(path.join(webDistRoot, 'index.html'), 'utf8');
     for (const expected of [
         'id="toolbar"',
         'id="module-selector"',
@@ -157,7 +217,7 @@ async function testSchematicAssets(): Promise<void> {
     }
     assert.doesNotMatch(html, /<svg\b/i);
 
-    const css = fs.readFileSync(path.join(mediaRoot, 'styles.css'), 'utf8');
+    const css = fs.readFileSync(path.join(webDistRoot, 'index.css'), 'utf8');
     assert.match(css, /grid-template-rows:\s*36px\s+minmax\(0,\s*1fr\)\s+24px/);
     assert.match(css, /--vscode-editor-background/);
     assert.match(css, /--vscode-editor-foreground/);
@@ -176,9 +236,17 @@ async function testSchematicAssets(): Promise<void> {
     );
 
     const webviewSource = fs.readFileSync(
-        path.join(extensionRoot, 'webview', 'schematic', 'index.ts'),
+        path.join(schematicSourceRoot, 'index.ts'),
         'utf8'
     );
+    const temporaryImportOwners = typeScriptFiles(
+        path.join(repositoryRoot, 'packages')
+    ).filter(filePath => fs.readFileSync(filePath, 'utf8').includes(
+        '../../../veriflow-vscode/src/'
+    )).map(filePath => path.relative(repositoryRoot, filePath).replace(/\\/g, '/'));
+    assert.deepStrictEqual(temporaryImportOwners, [
+        'packages/schematic-webview/src/index.ts',
+    ]);
     assert.match(webviewSource, /schematicNodeSize\(model\)/);
     assert.doesNotMatch(webviewSource, /function nodeDimensions\(/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
@@ -233,6 +301,28 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(webviewSource, /post\(\{\s*type:\s*'revealSource'/);
     assert.doesNotMatch(webviewSource, /post\(\{\s*type:\s*'openDefinition'/);
 
+    const generatedBundle = fs.readFileSync(
+        path.join(webDistRoot, 'index.js'),
+        'utf8'
+    );
+    assert.match(generatedBundle, /function clearSchematicState\(\)/);
+    const buildConfig = await loadEsmModule<BrowserBuildConfig>(pathToFileURL(
+        path.join(repositoryRoot, 'scripts', 'lib', 'build-config.mjs')
+    ).href);
+    const rebuiltBundle = await build({
+        ...buildConfig.browserBuildOptions(),
+        absWorkingDir: repositoryRoot,
+        entryPoints: [path.join(schematicSourceRoot, 'index.ts')],
+        outfile: path.join(webDistRoot, 'index.js'),
+        write: false,
+        logLevel: 'silent',
+    });
+    assert.strictEqual(rebuiltBundle.outputFiles?.length, 1);
+    const rebuiltBytes = rebuiltBundle.outputFiles![0].contents;
+    const generatedBytes = fs.readFileSync(path.join(webDistRoot, 'index.js'));
+    assert.strictEqual(sha256(rebuiltBytes), sha256(generatedBytes));
+    assert.deepStrictEqual(Buffer.from(rebuiltBytes), generatedBytes);
+
     const notices = fs.readFileSync(
         path.join(extensionRoot, 'THIRD_PARTY_NOTICES.md'),
         'utf8'
@@ -242,7 +332,8 @@ async function testSchematicAssets(): Promise<void> {
     assert.ok(notices.includes('lucide 1.28.0'));
 
     const bundle = await build({
-        entryPoints: [path.join(extensionRoot, 'webview', 'schematic', 'index.ts')],
+        absWorkingDir: repositoryRoot,
+        entryPoints: [path.join(schematicSourceRoot, 'index.ts')],
         bundle: true,
         platform: 'browser',
         format: 'iife',
@@ -255,7 +346,7 @@ async function testSchematicAssets(): Promise<void> {
     });
     const packages = await support.collectBundledPackageLicenses(
         bundle.metafile!,
-        extensionRoot
+        repositoryRoot
     );
     assert.ok(packages.length >= 3);
     for (const bundledPackage of packages) {

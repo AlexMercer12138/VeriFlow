@@ -24,7 +24,7 @@ import type {
     NetworkEndpoint,
     SchematicGraph,
     SchematicNetwork,
-} from '../../src/schematic/graphModel';
+} from '../../../veriflow-vscode/src/schematic/graphModel';
 import {
     deriveFeedbackRoutes,
     SCHEMATIC_BASE_NODE_SIZE,
@@ -32,8 +32,8 @@ import {
     SCHEMATIC_PORT_SIZE,
     schematicNodeSize,
     type SchematicLayout,
-} from '../../src/schematic/layoutStore';
-import type { HostEvent, WebviewCommand } from '../../src/schematic/protocol';
+} from '../../../veriflow-vscode/src/schematic/layoutStore';
+import type { HostEvent, WebviewCommand } from '../../../veriflow-vscode/src/schematic/protocol';
 import {
     cloneSchematicLayout,
     DebouncedLayoutSaveScheduler,
@@ -42,7 +42,7 @@ import {
     navigationCommandForCell,
     placeSchematicNetworkLabel,
     summarizeSchematicSelection,
-} from '../../src/schematic/webviewSupport';
+} from '../../../veriflow-vscode/src/schematic/webviewSupport';
 
 type PersistedWebviewState = { layouts?: Record<string, SchematicLayout> };
 type VsCodeApi = {

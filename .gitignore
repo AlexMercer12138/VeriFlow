@@ -17,8 +17,10 @@ src/presentation/gui/__pycache__/
 node_modules/
 veriflow-vscode/out/
 veriflow-vscode/dist/
+veriflow-vscode/media/waveform/
 veriflow-vscode/media/schematic/
 veriflow-vscode/*.vsix
+.artifacts/
 
 # Simulation outputs
 *.vks
