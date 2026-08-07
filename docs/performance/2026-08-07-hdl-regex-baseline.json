@@ -1,0 +1,11 @@
+{
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]"
+  },
+  "fixtureManifest": "tests/benchmarks/hdl-fixtures.json",
+  "indexMedianSeconds": 0.009242900006938726,
+  "parseMedianSeconds": 0.0018410999909974635,
+  "repetitions": 7,
+  "schemaVersion": 1
+}

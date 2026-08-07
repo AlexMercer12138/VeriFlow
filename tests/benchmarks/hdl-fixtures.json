@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "topModule": "uart_tb",
+  "files": [
+    "tests/project_test/uart_rx.v",
+    "tests/project_test/uart_tx.v",
+    "tests/project_test/uart_tb.v",
+    "veriflow-vscode/src/test/fixtures/hdl/structural.sv",
+    "veriflow-vscode/src/test/fixtures/hdl/schematic-readonly.sv"
+  ]
+}
