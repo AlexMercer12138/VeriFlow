@@ -3,9 +3,11 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const testRoot = path.join(process.cwd(), 'out', 'test');
-const files = (await readdir(testRoot))
-    .filter(name => name.endsWith('.test.js'))
-    .sort();
+const registeredTests = ['rootBuild.test.js'];
+const files = [...new Set([
+    ...(await readdir(testRoot)).filter(name => name.endsWith('.test.js')),
+    ...registeredTests,
+])].sort();
 
 for (const file of files) {
     const result = spawnSync(process.execPath, [path.join(testRoot, file)], {
