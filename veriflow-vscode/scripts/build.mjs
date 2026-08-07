@@ -1,17 +1,9 @@
-import {
-    copyFile,
-    mkdir,
-    readFile,
-    rm,
-    writeFile,
-} from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
     buildBundles,
-    collectBundledPackageLicenses,
-    formatThirdPartyNotices,
     runWatch,
     verifyAndCopyParserAssets,
 } from './build-support.mjs';
@@ -20,8 +12,6 @@ const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 const distRoot = path.join(extensionRoot, 'dist');
 const workerRoot = path.join(distRoot, 'workers');
 const parserRoot = path.join(extensionRoot, 'media', 'parsers');
-const schematicSourceRoot = path.join(extensionRoot, 'webview', 'schematic');
-const schematicRoot = path.join(extensionRoot, 'media', 'schematic');
 const workspaceRequire = createRequire(import.meta.url);
 const grammarPackageRoot = path.dirname(workspaceRequire.resolve(
     'tree-sitter-systemverilog/tree-sitter-systemverilog.wasm'
@@ -78,69 +68,8 @@ const nodeBundleOptions = [
     },
 ];
 
-async function writeThirdPartyNotices(frontendPackages = []) {
-    const parserPackages = await Promise.all(parserAssets.map(async asset => ({
-        name: asset.name,
-        version: asset.version,
-        license: asset.licenseDeclaration,
-        licenseText: await readFile(asset.licensePath, 'utf8'),
-    })));
-    await writeFile(
-        path.join(extensionRoot, 'THIRD_PARTY_NOTICES.md'),
-        formatThirdPartyNotices(parserPackages, frontendPackages),
-        'utf8'
-    );
-}
-
 async function prepareParserAssets() {
     await verifyAndCopyParserAssets(parserAssets);
-}
-
-async function prepareSchematicAssets() {
-    await rm(schematicRoot, { recursive: true, force: true });
-    await mkdir(schematicRoot, { recursive: true });
-    await Promise.all(['index.html', 'styles.css'].map(fileName => copyFile(
-        path.join(schematicSourceRoot, fileName),
-        path.join(schematicRoot, fileName)
-    )));
-}
-
-async function writeSchematicNotices(metafile) {
-    if (!metafile) {
-        throw new Error('The schematic browser bundle did not produce an esbuild metafile');
-    }
-    await writeThirdPartyNotices(
-        await collectBundledPackageLicenses(metafile, extensionRoot)
-    );
-}
-
-function schematicBundleOptions(watchMode) {
-    const options = {
-        bundle: true,
-        platform: 'browser',
-        format: 'iife',
-        target: 'es2020',
-        minify: true,
-        metafile: true,
-        sourcemap: false,
-        legalComments: 'none',
-        entryPoints: [path.join(schematicSourceRoot, 'index.ts')],
-        outfile: path.join(schematicRoot, 'index.js'),
-    };
-    if (!watchMode) return options;
-    return {
-        ...options,
-        plugins: [{
-            name: 'veriflow-schematic-notices',
-            setup(build) {
-                build.onEnd(async result => {
-                    if (result.errors.length === 0) {
-                        await writeSchematicNotices(result.metafile);
-                    }
-                });
-            },
-        }],
-    };
 }
 
 async function prepareDist() {
@@ -151,25 +80,14 @@ async function prepareDist() {
 async function runBuild() {
     await prepareParserAssets();
     await prepareDist();
-    await prepareSchematicAssets();
-    const results = await buildBundles([
-        ...nodeBundleOptions,
-        schematicBundleOptions(false),
-    ]);
-    await writeSchematicNotices(results.at(-1)?.metafile);
+    await buildBundles(nodeBundleOptions);
 }
 
 async function runWatchMode() {
     await prepareParserAssets();
     await prepareDist();
-    // Watch startup recreates static assets so stale media cannot survive.
-    await prepareSchematicAssets();
-    await writeThirdPartyNotices();
     process.exitCode = await runWatch({
-        bundleOptions: [
-            ...nodeBundleOptions,
-            schematicBundleOptions(true),
-        ],
+        bundleOptions: nodeBundleOptions,
         cwd: extensionRoot,
         typecheck: {
             command: process.execPath,

@@ -700,7 +700,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         return buildSchematicWebviewHtml(shell, {
             cspSource: webview.cspSource,
             styleUri: webview.asWebviewUri(
-                vscode.Uri.joinPath(assetRoot, 'styles.css')
+                vscode.Uri.joinPath(assetRoot, 'index.css')
             ).toString(),
             scriptUri: webview.asWebviewUri(
                 vscode.Uri.joinPath(assetRoot, 'index.js')

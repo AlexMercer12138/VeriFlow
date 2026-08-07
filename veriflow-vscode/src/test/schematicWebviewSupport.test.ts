@@ -34,13 +34,13 @@ function testSecureSchematicWebviewHtml(): void {
     const shell = [
         '<!doctype html>',
         '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\' \'unsafe-inline\'; script-src \'self\';">',
-        '<link rel="stylesheet" href="./styles.css">',
+        '<link rel="stylesheet" href="./index.css">',
         '<main>schematic shell</main>',
         '<script src="./index.js"></script>',
     ].join('\n');
     const html = buildSchematicWebviewHtml(shell, {
         cspSource: 'vscode-webview://schematic',
-        styleUri: 'vscode-webview://schematic/styles.css',
+        styleUri: 'vscode-webview://schematic/index.css',
         scriptUri: 'vscode-webview://schematic/index.js',
         nonce: 'nonceValue123',
     });
@@ -49,7 +49,7 @@ function testSecureSchematicWebviewHtml(): void {
         html,
         /default-src 'none'; img-src vscode-webview:\/\/schematic; style-src vscode-webview:\/\/schematic 'unsafe-inline'; script-src 'nonce-nonceValue123';/
     );
-    assert.ok(html.includes('href="vscode-webview://schematic/styles.css"'));
+    assert.ok(html.includes('href="vscode-webview://schematic/index.css"'));
     assert.ok(html.includes(
         '<script nonce="nonceValue123" src="vscode-webview://schematic/index.js"></script>'
     ));
@@ -60,7 +60,7 @@ function testSecureSchematicWebviewHtml(): void {
     assert.throws(
         () => buildSchematicWebviewHtml('<main>incomplete</main>', {
             cspSource: 'vscode-webview://schematic',
-            styleUri: 'vscode-webview://schematic/styles.css',
+            styleUri: 'vscode-webview://schematic/index.css',
             scriptUri: 'vscode-webview://schematic/index.js',
             nonce: 'nonceValue123',
         }),

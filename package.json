@@ -13,6 +13,7 @@
     "build:web": "node scripts/build-web.mjs",
     "build:parser": "node scripts/build-parser-probe.mjs",
     "build:vscode": "node scripts/build-vscode.mjs",
+    "watch:vscode": "node scripts/watch-vscode.mjs",
     "build": "npm run build:web && npm run build:parser && npm run build:vscode",
     "test": "npm run test --workspaces --if-present",
     "verify:generated": "node scripts/verify-generated.mjs"

@@ -6,7 +6,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('src/presentation/gui/resources/icon.ico', 'src/presentation/gui/resources'),
-        ('veriflow-vscode/media/waveform', 'veriflow-vscode/media/waveform'),
+        ('web-dist/waveform', 'web-dist/waveform'),
     ],
     hiddenimports=[
         'PySide6.QtWidgets',

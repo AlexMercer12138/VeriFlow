@@ -109,7 +109,7 @@ async function stopProcess(child: ChildProcess): Promise<void> {
 async function testBuildWatch(): Promise<void> {
     testWatchTypeScriptCliResolvesFromWorkspace();
     assert.strictEqual(manifest.main, './dist/extension.js');
-    assert.strictEqual(manifest.scripts.watch, 'node ./scripts/build.mjs --watch');
+    assert.strictEqual(manifest.scripts.watch, 'node ../scripts/watch-vscode.mjs');
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-build-watch-'));
     const sourceRoot = path.join(root, 'src');

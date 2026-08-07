@@ -106,11 +106,11 @@ export class WaveformEditorProvider implements vscode.CustomReadonlyEditorProvid
     private _getHtml(webview: vscode.Webview): string {
         const nonce = getNonce();
         const assetsDir = path.join(this._context.extensionPath, 'media', 'waveform');
-        const css = fs.readFileSync(path.join(assetsDir, 'viewer.css'), 'utf-8');
-        const body = fs.readFileSync(path.join(assetsDir, 'viewer.html'), 'utf-8');
+        const css = fs.readFileSync(path.join(assetsDir, 'index.css'), 'utf-8');
+        const body = fs.readFileSync(path.join(assetsDir, 'index.html'), 'utf-8');
         const coreScript = fs.readFileSync(path.join(assetsDir, 'viewer-core.js'), 'utf-8');
         const transportScript = fs.readFileSync(path.join(assetsDir, 'viewer-transport.js'), 'utf-8');
-        const script = fs.readFileSync(path.join(assetsDir, 'viewer.js'), 'utf-8')
+        const script = fs.readFileSync(path.join(assetsDir, 'index.js'), 'utf-8')
             .replace('const bootstrap = ${stateJson};', 'const bootstrap = { nonce: "' + nonce + '" };');
 
         return `<!DOCTYPE html>

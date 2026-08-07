@@ -50,7 +50,7 @@ export function buildSchematicWebviewHtml(
     );
     html = replaceRequired(
         html,
-        /href="\.\/styles\.css"/,
+        /href="\.\/index\.css"/,
         `href="${escapeHtmlAttribute(resources.styleUri)}"`,
         'stylesheet'
     );

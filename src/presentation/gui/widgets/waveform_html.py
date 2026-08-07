@@ -46,10 +46,10 @@ def _to_web_data(data: VcdData) -> dict:
 def _waveform_assets_dir() -> Path:
     bundled_root = getattr(sys, "_MEIPASS", None)
     if bundled_root:
-        bundled = Path(bundled_root) / "veriflow-vscode" / "media" / "waveform"
+        bundled = Path(bundled_root) / "web-dist" / "waveform"
         if bundled.exists():
             return bundled
-    return Path(__file__).resolve().parents[4] / "veriflow-vscode" / "media" / "waveform"
+    return Path(__file__).resolve().parents[4] / "web-dist" / "waveform"
 
 
 def _read_asset(name: str) -> str:
@@ -57,7 +57,7 @@ def _read_asset(name: str) -> str:
 
 
 def _viewer_script(*, indexed: bool = False) -> str:
-    script = _read_asset("viewer.js")
+    script = _read_asset("index.js")
     if not indexed:
         script = script.replace("waveformTransport.send({ type: 'ready' });", "")
     return script.replace("const bootstrap = ${stateJson};", "const bootstrap = {};")
@@ -76,8 +76,8 @@ def _build_waveform_html(file_name: str, data: VcdData) -> str:
         {"type": "vcd", "fileName": file_name, "data": _to_web_data(data)},
         ensure_ascii=False,
     )
-    css = _read_asset("viewer.css")
-    body = _read_asset("viewer.html")
+    css = _read_asset("index.css")
+    body = _read_asset("index.html")
     core_script = _viewer_core_script()
     transport_script = _viewer_transport_script()
     script = _viewer_script()
@@ -106,8 +106,8 @@ window.addEventListener('load', () => {{
 
 
 def _build_empty_waveform_html() -> str:
-    css = _read_asset("viewer.css")
-    body = _read_asset("viewer.html")
+    css = _read_asset("index.css")
+    body = _read_asset("index.html")
     core_script = _viewer_core_script()
     transport_script = _viewer_transport_script()
     script = _viewer_script(indexed=True)

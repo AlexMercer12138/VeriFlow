@@ -382,6 +382,12 @@ def test_vscode_waveform_provider_persists_layout_and_loads_core() -> None:
     assert "message.type === 'saveLayout'" in provider
     assert "WaveformWorkerClient" in provider
     assert "workspace.fs.readFile" not in provider
+    assert "index.css" in provider
+    assert "index.html" in provider
+    assert "index.js" in provider
+    assert "viewer.css" not in provider
+    assert "viewer.html" not in provider
+    assert "viewer.js" not in provider
     assert "viewer-core.js" in provider
     assert "viewer-transport.js" in provider
 
@@ -435,10 +441,10 @@ def test_python_waveform_viewer_builds_empty_html() -> None:
 
 def test_waveform_progress_controls_cover_waveform_workspace() -> None:
     root = Path(__file__).resolve().parents[1]
-    body = (root / "veriflow-vscode" / "media" / "waveform" / "viewer.html").read_text(
+    body = (root / "web-dist" / "waveform" / "index.html").read_text(
         encoding="utf-8"
     )
-    css = (root / "veriflow-vscode" / "media" / "waveform" / "viewer.css").read_text(
+    css = (root / "web-dist" / "waveform" / "index.css").read_text(
         encoding="utf-8"
     )
 
@@ -506,10 +512,9 @@ def test_waveform_progress_controls_cover_waveform_workspace() -> None:
 def test_indexed_waveform_viewer_uses_async_protocol() -> None:
     viewer = (
         Path(__file__).resolve().parents[1]
-        / "veriflow-vscode"
-        / "media"
+        / "web-dist"
         / "waveform"
-        / "viewer.js"
+        / "index.js"
     ).read_text(encoding="utf-8")
 
     for message_type in (
@@ -566,10 +571,9 @@ def test_indexed_waveform_viewer_uses_async_protocol() -> None:
 def test_indexed_waveform_viewer_locks_interactions_during_indexing() -> None:
     viewer = (
         Path(__file__).resolve().parents[1]
-        / "veriflow-vscode"
-        / "media"
+        / "web-dist"
         / "waveform"
-        / "viewer.js"
+        / "index.js"
     ).read_text(encoding="utf-8")
 
     loading = viewer[
@@ -770,7 +774,7 @@ def test_python_waveform_viewer_prefers_bundled_assets(
 ) -> None:
     from src.presentation.gui.widgets import waveform_html
 
-    bundled = tmp_path / "veriflow-vscode" / "media" / "waveform"
+    bundled = tmp_path / "web-dist" / "waveform"
     bundled.mkdir(parents=True)
     monkeypatch.setattr(waveform_html.sys, "_MEIPASS", str(tmp_path), raising=False)
 
