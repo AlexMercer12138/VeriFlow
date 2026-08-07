@@ -4,10 +4,12 @@ import path from 'node:path';
 
 const testRoot = path.join(process.cwd(), 'out', 'test');
 const registeredTests = ['rootBuild.test.js', 'webDistAssets.test.js'];
-const files = [...new Set([
+const finalTests = ['vsixPackaging.test.js'];
+const regularFiles = [...new Set([
     ...(await readdir(testRoot)).filter(name => name.endsWith('.test.js')),
     ...registeredTests,
-])].sort();
+])].filter(name => !finalTests.includes(name)).sort();
+const files = [...regularFiles, ...finalTests];
 
 for (const file of files) {
     const result = spawnSync(process.execPath, [path.join(testRoot, file)], {

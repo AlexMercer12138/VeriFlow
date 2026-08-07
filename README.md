@@ -133,18 +133,15 @@ pyinstaller VeriFlow-cli.spec --noconfirm
 ### 打包为 VSIX（VS Code 版本）
 
 ```bash
-# 进入 VS Code 扩展目录
-cd veriflow-vscode
-
-# 安装依赖
-npm install
-
-# 编译 TypeScript 代码
-npm run compile
+# 在仓库根目录安装唯一 lockfile 的依赖
+npm ci
 
 # 打包为 VSIX 文件（输出 veriflow-vscode/veriflow-{version}.vsix）
-npm run package
+npm run package --workspace veriflow-vscode
 ```
+
+`vscode:prepublish` 会通过仓库根目录的 `scripts/build-vscode.mjs` 构建规范的
+Web 资源并同步到扩展的 `media` 目录，然后 VSCE 才创建 VSIX。
 
 打包后的 `veriflow-{version}.vsix` 文件可上传至 [VS Code Marketplace](https://marketplace.visualstudio.com/) 或直接分发给用户安装。
 

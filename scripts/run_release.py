@@ -194,7 +194,10 @@ def package_release() -> None:
     ensure_versions_match()
     run(["pyinstaller", "VeriFlow.spec", "--noconfirm"])
     run(["pyinstaller", "VeriFlow-cli.spec", "--noconfirm"])
-    run(["npm", "run", "package"], cwd=VSCODE_DIR)
+    run(
+        ["npm", "run", "package", "--workspace", "veriflow-vscode"],
+        cwd=ROOT,
+    )
 
 
 def selected_actions(args: argparse.Namespace) -> List[str]:
