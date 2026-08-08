@@ -13,6 +13,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import type { CommandExecutor, ProcessExecution } from '@veriflow/flow-core/simulation';
+import type { WaveViewerLauncher } from '../src/commands/wave';
 import { CliEnvironment, runCli } from '../src/main';
 
 type JsonObject = Record<string, unknown>;
@@ -55,6 +56,7 @@ const configurationCases = contract.cases.filter(contractCase => {
         || command === 'top'
         || command === 'analyze'
         || command === 'sim'
+        || command === 'wave'
         || ['-h', '--help', '-v', '--version'].includes(command)
         || contractCase.id.startsWith('help_')
         || contractCase.id === 'unknown_command';
@@ -205,7 +207,7 @@ test('contract normalization handles Windows separators without replacing lookal
     });
 });
 
-assert.equal(configurationCases.length, 73);
+assert.equal(configurationCases.length, 78);
 
 for (const contractCase of configurationCases) {
     test(contractCase.id, async () => {
@@ -229,6 +231,11 @@ for (const contractCase of configurationCases) {
                 timeout: number;
             }> = [];
             const processResults = [...(contractCase.process_results ?? [])];
+            const popenCalls: Array<{
+                cmd: string;
+                shell: boolean;
+                kwargs: Record<string, unknown>;
+            }> = [];
             const commandExecutor: CommandExecutor = {
                 execute(command, processCwd, timeoutSeconds): Promise<ProcessExecution> {
                     processCalls.push({
@@ -248,12 +255,23 @@ for (const contractCase of configurationCases) {
                     });
                 },
             };
+            const waveViewerLauncher: WaveViewerLauncher = {
+                openBuiltin(): Promise<void> {
+                    popenCalls.push({ cmd: '', shell: true, kwargs: {} });
+                    return Promise.resolve();
+                },
+                openExternal(command): Promise<void> {
+                    popenCalls.push({ cmd: command, shell: true, kwargs: {} });
+                    return Promise.resolve();
+                },
+            };
             const environment: CliEnvironment = {
                 cwd,
                 homeDir,
                 stdout: text => { stdout += text; },
                 stderr: text => { stderr += text; },
                 commandExecutor,
+                waveViewerLauncher,
             };
             const exitCode = await runCli(
                 replaceTokens(contractCase.argv, tokens) as string[],
@@ -266,7 +284,7 @@ for (const contractCase of configurationCases) {
                 observed_json: observedJson(caseRoot, contractCase.observe_json ?? []),
                 observed_text: observedText(caseRoot, contractCase.observe_json ?? []),
                 process_calls: processCalls,
-                popen_calls: [],
+                popen_calls: popenCalls,
             }, [
                 [cwd, '<CWD>'],
                 [homeDir, '<HOME>'],

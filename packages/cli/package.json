@@ -13,13 +13,14 @@
     "@veriflow/flow-core": "1.3.2",
     "@veriflow/hdl-core": "1.3.2",
     "@veriflow/hdl-runtime": "1.3.2",
+    "@veriflow/waveform-desktop": "1.3.2",
     "tree-sitter-systemverilog": "0.4.0",
     "web-tree-sitter": "0.26.11"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pretest": "npm run build:shared --prefix ../..",
+    "pretest": "npm run build:shared --prefix ../.. && npm run build --workspace @veriflow/waveform-desktop",
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   }
 }

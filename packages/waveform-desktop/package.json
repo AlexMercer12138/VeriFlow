@@ -1,0 +1,43 @@
+{
+  "name": "@veriflow/waveform-desktop",
+  "version": "1.3.2",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/launcher.js",
+  "types": "dist/launcher.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/launcher.d.ts",
+      "require": "./dist/launcher.js",
+      "default": "./dist/launcher.js"
+    },
+    "./launcher": {
+      "types": "./dist/launcher.d.ts",
+      "require": "./dist/launcher.js",
+      "default": "./dist/launcher.js"
+    },
+    "./router": {
+      "types": "./dist/router.d.ts",
+      "require": "./dist/router.js",
+      "default": "./dist/router.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "dependencies": {
+    "@veriflow/waveform-runtime": "1.3.2",
+    "electron": "43.3.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-assets.mjs",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "npm run build --workspace @veriflow/waveform-runtime",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

@@ -15,9 +15,12 @@ import {
 } from './commands/project';
 import { topGet, topSet } from './commands/top';
 import { simulate } from './commands/sim';
+import { openWaveform, type WaveViewerLauncher } from './commands/wave';
+import { NodeWaveViewerLauncher } from './runtime/nodeWaveViewerLauncher';
 
 export interface CliEnvironment extends CommandEnvironment {
     commandExecutor?: CommandExecutor;
+    waveViewerLauncher?: WaveViewerLauncher;
 }
 
 type CommandHandler = (
@@ -287,10 +290,17 @@ const TOP_LEVEL_COMMANDS: Record<string, LeafCommand> = {
         ],
         handler: simulate,
     },
-};
-
-const DEFERRED_COMMAND_HELP: Record<string, string> = {
-    wave: WAVE_HELP,
+    wave: {
+        help: WAVE_HELP,
+        options: [
+            {
+                key: 'project',
+                aliases: ['-p', '--project'],
+                requiredName: '-p/--project',
+            },
+        ],
+        handler: openWaveform,
+    },
 };
 
 function usage(help: string): string {
@@ -420,16 +430,6 @@ export async function runCli(argv: string[], environment: CliEnvironment): Promi
         }
     }
 
-    const deferredHelp = DEFERRED_COMMAND_HELP[argv[0]];
-    if (deferredHelp !== undefined) {
-        if (argv.includes('-h') || argv.includes('--help')) {
-            environment.stdout(deferredHelp);
-            return 0;
-        }
-        environment.stderr(`Error: Command not implemented yet: ${argv[0]}\n`);
-        return 1;
-    }
-
     const parent = argv[0];
     if (!(parent in PARENT_HELP)) {
         environment.stderr(
@@ -477,6 +477,7 @@ if (require.main === module) {
         homeDir: os.homedir(),
         stdout: text => { process.stdout.write(text); },
         stderr: text => { process.stderr.write(text); },
+        waveViewerLauncher: new NodeWaveViewerLauncher(),
     }).then(exitCode => {
         process.exitCode = exitCode;
     });
