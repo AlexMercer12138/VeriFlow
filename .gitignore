@@ -16,6 +16,7 @@ src/presentation/gui/__pycache__/
 # Node workspace and VS Code extension
 node_modules/
 packages/parser-worker/dist-test/
+packages/*/dist-test/
 veriflow-vscode/out/
 veriflow-vscode/dist/
 veriflow-vscode/media/waveform/
