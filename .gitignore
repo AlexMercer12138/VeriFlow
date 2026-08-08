@@ -30,6 +30,7 @@ python-packages/veriflow-hdl-worker/src/veriflow_hdl_worker/bin/*
 *.vks
 *.out
 *.vcd
+!tests/cli_contract/fixtures/top.vcd
 *.fst
 *.lxt
 *.lxt2

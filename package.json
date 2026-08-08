@@ -13,6 +13,7 @@
     "build:web": "node scripts/build-web.mjs",
     "build:parser": "node scripts/build-parser-probe.mjs",
     "build:vscode": "node scripts/build-vscode.mjs",
+    "build:shared": "npm run build --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "watch:vscode": "node scripts/watch-vscode.mjs",
     "build": "npm run build:web && npm run build:parser && npm run build:vscode",
     "typecheck:shared": "npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",

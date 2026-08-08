@@ -12,6 +12,7 @@
         "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
         "stderr": "",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -29,6 +30,7 @@
         "stdout": "VeriFlow 1.3.2\n",
         "stderr": "",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -46,6 +48,7 @@
         "stdout": "",
         "stderr": "usage: veriflow [-h] [-v] COMMAND ...\nveriflow: error: argument COMMAND: invalid choice: 'unknown' (choose from project, lib, top, analyze, sim, wave)\n",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -130,6 +133,9 @@
             "simulate_status": "idle"
           }
         },
+        "observed_text": {
+          "workspace/configs/demo.json": "{\n  \"project_name\": \"demo\",\n  \"project_root\": \"../rtl\",\n  \"lib_dirs\": [\n    \"../rtl\",\n    \"../libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"gtkwave\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -191,6 +197,9 @@
             }
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -200,7 +209,7 @@
       "argv": [
         "project",
         "open",
-        "-p",
+        "--project",
         "missing.json"
       ],
       "cwd": "workspace",
@@ -213,6 +222,9 @@
         "stdout": "",
         "stderr": "Error: Project file not found: missing.json\n",
         "observed_json": {
+          "workspace/missing.json": null
+        },
+        "observed_text": {
           "workspace/missing.json": null
         },
         "process_calls": [],
@@ -300,6 +312,10 @@
             "theme": "dark"
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n",
+          "home/.veriflow_config.json": "{\n  \"version\": \"1.1.0\",\n  \"lib_dirs\": [\n    \"<CWD>/libs/global\"\n  ],\n  \"language\": \"zh\",\n  \"theme\": \"dark\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -336,6 +352,9 @@
             "theme": "dark"
           }
         },
+        "observed_text": {
+          "home/.veriflow_config.json": "{\n  \"version\": \"1.1.0\",\n  \"lib_dirs\": [\n    \"<CWD>/libs/global\"\n  ],\n  \"language\": \"zh\",\n  \"theme\": \"dark\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -345,7 +364,7 @@
       "argv": [
         "lib",
         "add",
-        "-L",
+        "--lib",
         "libs/missing"
       ],
       "cwd": "workspace",
@@ -358,6 +377,9 @@
         "stdout": "",
         "stderr": "Error: Directory not found: libs/missing\n",
         "observed_json": {
+          "home/.veriflow_config.json": null
+        },
+        "observed_text": {
           "home/.veriflow_config.json": null
         },
         "process_calls": [],
@@ -405,6 +427,9 @@
             "theme": "dark"
           }
         },
+        "observed_text": {
+          "home/.veriflow_config.json": "{\n  \"version\": \"1.1.0\",\n  \"lib_dirs\": [],\n  \"language\": \"zh\",\n  \"theme\": \"dark\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -451,6 +476,9 @@
             "language": "zh",
             "theme": "dark"
           }
+        },
+        "observed_text": {
+          "home/.veriflow_config.json": "{\n  \"version\": \"1.1.0\",\n  \"lib_dirs\": [\n    \"<CWD>/libs/global\",\n    \"<CWD>/libs/missing\"\n  ],\n  \"language\": \"zh\",\n  \"theme\": \"dark\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -525,6 +553,9 @@
             "simulate_status": "idle"
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"replacement_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -577,6 +608,9 @@
               "owner": "contract"
             }
           }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
         },
         "process_calls": [],
         "popen_calls": []
@@ -642,6 +676,9 @@
             }
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -666,6 +703,7 @@
         "stdout": "",
         "stderr": "Error: Either --project or --top is required\n",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -706,6 +744,9 @@
             "top_module": ""
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"no_top\",\n  \"project_root\": \"rtl\",\n  \"top_module\": \"\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -732,6 +773,7 @@
         "stdout": "Top module: missing_top\nFiles (1):\n  rtl/missing_top.v\n\nMissing modules: absent\n",
         "stderr": "",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -810,6 +852,9 @@
             }
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
         "process_calls": [
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
@@ -857,6 +902,9 @@
             "top_module": ""
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"no_top\",\n  \"project_root\": \"rtl\",\n  \"top_module\": \"\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -903,6 +951,9 @@
             "simulator": "missing"
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"unknown_sim\",\n  \"project_root\": \"rtl\",\n  \"top_module\": \"top\",\n  \"simulator\": \"missing\"\n}"
+        },
         "process_calls": [],
         "popen_calls": []
       }
@@ -920,6 +971,7 @@
         "stdout": "",
         "stderr": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\nveriflow sim: error: the following arguments are required: --project/-p\n",
         "observed_json": {},
+        "observed_text": {},
         "process_calls": [],
         "popen_calls": []
       }
@@ -976,6 +1028,9 @@
             }
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
         "process_calls": [],
         "popen_calls": [
           {
@@ -984,6 +1039,836 @@
             "kwargs": {}
           }
         ]
+      }
+    },
+    {
+      "id": "root_help_short",
+      "argv": [
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "version_short",
+      "argv": [
+        "-v"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "VeriFlow 1.3.2\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_new",
+      "argv": [
+        "project",
+        "new",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_open",
+      "argv": [
+        "project",
+        "open",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project open [-h] --project PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_show",
+      "argv": [
+        "project",
+        "show",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project show [-h] --project PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_add",
+      "argv": [
+        "lib",
+        "add",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib add [-h] -L LIB\n\noptions:\n  -h, --help     show this help message and exit\n  -L, --lib LIB  library directory\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_remove",
+      "argv": [
+        "lib",
+        "remove",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib remove [-h] -L LIB\n\noptions:\n  -h, --help     show this help message and exit\n  -L, --lib LIB  library directory\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_list",
+      "argv": [
+        "lib",
+        "list",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top_set",
+      "argv": [
+        "top",
+        "set",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top set [-h] -p PROJECT -t TOP\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top_get",
+      "argv": [
+        "top",
+        "get",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top get [-h] -p PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_analyze",
+      "argv": [
+        "analyze",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_sim",
+      "argv": [
+        "sim",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_wave",
+      "argv": [
+        "wave",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow wave [-h] -p PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "project_new_long_options",
+      "argv": [
+        "project",
+        "new",
+        "--name",
+        "long_demo",
+        "--root",
+        "rtl",
+        "--top",
+        "top",
+        "--lib",
+        "rtl,libs",
+        "--sim",
+        "custom",
+        "--wave",
+        "surfer",
+        "--output",
+        "long-demo.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/.keep",
+          "content": ""
+        }
+      ],
+      "observe_json": [
+        "workspace/long-demo.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Project created: long-demo.json\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/long-demo.json": {
+            "project_name": "long_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "rtl",
+              "libs"
+            ],
+            "top_module": "top",
+            "simulator": "custom",
+            "wave_viewer": "surfer",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/long-demo.json": "{\n  \"project_name\": \"long_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"rtl\",\n    \"libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"surfer\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "analyze_project_overrides",
+      "argv": [
+        "analyze",
+        "--project",
+        "project.json",
+        "--top",
+        "top",
+        "--lib",
+        "libs/override",
+        "--sim",
+        "fake",
+        "--wave",
+        "custom",
+        "--root",
+        "ignored-root"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/override/.keep",
+          "content": ""
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Top module: top\nFiles (2):\n  <CWD>/rtl/child.v\n  <CWD>/rtl/top.v\n\nAnalysis: OK\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/override"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "custom",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              },
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "sim_project_overrides",
+      "argv": [
+        "sim",
+        "--project",
+        "project.json",
+        "--top",
+        "top",
+        "--lib",
+        "libs/override",
+        "--sim",
+        "fake",
+        "--wave",
+        "custom"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/override/.keep",
+          "content": ""
+        }
+      ],
+      "process_results": [
+        {
+          "exit_code": 0,
+          "stdout": "COMPILE OVERRIDE OK\n",
+          "stderr": "",
+          "elapsed": 0.05
+        },
+        {
+          "exit_code": 0,
+          "stdout": "RUN OVERRIDE OK\n",
+          "stderr": "",
+          "elapsed": 0.05
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Simulating: top\nSimulator: fake\nWave viewer: custom\n[CMD] Compile: fake-compile -o \"top.out\" \"child.v\" \"top.v\"\nRUN OVERRIDE OK\n[CMD] Run: fake-run \"top.out\"\n\nSimulation: OK (0.10s)\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/override"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "custom",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              },
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [
+          {
+            "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          },
+          {
+            "cmd": "fake-run \"top.out\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          }
+        ],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "sim_compile_failure",
+      "argv": [
+        "sim",
+        "-p",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/project/.keep",
+          "content": ""
+        }
+      ],
+      "process_results": [
+        {
+          "exit_code": 2,
+          "stdout": "COMPILE OUTPUT\n",
+          "stderr": "top.v:3: error: compile failed\n",
+          "elapsed": 0.2
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 1,
+        "stdout": "Simulating: top\nSimulator: fake\nWave viewer: builtin\n[CMD] Compile: fake-compile -o \"top.out\" \"child.v\" \"top.v\"\nCOMPILE OUTPUT\n  top.v:3: error: compile failed\n\nSimulation: FAILED (exit=2)\nErrors:\n  [ERROR] top.v:3 compile failed\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/project"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "builtin",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              }
+            },
+            "wave_viewers": {
+              "builtin": ""
+            },
+            "file_order": [],
+            "custom_metadata": {
+              "owner": "contract"
+            }
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
+        "process_calls": [
+          {
+            "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          }
+        ],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "sim_run_failure",
+      "argv": [
+        "sim",
+        "-p",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/project/.keep",
+          "content": ""
+        }
+      ],
+      "process_results": [
+        {
+          "exit_code": 0,
+          "stdout": "COMPILE OK\n",
+          "stderr": "",
+          "elapsed": 0.1
+        },
+        {
+          "exit_code": 7,
+          "stdout": "RUN OUTPUT\n",
+          "stderr": "runtime failed\n",
+          "elapsed": 0.2
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 1,
+        "stdout": "Simulating: top\nSimulator: fake\nWave viewer: builtin\n[CMD] Compile: fake-compile -o \"top.out\" \"child.v\" \"top.v\"\nRUN OUTPUT\n  runtime failed\n\nSimulation: FAILED (exit=7)\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/project"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "builtin",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              }
+            },
+            "wave_viewers": {
+              "builtin": ""
+            },
+            "file_order": [],
+            "custom_metadata": {
+              "owner": "contract"
+            }
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
+        "process_calls": [
+          {
+            "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          },
+          {
+            "cmd": "fake-run \"top.out\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          }
+        ],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "wave_external_viewer",
+      "argv": [
+        "wave",
+        "--project",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "json": {
+            "project_name": "external_wave",
+            "project_root": "rtl",
+            "top_module": "top",
+            "wave_viewer": "external",
+            "wave_viewers": {
+              "external": "fake-viewer \"{wave_file}\" --flag"
+            }
+          }
+        },
+        {
+          "path": "workspace/rtl/top.vcd",
+          "fixture": "top.vcd"
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Opening wave file: <CWD>/rtl/top.vcd\nWave viewer launched: external\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "external_wave",
+            "project_root": "rtl",
+            "top_module": "top",
+            "wave_viewer": "external",
+            "wave_viewers": {
+              "external": "fake-viewer \"{wave_file}\" --flag"
+            }
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"external_wave\",\n  \"project_root\": \"rtl\",\n  \"top_module\": \"top\",\n  \"wave_viewer\": \"external\",\n  \"wave_viewers\": {\n    \"external\": \"fake-viewer \\\"{wave_file}\\\" --flag\"\n  }\n}"
+        },
+        "process_calls": [],
+        "popen_calls": [
+          {
+            "cmd": "fake-viewer \"<CWD>/rtl/top.vcd\" --flag",
+            "shell": true,
+            "kwargs": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "wave_unknown_viewer",
+      "argv": [
+        "wave",
+        "-p",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "json": {
+            "project_name": "unknown_wave",
+            "project_root": "rtl",
+            "top_module": "top",
+            "wave_viewer": "missing",
+            "wave_viewers": {}
+          }
+        },
+        {
+          "path": "workspace/rtl/top.vcd",
+          "fixture": "top.vcd"
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: Wave viewer 'missing' not configured\n",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "unknown_wave",
+            "project_root": "rtl",
+            "top_module": "top",
+            "wave_viewer": "missing",
+            "wave_viewers": {}
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"unknown_wave\",\n  \"project_root\": \"rtl\",\n  \"top_module\": \"top\",\n  \"wave_viewer\": \"missing\",\n  \"wave_viewers\": {}\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
       }
     },
     {
@@ -1034,7 +1919,1017 @@
             }
           }
         },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
         "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "root_help_long",
+      "argv": [
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_short",
+      "argv": [
+        "project",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    new       create new project (auto-saved)\n    open      open and show project\n    show      show project details\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project",
+      "argv": [
+        "project",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    new       create new project (auto-saved)\n    open      open and show project\n    show      show project details\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_short",
+      "argv": [
+        "lib",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    add       add global library\n    remove    remove global library\n    list      list global libraries\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib",
+      "argv": [
+        "lib",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    add       add global library\n    remove    remove global library\n    list      list global libraries\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top_short",
+      "argv": [
+        "top",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    set       set top module (auto-saved)\n    get       get current top module\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top",
+      "argv": [
+        "top",
+        "--help"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top [-h] ACTION ...\n\npositional arguments:\n  ACTION\n    set       set top module (auto-saved)\n    get       get current top module\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "no_action_project",
+      "argv": [
+        "project"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "no_action_lib",
+      "argv": [
+        "lib"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "no_action_top",
+      "argv": [
+        "top"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow [-h] [-v] COMMAND ...\n\nVeriFlow - Lightweight Verilog Simulation Manager\n\npositional arguments:\n  COMMAND\n    project      project management\n    lib          global library management\n    top          top module management\n    analyze      analyze dependencies\n    sim          compile and simulate\n    wave         open waveform viewer\n\noptions:\n  -h, --help     show this help message and exit\n  -v, --version  show program's version number and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_new_short",
+      "argv": [
+        "project",
+        "new",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_open_short",
+      "argv": [
+        "project",
+        "open",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project open [-h] --project PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_project_show_short",
+      "argv": [
+        "project",
+        "show",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow project show [-h] --project PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_add_short",
+      "argv": [
+        "lib",
+        "add",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib add [-h] -L LIB\n\noptions:\n  -h, --help     show this help message and exit\n  -L, --lib LIB  library directory\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_remove_short",
+      "argv": [
+        "lib",
+        "remove",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib remove [-h] -L LIB\n\noptions:\n  -h, --help     show this help message and exit\n  -L, --lib LIB  library directory\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_lib_list_short",
+      "argv": [
+        "lib",
+        "list",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow lib list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top_set_short",
+      "argv": [
+        "top",
+        "set",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top set [-h] -p PROJECT -t TOP\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_top_get_short",
+      "argv": [
+        "top",
+        "get",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow top get [-h] -p PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_analyze_short",
+      "argv": [
+        "analyze",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_sim_short",
+      "argv": [
+        "sim",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "help_wave_short",
+      "argv": [
+        "wave",
+        "-h"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "usage: veriflow wave [-h] -p PROJECT\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n",
+        "stderr": "",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_project_new_name",
+      "argv": [
+        "project",
+        "new"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\nveriflow project new: error: the following arguments are required: -n/--name\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_project_open_project",
+      "argv": [
+        "project",
+        "open"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow project open [-h] --project PROJECT\nveriflow project open: error: the following arguments are required: --project/-p\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_project_show_project",
+      "argv": [
+        "project",
+        "show"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow project show [-h] --project PROJECT\nveriflow project show: error: the following arguments are required: --project/-p\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_lib_add_lib",
+      "argv": [
+        "lib",
+        "add"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow lib add [-h] -L LIB\nveriflow lib add: error: the following arguments are required: -L/--lib\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_lib_remove_lib",
+      "argv": [
+        "lib",
+        "remove"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow lib remove [-h] -L LIB\nveriflow lib remove: error: the following arguments are required: -L/--lib\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_top_set_arguments",
+      "argv": [
+        "top",
+        "set"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow top set [-h] -p PROJECT -t TOP\nveriflow top set: error: the following arguments are required: -p/--project, -t/--top\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_top_get_project",
+      "argv": [
+        "top",
+        "get"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow top get [-h] -p PROJECT\nveriflow top get: error: the following arguments are required: -p/--project\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "required_wave_project",
+      "argv": [
+        "wave"
+      ],
+      "cwd": "workspace",
+      "initial_files": [],
+      "observe_json": [],
+      "expected": {
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "usage: veriflow wave [-h] -p PROJECT\nveriflow wave: error: the following arguments are required: -p/--project\n",
+        "observed_json": {},
+        "observed_text": {},
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "project_show_long",
+      "argv": [
+        "project",
+        "show",
+        "--project",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/project/.keep",
+          "content": ""
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "=== Project: contract_demo ===\nRoot: <CWD>/rtl\nTop module: top\nSimulator: fake\nWave viewer: builtin\n\nGlobal lib dirs (0):\n  (none)\n\nProject lib dirs (1):\n  - <CWD>/libs/project\n\nSearch dirs (all):\n  [Project Root] <CWD>/rtl\n  [Project: <CWD>/libs/project] <CWD>/libs/project\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/project"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "builtin",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              }
+            },
+            "wave_viewers": {
+              "builtin": ""
+            },
+            "file_order": [],
+            "custom_metadata": {
+              "owner": "contract"
+            }
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "lib_remove_long",
+      "argv": [
+        "lib",
+        "remove",
+        "--lib",
+        "<CWD>/libs/global"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "home/.veriflow_config.json",
+          "json": {
+            "version": "1.1.0",
+            "lib_dirs": [
+              "<CWD>/libs/global"
+            ],
+            "language": "zh",
+            "theme": "dark"
+          }
+        }
+      ],
+      "observe_json": [
+        "home/.veriflow_config.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Removed global lib: <CWD>/libs/global\n",
+        "stderr": "",
+        "observed_json": {
+          "home/.veriflow_config.json": {
+            "version": "1.1.0",
+            "lib_dirs": [],
+            "language": "zh",
+            "theme": "dark"
+          }
+        },
+        "observed_text": {
+          "home/.veriflow_config.json": "{\n  \"version\": \"1.1.0\",\n  \"lib_dirs\": [],\n  \"language\": \"zh\",\n  \"theme\": \"dark\"\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "top_set_long",
+      "argv": [
+        "top",
+        "set",
+        "--project",
+        "project.json",
+        "--top",
+        "long_top"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Top module set to: long_top\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/project"
+            ],
+            "top_module": "long_top",
+            "simulator": "fake",
+            "wave_viewer": "builtin",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              },
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"long_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "top_get_long",
+      "argv": [
+        "top",
+        "get",
+        "--project",
+        "project.json"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "top\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/project"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "builtin",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              }
+            },
+            "wave_viewers": {
+              "builtin": ""
+            },
+            "file_order": [],
+            "custom_metadata": {
+              "owner": "contract"
+            }
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\"\n  },\n  \"file_order\": [],\n  \"custom_metadata\": {\n    \"owner\": \"contract\"\n  }\n}\n"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "analyze_short_overrides",
+      "argv": [
+        "analyze",
+        "-p",
+        "project.json",
+        "-t",
+        "top",
+        "-L",
+        "libs/override",
+        "-s",
+        "fake",
+        "-w",
+        "custom",
+        "-r",
+        "ignored-root"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/override/.keep",
+          "content": ""
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Top module: top\nFiles (2):\n  <CWD>/rtl/child.v\n  <CWD>/rtl/top.v\n\nAnalysis: OK\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/override"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "custom",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              },
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [],
+        "popen_calls": []
+      }
+    },
+    {
+      "id": "sim_short_overrides",
+      "argv": [
+        "sim",
+        "-p",
+        "project.json",
+        "-t",
+        "top",
+        "-L",
+        "libs/override",
+        "-s",
+        "fake",
+        "-w",
+        "custom"
+      ],
+      "cwd": "workspace",
+      "initial_files": [
+        {
+          "path": "workspace/project.json",
+          "fixture": "project.json"
+        },
+        {
+          "path": "workspace/rtl/child.v",
+          "fixture": "child.v"
+        },
+        {
+          "path": "workspace/rtl/top.v",
+          "fixture": "top.v"
+        },
+        {
+          "path": "workspace/libs/override/.keep",
+          "content": ""
+        }
+      ],
+      "process_results": [
+        {
+          "exit_code": 0,
+          "stdout": "COMPILE SHORT OK\n",
+          "stderr": "",
+          "elapsed": 0.05
+        },
+        {
+          "exit_code": 0,
+          "stdout": "RUN SHORT OK\n",
+          "stderr": "",
+          "elapsed": 0.05
+        }
+      ],
+      "observe_json": [
+        "workspace/project.json"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "stdout": "Simulating: top\nSimulator: fake\nWave viewer: custom\n[CMD] Compile: fake-compile -o \"top.out\" \"child.v\" \"top.v\"\nRUN SHORT OK\n[CMD] Run: fake-run \"top.out\"\n\nSimulation: OK (0.10s)\n",
+        "stderr": "",
+        "observed_json": {
+          "workspace/project.json": {
+            "project_name": "contract_demo",
+            "project_root": "rtl",
+            "lib_dirs": [
+              "libs/override"
+            ],
+            "top_module": "top",
+            "simulator": "fake",
+            "wave_viewer": "custom",
+            "wave_file_template": "{top_module}.vcd",
+            "testbench_output_dir": ".",
+            "simulators": {
+              "fake": {
+                "compile_cmd": "fake-compile -o \"{output}\" {files}",
+                "run_cmd": "fake-run \"{output}\""
+              },
+              "iverilog": {
+                "compile_cmd": "iverilog -o \"{output}\" {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
+              "vcs": {
+                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
+                "run_cmd": "./\"{output}\""
+              },
+              "xsim": {
+                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
+                "run_cmd": "xsim \"{output}\" --runall"
+              },
+              "custom": {
+                "compile_cmd": "",
+                "run_cmd": ""
+              }
+            },
+            "wave_viewers": {
+              "builtin": "",
+              "surfer": "surfer \"{wave_file}\"",
+              "gtkwave": "gtkwave \"{wave_file}\"",
+              "custom": ""
+            },
+            "file_order": [],
+            "analyze_status": "idle",
+            "simulate_status": "idle"
+          }
+        },
+        "observed_text": {
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+        },
+        "process_calls": [
+          {
+            "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          },
+          {
+            "cmd": "fake-run \"top.out\"",
+            "cwd": "<CWD>/rtl",
+            "timeout": 300.0
+          }
+        ],
         "popen_calls": []
       }
     }

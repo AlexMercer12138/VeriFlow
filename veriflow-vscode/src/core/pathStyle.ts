@@ -4,7 +4,12 @@ export interface RelativeDisplayPathOptions {
     allowOutsideRoot?: boolean;
 }
 
-const windowsAbsolutePath = /^[A-Za-z]:[\\/]/;
+const windowsDrivePath = /^[A-Za-z]:[\\/]/;
+const windowsUncPath = /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/;
+
+function isWindowsAbsolutePath(filepath: string): boolean {
+    return windowsDrivePath.test(filepath) || windowsUncPath.test(filepath);
+}
 
 function displayPath(filepath: string): string {
     return filepath.replace(/\\/g, '/');
@@ -15,8 +20,8 @@ export function relativeDisplayPath(
     target: string,
     options: RelativeDisplayPathOptions = {}
 ): string {
-    const rootIsWindows = windowsAbsolutePath.test(root);
-    const targetIsWindows = windowsAbsolutePath.test(target);
+    const rootIsWindows = isWindowsAbsolutePath(root);
+    const targetIsWindows = isWindowsAbsolutePath(target);
     const rootIsPosix = path.posix.isAbsolute(root);
     const targetIsPosix = path.posix.isAbsolute(target);
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,12 +35,45 @@ def _replace_tokens(value: Any, tokens: dict[str, str]) -> Any:
     return value
 
 
+def _normalize_tokenized_path_tails(value: str, token: str) -> str:
+    pattern = re.escape(token) + r"(?P<tail>/[^\"'\s:,)\]}]*)"
+
+    def normalize_tail(match: re.Match[str]) -> str:
+        tail = match.group("tail").replace("\\\\", "/").replace("\\", "/")
+        return token + tail
+
+    return re.sub(pattern, normalize_tail, value)
+
+
 def _normalize(value: Any, replacements: list[tuple[str, str]]) -> Any:
     if isinstance(value, str):
         for source, replacement in replacements:
-            value = value.replace(source, replacement)
-            value = value.replace(source.replace("/", "\\"), replacement)
-        return value.replace("\\", "/")
+            encoded_replacement = json.dumps(replacement, ensure_ascii=False)[1:-1]
+            variants = dict.fromkeys((
+                source,
+                source.replace("\\", "/"),
+                source.replace("/", "\\"),
+            ))
+            for variant in variants:
+                encoded_variant = json.dumps(variant, ensure_ascii=False)[1:-1]
+                forms = (
+                    (encoded_variant, encoded_replacement, ("/", "\\\\")),
+                    (variant, replacement, ("/", "\\")),
+                )
+                for candidate, normalized, separators in forms:
+                    for separator in separators:
+                        value = value.replace(
+                            candidate + separator,
+                            normalized + "/",
+                        )
+                    value = re.sub(
+                        re.escape(candidate) + r"(?=$|[\s\"',)\]}])",
+                        lambda _match, normalized=normalized: normalized,
+                        value,
+                    )
+            value = _normalize_tokenized_path_tails(value, replacement)
+            value = _normalize_tokenized_path_tails(value, encoded_replacement)
+        return value
     if isinstance(value, list):
         return [_normalize(item, replacements) for item in value]
     if isinstance(value, dict):
@@ -78,6 +112,16 @@ def _observed_json(case_root: Path, paths: list[str]) -> dict[str, Any]:
         path = case_root / relative
         observed[relative] = (
             json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        )
+    return observed
+
+
+def _observed_text(case_root: Path, paths: list[str]) -> dict[str, str | None]:
+    observed: dict[str, str | None] = {}
+    for relative in paths:
+        path = case_root / relative
+        observed[relative] = (
+            path.read_bytes().decode("utf-8") if path.exists() else None
         )
     return observed
 
@@ -183,6 +227,7 @@ def capture_case(case: dict[str, Any], case_root: Path) -> dict[str, Any]:
         "stdout": stdout.getvalue(),
         "stderr": stderr.getvalue(),
         "observed_json": _observed_json(case_root, case.get("observe_json", [])),
+        "observed_text": _observed_text(case_root, case.get("observe_json", [])),
         "process_calls": process_calls,
         "popen_calls": popen_calls,
     }

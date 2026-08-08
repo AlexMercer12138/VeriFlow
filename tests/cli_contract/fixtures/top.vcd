@@ -1,0 +1,15 @@
+$date
+  deterministic fixture
+$end
+$version
+  VeriFlow CLI contract
+$end
+$timescale 1ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#10
+1!

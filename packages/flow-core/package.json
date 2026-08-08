@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+    "pretest": "npm run build:shared --prefix ../..",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   }
 }

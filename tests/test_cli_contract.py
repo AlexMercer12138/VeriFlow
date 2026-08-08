@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from tests.cli_contract.harness import capture_case, load_contract
+from tests.cli_contract.harness import _normalize, capture_case, load_contract
 
 
 CONTRACT_PATH = Path(__file__).parent / "cli_contract" / "cases.json"
@@ -45,6 +45,93 @@ def test_contract_covers_every_leaf_command() -> None:
     }.issubset(leaves)
 
 
+def test_contract_covers_options_help_and_runtime_failures() -> None:
+    case_ids = {case["id"] for case in CASES}
+    assert {
+        "root_help_short",
+        "root_help_long",
+        "version_short",
+        "project_new_long_options",
+        "analyze_project_overrides",
+        "analyze_short_overrides",
+        "sim_project_overrides",
+        "sim_short_overrides",
+        "sim_compile_failure",
+        "sim_run_failure",
+        "wave_external_viewer",
+        "wave_unknown_viewer",
+    }.issubset(case_ids)
+
+    leaves = {
+        ("project", "new"),
+        ("project", "open"),
+        ("project", "show"),
+        ("lib", "add"),
+        ("lib", "remove"),
+        ("lib", "list"),
+        ("top", "set"),
+        ("top", "get"),
+        ("analyze",),
+        ("sim",),
+        ("wave",),
+    }
+    all_argv = {tuple(case["argv"]) for case in CASES}
+    expected_help_argv = {
+        (*command, flag)
+        for command in leaves | {("project",), ("lib",), ("top",)}
+        for flag in ("-h", "--help")
+    }
+    assert expected_help_argv.issubset(all_argv)
+    assert {
+        (), ("project",), ("lib",), ("top",),
+        ("-h",), ("--help",), ("-v",), ("--version",),
+    }.issubset(all_argv)
+
+    aliases_by_leaf = {
+        ("project", "new"): [
+            ("-n", "--name"), ("-r", "--root"), ("-t", "--top"),
+            ("-L", "--lib"), ("-s", "--sim"), ("-w", "--wave"),
+            ("-o", "--output"),
+        ],
+        ("project", "open"): [("-p", "--project")],
+        ("project", "show"): [("-p", "--project")],
+        ("lib", "add"): [("-L", "--lib")],
+        ("lib", "remove"): [("-L", "--lib")],
+        ("top", "set"): [("-p", "--project"), ("-t", "--top")],
+        ("top", "get"): [("-p", "--project")],
+        ("analyze",): [
+            ("-p", "--project"), ("-t", "--top"), ("-r", "--root"),
+            ("-L", "--lib"), ("-s", "--sim"), ("-w", "--wave"),
+        ],
+        ("sim",): [
+            ("-p", "--project"), ("-t", "--top"), ("-L", "--lib"),
+            ("-s", "--sim"), ("-w", "--wave"),
+        ],
+        ("wave",): [("-p", "--project")],
+    }
+    for leaf, aliases in aliases_by_leaf.items():
+        leaf_argv = [
+            case["argv"][len(leaf):]
+            for case in CASES
+            if tuple(case["argv"][:len(leaf)]) == leaf
+        ]
+        for short, long in aliases:
+            assert any(short in argv for argv in leaf_argv), f"{leaf} misses {short}"
+            assert any(long in argv for argv in leaf_argv), f"{leaf} misses {long}"
+
+    assert {
+        "required_project_new_name",
+        "required_project_open_project",
+        "required_project_show_project",
+        "required_lib_add_lib",
+        "required_lib_remove_lib",
+        "required_top_set_arguments",
+        "required_top_get_project",
+        "sim_missing_required_project",
+        "required_wave_project",
+    }.issubset(case_ids)
+
+
 def test_contract_captures_required_failure_modes() -> None:
     cases_by_id = {case["id"]: case for case in CASES}
     expected_messages = {
@@ -58,6 +145,52 @@ def test_contract_captures_required_failure_modes() -> None:
         expected = cases_by_id[case_id]["expected"]
         assert expected["exit_code"] != 0
         assert message in expected["stdout"] + expected["stderr"]
+
+
+def test_contract_fixture_references_are_tracked() -> None:
+    repository_root = Path(__file__).parent.parent
+    fixture_paths = sorted({
+        f"tests/cli_contract/fixtures/{entry['fixture']}"
+        for case in CASES
+        for entry in case.get("initial_files", [])
+        if "fixture" in entry
+    })
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", *fixture_paths],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_contract_captures_exact_json_serialization() -> None:
+    case = next(case for case in CASES if case["id"] == "project_new_relative_paths")
+    raw = case["expected"]["observed_text"]["workspace/configs/demo.json"]
+    assert raw.startswith('{\n  "project_name": "demo",\n')
+    assert raw.endswith("\n}")
+    assert not raw.endswith("\n")
+
+
+def test_contract_normalization_only_normalizes_temporary_path_prefixes() -> None:
+    value = {
+        "stdout": "Root: C:\\contract\\workspace\\libs\\project\n",
+        "observed_text": '"lib_dirs": ["C:\\\\contract\\\\workspace\\\\libs\\\\project"]',
+        "metadata": r"pattern=\d+\w; source=rtl\top.v",
+        "lookalike": r"C:\contract\workspace-old",
+        "diagnostic": (
+            "C:\\contract\\workspace\\libs\\project: "
+            r"escaped=\signal regex=\d+\w"
+        ),
+    }
+
+    assert _normalize(value, [(r"C:\contract\workspace", "<CWD>")]) == {
+        "stdout": "Root: <CWD>/libs/project\n",
+        "observed_text": '"lib_dirs": ["<CWD>/libs/project"]',
+        "metadata": r"pattern=\d+\w; source=rtl\top.v",
+        "lookalike": r"C:\contract\workspace-old",
+        "diagnostic": r"<CWD>/libs/project: escaped=\signal regex=\d+\w",
+    }
 
 
 def test_contract_capture_is_independent_of_terminal_width(
