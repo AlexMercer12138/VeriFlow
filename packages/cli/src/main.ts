@@ -2,6 +2,7 @@
 
 import os from 'node:os';
 
+import { analyze } from './commands/analyze';
 import { libAdd, libList, libRemove } from './commands/lib';
 import {
     CommandEnvironment,
@@ -253,8 +254,22 @@ const PARENT_ACTIONS: Record<string, string[]> = {
     top: ['set', 'get'],
 };
 
+const TOP_LEVEL_COMMANDS: Record<string, LeafCommand> = {
+    analyze: {
+        help: ANALYZE_HELP,
+        options: [
+            { key: 'project', aliases: ['-p', '--project'] },
+            { key: 'top', aliases: ['-t', '--top'] },
+            { key: 'root', aliases: ['-r', '--root'] },
+            { key: 'lib', aliases: ['-L', '--lib'] },
+            { key: 'sim', aliases: ['-s', '--sim'] },
+            { key: 'wave', aliases: ['-w', '--wave'] },
+        ],
+        handler: analyze,
+    },
+};
+
 const DEFERRED_COMMAND_HELP: Record<string, string> = {
-    analyze: ANALYZE_HELP,
     sim: SIM_HELP,
     wave: WAVE_HELP,
 };
@@ -371,6 +386,19 @@ export async function runCli(argv: string[], environment: CliEnvironment): Promi
     if (argv[0] === '-v' || argv[0] === '--version') {
         environment.stdout(`VeriFlow ${VERSION}\n`);
         return 0;
+    }
+
+    const topLevelCommand = TOP_LEVEL_COMMANDS[argv[0]];
+    if (topLevelCommand) {
+        const parsed = parseOptions(argv[0], argv.slice(1), topLevelCommand, environment);
+        if (typeof parsed === 'number') return parsed;
+        try {
+            return await topLevelCommand.handler(parsed, environment);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            environment.stderr(`Error: ${message}\n`);
+            return 1;
+        }
     }
 
     const deferredHelp = DEFERRED_COMMAND_HELP[argv[0]];

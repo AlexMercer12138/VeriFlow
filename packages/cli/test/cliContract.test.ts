@@ -46,6 +46,7 @@ const configurationCases = contract.cases.filter(contractCase => {
         || command === 'project'
         || command === 'lib'
         || command === 'top'
+        || command === 'analyze'
         || ['-h', '--help', '-v', '--version'].includes(command)
         || contractCase.id.startsWith('help_')
         || contractCase.id === 'unknown_command';
@@ -196,7 +197,7 @@ test('contract normalization handles Windows separators without replacing lookal
     });
 });
 
-assert.equal(configurationCases.length, 59);
+assert.equal(configurationCases.length, 65);
 
 for (const contractCase of configurationCases) {
     test(contractCase.id, async () => {
