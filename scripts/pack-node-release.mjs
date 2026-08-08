@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveNpmInvocation } from './lib/npm-command.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const destination = path.join(repositoryRoot, 'dist', 'npm');
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const workspaces = [
     '@veriflow/flow-core',
     '@veriflow/hdl-core',
@@ -16,7 +16,8 @@ const workspaces = [
 ];
 
 function npm(args) {
-    execFileSync(npmCommand, args, {
+    const invocation = resolveNpmInvocation(args);
+    execFileSync(invocation.executable, invocation.args, {
         cwd: repositoryRoot,
         stdio: 'inherit',
     });

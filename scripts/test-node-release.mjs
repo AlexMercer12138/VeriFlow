@@ -12,9 +12,9 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveNpmInvocation } from './lib/npm-command.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const publishable = [
     {
         name: '@veriflow/flow-core',
@@ -75,17 +75,19 @@ function readJson(filepath) {
     return JSON.parse(readFileSync(filepath, 'utf8'));
 }
 
-function installedCli(installRoot) {
-    return path.join(
-        installRoot,
-        'node_modules',
-        '.bin',
-        process.platform === 'win32' ? 'veriflow.cmd' : 'veriflow'
-    );
+function runNpm(args, cwd = repositoryRoot, environment = process.env) {
+    const invocation = resolveNpmInvocation(args, {
+        npmExecutable: environment.npm_execpath,
+    });
+    return run(invocation.executable, invocation.args, cwd, environment);
 }
 
-function invokeCli(executable, args, cwd, environment) {
-    return spawnSync(executable, args, {
+function invokeCli(args, cwd, environment) {
+    const invocation = resolveNpmInvocation(
+        ['exec', '--', 'veriflow', ...args],
+        { npmExecutable: environment.npm_execpath }
+    );
+    return spawnSync(invocation.executable, invocation.args, {
         cwd,
         env: environment,
         encoding: 'utf8',
@@ -114,11 +116,11 @@ mkdirSync(packRoot, { recursive: true });
 mkdirSync(installRoot, { recursive: true });
 
 try {
-    run(npmCommand, ['run', 'build:cli']);
+    runNpm(['run', 'build:cli']);
     const tarballs = [];
     for (const entry of publishable) {
         const before = new Set(readdirSync(packRoot));
-        const output = run(npmCommand, [
+        const output = runNpm([
             '--silent',
             'pack',
             '--workspace',
@@ -153,7 +155,7 @@ try {
         USERPROFILE: homeDir,
         VERIFLOW_SKIP_ELECTRON_DOWNLOAD: '1',
     };
-    run(npmCommand, [
+    runNpm([
         'install',
         '--no-audit',
         '--no-fund',
@@ -168,11 +170,10 @@ try {
         'cli'
     ));
     assert.equal(installedPackage.startsWith(realpathSync(installRoot)), true);
-    const executable = installedCli(installRoot);
-    const help = invokeCli(executable, ['--help'], installRoot, environment);
+    const help = invokeCli(['--help'], installRoot, environment);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /VeriFlow - Lightweight Verilog Simulation Manager/);
-    const version = invokeCli(executable, ['--version'], installRoot, environment);
+    const version = invokeCli(['--version'], installRoot, environment);
     assert.equal(version.status, 0, version.stderr);
     assert.equal(version.stdout, `VeriFlow ${rootVersion}\n`);
 
@@ -191,7 +192,6 @@ try {
         top_module: 'top',
     }, null, 2), 'utf8');
     const analyze = invokeCli(
-        executable,
         ['analyze', '--project', 'project.json'],
         projectRoot,
         environment

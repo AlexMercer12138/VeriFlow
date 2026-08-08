@@ -22,7 +22,7 @@
     "typecheck:shared": "npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "test:shared": "npm test --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "test:cli": "npm test --workspace @veriflow/cli",
-    "test:release": "node scripts/test-node-release.mjs",
+    "test:release": "node --test scripts/lib/npm-command.test.mjs && node scripts/test-node-release.mjs",
     "test": "npm run test --workspaces --if-present",
     "verify:generated": "node scripts/verify-generated.mjs"
   },
