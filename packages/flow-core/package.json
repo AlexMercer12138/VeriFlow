@@ -16,6 +16,11 @@
       "require": "./dist/logParser.js",
       "default": "./dist/logParser.js"
     },
+    "./nativeSimulatorBackend": {
+      "types": "./dist/nativeSimulatorBackend.d.ts",
+      "require": "./dist/nativeSimulatorBackend.js",
+      "default": "./dist/nativeSimulatorBackend.js"
+    },
     "./defaults": {
       "types": "./dist/defaults.d.ts",
       "require": "./dist/defaults.js",
@@ -41,6 +46,11 @@
       "require": "./dist/projectStore.js",
       "default": "./dist/projectStore.js"
     },
+    "./simulation": {
+      "types": "./dist/simulation.d.ts",
+      "require": "./dist/simulation.js",
+      "default": "./dist/simulation.js"
+    },
     "./templateEngine": {
       "types": "./dist/templateEngine.d.ts",
       "require": "./dist/templateEngine.js",
@@ -57,9 +67,11 @@
       "defaults": ["dist/defaults.d.ts"],
       "globalConfigStore": ["dist/globalConfigStore.d.ts"],
       "logParser": ["dist/logParser.d.ts"],
+      "nativeSimulatorBackend": ["dist/nativeSimulatorBackend.d.ts"],
       "pathStyle": ["dist/pathStyle.d.ts"],
       "project": ["dist/project.d.ts"],
       "projectStore": ["dist/projectStore.d.ts"],
+      "simulation": ["dist/simulation.d.ts"],
       "templateEngine": ["dist/templateEngine.d.ts"],
       "types": ["dist/types.d.ts"]
     }

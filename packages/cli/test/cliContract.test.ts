@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import type { CommandExecutor, ProcessExecution } from '@veriflow/flow-core/simulation';
 import { CliEnvironment, runCli } from '../src/main';
 
 type JsonObject = Record<string, unknown>;
@@ -29,6 +30,12 @@ type ContractCase = {
     argv: string[];
     cwd: string;
     initial_files: ContractFile[];
+    process_results?: Array<{
+        exit_code: number;
+        stdout: string;
+        stderr: string;
+        elapsed: number;
+    }>;
     observe_json: string[];
     expected: JsonObject;
 };
@@ -47,6 +54,7 @@ const configurationCases = contract.cases.filter(contractCase => {
         || command === 'lib'
         || command === 'top'
         || command === 'analyze'
+        || command === 'sim'
         || ['-h', '--help', '-v', '--version'].includes(command)
         || contractCase.id.startsWith('help_')
         || contractCase.id === 'unknown_command';
@@ -197,7 +205,7 @@ test('contract normalization handles Windows separators without replacing lookal
     });
 });
 
-assert.equal(configurationCases.length, 65);
+assert.equal(configurationCases.length, 73);
 
 for (const contractCase of configurationCases) {
     test(contractCase.id, async () => {
@@ -215,11 +223,37 @@ for (const contractCase of configurationCases) {
             writeInitialFiles(caseRoot, contractCase.initial_files ?? [], tokens);
             let stdout = '';
             let stderr = '';
+            const processCalls: Array<{
+                cmd: string;
+                cwd: string;
+                timeout: number;
+            }> = [];
+            const processResults = [...(contractCase.process_results ?? [])];
+            const commandExecutor: CommandExecutor = {
+                execute(command, processCwd, timeoutSeconds): Promise<ProcessExecution> {
+                    processCalls.push({
+                        cmd: command,
+                        cwd: processCwd,
+                        timeout: timeoutSeconds,
+                    });
+                    const result = processResults.shift();
+                    if (!result) {
+                        throw new Error(`Unexpected process call: ${command}`);
+                    }
+                    return Promise.resolve({
+                        exitCode: result.exit_code,
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        elapsedTime: result.elapsed,
+                    });
+                },
+            };
             const environment: CliEnvironment = {
                 cwd,
                 homeDir,
                 stdout: text => { stdout += text; },
                 stderr: text => { stderr += text; },
+                commandExecutor,
             };
             const exitCode = await runCli(
                 replaceTokens(contractCase.argv, tokens) as string[],
@@ -231,7 +265,7 @@ for (const contractCase of configurationCases) {
                 stderr,
                 observed_json: observedJson(caseRoot, contractCase.observe_json ?? []),
                 observed_text: observedText(caseRoot, contractCase.observe_json ?? []),
-                process_calls: [],
+                process_calls: processCalls,
                 popen_calls: [],
             }, [
                 [cwd, '<CWD>'],

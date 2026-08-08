@@ -2,6 +2,8 @@
 
 import os from 'node:os';
 
+import type { CommandExecutor } from '@veriflow/flow-core/simulation';
+
 import { analyze } from './commands/analyze';
 import { libAdd, libList, libRemove } from './commands/lib';
 import {
@@ -12,8 +14,11 @@ import {
     projectShow,
 } from './commands/project';
 import { topGet, topSet } from './commands/top';
+import { simulate } from './commands/sim';
 
-export interface CliEnvironment extends CommandEnvironment {}
+export interface CliEnvironment extends CommandEnvironment {
+    commandExecutor?: CommandExecutor;
+}
 
 type CommandHandler = (
     options: CommandOptions,
@@ -267,10 +272,24 @@ const TOP_LEVEL_COMMANDS: Record<string, LeafCommand> = {
         ],
         handler: analyze,
     },
+    sim: {
+        help: SIM_HELP,
+        options: [
+            {
+                key: 'project',
+                aliases: ['--project', '-p'],
+                requiredName: '--project/-p',
+            },
+            { key: 'top', aliases: ['--top', '-t'] },
+            { key: 'lib', aliases: ['--lib', '-L'] },
+            { key: 'sim', aliases: ['--sim', '-s'] },
+            { key: 'wave', aliases: ['--wave', '-w'] },
+        ],
+        handler: simulate,
+    },
 };
 
 const DEFERRED_COMMAND_HELP: Record<string, string> = {
-    sim: SIM_HELP,
     wave: WAVE_HELP,
 };
 
