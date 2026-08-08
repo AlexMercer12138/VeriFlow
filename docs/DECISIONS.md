@@ -39,3 +39,21 @@
 **Tags:** #lesson-learned #tooling #infrastructure
 
 ---
+
+## 2026-08-09: Add a personal brand without changing VeriFlow identities
+
+**Context:** The VeriFlow name alone is difficult to distinguish, while a complete rename would create unnecessary migration work and could disrupt existing users. The VS Code display name, "Verilog Simulation Flow," is also too narrow now that the product covers analysis, visual design, testbench generation, simulation, and waveform viewing.
+
+**Decision:** Use `Vik-VeriFlow` as the repository and project brand, keep the `veriflow` CLI command and existing compatibility identifiers, and change only the VS Code Marketplace display name to "Verilog Design Flow." Preserve the Marketplace identity `Vikai-mercer.veriflow`, `veriflow.*` command and configuration keys, and `.veriflow_config.json` compatibility.
+
+**Why not:**
+- Adopt an entirely new abstract product name: it would require broad package, command, documentation, and release migration before the first Node release.
+- Rename the VS Code extension ID: changing its publisher or package `name` would create a separate Marketplace extension and break automatic updates for current users.
+- Keep "Verilog Simulation Flow": simulation no longer represents the visual design and broader project workflow.
+- Use "Verilog Design & Verification Flow": it is accurate but unnecessarily long for Marketplace and VS Code UI surfaces.
+
+**Affects:** `README.md`, `veriflow-vscode/package.json`, `veriflow-vscode/README.md`, GitHub repository metadata
+
+**Tags:** #architecture #tooling #migration #branding
+
+---
