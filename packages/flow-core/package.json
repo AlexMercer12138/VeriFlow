@@ -10,6 +10,34 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./logParser": {
+      "types": "./dist/logParser.d.ts",
+      "require": "./dist/logParser.js",
+      "default": "./dist/logParser.js"
+    },
+    "./pathStyle": {
+      "types": "./dist/pathStyle.d.ts",
+      "require": "./dist/pathStyle.js",
+      "default": "./dist/pathStyle.js"
+    },
+    "./templateEngine": {
+      "types": "./dist/templateEngine.d.ts",
+      "require": "./dist/templateEngine.js",
+      "default": "./dist/templateEngine.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "require": "./dist/types.js",
+      "default": "./dist/types.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "logParser": ["dist/logParser.d.ts"],
+      "pathStyle": ["dist/pathStyle.d.ts"],
+      "templateEngine": ["dist/templateEngine.d.ts"],
+      "types": ["dist/types.d.ts"]
     }
   },
   "files": ["dist"],
