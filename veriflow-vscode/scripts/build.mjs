@@ -58,7 +58,14 @@ const nodeBundleOptions = [
     },
     {
         ...commonBuildOptions,
-        entryPoints: [path.join(extensionRoot, 'src', 'core', 'hdl', 'parserWorker.ts')],
+        entryPoints: [path.join(
+            extensionRoot,
+            '..',
+            'packages',
+            'hdl-runtime',
+            'src',
+            'parserWorker.ts'
+        )],
         outfile: path.join(workerRoot, 'hdlParserWorker.js'),
     },
     {

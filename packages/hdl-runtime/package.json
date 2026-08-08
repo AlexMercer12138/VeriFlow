@@ -10,15 +10,44 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./parserClient": {
+      "types": "./dist/parserClient.d.ts",
+      "require": "./dist/parserClient.js",
+      "default": "./dist/parserClient.js"
+    },
+    "./parserQueue": {
+      "types": "./dist/parserQueue.d.ts",
+      "require": "./dist/parserQueue.js",
+      "default": "./dist/parserQueue.js"
+    },
+    "./parserWorker": {
+      "types": "./dist/parserWorker.d.ts",
+      "require": "./dist/parserWorker.js",
+      "default": "./dist/parserWorker.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "require": "./dist/protocol.js",
+      "default": "./dist/protocol.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "parserClient": ["dist/parserClient.d.ts"],
+      "parserQueue": ["dist/parserQueue.d.ts"],
+      "parserWorker": ["dist/parserWorker.d.ts"],
+      "protocol": ["dist/protocol.d.ts"]
     }
   },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build"
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
-    "@veriflow/hdl-core": "1.3.2"
+    "@veriflow/hdl-core": "1.3.2",
+    "web-tree-sitter": "0.26.11"
   }
 }
