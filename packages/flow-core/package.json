@@ -16,10 +16,30 @@
       "require": "./dist/logParser.js",
       "default": "./dist/logParser.js"
     },
+    "./defaults": {
+      "types": "./dist/defaults.d.ts",
+      "require": "./dist/defaults.js",
+      "default": "./dist/defaults.js"
+    },
+    "./globalConfigStore": {
+      "types": "./dist/globalConfigStore.d.ts",
+      "require": "./dist/globalConfigStore.js",
+      "default": "./dist/globalConfigStore.js"
+    },
     "./pathStyle": {
       "types": "./dist/pathStyle.d.ts",
       "require": "./dist/pathStyle.js",
       "default": "./dist/pathStyle.js"
+    },
+    "./project": {
+      "types": "./dist/project.d.ts",
+      "require": "./dist/project.js",
+      "default": "./dist/project.js"
+    },
+    "./projectStore": {
+      "types": "./dist/projectStore.d.ts",
+      "require": "./dist/projectStore.js",
+      "default": "./dist/projectStore.js"
     },
     "./templateEngine": {
       "types": "./dist/templateEngine.d.ts",
@@ -34,8 +54,12 @@
   },
   "typesVersions": {
     "*": {
+      "defaults": ["dist/defaults.d.ts"],
+      "globalConfigStore": ["dist/globalConfigStore.d.ts"],
       "logParser": ["dist/logParser.d.ts"],
       "pathStyle": ["dist/pathStyle.d.ts"],
+      "project": ["dist/project.d.ts"],
+      "projectStore": ["dist/projectStore.d.ts"],
       "templateEngine": ["dist/templateEngine.d.ts"],
       "types": ["dist/types.d.ts"]
     }
