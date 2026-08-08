@@ -1,10 +1,21 @@
 {
   "name": "@veriflow/cli",
   "version": "1.3.2",
-  "private": true,
   "type": "commonjs",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "require": "./dist/main.js",
+      "default": "./dist/main.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "veriflow": "dist/main.js"
   },
@@ -19,6 +30,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "pretest": "npm run build:shared --prefix ../.. && npm run build --workspace @veriflow/waveform-desktop",
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"

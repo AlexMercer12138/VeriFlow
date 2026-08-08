@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Retained for one Python deprecation release; remove only after the retirement gate.
 
 a = Analysis(
     ['run_gui.py'],

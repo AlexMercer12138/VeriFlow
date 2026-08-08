@@ -2,10 +2,10 @@
 
 <div align="center">
 
-**轻量级跨平台 Verilog 仿真工程管理器，支持桌面 GUI、命令行和 VS Code 扩展**
+**轻量级跨平台 Verilog 仿真工程管理器，支持 Node CLI 和 VS Code 扩展**
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://pypi.org/project/PySide6/)
+[![Node.js](https://img.shields.io/badge/Node.js-24.14.1-green.svg)](https://nodejs.org/)
+[![Electron](https://img.shields.io/badge/Waveform-Electron-47848F.svg)](https://www.electronjs.org/)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension-007ACC.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -15,7 +15,9 @@
 
 ## 概述
 
-**VeriFlow**是一个专为简化 Verilog 开发流程而设计的工具。它能自动完成依赖解析、编译排序、仿真执行和波形查看——全部集成在简洁的深色主题 GUI、灵活的命令行界面或 VS Code 侧边栏中。
+**VeriFlow**是一个专为简化 Verilog 开发流程而设计的工具。它能自动完成依赖解析、编译排序、仿真执行和波形查看，并通过 Node CLI 或 VS Code 侧边栏提供一致的 TypeScript 核心能力。
+
+> **产品状态：** Node CLI 和 VS Code 扩展是持续维护的产品形态。Python GUI/CLI 已弃用，仅在首个弃用版本中保留兼容制品；完成 retirement gate 后将删除。
 
 无论你是在开发一个小模块，还是管理一个跨多目录、多库依赖的大型设计，VeriFlow 都能帮你一条龙完成 **分析 → 编译 → 仿真 → 查看**。
 
@@ -28,16 +30,32 @@
 - **Testbench 生成** — 可视化配置时钟、复位、DUT 模块，一键生成 Verilog Testbench（GUI 和 VS Code 扩展均支持）
 - **端口解析与模板生成** — 解析基础 Verilog / 常见 SystemVerilog 端口，生成带对齐的例化模板和连线声明
 - **结构化日志解析** — 将仿真器/编译器输出解析为带文件和行号引用的结构化日志条目
-- **全局库管理** — 配置跨工程共享的库目录（Python 版）
-- **桌面 GUI** — 深色主题 PySide6 界面，包含工程侧边栏、依赖树、模块浏览器和日志面板
-- **CLI 命令行** — 支持脚本化和 CI/CD 集成
+- **全局库管理** — Node CLI 与兼容产品共享 `~/.veriflow_config.json`
+- **Electron 波形窗口** — Node CLI 复用与 VS Code 相同的共享波形前端
+- **Node CLI 命令行** — 支持脚本化和 CI/CD 集成
 - **VS Code 扩展** — 原生 TypeScript 实现，无需安装 Python，在编辑器中直接完成全流程
+- **Python GUI/CLI（已弃用）** — 仅为迁移期兼容和回滚保留一个发布周期
 
 ---
 
 ## 架构
 
-VeriFlow 遵循 **Clean Architecture**（领域驱动设计），分为四个独立层级：
+Node CLI 和 VS Code 扩展通过 npm workspaces 共享宿主无关的 TypeScript 包：
+
+```text
+packages/
+├── flow-core/          # 工程配置、模板、仿真后端和日志
+├── hdl-core/           # HDL 语义模型与预处理
+├── hdl-runtime/        # Tree-sitter worker、索引和依赖分析
+├── waveform-runtime/   # VCD 索引、缓存和 worker
+├── waveform-desktop/   # context-isolated Electron host
+└── cli/                # Node CLI 产品入口
+veriflow-vscode/        # VS Code 产品适配层
+```
+
+共享包不依赖 Electron、VS Code 或 Python 产品入口。Electron 和 VS Code 只负责宿主 transport、窗口生命周期和编辑器 API。
+
+弃用的 Python 兼容实现仍按原 Clean Architecture 分层保留到 retirement gate：
 
 ```
 src/
@@ -96,7 +114,7 @@ src/
 
 ### 前置要求
 
-- **Python 3.8+**
+- **Node.js 24.14.1**
 - **至少一款 Verilog 仿真器**：
   - [Icarus Verilog](https://bleyer.org/icarus/)（`iverilog` + `vvp`，开源）
   - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html)（商业）
@@ -108,14 +126,32 @@ src/
 ### 安装步骤
 
 ```bash
-git clone https://github.com/AlexMercer12138/VeriFlow.git
-cd VeriFlow
-pip install -r requirements.txt
+npm install --global @veriflow/cli
+veriflow --version
 ```
 
-Python 依赖仅需 **PySide6**（>= 6.5.0）用于 GUI，CLI 无需额外依赖。
+Node CLI 安装会同时安装 Electron 波形宿主，因此安装体积较大。`analyze`、`sim` 和外部波形查看器命令不会加载 Electron；只有内置 `wave` 命令会启动窗口。
+
+从源码开发时使用仓库根目录唯一的 lockfile：
+
+```bash
+git clone https://github.com/AlexMercer12138/VeriFlow.git
+cd VeriFlow
+npm ci
+npm run build:cli
+```
+
+### Python 兼容产品（已弃用）
+
+Python GUI/CLI 只用于弃用发布和迁移回滚，不再接收新功能。临时安装方式保持不变：
+
+```bash
+python -m pip install -e .
+```
 
 ### 打包为 EXE（Python 版本）
+
+以下制品仅保留到 retirement gate，不是新的默认安装方式。
 
 ```bash
 # 安装 PyInstaller
@@ -149,7 +185,9 @@ Web 资源并同步到扩展的 `media` 目录，然后 VSCE 才创建 VSIX。
 
 ## 使用方式
 
-### GUI 模式
+### Python GUI 模式（已弃用）
+
+Python GUI 不再新增功能，建议使用 Node CLI 或 VS Code 扩展完成以下流程。
 
 **典型操作流程**：
 
@@ -161,7 +199,7 @@ Web 资源并同步到扩展的 `media` 目录，然后 VSCE 才创建 VSIX。
 6. 点击 编译并仿真 运行仿真
 7. 点击 打开波形 查看生成的波形文件
 
-### CLI 模式
+### Node CLI 模式
 
 ```bash
 # 1. 创建工程
@@ -260,9 +298,9 @@ veriflow --version
 
 ---
 
-## 全局配置（Python 版）
+## 全局配置
 
-VeriFlow 全局设置保存在 `~/.veriflow_config.json`，目前支持：
+Node CLI 和弃用的 Python 兼容产品都读取 `~/.veriflow_config.json`，目前支持：
 
 - **`lib_dirs`**：全局库目录，会自动纳入所有工程的模块扫描和依赖解析。
 
@@ -348,7 +386,7 @@ VeriFlow 的解析器用于模块扫描、依赖分析、端口提取和 Testben
 
 ## 发布流程
 
-项目发布统一使用 `scripts/run_release.py`，避免 Python 版本、VS Code 扩展版本和打包流程不一致。
+项目发布统一使用 `scripts/run_release.py`，同步共享包、Node CLI、VS Code 扩展和临时 Python 兼容制品的版本与门禁。
 
 ### 发布前检查
 
@@ -360,10 +398,12 @@ python scripts/run_release.py -c
 
 检查内容包括：
 
-- `src/version.py`、`pyproject.toml`、`veriflow-vscode/package.json` 版本一致性
+- 根目录、所有 workspace `package.json`、`src/version.py`、`pyproject.toml` 与 VS Code 扩展版本一致性
 - `veriflow-vscode/CHANGELOG.md` 是否包含当前版本标题
 - Python 测试：`python -m pytest`
-- VS Code 扩展测试：`npm test`
+- shared、Node CLI、Electron 和 VS Code 测试
+- npm tarball 空目录安装及 `help/version/analyze` smoke
+- 生成资源一致性
 - `git diff --check`
 - `git status --short --branch`
 
@@ -384,7 +424,8 @@ python scripts/run_release.py -u 1.2.0
 
 - `src/version.py`
 - `pyproject.toml`
-- `veriflow-vscode/package.json`
+- 根目录、所有 workspace 与 `veriflow-vscode/package.json`
+- workspace 内部依赖版本和 `package-lock.json`
 
 ### 打包发布产物
 
@@ -396,9 +437,10 @@ python scripts/run_release.py -p
 
 打包内容包括：
 
-- Python GUI：`dist/VeriFlow.exe`
-- Python CLI：`dist/VeriFlow-cli.exe`
+- Node shared/CLI/Electron 包：`dist/npm/*.tgz`
 - VS Code 扩展：`veriflow-vscode/veriflow-{version}.vsix`
+- Python GUI（已弃用）：`dist/VeriFlow.exe`
+- Python CLI（已弃用）：`dist/VeriFlow-cli.exe`
 
 ### 一键发布流程
 
@@ -445,6 +487,8 @@ npm run verify:generated
 npm run build:vscode
 npm run build:parser
 node scripts/smoke-parser-probe.mjs
+npm run test:release
+npm run pack:node
 python -m pip install build==1.5.0 setuptools==82.0.1 wheel==0.46.3 pyinstaller==6.19.0 pytest==9.0.3 PyYAML==6.0.3
 python scripts/build_parser_probe_wheel.py
 ```

@@ -18,6 +18,9 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
     from src.presentation.gui.main_window import MainWindow
+    from src.presentation.deprecation import warn_python_product
+
+    warn_python_product("GUI")
 
     app = QApplication(sys.argv)
     app.setApplicationName("VeriFlow")

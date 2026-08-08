@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 from typing import List, Tuple
 
@@ -9,6 +10,17 @@ ROOT = Path(__file__).resolve().parents[1]
 VSCODE_PACKAGE = ROOT / "veriflow-vscode" / "package.json"
 ROOT_VSCODE_BUILD = ROOT / "scripts" / "build-vscode.mjs"
 README = ROOT / "README.md"
+CLI_MAIN = ROOT / "packages" / "cli" / "src" / "main.ts"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+CHANGELOG = ROOT / "veriflow-vscode" / "CHANGELOG.md"
+PUBLISHABLE_WORKSPACES = {
+    "packages/flow-core/package.json",
+    "packages/hdl-core/package.json",
+    "packages/hdl-runtime/package.json",
+    "packages/waveform-runtime/package.json",
+    "packages/waveform-desktop/package.json",
+    "packages/cli/package.json",
+}
 
 
 def test_package_release_uses_root_workspace_boundary(monkeypatch) -> None:
@@ -29,6 +41,7 @@ def test_package_release_uses_root_workspace_boundary(monkeypatch) -> None:
     run_release.package_release()
 
     assert calls == [
+        (["npm", "run", "pack:node"], ROOT),
         (["pyinstaller", "VeriFlow.spec", "--noconfirm"], ROOT),
         (["pyinstaller", "VeriFlow-cli.spec", "--noconfirm"], ROOT),
         (
@@ -36,6 +49,112 @@ def test_package_release_uses_root_workspace_boundary(monkeypatch) -> None:
             ROOT,
         ),
     ]
+
+
+def test_release_check_covers_all_products(monkeypatch) -> None:
+    calls: List[Tuple[List[str], Path]] = []
+    monkeypatch.setattr(run_release, "ensure_versions_match", lambda: "1.3.2")
+    monkeypatch.setattr(run_release, "ensure_changelog_has_version", lambda _version: None)
+
+    def record_run(
+        command: List[str],
+        cwd: Path = run_release.ROOT,
+        suppress_crlf_warnings: bool = False,
+    ) -> None:
+        calls.append((command, cwd))
+
+    monkeypatch.setattr(run_release, "run", record_run)
+
+    run_release.release_check()
+
+    assert calls == [
+        ([run_release.sys.executable, "-m", "pytest"], ROOT),
+        (["npm", "run", "typecheck:shared"], ROOT),
+        (["npm", "run", "test:shared"], ROOT),
+        (["npm", "test", "--workspace", "@veriflow/cli"], ROOT),
+        (["npm", "test", "--workspace", "@veriflow/waveform-desktop"], ROOT),
+        (["npm", "test", "--workspace", "veriflow-vscode"], ROOT),
+        (["npm", "run", "test:release"], ROOT),
+        (["npm", "run", "verify:generated"], ROOT),
+        (["git", "diff", "--check"], ROOT),
+        (["git", "status", "--short", "--branch"], ROOT),
+    ]
+
+
+def test_release_versions_cover_root_and_all_workspaces() -> None:
+    versions = run_release.read_versions()
+
+    assert "package.json" in versions
+    assert "src/version.py" in versions
+    assert "pyproject.toml" in versions
+    assert "veriflow-vscode/package.json" in versions
+    assert PUBLISHABLE_WORKSPACES <= versions.keys()
+    assert set(versions.values()) == {"1.3.2"}
+
+
+def test_node_cli_version_comes_from_its_package_manifest() -> None:
+    source = CLI_MAIN.read_text(encoding="utf-8")
+
+    assert "require('@veriflow/cli/package.json')" in source
+    assert "const VERSION = '" not in source
+
+
+def test_python_console_scripts_use_deprecated_entrypoints() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["scripts"] == {
+        "veriflow": "src.presentation.cli:deprecated_main",
+        "veriflow-gui": "src.presentation.gui.__main__:deprecated_main",
+    }
+
+
+def test_python_cli_deprecation_wrapper_preserves_exit_code(monkeypatch, capsys) -> None:
+    from src.presentation import cli
+
+    monkeypatch.setattr(cli, "main", lambda: 7)
+
+    assert cli.deprecated_main() == 7
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Python CLI is deprecated" in captured.err
+    assert "@veriflow/cli" in captured.err
+
+
+def test_ci_builds_and_smokes_release_artifacts() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "node-release:" in workflow
+    assert "npm run typecheck:shared" in workflow
+    assert "npm run test:shared" in workflow
+    assert "npm test --workspace @veriflow/cli" in workflow
+    assert "xvfb-run -a npm test --workspace @veriflow/waveform-desktop" in workflow
+    assert "npm run test:release" in workflow
+    assert "npm run pack:node" in workflow
+    assert "npm run package --workspace veriflow-vscode" in workflow
+    assert "dist/npm/*.tgz" in workflow
+    assert "veriflow-vscode/*.vsix" in workflow
+
+
+def test_readme_makes_node_cli_the_default_and_marks_python_deprecated() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "npm install --global @veriflow/cli" in readme
+    assert "Node.js 24.14.1" in readme
+    assert "Node CLI 和 VS Code 扩展是持续维护的产品形态" in readme
+    assert "Python GUI/CLI 已弃用" in readme
+    assert "dist/npm/*.tgz" in readme
+
+
+def test_deprecation_release_is_recorded_without_retiring_python_early() -> None:
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    gui_spec = (ROOT / "VeriFlow.spec").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "VeriFlow-cli.spec").read_text(encoding="utf-8")
+
+    assert "## [Unreleased]" in changelog
+    assert "Node CLI" in changelog
+    assert "Python GUI/CLI" in changelog
+    assert "retirement gate" in gui_spec
+    assert "retirement gate" in cli_spec
 
 
 def test_vscode_packaging_lifecycle_uses_root_web_asset_orchestration() -> None:

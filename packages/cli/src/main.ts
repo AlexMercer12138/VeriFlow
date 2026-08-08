@@ -40,7 +40,7 @@ interface LeafCommand {
     handler: CommandHandler;
 }
 
-const VERSION = '1.3.2';
+const VERSION = (require('@veriflow/cli/package.json') as { version: string }).version;
 
 const ROOT_HELP = `usage: veriflow [-h] [-v] COMMAND ...
 

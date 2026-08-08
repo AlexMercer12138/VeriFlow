@@ -1,8 +1,11 @@
 {
   "name": "@veriflow/waveform-runtime",
   "version": "1.3.2",
-  "private": true,
   "type": "commonjs",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -49,6 +52,7 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   }

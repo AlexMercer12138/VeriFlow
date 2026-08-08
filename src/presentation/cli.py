@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.application.coordinator import ApplicationCoordinator
+from src.presentation.deprecation import warn_python_product
 from src.version import VERSION
 
 
@@ -399,5 +400,10 @@ def main():
         return 0
 
 
+def deprecated_main():
+    warn_python_product("CLI")
+    return main()
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(deprecated_main())

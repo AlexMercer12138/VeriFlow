@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PY_VERSION_FILE = ROOT / "src" / "version.py"
 PYPROJECT_FILE = ROOT / "pyproject.toml"
 VSCODE_PACKAGE_FILE = ROOT / "veriflow-vscode" / "package.json"
+ROOT_PACKAGE_FILE = ROOT / "package.json"
+WORKSPACE_PACKAGE_FILES = sorted((ROOT / "packages").glob("*/package.json"))
+PACKAGE_FILES = [ROOT_PACKAGE_FILE, *WORKSPACE_PACKAGE_FILES, VSCODE_PACKAGE_FILE]
 VSCODE_DIR = ROOT / "veriflow-vscode"
 VSCODE_CHANGELOG_FILE = VSCODE_DIR / "CHANGELOG.md"
 CRLF_WARNING_RE = re.compile(
@@ -99,16 +102,17 @@ def read_versions() -> dict:
     if not pyproject_match:
         raise ReleaseError(f"could not read project.version from {PYPROJECT_FILE}")
 
-    package_json = json.loads(read_text(VSCODE_PACKAGE_FILE))
-    package_version = package_json.get("version")
-    if not isinstance(package_version, str):
-        raise ReleaseError(f"could not read version from {VSCODE_PACKAGE_FILE}")
-
-    return {
+    versions = {
         "src/version.py": py_version_match.group(1),
         "pyproject.toml": pyproject_match.group(1),
-        "veriflow-vscode/package.json": package_version,
     }
+    for package_file in PACKAGE_FILES:
+        package_json = json.loads(read_text(package_file))
+        package_version = package_json.get("version")
+        if not isinstance(package_version, str):
+            raise ReleaseError(f"could not read version from {package_file}")
+        versions[package_file.relative_to(ROOT).as_posix()] = package_version
+    return versions
 
 
 def parse_version(version: str) -> Tuple[int, int, int]:
@@ -174,9 +178,27 @@ def update_version(target_version: Optional[str]) -> str:
     )
     write_text(PYPROJECT_FILE, pyproject_text)
 
-    package_json = json.loads(read_text(VSCODE_PACKAGE_FILE))
-    package_json["version"] = new_version
-    write_text(VSCODE_PACKAGE_FILE, json.dumps(package_json, indent=2, ensure_ascii=False) + "\n")
+    for package_file in PACKAGE_FILES:
+        package_json = json.loads(read_text(package_file))
+        package_json["version"] = new_version
+        for dependency_group in (
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ):
+            dependencies = package_json.get(dependency_group)
+            if not isinstance(dependencies, dict):
+                continue
+            for dependency in dependencies:
+                if dependency.startswith("@veriflow/"):
+                    dependencies[dependency] = new_version
+        write_text(
+            package_file,
+            json.dumps(package_json, indent=2, ensure_ascii=False) + "\n",
+        )
+
+    run(["npm", "install", "--package-lock-only", "--ignore-scripts"])
 
     return new_version
 
@@ -185,13 +207,20 @@ def release_check() -> None:
     version = ensure_versions_match()
     ensure_changelog_has_version(version)
     run([sys.executable, "-m", "pytest"])
-    run(["npm", "test"], cwd=VSCODE_DIR)
+    run(["npm", "run", "typecheck:shared"])
+    run(["npm", "run", "test:shared"])
+    run(["npm", "test", "--workspace", "@veriflow/cli"])
+    run(["npm", "test", "--workspace", "@veriflow/waveform-desktop"])
+    run(["npm", "test", "--workspace", "veriflow-vscode"])
+    run(["npm", "run", "test:release"])
+    run(["npm", "run", "verify:generated"])
     run(["git", "diff", "--check"], suppress_crlf_warnings=True)
     run(["git", "status", "--short", "--branch"])
 
 
 def package_release() -> None:
     ensure_versions_match()
+    run(["npm", "run", "pack:node"])
     run(["pyinstaller", "VeriFlow.spec", "--noconfirm"])
     run(["pyinstaller", "VeriFlow-cli.spec", "--noconfirm"])
     run(

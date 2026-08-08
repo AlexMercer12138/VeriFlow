@@ -1,8 +1,11 @@
 {
   "name": "@veriflow/waveform-desktop",
   "version": "1.3.2",
-  "private": true,
   "type": "commonjs",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/launcher.js",
   "types": "dist/launcher.d.ts",
   "exports": {
@@ -24,7 +27,8 @@
   },
   "files": [
     "dist",
-    "assets"
+    "assets",
+    "scripts/install-electron.cjs"
   ],
   "dependencies": {
     "@veriflow/waveform-runtime": "1.3.2",
@@ -32,6 +36,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-assets.mjs",
+    "postinstall": "node scripts/install-electron.cjs",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "pretest": "npm run build --workspace @veriflow/waveform-runtime",

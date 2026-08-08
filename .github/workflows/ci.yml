@@ -125,3 +125,54 @@ jobs:
 
       - name: Test extension core
         run: npm test --workspace veriflow-vscode
+
+  node-release:
+    name: Node CLI and release artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Install Electron system dependencies
+        run: sudo npx playwright install-deps chromium
+
+      - name: Typecheck shared packages
+        run: npm run typecheck:shared
+
+      - name: Test shared packages
+        run: npm run test:shared
+
+      - name: Test Node CLI
+        run: npm test --workspace @veriflow/cli
+
+      - name: Test Electron waveform host
+        run: xvfb-run -a npm test --workspace @veriflow/waveform-desktop
+
+      - name: Smoke clean npm artifacts
+        run: npm run test:release
+
+      - name: Pack Node release artifacts
+        run: npm run pack:node
+
+      - name: Pack VS Code extension
+        run: npm run package --workspace veriflow-vscode
+
+      - name: Upload Node and VSIX artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: veriflow-node-release
+          if-no-files-found: error
+          path: |
+            dist/npm/*.tgz
+            veriflow-vscode/*.vsix
