@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
+import { copyFilePreservingMode } from '../../scripts/lib/files.mjs';
 
 const childExitTimeoutMs = 5_000;
 
@@ -136,7 +137,9 @@ export async function verifyAndCopyParserAssets(assets) {
     await Promise.all(assets.map(asset => (
         mkdir(path.dirname(asset.destination), { recursive: true })
     )));
-    await Promise.all(assets.map(asset => copyFile(asset.source, asset.destination)));
+    await Promise.all(assets.map(asset => (
+        copyFilePreservingMode(asset.source, asset.destination)
+    )));
 }
 
 export async function buildBundles(bundleOptions) {

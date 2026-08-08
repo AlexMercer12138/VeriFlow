@@ -276,7 +276,7 @@
     "compile:ts": "tsc -p ./",
     "bundle": "node ./scripts/build.mjs",
     "compile": "npm run compile:ts && npm run bundle",
-    "test": "npm run compile && node ./scripts/run-tests.mjs",
+    "test": "npm run vscode:prepublish && node ./scripts/run-tests.mjs",
     "test:schematic-integration": "npm run compile && node out/test/schematicIntegration.test.js",
     "test:task6": "npm run compile:ts && node out/test/core.test.js && node out/test/hdlFeatureMigration.test.js && node out/test/testbenchPanel.test.js",
     "benchmark:waveform": "python ../scripts/generate_waveform_benchmark.py --target-bytes 10485760 --signals 64 --seed 1 --output ../.tmp-waveform-benchmark.vcd && python ../scripts/benchmark_waveform_index.py ../.tmp-waveform-benchmark.vcd --queries 32 --output ../.tmp-waveform-report.json",

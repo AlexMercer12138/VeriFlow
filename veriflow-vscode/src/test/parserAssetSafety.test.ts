@@ -42,6 +42,10 @@ async function testParserAssetSafety(): Promise<void> {
         fs.writeFileSync(secondSource, secondContent);
         fs.writeFileSync(firstDestination, trustedFirst);
         fs.writeFileSync(secondDestination, trustedSecond);
+        if (process.platform !== 'win32') {
+            fs.chmodSync(firstSource, 0o755);
+            fs.chmodSync(firstDestination, 0o644);
+        }
 
         const support = await loadEsmModule(pathToFileURL(
             path.join(extensionRoot, 'scripts', 'build-support.mjs')
@@ -72,6 +76,9 @@ async function testParserAssetSafety(): Promise<void> {
         await support.verifyAndCopyParserAssets(assets);
         assert.strictEqual(fs.readFileSync(firstDestination, 'utf8'), firstContent);
         assert.strictEqual(fs.readFileSync(secondDestination, 'utf8'), secondContent);
+        if (process.platform !== 'win32') {
+            assert.strictEqual(fs.statSync(firstDestination).mode & 0o777, 0o644);
+        }
     } finally {
         fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

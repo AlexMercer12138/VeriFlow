@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 
 async function run(): Promise<void> {
@@ -14,6 +15,14 @@ async function run(): Promise<void> {
         legalComments: 'none',
         charset: 'utf8',
     });
+    const extensionManifest = JSON.parse(fs.readFileSync(
+        path.join(root, 'veriflow-vscode', 'package.json'),
+        'utf8'
+    )) as { scripts: Record<string, string> };
+    assert.strictEqual(
+        extensionManifest.scripts.test,
+        'npm run vscode:prepublish && node ./scripts/run-tests.mjs'
+    );
 }
 
 run().then(() => console.log('root build tests passed'));

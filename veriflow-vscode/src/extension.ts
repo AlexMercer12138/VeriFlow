@@ -34,6 +34,7 @@ import {
     isSourceUriWithinRoot,
 } from './core/hdl/preprocessor';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
+import { relativeDisplayPath } from './core/pathStyle';
 
 const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
     iverilog: {
@@ -2519,7 +2520,7 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     const choices = definitions.map(definition => ({
         label: definition.name,
         description: (counts.get(definition.name) ?? 0) > 1
-            ? path.relative(getWorkspaceRoot()!, definition.filepath) || definition.filepath
+            ? relativeDisplayPath(getWorkspaceRoot()!, definition.filepath)
             : undefined,
         definitionKey: definition.key,
         name: definition.name,
