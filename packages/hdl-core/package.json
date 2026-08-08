@@ -10,12 +10,46 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "require": "./dist/model.js",
+      "default": "./dist/model.js"
+    },
+    "./positionMap": {
+      "types": "./dist/positionMap.d.ts",
+      "require": "./dist/positionMap.js",
+      "default": "./dist/positionMap.js"
+    },
+    "./preprocessor": {
+      "types": "./dist/preprocessor.d.ts",
+      "require": "./dist/preprocessor.js",
+      "default": "./dist/preprocessor.js"
+    },
+    "./treeEdit": {
+      "types": "./dist/treeEdit.d.ts",
+      "require": "./dist/treeEdit.js",
+      "default": "./dist/treeEdit.js"
+    },
+    "./treeSitterAdapter": {
+      "types": "./dist/treeSitterAdapter.d.ts",
+      "require": "./dist/treeSitterAdapter.js",
+      "default": "./dist/treeSitterAdapter.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "model": ["dist/model.d.ts"],
+      "positionMap": ["dist/positionMap.d.ts"],
+      "preprocessor": ["dist/preprocessor.d.ts"],
+      "treeEdit": ["dist/treeEdit.d.ts"],
+      "treeSitterAdapter": ["dist/treeSitterAdapter.d.ts"]
     }
   },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build"
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   }
 }
