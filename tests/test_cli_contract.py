@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import subprocess
 import sys
@@ -199,6 +200,35 @@ def test_contract_capture_is_independent_of_terminal_width(
 ) -> None:
     monkeypatch.setenv("COLUMNS", "40")
     case = next(case for case in CASES if case["id"] == "root_help")
+    assert capture_case(case, tmp_path / case["id"]) == case["expected"]
+
+
+def test_cli_help_is_stable_when_argparse_repeats_option_metavars(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def legacy_action_invocation(
+        formatter: argparse.HelpFormatter,
+        action: argparse.Action,
+    ) -> str:
+        if not action.option_strings:
+            default = formatter._get_default_metavar_for_positional(action)
+            return " ".join(formatter._metavar_formatter(action, default)(1))
+        if action.nargs == 0:
+            return ", ".join(action.option_strings)
+        default = formatter._get_default_metavar_for_optional(action)
+        return ", ".join(
+            f"{option} {formatter._format_args(action, default)}"
+            for option in action.option_strings
+        )
+
+    monkeypatch.setattr(
+        argparse.HelpFormatter,
+        "_format_action_invocation",
+        legacy_action_invocation,
+    )
+    case = next(case for case in CASES if case["id"] == "help_top_get_short")
+
     assert capture_case(case, tmp_path / case["id"]) == case["expected"]
 
 

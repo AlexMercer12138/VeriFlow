@@ -30,6 +30,24 @@ from src.presentation.deprecation import warn_python_product
 from src.version import VERSION
 
 
+class _StableHelpFormatter(argparse.HelpFormatter):
+    def _format_action_invocation(self, action):
+        if not action.option_strings:
+            default = self._get_default_metavar_for_positional(action)
+            return " ".join(self._metavar_formatter(action, default)(1))
+        if action.nargs == 0:
+            return ", ".join(action.option_strings)
+        default = self._get_default_metavar_for_optional(action)
+        args_string = self._format_args(action, default)
+        return f"{', '.join(action.option_strings)} {args_string}"
+
+
+class _StableArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("formatter_class", _StableHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+
 def _print(msg: str = ""):
     print(msg)
 
@@ -304,7 +322,7 @@ def cmd_wave(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
+    parser = _StableArgumentParser(
         prog='veriflow',
         description='VeriFlow - Lightweight Verilog Simulation Manager',
         formatter_class=argparse.RawDescriptionHelpFormatter,

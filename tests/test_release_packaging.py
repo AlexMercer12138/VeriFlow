@@ -91,6 +91,27 @@ def test_shared_typecheck_builds_dependency_outputs_first() -> None:
     )
 
 
+def test_shared_package_consumers_build_dependency_outputs_first() -> None:
+    root_manifest = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    scripts = root_manifest["scripts"]
+
+    assert scripts["build:vscode"].startswith("npm run build:shared && ")
+    assert scripts["build:desktop"].startswith("npm run build:shared && ")
+
+
+def test_parser_sea_accepts_the_published_node_engine_range() -> None:
+    root_manifest = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    build_source = (ROOT / "scripts" / "build-parser-probe.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert root_manifest["engines"]["node"] == ">=24.14.1"
+    assert (
+        "workspaceMetadata.engines?.node !== "
+        "`>=${expectedNodeVersion.slice(1)}`"
+    ) in build_source
+
+
 def test_release_versions_cover_root_and_all_workspaces() -> None:
     versions = run_release.read_versions()
 

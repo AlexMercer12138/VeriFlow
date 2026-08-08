@@ -12,8 +12,8 @@
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
     "build:parser": "node scripts/build-parser-probe.mjs",
-    "build:vscode": "node scripts/build-vscode.mjs",
-    "build:desktop": "npm run build --workspace @veriflow/waveform-desktop",
+    "build:vscode": "npm run build:shared && node scripts/build-vscode.mjs",
+    "build:desktop": "npm run build:shared && npm run build --workspace @veriflow/waveform-desktop",
     "build:cli": "npm run build:desktop && npm run build --workspace @veriflow/cli",
     "pack:node": "node scripts/pack-node-release.mjs",
     "build:shared": "npm run build --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",

@@ -45,8 +45,8 @@ export async function buildParserProbe() {
 
     const workspaceMetadata = await readJson(path.join(root, 'package.json'));
     const parserMetadata = await readJson(path.join(packageRoot, 'package.json'));
-    if (workspaceMetadata.engines?.node !== expectedNodeVersion.slice(1)) {
-        throw new Error(`Workspace Node pin must be ${expectedNodeVersion.slice(1)}`);
+    if (workspaceMetadata.engines?.node !== `>=${expectedNodeVersion.slice(1)}`) {
+        throw new Error(`Workspace Node minimum must be ${expectedNodeVersion.slice(1)}`);
     }
     if (parserMetadata.version !== workspaceMetadata.version) {
         throw new Error(
