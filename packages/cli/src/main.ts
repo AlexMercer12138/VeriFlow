@@ -142,6 +142,41 @@ options:
                         project JSON file
 `;
 
+const ANALYZE_HELP = `usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]
+                        [-w WAVE]
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+  -t, --top TOP         top module name (auto-saved)
+  -r, --root ROOT       project root (use with --top)
+  -L, --lib LIB         lib dirs (comma separated, auto-saved)
+  -s, --sim SIM         simulator (auto-saved)
+  -w, --wave WAVE       wave viewer (auto-saved)
+`;
+
+const SIM_HELP = `usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]
+                    [--wave WAVE]
+
+options:
+  -h, --help            show this help message and exit
+  --project, -p PROJECT
+                        project JSON file
+  --top, -t TOP         top module name (auto-saved)
+  --lib, -L LIB         lib dirs (comma separated, auto-saved)
+  --sim, -s SIM         simulator (auto-saved)
+  --wave, -w WAVE       wave viewer (auto-saved)
+`;
+
+const WAVE_HELP = `usage: veriflow wave [-h] -p PROJECT
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+`;
+
 const LEAF_COMMANDS: Record<string, LeafCommand> = {
     'project new': {
         help: PROJECT_NEW_HELP,
@@ -218,6 +253,12 @@ const PARENT_ACTIONS: Record<string, string[]> = {
     top: ['set', 'get'],
 };
 
+const DEFERRED_COMMAND_HELP: Record<string, string> = {
+    analyze: ANALYZE_HELP,
+    sim: SIM_HELP,
+    wave: WAVE_HELP,
+};
+
 function usage(help: string): string {
     return `${help.split('\n\n', 1)[0]}\n`;
 }
@@ -251,7 +292,34 @@ function parseOptions(
     const values: CommandOptions = {};
     for (let index = 0; index < argv.length; index += 1) {
         const argument = argv[index];
-        const option = byAlias.get(argument);
+        let option = byAlias.get(argument);
+        let inlineValue: string | undefined;
+
+        if (!option && argument.startsWith('--')) {
+            const equals = argument.indexOf('=');
+            const optionName = equals < 0 ? argument : argument.slice(0, equals);
+            const matchingAliases = definition.options.flatMap(candidate => (
+                candidate.aliases.filter(alias => alias.startsWith('--') && alias.startsWith(optionName))
+            ));
+            if (matchingAliases.length > 1) {
+                return parseError(
+                    environment,
+                    command,
+                    definition.help,
+                    `ambiguous option: ${optionName} could match ${matchingAliases.join(', ')}`
+                );
+            }
+            if (matchingAliases.length === 1) {
+                option = byAlias.get(matchingAliases[0]);
+                if (equals >= 0) inlineValue = argument.slice(equals + 1);
+            }
+        }
+
+        if (!option && /^-[^-].+/.test(argument)) {
+            option = byAlias.get(argument.slice(0, 2));
+            if (option) inlineValue = argument.slice(2);
+        }
+
         if (!option) {
             return parseError(
                 environment,
@@ -260,8 +328,12 @@ function parseOptions(
                 `unrecognized arguments: ${argument}`
             );
         }
-        const value = argv[index + 1];
-        if (value === undefined || byAlias.has(value)) {
+
+        const value = inlineValue ?? argv[index + 1];
+        if (
+            value === undefined
+            || (inlineValue === undefined && value !== '-' && value.startsWith('-'))
+        ) {
             return parseError(
                 environment,
                 command,
@@ -270,7 +342,7 @@ function parseOptions(
             );
         }
         values[option.key] = value;
-        index += 1;
+        if (inlineValue === undefined) index += 1;
     }
 
     const missing = definition.options
@@ -299,6 +371,16 @@ export async function runCli(argv: string[], environment: CliEnvironment): Promi
     if (argv[0] === '-v' || argv[0] === '--version') {
         environment.stdout(`VeriFlow ${VERSION}\n`);
         return 0;
+    }
+
+    const deferredHelp = DEFERRED_COMMAND_HELP[argv[0]];
+    if (deferredHelp !== undefined) {
+        if (argv.includes('-h') || argv.includes('--help')) {
+            environment.stdout(deferredHelp);
+            return 0;
+        }
+        environment.stderr(`Error: Command not implemented yet: ${argv[0]}\n`);
+        return 1;
     }
 
     const parent = argv[0];

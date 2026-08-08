@@ -208,8 +208,10 @@ export class ProjectStore {
 
     save(project: Project, filepath: string, options: ProjectSaveOptions = {}): void {
         const base = path.dirname(path.resolve(filepath));
-        const data = serializeProject(project, base);
-        if (options.preserveUnknown !== false) Object.assign(data, project.extra);
+        const serialized = serializeProject(project, base);
+        const data = options.preserveUnknown === false
+            ? serialized
+            : { ...serialized, ...project.extra };
         mkdirSync(base, { recursive: true });
         writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
     }

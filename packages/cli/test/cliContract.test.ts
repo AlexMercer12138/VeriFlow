@@ -47,6 +47,7 @@ const configurationCases = contract.cases.filter(contractCase => {
         || command === 'lib'
         || command === 'top'
         || ['-h', '--help', '-v', '--version'].includes(command)
+        || contractCase.id.startsWith('help_')
         || contractCase.id === 'unknown_command';
 });
 
@@ -120,16 +121,48 @@ function observedText(caseRoot: string, paths: string[]): JsonObject {
     }));
 }
 
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeTokenizedPathTails(value: string, token: string): string {
+    const pattern = new RegExp(`${escapeRegExp(token)}(/[^"'\\s:,)\\]}]*)`, 'g');
+    return value.replace(pattern, (_match, tail: string) => (
+        token + tail.replace(/\\\\/g, '/').replace(/\\/g, '/')
+    ));
+}
+
 function normalize(value: unknown, replacements: Array<[string, string]>): unknown {
     if (typeof value === 'string') {
         let result = value;
-        for (const [source, token] of replacements) {
-            const variants = [source, source.split(path.sep).join('/'), source.replace(/\//g, '\\')];
+        for (const [source, replacement] of replacements) {
+            const encodedReplacement = JSON.stringify(replacement).slice(1, -1);
+            const variants = [
+                source,
+                source.replace(/\\/g, '/'),
+                source.replace(/\//g, '\\'),
+            ];
             for (const variant of new Set(variants)) {
-                result = result.split(variant).join(token);
-                const encoded = JSON.stringify(variant).slice(1, -1);
-                result = result.split(encoded).join(token);
+                const encodedVariant = JSON.stringify(variant).slice(1, -1);
+                const forms: Array<[string, string, string[]]> = [
+                    [encodedVariant, encodedReplacement, ['/', '\\\\']],
+                    [variant, replacement, ['/', '\\']],
+                ];
+                for (const [candidate, normalized, separators] of forms) {
+                    for (const separator of separators) {
+                        result = result
+                            .split(candidate + separator)
+                            .join(`${normalized}/`);
+                    }
+                    const boundary = new RegExp(
+                        `${escapeRegExp(candidate)}(?=$|[\\s"',)\\]}])`,
+                        'g'
+                    );
+                    result = result.replace(boundary, normalized);
+                }
             }
+            result = normalizeTokenizedPathTails(result, replacement);
+            result = normalizeTokenizedPathTails(result, encodedReplacement);
         }
         return result;
     }
@@ -142,7 +175,28 @@ function normalize(value: unknown, replacements: Array<[string, string]>): unkno
     return value;
 }
 
-assert.equal(configurationCases.length, 53);
+test('contract normalization handles Windows separators without replacing lookalikes', () => {
+    const value = {
+        stdout: 'Root: C:\\contract\\workspace\\libs\\project\n',
+        observedText: '"lib_dirs": ["C:\\\\contract\\\\workspace\\\\libs\\\\project"]',
+        metadata: String.raw`pattern=\d+\w; source=rtl\top.v`,
+        lookalike: String.raw`C:\contract\workspace-old`,
+        diagnostic: (
+            'C:\\contract\\workspace\\libs\\project: '
+            + String.raw`escaped=\signal regex=\d+\w`
+        ),
+    };
+
+    assert.deepEqual(normalize(value, [[String.raw`C:\contract\workspace`, '<CWD>']]), {
+        stdout: 'Root: <CWD>/libs/project\n',
+        observedText: '"lib_dirs": ["<CWD>/libs/project"]',
+        metadata: String.raw`pattern=\d+\w; source=rtl\top.v`,
+        lookalike: String.raw`C:\contract\workspace-old`,
+        diagnostic: String.raw`<CWD>/libs/project: escaped=\signal regex=\d+\w`,
+    });
+});
+
+assert.equal(configurationCases.length, 59);
 
 for (const contractCase of configurationCases) {
     test(contractCase.id, async () => {

@@ -121,21 +121,52 @@ test('project store saves snake case, relative paths, exact JSON, and unknown ke
     }
 });
 
-test('project helpers resolve wave and testbench paths from the project root', () => {
-    const project = new ProjectStore().create('demo', '/workspace/project');
-    project.topModule = 'top';
-    project.waveFileTemplate = 'waves/{top_module}.vcd';
-    project.testbenchOutputDir = 'generated/tb';
+test('project store safely preserves a __proto__ unknown key', () => {
+    const root = temporaryDirectory('veriflow-project-special-key-');
+    try {
+        const sourceFile = path.join(root, 'source.json');
+        const savedFile = path.join(root, 'saved.json');
+        writeFileSync(
+            sourceFile,
+            '{"project_name":"special","__proto__":{"keep":true}}'
+        );
 
-    assert.equal(resolveWaveFile(project), '/workspace/project/waves/top.vcd');
-    project.waveFileTemplate = '/tmp/external.vcd';
-    assert.equal(resolveWaveFile(project), '/tmp/external.vcd');
-    assert.equal(
-        resolveTestbenchOutputDir(project),
-        '/workspace/project/generated/tb'
-    );
-    project.testbenchOutputDir = '/tmp/generated';
-    assert.equal(resolveTestbenchOutputDir(project), '/tmp/generated');
+        const store = new ProjectStore();
+        const project = store.open(sourceFile);
+        assert.deepEqual(Object.keys(project.extra), ['__proto__']);
+
+        store.save(project, savedFile);
+        const saved = JSON.parse(readFileSync(savedFile, 'utf8'));
+        assert.deepEqual(saved.__proto__, { keep: true });
+        assert.equal(Object.getPrototypeOf(saved), Object.prototype);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('project helpers resolve wave and testbench paths from the project root', () => {
+    const root = temporaryDirectory('veriflow-project-paths-');
+    try {
+        const projectRoot = path.join(root, 'workspace', 'project');
+        const project = new ProjectStore().create('demo', projectRoot);
+        project.topModule = 'top';
+        project.waveFileTemplate = 'waves/{top_module}.vcd';
+        project.testbenchOutputDir = 'generated/tb';
+
+        assert.equal(resolveWaveFile(project), path.join(projectRoot, 'waves', 'top.vcd'));
+        const externalWave = path.join(root, 'external.vcd');
+        project.waveFileTemplate = externalWave;
+        assert.equal(resolveWaveFile(project), externalWave);
+        assert.equal(
+            resolveTestbenchOutputDir(project),
+            path.join(projectRoot, 'generated', 'tb')
+        );
+        const externalOutput = path.join(root, 'generated');
+        project.testbenchOutputDir = externalOutput;
+        assert.equal(resolveTestbenchOutputDir(project), externalOutput);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test('project store rejects invalid project field shapes', () => {
