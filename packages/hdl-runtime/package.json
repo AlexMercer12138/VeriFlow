@@ -30,6 +30,21 @@
       "types": "./dist/protocol.d.ts",
       "require": "./dist/protocol.js",
       "default": "./dist/protocol.js"
+    },
+    "./workspaceHdlIndex": {
+      "types": "./dist/workspaceHdlIndex.d.ts",
+      "require": "./dist/workspaceHdlIndex.js",
+      "default": "./dist/workspaceHdlIndex.js"
+    },
+    "./workspaceIndexStore": {
+      "types": "./dist/workspaceIndexStore.d.ts",
+      "require": "./dist/workspaceIndexStore.js",
+      "default": "./dist/workspaceIndexStore.js"
+    },
+    "./workspaceIndexTypes": {
+      "types": "./dist/workspaceIndexTypes.d.ts",
+      "require": "./dist/workspaceIndexTypes.js",
+      "default": "./dist/workspaceIndexTypes.js"
     }
   },
   "typesVersions": {
@@ -37,7 +52,10 @@
       "parserClient": ["dist/parserClient.d.ts"],
       "parserQueue": ["dist/parserQueue.d.ts"],
       "parserWorker": ["dist/parserWorker.d.ts"],
-      "protocol": ["dist/protocol.d.ts"]
+      "protocol": ["dist/protocol.d.ts"],
+      "workspaceHdlIndex": ["dist/workspaceHdlIndex.d.ts"],
+      "workspaceIndexStore": ["dist/workspaceIndexStore.d.ts"],
+      "workspaceIndexTypes": ["dist/workspaceIndexTypes.d.ts"]
     }
   },
   "files": ["dist"],
