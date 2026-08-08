@@ -3,6 +3,8 @@ import tomllib
 from pathlib import Path
 from typing import List, Tuple
 
+import yaml
+
 from scripts import run_release
 
 
@@ -121,25 +123,50 @@ def test_python_cli_deprecation_wrapper_preserves_exit_code(monkeypatch, capsys)
 
 
 def test_ci_builds_and_smokes_release_artifacts() -> None:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    workflow_source = CI_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_source)
+    install_smoke = workflow["jobs"]["node-install-smoke"]
+    smoke_commands = [
+        step["run"]
+        for step in install_smoke["steps"]
+        if "run" in step
+    ]
 
-    assert "node-release:" in workflow
-    assert "npm run typecheck:shared" in workflow
-    assert "npm run test:shared" in workflow
-    assert "npm test --workspace @veriflow/cli" in workflow
-    assert "xvfb-run -a npm test --workspace @veriflow/waveform-desktop" in workflow
-    assert "npm run test:release" in workflow
-    assert "npm run pack:node" in workflow
-    assert "npm run package --workspace veriflow-vscode" in workflow
-    assert "dist/npm/*.tgz" in workflow
-    assert "veriflow-vscode/*.vsix" in workflow
+    assert install_smoke["runs-on"] == "${{ matrix.os }}"
+    assert set(install_smoke["strategy"]["matrix"]["os"]) == {
+        "ubuntu-latest",
+        "windows-latest",
+        "macos-latest",
+    }
+    assert "npm ci" in smoke_commands
+    assert "npm run test:release" in smoke_commands
+
+    assert "node-release:" in workflow_source
+    assert "npm run typecheck:shared" in workflow_source
+    assert "npm run test:shared" in workflow_source
+    assert "npm test --workspace @veriflow/cli" in workflow_source
+    assert "xvfb-run -a npm test --workspace @veriflow/waveform-desktop" in workflow_source
+    assert "npm run test:release" in workflow_source
+    assert "npm run pack:node" in workflow_source
+    assert "npm run package --workspace veriflow-vscode" in workflow_source
+    assert "dist/npm/*.tgz" in workflow_source
+    assert "veriflow-vscode/*.vsix" in workflow_source
+
+
+def test_publishable_node_packages_declare_supported_engine() -> None:
+    root_manifest = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    assert root_manifest["engines"] == {"node": ">=24.14.1"}
+
+    for relative_manifest in PUBLISHABLE_WORKSPACES:
+        manifest = json.loads((ROOT / relative_manifest).read_text(encoding="utf-8"))
+        assert manifest["engines"] == root_manifest["engines"], relative_manifest
 
 
 def test_readme_makes_node_cli_the_default_and_marks_python_deprecated() -> None:
     readme = README.read_text(encoding="utf-8")
 
     assert "npm install --global @veriflow/cli" in readme
-    assert "Node.js 24.14.1" in readme
+    assert "Node.js 24.14.1+" in readme
     assert "Node CLI 和 VS Code 扩展是持续维护的产品形态" in readme
     assert "Python GUI/CLI 已弃用" in readme
     assert "dist/npm/*.tgz" in readme

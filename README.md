@@ -114,7 +114,7 @@ src/
 
 ### 前置要求
 
-- **Node.js 24.14.1**
+- **Node.js 24.14.1+**
 - **至少一款 Verilog 仿真器**：
   - [Icarus Verilog](https://bleyer.org/icarus/)（`iverilog` + `vvp`，开源）
   - [Synopsys VCS](https://www.synopsys.com/verification/simulation/vcs.html)（商业）
