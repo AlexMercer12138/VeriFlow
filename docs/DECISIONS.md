@@ -22,3 +22,20 @@
 **Tags:** #architecture #tooling #migration
 
 ---
+
+## 2026-08-08: Run release npm commands through Node
+
+**Context:** The cross-platform clean-install gate exposed that Windows `.cmd` shims cannot be passed directly to `execFileSync` or to `spawnSync` without a shell. The release scripts must run identically on Linux, macOS, and Windows without shell-specific quoting.
+
+**Decision:** Release scripts invoke npm as `process.execPath` plus the `npm_execpath` supplied by the outer npm lifecycle. Clean-installed CLI commands run through `npm exec -- veriflow`, which resolves the local package bin on each platform.
+
+**Why not:**
+- Execute `npm.cmd` or `veriflow.cmd` directly: Windows command shims are not native executables and fail with the no-shell child-process APIs used by the scripts.
+- Enable `shell: true`: shell parsing creates platform-specific quoting rules and an unnecessary command-injection boundary.
+- Invoke the CLI's compiled JavaScript directly: that would stop the release smoke from testing the published `bin` contract.
+
+**Affects:** `scripts/lib/npm-command.mjs`, `scripts/pack-node-release.mjs`, `scripts/test-node-release.mjs`, `.github/workflows/ci.yml`
+
+**Tags:** #lesson-learned #tooling #infrastructure
+
+---
