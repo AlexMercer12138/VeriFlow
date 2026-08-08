@@ -19,7 +19,7 @@
     "build:shared": "npm run build --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "watch:vscode": "node scripts/watch-vscode.mjs",
     "build": "npm run build:web && npm run build:parser && npm run build:vscode",
-    "typecheck:shared": "npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
+    "typecheck:shared": "npm run build:shared && npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "test:shared": "npm test --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
     "test:cli": "npm test --workspace @veriflow/cli",
     "test:release": "node --test scripts/lib/npm-command.test.mjs && node scripts/test-node-release.mjs",

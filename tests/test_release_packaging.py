@@ -83,6 +83,14 @@ def test_release_check_covers_all_products(monkeypatch) -> None:
     ]
 
 
+def test_shared_typecheck_builds_dependency_outputs_first() -> None:
+    root_manifest = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+
+    assert root_manifest["scripts"]["typecheck:shared"].startswith(
+        "npm run build:shared && "
+    )
+
+
 def test_release_versions_cover_root_and_all_workspaces() -> None:
     versions = run_release.read_versions()
 
