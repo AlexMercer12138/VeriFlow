@@ -197,6 +197,71 @@ test('cancellation suppresses results and retry opens a new generation', async (
     }
 });
 
+test('stale renderer generations cannot query or control the current worker', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-desktop-generation-'));
+    const transport = new MemoryTransport();
+    const worker = new WaveformWorkerClient({ cacheRoot: path.join(root, 'cache') });
+    const router = new WaveformRouter({ source: waveformFixture, transport, worker });
+    try {
+        transport.emitRenderer({ type: 'ready' });
+        await waitForMessage(
+            transport,
+            message => message.type === 'indexReady' && message.generation === 1
+        );
+        transport.emitRenderer({ type: 'retryLoad', generation: 1 });
+        await waitForMessage(
+            transport,
+            message => message.type === 'indexReady' && message.generation === 2
+        );
+
+        const messageOffset = transport.hostMessages.length;
+        transport.emitRenderer({
+            type: 'windowRequest',
+            generation: 1,
+            requestId: 'window:stale:1',
+            references: ['clk'],
+            start: 0,
+            end: 20,
+            pixelWidth: 64,
+        });
+        transport.emitRenderer({
+            type: 'cancelRequest',
+            generation: 1,
+            requestId: 'window:stale:1',
+        });
+        transport.emitRenderer({ type: 'cancelLoad', generation: 1 });
+        transport.emitRenderer({ type: 'retryLoad', generation: 1 });
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        assert.deepEqual(transport.hostMessages.slice(messageOffset), [
+            {
+                type: 'bridgeError',
+                generation: 2,
+                message: 'stale windowRequest generation',
+            },
+            {
+                type: 'bridgeError',
+                generation: 2,
+                message: 'stale cancelRequest generation',
+            },
+            {
+                type: 'bridgeError',
+                generation: 2,
+                message: 'stale cancelLoad generation',
+            },
+            {
+                type: 'bridgeError',
+                generation: 2,
+                message: 'stale retryLoad generation',
+            },
+        ]);
+        assert.equal(worker.currentGeneration, 2);
+    } finally {
+        await router.dispose();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('malformed renderer messages are rejected and disposal detaches IPC', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-desktop-invalid-'));
     const transport = new MemoryTransport();

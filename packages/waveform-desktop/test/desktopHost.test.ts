@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -90,8 +92,34 @@ async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
     }
 }
 
+async function startUntrustedServer(): Promise<{
+    url: string;
+    close(): Promise<void>;
+}> {
+    const server = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end('<!doctype html><title>Untrusted</title><body>untrusted</body>');
+    });
+    await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => reject(error);
+        server.once('error', onError);
+        server.listen(0, '127.0.0.1', () => {
+            server.removeListener('error', onError);
+            resolve();
+        });
+    });
+    const address = server.address() as AddressInfo;
+    return {
+        url: `http://127.0.0.1:${address.port}/untrusted`,
+        close: () => new Promise<void>((resolve, reject) => {
+            server.close(error => error ? reject(error) : resolve());
+        }),
+    };
+}
+
 test('Electron host isolates the shared waveform renderer', { timeout: 20_000 }, async () => {
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-electron-host-'));
+    const untrusted = await startUntrustedServer();
     const electronApp = await electron.launch({
         args: electronArguments(userDataDir),
         env: electronEnvironment(),
@@ -120,8 +148,21 @@ test('Electron host isolates the shared waveform renderer', { timeout: 20_000 },
             transportKeys: ['onMessage', 'send'],
             title: 'VeriFlow Waveform',
         });
+
+        const waveformUrl = page.url();
+        await page.evaluate(url => { window.location.href = url; }, untrusted.url);
+        await page.waitForTimeout(200);
+        assert.equal(page.url(), waveformUrl);
+
+        await page.evaluate(url => { window.open(url, '_blank'); }, untrusted.url);
+        await page.waitForTimeout(100);
+        const windowCount = await electronApp.evaluate(({ BrowserWindow }) => (
+            BrowserWindow.getAllWindows().length
+        ));
+        assert.equal(windowCount, 1);
     } finally {
         await electronApp.close();
+        await untrusted.close();
         rmSync(userDataDir, { recursive: true, force: true });
     }
 });

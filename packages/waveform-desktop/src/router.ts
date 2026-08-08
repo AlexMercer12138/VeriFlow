@@ -176,6 +176,16 @@ export class WaveformRouter {
         });
     }
 
+    private acceptsGeneration(request: WaveformRendererMessage): boolean {
+        if (request.type === 'ready') return true;
+        const expected = request.type === 'cancelLoad' || request.type === 'retryLoad'
+            ? this.options.worker.currentLoadingGeneration
+            : this.options.worker.currentGeneration;
+        if (request.generation === expected) return true;
+        this.bridgeError(`stale ${request.type} generation`);
+        return false;
+    }
+
     private handleRendererMessage(message: unknown): void {
         if (!isRecord(message)) {
             this.bridgeError('waveform bridge message must be an object');
@@ -187,6 +197,7 @@ export class WaveformRouter {
             return;
         }
         const request = message as WaveformRendererMessage;
+        if (!this.acceptsGeneration(request)) return;
         if (request.type === 'ready' || request.type === 'retryLoad') {
             this.options.worker.open(this.options.source);
         } else if (request.type === 'cancelRequest') {

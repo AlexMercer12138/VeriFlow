@@ -53,6 +53,8 @@ export async function createWaveformWindow(source: string): Promise<BrowserWindo
             sandbox: true,
         },
     });
+    window.webContents.on('will-navigate', event => event.preventDefault());
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     const worker = new WaveformWorkerClient({
         cacheRoot: path.join(app.getPath('userData'), 'waveform-cache'),
     });
