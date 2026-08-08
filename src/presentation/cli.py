@@ -47,6 +47,18 @@ class _StableArgumentParser(argparse.ArgumentParser):
         kwargs.setdefault("formatter_class", _StableHelpFormatter)
         super().__init__(*args, **kwargs)
 
+    def _check_value(self, action, value):
+        choices = action.choices
+        if choices is None:
+            return
+        membership_choices = iter(choices) if isinstance(choices, str) else choices
+        if value not in membership_choices:
+            rendered_choices = ", ".join(map(str, action.choices))
+            raise argparse.ArgumentError(
+                action,
+                f"invalid choice: {value!r} (choose from {rendered_choices})",
+            )
+
 
 def _print(msg: str = ""):
     print(msg)

@@ -232,6 +232,32 @@ def test_cli_help_is_stable_when_argparse_repeats_option_metavars(
     assert capture_case(case, tmp_path / case["id"]) == case["expected"]
 
 
+def test_cli_invalid_choice_is_stable_when_argparse_quotes_choices(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def legacy_check_value(
+        parser: argparse.ArgumentParser,
+        action: argparse.Action,
+        value: object,
+    ) -> None:
+        if action.choices is not None and value not in action.choices:
+            choices = ", ".join(map(repr, action.choices))
+            raise argparse.ArgumentError(
+                action,
+                f"invalid choice: {value!r} (choose from {choices})",
+            )
+
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "_check_value",
+        legacy_check_value,
+    )
+    case = next(case for case in CASES if case["id"] == "unknown_command")
+
+    assert capture_case(case, tmp_path / case["id"]) == case["expected"]
+
+
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 def test_python_cli_contract(case: dict, tmp_path: Path) -> None:
     assert case["expected"] is not None, (
