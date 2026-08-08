@@ -10,12 +10,46 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./vcdIndex": {
+      "types": "./dist/vcdIndex.d.ts",
+      "require": "./dist/vcdIndex.js",
+      "default": "./dist/vcdIndex.js"
+    },
+    "./vcdIndexFormat": {
+      "types": "./dist/vcdIndexFormat.d.ts",
+      "require": "./dist/vcdIndexFormat.js",
+      "default": "./dist/vcdIndexFormat.js"
+    },
+    "./waveformCache": {
+      "types": "./dist/waveformCache.d.ts",
+      "require": "./dist/waveformCache.js",
+      "default": "./dist/waveformCache.js"
+    },
+    "./waveformWorker": {
+      "types": "./dist/waveformWorker.d.ts",
+      "require": "./dist/waveformWorker.js",
+      "default": "./dist/waveformWorker.js"
+    },
+    "./waveformWorkerClient": {
+      "types": "./dist/waveformWorkerClient.d.ts",
+      "require": "./dist/waveformWorkerClient.js",
+      "default": "./dist/waveformWorkerClient.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "vcdIndex": ["dist/vcdIndex.d.ts"],
+      "vcdIndexFormat": ["dist/vcdIndexFormat.d.ts"],
+      "waveformCache": ["dist/waveformCache.d.ts"],
+      "waveformWorker": ["dist/waveformWorker.d.ts"],
+      "waveformWorkerClient": ["dist/waveformWorkerClient.d.ts"]
     }
   },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build"
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   }
 }

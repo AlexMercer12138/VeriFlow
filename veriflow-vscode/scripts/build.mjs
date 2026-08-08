@@ -70,7 +70,14 @@ const nodeBundleOptions = [
     },
     {
         ...commonBuildOptions,
-        entryPoints: [path.join(extensionRoot, 'src', 'core', 'waveformWorker.ts')],
+        entryPoints: [path.join(
+            extensionRoot,
+            '..',
+            'packages',
+            'waveform-runtime',
+            'src',
+            'waveformWorker.ts'
+        )],
         outfile: path.join(workerRoot, 'waveformWorker.js'),
     },
 ];
