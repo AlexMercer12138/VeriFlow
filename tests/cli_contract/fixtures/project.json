@@ -1,0 +1,25 @@
+{
+  "project_name": "contract_demo",
+  "project_root": "rtl",
+  "lib_dirs": [
+    "libs/project"
+  ],
+  "top_module": "top",
+  "simulator": "fake",
+  "wave_viewer": "builtin",
+  "wave_file_template": "{top_module}.vcd",
+  "testbench_output_dir": ".",
+  "simulators": {
+    "fake": {
+      "compile_cmd": "fake-compile -o \"{output}\" {files}",
+      "run_cmd": "fake-run \"{output}\""
+    }
+  },
+  "wave_viewers": {
+    "builtin": ""
+  },
+  "file_order": [],
+  "custom_metadata": {
+    "owner": "contract"
+  }
+}
