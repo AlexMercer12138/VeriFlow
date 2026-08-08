@@ -509,8 +509,12 @@ async function testDependencyAnalyzerNonFileUriFallback(): Promise<void> {
 }
 
 function testDependencyAnalyzerProductionWiring(): void {
-    const analyzerSource = fs.readFileSync(
+    const analyzerShimSource = fs.readFileSync(
         path.join(repositoryRoot, 'veriflow-vscode', 'src', 'core', 'dependencyAnalyzer.ts'),
+        'utf8'
+    );
+    const analyzerSource = fs.readFileSync(
+        path.join(repositoryRoot, 'packages', 'hdl-runtime', 'src', 'dependencyAnalyzer.ts'),
         'utf8'
     );
     const extensionSource = fs.readFileSync(
@@ -518,6 +522,10 @@ function testDependencyAnalyzerProductionWiring(): void {
         'utf8'
     );
 
+    assert.strictEqual(
+        analyzerShimSource,
+        "export * from '@veriflow/hdl-runtime/dependencyAnalyzer';\n"
+    );
     assert.match(analyzerSource, /constructor\(private readonly index: WorkspaceHdlIndex\)/);
     assert.doesNotMatch(analyzerSource, /MODULE_DECL_RE|INST_RE|INCLUDE_RE|readText|listVerilogFiles/);
     assert.match(extensionSource, /new DependencyAnalyzer\(index\)/);
