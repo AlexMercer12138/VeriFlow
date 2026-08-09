@@ -17,20 +17,21 @@ import {
     Workflow,
 } from 'lucide';
 
-import type {
-    GraphNode,
-    GraphNodeKind,
-    GraphPin,
-    NetworkEndpoint,
-    SchematicGraph,
-    SchematicNetwork,
-} from '../../../veriflow-vscode/src/schematic/graphModel';
+import {
+    measureSchematicNode,
+    resolvePinSides,
+    SCHEMATIC_NODE_LAYOUT,
+    type GraphNode,
+    type GraphNodeKind,
+    type MeasuredNode,
+    type NetworkEndpoint,
+    type PinKey,
+    type PinSide,
+    type SchematicGraph,
+    type SchematicNetwork,
+} from '@veriflow/schematic-core';
 import {
     deriveFeedbackRoutes,
-    SCHEMATIC_BASE_NODE_SIZE,
-    SCHEMATIC_PIN_LAYOUT,
-    SCHEMATIC_PORT_SIZE,
-    schematicNodeSize,
     type SchematicLayout,
 } from '../../../veriflow-vscode/src/schematic/layoutStore';
 import type { HostEvent, WebviewCommand } from '../../../veriflow-vscode/src/schematic/protocol';
@@ -150,6 +151,22 @@ function truncate(value: string, limit: number): string {
     return limit <= 3 ? value.slice(0, limit) : `${value.slice(0, limit - 3)}...`;
 }
 
+let textMeasureContext: CanvasRenderingContext2D | null | undefined;
+
+function measureNodeText(text: string): number {
+    if (textMeasureContext === undefined) {
+        textMeasureContext = document.createElement('canvas').getContext('2d');
+    }
+    if (textMeasureContext) {
+        const fontFamily = getComputedStyle(document.documentElement)
+            .getPropertyValue('--vscode-font-family').trim() || 'sans-serif';
+        textMeasureContext.font = `12px ${fontFamily}`;
+        const width = textMeasureContext.measureText(text).width;
+        if (Number.isFinite(width) && width >= 0) return width;
+    }
+    return text.length * 7;
+}
+
 function registerShapes(): void {
     for (const [kind, shapeName] of Object.entries(shapeNames) as Array<[
         GraphNodeKind,
@@ -158,11 +175,11 @@ function registerShapes(): void {
         Graph.registerNode(shapeName, {
             inherit: 'rect',
             width: kind === 'port'
-                ? SCHEMATIC_PORT_SIZE.width
-                : SCHEMATIC_BASE_NODE_SIZE.width,
+                ? SCHEMATIC_NODE_LAYOUT.portWidth
+                : SCHEMATIC_NODE_LAYOUT.minimumWidth,
             height: kind === 'port'
-                ? SCHEMATIC_PORT_SIZE.height
-                : SCHEMATIC_BASE_NODE_SIZE.height,
+                ? SCHEMATIC_NODE_LAYOUT.portHeight
+                : SCHEMATIC_NODE_LAYOUT.minimumHeight,
             markup: [
                 { tagName: 'rect', selector: 'body' },
                 { tagName: 'rect', selector: 'accent' },
@@ -247,57 +264,27 @@ function portGroups() {
             attrs: { portBody: body },
             label: { position: { name: 'left', args: { x: -7 } } },
         },
-        bottom: {
-            position: { name: 'absolute' },
-            attrs: { portBody: body },
-            label: { position: { name: 'top', args: { y: -6 } } },
-        },
     };
 }
 
 function pinItems(
-    node: GraphNode,
-    width: number,
-    height: number
+    node: MeasuredNode
 ): { items: object[]; positions: Map<string, { x: number; y: number }> } {
     const positions = new Map<string, { x: number; y: number }>();
-    const bySide = {
-        left: node.pins.filter(pin => pin.side === 'left'),
-        right: node.pins.filter(pin => pin.side === 'right'),
-        bottom: node.pins.filter(pin => pin.side === 'bottom'),
-    };
-    const items = node.pins.map(pin => {
-        const sidePins = bySide[pin.side];
-        const index = sidePins.indexOf(pin);
-        const position = pin.side === 'bottom'
-            ? { x: width * (index + 1) / (sidePins.length + 1), y: height }
-            : {
-                x: pin.side === 'left' ? 0 : width,
-                y: node.kind === 'port'
-                    ? height / 2
-                    : SCHEMATIC_PIN_LAYOUT.startY
-                        + index * SCHEMATIC_PIN_LAYOUT.rowHeight,
-            };
+    const items = node.pins.map(resolved => {
+        const pin = resolved.source;
+        const position = resolved.anchor;
         positions.set(pin.id, position);
-        const bottomSlotWidth = width / Math.max(1, sidePins.length);
-        const bottomLimit = bottomSlotWidth < 7
-            ? 0
-            : Math.max(1, Math.floor(bottomSlotWidth / 7));
-        const labelText = node.kind === 'port'
-            ? ''
-            : pin.side === 'bottom' && bottomLimit === 0
-                ? ''
-                : truncate(pin.name, pin.side === 'bottom' ? bottomLimit : 10);
         return {
             id: pin.id,
-            group: pin.side,
+            group: resolved.side,
             args: position,
             attrs: {
                 portBody: {
                     strokeDasharray: pin.readOnly ? '2 1' : undefined,
                 },
                 portLabel: {
-                    text: labelText,
+                    text: resolved.visibleLabel,
                     title: pin.name,
                     fill: 'var(--vscode-editor-foreground, #202124)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
@@ -315,11 +302,19 @@ function positionFor(layout: SchematicLayout, nodeId: string): { x: number; y: n
     return layout.nodes[nodeId] ?? { x: 0, y: 0 };
 }
 
-function createRenderedNode(model: GraphNode, layout: SchematicLayout): RenderedNode {
-    const { width, height } = schematicNodeSize(model);
+function createRenderedNode(
+    model: GraphNode,
+    layout: SchematicLayout,
+    pinSides: ReadonlyMap<PinKey, PinSide>
+): RenderedNode {
+    const subtitle = model.subtitle ?? (model.readOnly ? 'read-only' : undefined);
+    const displayModel = subtitle === model.subtitle
+        ? model
+        : { ...model, subtitle };
+    const measured = measureSchematicNode(displayModel, pinSides, measureNodeText);
+    const { width, height } = measured;
     const center = positionFor(layout, model.id);
-    const ports = pinItems(model, width, height);
-    const subtitle = model.subtitle ?? (model.readOnly ? 'read-only' : '');
+    const ports = pinItems(measured);
     const cell = graph.addNode({
         id: model.id,
         shape: shapeNames[model.kind],
@@ -344,12 +339,12 @@ function createRenderedNode(model: GraphNode, layout: SchematicLayout): Rendered
             },
             accent: { height },
             label: {
-                text: truncate(model.label, model.kind === 'port' ? 9 : 19),
+                text: measured.title.visibleText,
                 title: model.label,
             },
             subtitle: {
-                text: truncate(subtitle, 22),
-                title: subtitle,
+                text: measured.subtitle?.visibleText ?? '',
+                title: subtitle ?? '',
                 cursor: model.kind === 'instance' && model.definitionKey
                     ? 'pointer'
                     : 'default',
@@ -758,9 +753,10 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
     const renderedNodes = new Map<string, RenderedNode>();
+    const pinSides = resolvePinSides(model);
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {
-            renderedNodes.set(node.id, createRenderedNode(node, layout));
+            renderedNodes.set(node.id, createRenderedNode(node, layout, pinSides));
         }
         renderNetworks(model, layout, renderedNodes);
     });

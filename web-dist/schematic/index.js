@@ -489,6 +489,288 @@
     }
   });
 
+  // packages/schematic-core/dist/model.js
+  var require_model = __commonJS({
+    "packages/schematic-core/dist/model.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+    }
+  });
+
+  // packages/schematic-core/dist/pins.js
+  var require_pins = __commonJS({
+    "packages/schematic-core/dist/pins.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.pinKey = pinKey2;
+      exports2.resolvePinSides = resolvePinSides2;
+      function pinKey2(nodeId, pinId) {
+        return `${nodeId}\0${pinId}`;
+      }
+      function boundaryPinSide(node) {
+        if (node.kind !== "port")
+          return void 0;
+        return node.pins[0]?.direction === "driver" ? "right" : "left";
+      }
+      function compareEndpoints(left4, right4) {
+        return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
+      }
+      function resolvePinSides2(graph2) {
+        const orderedPins = [];
+        const networksByPin = /* @__PURE__ */ new Map();
+        const nodeIndexes = /* @__PURE__ */ new Map();
+        const pinIndexes = /* @__PURE__ */ new Map();
+        const nodesById = /* @__PURE__ */ new Map();
+        graph2.nodes.forEach((node, nodeIndex) => {
+          nodeIndexes.set(node.id, nodeIndex);
+          nodesById.set(node.id, node);
+          node.pins.forEach((pin2, pinIndex) => {
+            const key = pinKey2(node.id, pin2.id);
+            orderedPins.push({ key, node, direction: pin2.direction });
+            pinIndexes.set(key, pinIndex);
+          });
+        });
+        const orderedNetworks = graph2.networks.map((network) => network.endpoints.flatMap((endpoint) => {
+          const node = nodesById.get(endpoint.nodeId);
+          const key = pinKey2(endpoint.nodeId, endpoint.pinId);
+          const nodeIndex = nodeIndexes.get(endpoint.nodeId);
+          const pinIndex = pinIndexes.get(key);
+          if (!node || nodeIndex === void 0 || pinIndex === void 0)
+            return [];
+          const ordered = {
+            ...endpoint,
+            key,
+            node,
+            nodeIndex,
+            pinIndex
+          };
+          return [ordered];
+        }).sort(compareEndpoints));
+        for (const endpoints of orderedNetworks) {
+          for (const endpoint of endpoints) {
+            const networks = networksByPin.get(endpoint.key) ?? [];
+            networks.push(endpoints);
+            networksByPin.set(endpoint.key, networks);
+          }
+        }
+        const resolved = /* @__PURE__ */ new Map();
+        for (const candidate of orderedPins) {
+          const boundary2 = boundaryPinSide(candidate.node);
+          if (boundary2) {
+            resolved.set(candidate.key, boundary2);
+          } else if (candidate.direction === "driver") {
+            resolved.set(candidate.key, "right");
+          } else if (candidate.direction === "load") {
+            resolved.set(candidate.key, "left");
+          }
+        }
+        for (const candidate of orderedPins) {
+          if (resolved.has(candidate.key))
+            continue;
+          let hasDriverPeer = false;
+          let hasLoadPeer = false;
+          for (const endpoints of networksByPin.get(candidate.key) ?? []) {
+            for (const peer of endpoints) {
+              if (peer.key === candidate.key)
+                continue;
+              hasDriverPeer || (hasDriverPeer = peer.role === "driver");
+              hasLoadPeer || (hasLoadPeer = peer.role === "load");
+            }
+          }
+          if (hasDriverPeer) {
+            resolved.set(candidate.key, "left");
+          } else if (hasLoadPeer) {
+            resolved.set(candidate.key, "right");
+          }
+        }
+        for (const endpoints of orderedNetworks) {
+          const ambiguous = endpoints.filter((endpoint) => !resolved.has(endpoint.key));
+          if (ambiguous.length === 0)
+            continue;
+          const source = ambiguous.find((endpoint) => endpoint.node.kind !== "port") ?? ambiguous[0];
+          for (const endpoint of ambiguous) {
+            resolved.set(endpoint.key, endpoint.key === source.key ? "right" : "left");
+          }
+        }
+        for (const candidate of orderedPins) {
+          if (!resolved.has(candidate.key))
+            resolved.set(candidate.key, "left");
+        }
+        return new Map(orderedPins.map((candidate) => [
+          candidate.key,
+          resolved.get(candidate.key)
+        ]));
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/nodeGeometry.js
+  var require_nodeGeometry = __commonJS({
+    "packages/schematic-core/dist/nodeGeometry.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.SCHEMATIC_NODE_LAYOUT = void 0;
+      exports2.measureSchematicNode = measureSchematicNode3;
+      var pins_1 = require_pins();
+      exports2.SCHEMATIC_NODE_LAYOUT = {
+        gridSize: 2,
+        minimumWidth: 160,
+        maximumWidth: 320,
+        minimumHeight: 72,
+        portWidth: 96,
+        portHeight: 40,
+        headerAreaHeight: 40,
+        pinRowHeight: 20,
+        verticalPadding: 12,
+        horizontalPadding: 12,
+        pinLabelInset: 10,
+        minimumCenterGap: 24,
+        labelHeight: 14
+      };
+      function measuredWidth(measure, text3) {
+        const width2 = measure(text3);
+        return Number.isFinite(width2) ? Math.max(0, width2) : 0;
+      }
+      function fitText(text3, maximumWidth, measure) {
+        const available = Number.isFinite(maximumWidth) ? Math.max(0, maximumWidth) : 0;
+        if (measuredWidth(measure, text3) <= available) {
+          return { visibleText: text3, truncated: false };
+        }
+        const ellipsis = "...";
+        if (measuredWidth(measure, ellipsis) > available) {
+          return { visibleText: "", truncated: true };
+        }
+        let lower = 0;
+        let upper = text3.length;
+        while (lower < upper) {
+          const candidate = Math.ceil((lower + upper) / 2);
+          if (measuredWidth(measure, `${text3.slice(0, candidate)}${ellipsis}`) <= available) {
+            lower = candidate;
+          } else {
+            upper = candidate - 1;
+          }
+        }
+        return { visibleText: `${text3.slice(0, lower)}${ellipsis}`, truncated: true };
+      }
+      function sideFor(node, pin2, sideMap) {
+        return sideMap.get((0, pins_1.pinKey)(node.id, pin2.id)) ?? (pin2.direction === "driver" ? "right" : "left");
+      }
+      function allocateLabelWidths(leftNatural, rightNatural, available) {
+        if (leftNatural + rightNatural <= available) {
+          return { left: leftNatural, right: rightNatural };
+        }
+        if (leftNatural === 0)
+          return { left: 0, right: available };
+        if (rightNatural === 0)
+          return { left: available, right: 0 };
+        let left4 = Math.min(leftNatural, available / 2);
+        let right4 = Math.min(rightNatural, available - left4);
+        let remaining = available - left4 - right4;
+        const leftGrowth = Math.min(leftNatural - left4, remaining);
+        left4 += leftGrowth;
+        remaining -= leftGrowth;
+        right4 += Math.min(rightNatural - right4, remaining);
+        return { left: left4, right: right4 };
+      }
+      function measuredLabel(fullText, clipBounds, measure) {
+        const fitted = fitText(fullText, clipBounds.width, measure);
+        return { fullText, ...fitted, clipBounds };
+      }
+      function measureSchematicNode3(node, sideMap, measure) {
+        const sidePins = node.pins.map((source) => ({
+          source,
+          side: sideFor(node, source, sideMap)
+        }));
+        const leftPins = sidePins.filter((pin2) => pin2.side === "left");
+        const rightPins = sidePins.filter((pin2) => pin2.side === "right");
+        const isPort = node.kind === "port";
+        const leftNatural = isPort ? 0 : Math.max(0, ...leftPins.map((pin2) => measuredWidth(measure, pin2.source.name)));
+        const rightNatural = isPort ? 0 : Math.max(0, ...rightPins.map((pin2) => measuredWidth(measure, pin2.source.name)));
+        const headingWidth = Math.max(measuredWidth(measure, node.label), measuredWidth(measure, node.subtitle ?? "")) + 2 * exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding;
+        const pinWidth = leftNatural + rightNatural + exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap + 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset;
+        const width2 = isPort ? exports2.SCHEMATIC_NODE_LAYOUT.portWidth : Math.min(exports2.SCHEMATIC_NODE_LAYOUT.maximumWidth, Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumWidth, headingWidth, pinWidth));
+        const sideRows = Math.max(leftPins.length, rightPins.length);
+        const height2 = isPort ? exports2.SCHEMATIC_NODE_LAYOUT.portHeight : Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumHeight, exports2.SCHEMATIC_NODE_LAYOUT.headerAreaHeight + sideRows * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.verticalPadding);
+        const availableForPins = Math.max(0, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset - exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap);
+        const labelWidths = isPort ? { left: 0, right: 0 } : allocateLabelWidths(leftNatural, rightNatural, availableForPins);
+        const centerWidth = Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset - labelWidths.left - labelWidths.right);
+        const titleBounds = {
+          x: exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding,
+          y: 5,
+          width: Math.max(0, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding),
+          height: exports2.SCHEMATIC_NODE_LAYOUT.labelHeight
+        };
+        const subtitleBounds = {
+          ...titleBounds,
+          y: 22
+        };
+        const sideIndexes = { left: 0, right: 0 };
+        const pins = sidePins.map(({ source, side }) => {
+          const row = sideIndexes[side]++;
+          const anchor2 = isPort ? { x: side === "left" ? 0 : width2, y: height2 / 2 } : {
+            x: side === "left" ? 0 : width2,
+            y: exports2.SCHEMATIC_NODE_LAYOUT.headerAreaHeight + row * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight / 2
+          };
+          const labelWidth = side === "left" ? labelWidths.left : labelWidths.right;
+          const clipBounds = {
+            x: side === "left" ? exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset : width2 - exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset - labelWidth,
+            y: Math.max(0, anchor2.y - exports2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2),
+            width: labelWidth,
+            height: Math.min(exports2.SCHEMATIC_NODE_LAYOUT.labelHeight, height2)
+          };
+          const fitted = isPort ? { visibleText: "", truncated: false } : fitText(source.name, clipBounds.width, measure);
+          return {
+            source,
+            side,
+            anchor: anchor2,
+            fullLabel: source.name,
+            visibleLabel: fitted.visibleText,
+            truncated: fitted.truncated,
+            clipBounds
+          };
+        });
+        return {
+          source: node,
+          width: width2,
+          height: height2,
+          title: measuredLabel(node.label, titleBounds, measure),
+          subtitle: node.subtitle === void 0 ? void 0 : measuredLabel(node.subtitle, subtitleBounds, measure),
+          pins,
+          leftLabelWidth: labelWidths.left,
+          rightLabelWidth: labelWidths.right,
+          centerWidth
+        };
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/index.js
+  var require_dist = __commonJS({
+    "packages/schematic-core/dist/index.js"(exports2) {
+      "use strict";
+      var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
+        if (k2 === void 0) k2 = k;
+        var desc = Object.getOwnPropertyDescriptor(m, k);
+        if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+          desc = { enumerable: true, get: function() {
+            return m[k];
+          } };
+        }
+        Object.defineProperty(o, k2, desc);
+      }) : (function(o, m, k, k2) {
+        if (k2 === void 0) k2 = k;
+        o[k2] = m[k];
+      }));
+      var __exportStar = exports2 && exports2.__exportStar || function(m, exports3) {
+        for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports3, p)) __createBinding(exports3, m, p);
+      };
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      __exportStar(require_model(), exports2);
+      __exportStar(require_nodeGeometry(), exports2);
+      __exportStar(require_pins(), exports2);
+    }
+  });
+
   // node_modules/tslib/tslib.es6.mjs
   function __rest(s, e) {
     var t = {};
@@ -9018,7 +9300,7 @@
     get: () => get2,
     getAttribute: () => getAttribute,
     getClass: () => getClass,
-    getComputedStyle: () => getComputedStyle,
+    getComputedStyle: () => getComputedStyle2,
     getData: () => getData,
     getPointsFromSvgElement: () => getPointsFromSvgElement,
     getTransformToElement: () => getTransformToElement,
@@ -9510,7 +9792,7 @@
     }
     style2[name] = value;
   }
-  function getComputedStyle(elem, name) {
+  function getComputedStyle2(elem, name) {
     const computed = elem.ownerDocument && elem.ownerDocument.defaultView && elem.ownerDocument.defaultView.opener ? elem.ownerDocument.defaultView.getComputedStyle(elem, null) : window.getComputedStyle(elem, null);
     if (computed && name) {
       return computed.getPropertyValue(name) || computed[name];
@@ -9518,7 +9800,7 @@
     return computed;
   }
   function hasScrollbars(container) {
-    const style2 = getComputedStyle(container);
+    const style2 = getComputedStyle2(container);
     return style2 != null && (style2.overflow === "scroll" || style2.overflow === "auto");
   }
 
@@ -40018,6 +40300,9 @@
     ["rect", { width: "8", height: "8", x: "13", y: "13", rx: "2" }]
   ];
 
+  // packages/schematic-webview/src/index.ts
+  var import_schematic_core2 = __toESM(require_dist());
+
   // node_modules/@dagrejs/dagre/dist/dagre.esm.js
   var Re = Object.defineProperty;
   var Mn = (e, n) => {
@@ -40660,15 +40945,12 @@
   }
 
   // veriflow-vscode/src/schematic/layoutStore.ts
+  var import_schematic_core = __toESM(require_dist());
   var MIN_ZOOM = 0.1;
   var MAX_ZOOM = 4;
-  var SCHEMATIC_BASE_NODE_SIZE = { width: 160, height: 72 };
-  var SCHEMATIC_PORT_SIZE = { width: 96, height: 40 };
-  var SCHEMATIC_PIN_LAYOUT = {
-    startY: 44,
-    rowHeight: 18,
-    bottomSpacing: 18,
-    bottomPadding: 10
+  var SCHEMATIC_PORT_SIZE = {
+    width: import_schematic_core.SCHEMATIC_NODE_LAYOUT.portWidth,
+    height: import_schematic_core.SCHEMATIC_NODE_LAYOUT.portHeight
   };
   var FEEDBACK_LANE_SEPARATION = 32;
   function isRecord(value) {
@@ -40717,22 +40999,12 @@
     return left4 < right4 ? -1 : left4 > right4 ? 1 : 0;
   }
   function schematicNodeSize(node) {
-    if (node.kind === "port") {
-      return { ...SCHEMATIC_PORT_SIZE };
-    }
-    const sideRows = Math.max(
-      node.pins.filter((pin2) => pin2.side === "left").length,
-      node.pins.filter((pin2) => pin2.side === "right").length
-    );
-    const bottomPins = node.pins.filter((pin2) => pin2.side === "bottom").length;
-    const pinHeight = sideRows === 0 ? 0 : SCHEMATIC_PIN_LAYOUT.startY + (sideRows - 1) * SCHEMATIC_PIN_LAYOUT.rowHeight + SCHEMATIC_PIN_LAYOUT.bottomPadding;
-    return {
-      width: Math.max(
-        SCHEMATIC_BASE_NODE_SIZE.width,
-        (bottomPins + 1) * SCHEMATIC_PIN_LAYOUT.bottomSpacing
-      ),
-      height: Math.max(SCHEMATIC_BASE_NODE_SIZE.height, pinHeight)
-    };
+    const sides = new Map(node.pins.map((pin2) => [
+      (0, import_schematic_core.pinKey)(node.id, pin2.id),
+      pin2.direction === "driver" ? "right" : "left"
+    ]));
+    const measured = (0, import_schematic_core.measureSchematicNode)(node, sides, (text3) => text3.length * 7);
+    return { width: measured.width, height: measured.height };
   }
   function deriveFeedbackRoutes(graph2, layout) {
     const normalizedLayout = normalizeLayout(layout);
@@ -41012,12 +41284,25 @@
     if (value.length <= limit) return value;
     return limit <= 3 ? value.slice(0, limit) : `${value.slice(0, limit - 3)}...`;
   }
+  var textMeasureContext;
+  function measureNodeText(text3) {
+    if (textMeasureContext === void 0) {
+      textMeasureContext = document.createElement("canvas").getContext("2d");
+    }
+    if (textMeasureContext) {
+      const fontFamily = getComputedStyle(document.documentElement).getPropertyValue("--vscode-font-family").trim() || "sans-serif";
+      textMeasureContext.font = `12px ${fontFamily}`;
+      const width2 = textMeasureContext.measureText(text3).width;
+      if (Number.isFinite(width2) && width2 >= 0) return width2;
+    }
+    return text3.length * 7;
+  }
   function registerShapes() {
     for (const [kind, shapeName] of Object.entries(shapeNames)) {
       Graph.registerNode(shapeName, {
         inherit: "rect",
-        width: kind === "port" ? SCHEMATIC_PORT_SIZE.width : SCHEMATIC_BASE_NODE_SIZE.width,
-        height: kind === "port" ? SCHEMATIC_PORT_SIZE.height : SCHEMATIC_BASE_NODE_SIZE.height,
+        width: kind === "port" ? import_schematic_core2.SCHEMATIC_NODE_LAYOUT.portWidth : import_schematic_core2.SCHEMATIC_NODE_LAYOUT.minimumWidth,
+        height: kind === "port" ? import_schematic_core2.SCHEMATIC_NODE_LAYOUT.portHeight : import_schematic_core2.SCHEMATIC_NODE_LAYOUT.minimumHeight,
         markup: [
           { tagName: "rect", selector: "body" },
           { tagName: "rect", selector: "accent" },
@@ -41098,42 +41383,25 @@
         position: { name: "absolute" },
         attrs: { portBody: body },
         label: { position: { name: "left", args: { x: -7 } } }
-      },
-      bottom: {
-        position: { name: "absolute" },
-        attrs: { portBody: body },
-        label: { position: { name: "top", args: { y: -6 } } }
       }
     };
   }
-  function pinItems(node, width2, height2) {
+  function pinItems(node) {
     const positions = /* @__PURE__ */ new Map();
-    const bySide = {
-      left: node.pins.filter((pin2) => pin2.side === "left"),
-      right: node.pins.filter((pin2) => pin2.side === "right"),
-      bottom: node.pins.filter((pin2) => pin2.side === "bottom")
-    };
-    const items = node.pins.map((pin2) => {
-      const sidePins = bySide[pin2.side];
-      const index2 = sidePins.indexOf(pin2);
-      const position2 = pin2.side === "bottom" ? { x: width2 * (index2 + 1) / (sidePins.length + 1), y: height2 } : {
-        x: pin2.side === "left" ? 0 : width2,
-        y: node.kind === "port" ? height2 / 2 : SCHEMATIC_PIN_LAYOUT.startY + index2 * SCHEMATIC_PIN_LAYOUT.rowHeight
-      };
+    const items = node.pins.map((resolved) => {
+      const pin2 = resolved.source;
+      const position2 = resolved.anchor;
       positions.set(pin2.id, position2);
-      const bottomSlotWidth = width2 / Math.max(1, sidePins.length);
-      const bottomLimit = bottomSlotWidth < 7 ? 0 : Math.max(1, Math.floor(bottomSlotWidth / 7));
-      const labelText = node.kind === "port" ? "" : pin2.side === "bottom" && bottomLimit === 0 ? "" : truncate(pin2.name, pin2.side === "bottom" ? bottomLimit : 10);
       return {
         id: pin2.id,
-        group: pin2.side,
+        group: resolved.side,
         args: position2,
         attrs: {
           portBody: {
             strokeDasharray: pin2.readOnly ? "2 1" : void 0
           },
           portLabel: {
-            text: labelText,
+            text: resolved.visibleLabel,
             title: pin2.name,
             fill: "var(--vscode-editor-foreground, #202124)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
@@ -41149,11 +41417,13 @@
   function positionFor(layout, nodeId) {
     return layout.nodes[nodeId] ?? { x: 0, y: 0 };
   }
-  function createRenderedNode(model, layout) {
-    const { width: width2, height: height2 } = schematicNodeSize(model);
+  function createRenderedNode(model, layout, pinSides) {
+    const subtitle = model.subtitle ?? (model.readOnly ? "read-only" : void 0);
+    const displayModel = subtitle === model.subtitle ? model : { ...model, subtitle };
+    const measured = (0, import_schematic_core2.measureSchematicNode)(displayModel, pinSides, measureNodeText);
+    const { width: width2, height: height2 } = measured;
     const center2 = positionFor(layout, model.id);
-    const ports = pinItems(model, width2, height2);
-    const subtitle = model.subtitle ?? (model.readOnly ? "read-only" : "");
+    const ports = pinItems(measured);
     const cell = graph.addNode({
       id: model.id,
       shape: shapeNames[model.kind],
@@ -41178,12 +41448,12 @@
         },
         accent: { height: height2 },
         label: {
-          text: truncate(model.label, model.kind === "port" ? 9 : 19),
+          text: measured.title.visibleText,
           title: model.label
         },
         subtitle: {
-          text: truncate(subtitle, 22),
-          title: subtitle,
+          text: measured.subtitle?.visibleText ?? "",
+          title: subtitle ?? "",
           cursor: model.kind === "instance" && model.definitionKey ? "pointer" : "default",
           textDecoration: model.kind === "instance" && model.definitionKey ? "underline" : "none",
           event: model.kind === "instance" && model.definitionKey ? "node:open-definition" : void 0
@@ -41522,9 +41792,10 @@
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
     const renderedNodes = /* @__PURE__ */ new Map();
+    const pinSides = (0, import_schematic_core2.resolvePinSides)(model);
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
-        renderedNodes.set(node.id, createRenderedNode(node, layout));
+        renderedNodes.set(node.id, createRenderedNode(node, layout, pinSides));
       }
       renderNetworks(model, layout, renderedNodes);
     });

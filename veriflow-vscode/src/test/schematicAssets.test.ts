@@ -247,7 +247,14 @@ async function testSchematicAssets(): Promise<void> {
     assert.deepStrictEqual(temporaryImportOwners, [
         'packages/schematic-webview/src/index.ts',
     ]);
-    assert.match(webviewSource, /schematicNodeSize\(model\)/);
+    assert.match(webviewSource, /resolvePinSides\(model\)/);
+    assert.match(webviewSource, /measureSchematicNode\(/);
+    assert.match(webviewSource, /SCHEMATIC_NODE_LAYOUT/);
+    assert.doesNotMatch(
+        webviewSource,
+        /bottom:\s*{\s*position:\s*{\s*name:\s*'absolute'/
+    );
+    assert.doesNotMatch(webviewSource, /pin\.side\s*===\s*'bottom'/);
     assert.doesNotMatch(webviewSource, /function nodeDimensions\(/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
     assert.doesNotMatch(webviewSource, /\bsaveTimer\b/);

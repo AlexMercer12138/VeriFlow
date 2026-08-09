@@ -7,7 +7,7 @@ function typedGraph(graph: SchematicGraph): SchematicGraph {
     return graph;
 }
 
-test('schematic graph model preserves the compatibility shape', () => {
+test('schematic graph model preserves its semantic shape', () => {
     const graph = typedGraph({
         fileUri: 'file:///top.sv',
         moduleKey: 'module:top:0',
@@ -21,7 +21,6 @@ test('schematic graph model preserves the compatibility shape', () => {
                     id: 'port:input:data:value',
                     name: 'data',
                     direction: 'driver',
-                    side: 'right',
                     width: { kind: 'known', bits: 8 },
                     readOnly: false,
                     sourceSpan: { start: 7, end: 11 },
@@ -38,7 +37,6 @@ test('schematic graph model preserves the compatibility shape', () => {
                         id: 'instance:u_sink:data',
                         name: 'data',
                         direction: 'load',
-                        side: 'left',
                         width: { kind: 'symbolic', expression: 'DATA_WIDTH' },
                         readOnly: false,
                     },
@@ -46,7 +44,6 @@ test('schematic graph model preserves the compatibility shape', () => {
                         id: 'instance:u_sink:io',
                         name: 'io',
                         direction: 'bidirectional',
-                        side: 'bottom',
                         width: { kind: 'unknown' },
                         readOnly: true,
                     },
@@ -88,11 +85,8 @@ test('schematic graph model preserves the compatibility shape', () => {
         'driver',
         'load',
     ]);
-    assert.deepEqual(graph.nodes.flatMap(node => node.pins.map(pin => pin.side)), [
-        'right',
-        'left',
-        'bottom',
-    ]);
+    assert.equal(graph.nodes.some(node => node.pins.some(pin =>
+        Object.prototype.hasOwnProperty.call(pin, 'side'))), false);
     assert.deepEqual(graph.nodes.flatMap(node => node.pins.map(pin => pin.width)), [
         { kind: 'known', bits: 8 },
         { kind: 'symbolic', expression: 'DATA_WIDTH' },

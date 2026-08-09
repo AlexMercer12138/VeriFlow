@@ -22,11 +22,12 @@ async function testGoldenGraph(): Promise<void> {
     ]);
     const child = graph.nodes.find(node => node.id === 'instance:u_child')!;
     assert.strictEqual(child.subtitle, 'child');
-    assert.deepStrictEqual(child.pins.map(pin => [pin.name, pin.side]), [
-        ['clk', 'left'],
-        ['enable', 'left'],
-        ['done', 'right'],
+    assert.deepStrictEqual(child.pins.map(pin => [pin.name, pin.direction]), [
+        ['clk', 'load'],
+        ['enable', 'load'],
+        ['done', 'driver'],
     ]);
+    assert.doesNotMatch(JSON.stringify(graph), /"side"\s*:|"bottom"/);
     assert.strictEqual(graph.networks.find(net => net.name === 'clk')?.endpoints.length, 2);
     assert.strictEqual(graph.fileUri, document.uri);
     assert.strictEqual(graph.moduleKey, module.id);
@@ -40,7 +41,7 @@ async function testStructuralEdgeCases(): Promise<void> {
 
     const shared = graph.nodes.find(node => node.id === 'port:shared')!;
     assert.strictEqual(shared.pins[0].direction, 'bidirectional');
-    assert.strictEqual(shared.pins[0].side, 'bottom');
+    assert.equal(Object.prototype.hasOwnProperty.call(shared.pins[0], 'side'), false);
 
     const fanout = graph.networks.find(network => network.name === 'source')!;
     const expressions = graph.nodes.filter(node =>

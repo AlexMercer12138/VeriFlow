@@ -5,6 +5,13 @@ import {
     type GraphLabel,
     type NodeLabel,
 } from '@dagrejs/dagre';
+import {
+    measureSchematicNode,
+    pinKey,
+    SCHEMATIC_NODE_LAYOUT,
+    type PinKey,
+    type PinSide,
+} from '@veriflow/schematic-core';
 
 import type { GraphNode, SchematicGraph, SchematicNetwork } from './graphModel';
 
@@ -61,13 +68,9 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const RANK_SEPARATION = 48;
 const NODE_SEPARATION = 24;
-export const SCHEMATIC_BASE_NODE_SIZE = { width: 160, height: 72 } as const;
-export const SCHEMATIC_PORT_SIZE = { width: 96, height: 40 } as const;
-export const SCHEMATIC_PIN_LAYOUT = {
-    startY: 44,
-    rowHeight: 18,
-    bottomSpacing: 18,
-    bottomPadding: 10,
+export const SCHEMATIC_PORT_SIZE = {
+    width: SCHEMATIC_NODE_LAYOUT.portWidth,
+    height: SCHEMATIC_NODE_LAYOUT.portHeight,
 } as const;
 const FEEDBACK_LANE_SEPARATION = 32;
 
@@ -222,26 +225,12 @@ function boundarySide(node: GraphNode): BoundarySide | undefined {
 }
 
 export function schematicNodeSize(node: GraphNode): SchematicNodeSize {
-    if (node.kind === 'port') {
-        return { ...SCHEMATIC_PORT_SIZE };
-    }
-    const sideRows = Math.max(
-        node.pins.filter(pin => pin.side === 'left').length,
-        node.pins.filter(pin => pin.side === 'right').length
-    );
-    const bottomPins = node.pins.filter(pin => pin.side === 'bottom').length;
-    const pinHeight = sideRows === 0
-        ? 0
-        : SCHEMATIC_PIN_LAYOUT.startY
-            + (sideRows - 1) * SCHEMATIC_PIN_LAYOUT.rowHeight
-            + SCHEMATIC_PIN_LAYOUT.bottomPadding;
-    return {
-        width: Math.max(
-            SCHEMATIC_BASE_NODE_SIZE.width,
-            (bottomPins + 1) * SCHEMATIC_PIN_LAYOUT.bottomSpacing
-        ),
-        height: Math.max(SCHEMATIC_BASE_NODE_SIZE.height, pinHeight),
-    };
+    const sides = new Map<PinKey, PinSide>(node.pins.map(pin => [
+        pinKey(node.id, pin.id),
+        pin.direction === 'driver' ? 'right' : 'left',
+    ]));
+    const measured = measureSchematicNode(node, sides, text => text.length * 7);
+    return { width: measured.width, height: measured.height };
 }
 
 function addNetworkEdges(

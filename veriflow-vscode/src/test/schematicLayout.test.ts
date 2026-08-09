@@ -80,14 +80,12 @@ function createMemoryMemento(): MemoryMemento {
 function pin(
     nodeId: string,
     name: string,
-    direction: PinDirection,
-    side: GraphPin['side']
+    direction: PinDirection
 ): GraphPin {
     return {
         id: `${nodeId}:${name}`,
         name,
         direction,
-        side,
         width: { kind: 'known', bits: 1 },
         readOnly: false,
     };
@@ -117,16 +115,16 @@ function createGraph(): SchematicGraph {
         moduleKey: 'module:top:0',
         moduleName: 'top',
         nodes: [
-            node(inputId, 'port', [pin(inputId, 'clk', 'driver', 'right')]),
+            node(inputId, 'port', [pin(inputId, 'clk', 'driver')]),
             node(inoutId, 'port', [
-                pin(inoutId, 'shared', 'bidirectional', 'bottom'),
+                pin(inoutId, 'shared', 'bidirectional'),
             ]),
             node(instanceId, 'instance', [
-                pin(instanceId, 'clk', 'load', 'left'),
-                pin(instanceId, 'shared', 'bidirectional', 'bottom'),
-                pin(instanceId, 'done', 'driver', 'right'),
+                pin(instanceId, 'clk', 'load'),
+                pin(instanceId, 'shared', 'bidirectional'),
+                pin(instanceId, 'done', 'driver'),
             ]),
-            node(outputId, 'port', [pin(outputId, 'done', 'load', 'left')]),
+            node(outputId, 'port', [pin(outputId, 'done', 'load')]),
         ],
         networks: [
             {
@@ -642,13 +640,13 @@ async function testPartialLayoutAvoidsFixedObstacles(): Promise<void> {
         ...empty,
         nodes: [
             node(fixedPortId, 'port', [
-                pin(fixedPortId, 'fixed-input', 'driver', 'right'),
+                pin(fixedPortId, 'fixed-input', 'driver'),
             ]),
             node(newPortId, 'port', [
-                pin(newPortId, 'new-input', 'driver', 'right'),
+                pin(newPortId, 'new-input', 'driver'),
             ]),
             node(outputPortId, 'port', [
-                pin(outputPortId, 'output', 'load', 'left'),
+                pin(outputPortId, 'output', 'load'),
             ]),
             node(fixedInteriorId, 'instance'),
             ...newInteriorIds.map(id => node(id, 'opaque')),
@@ -790,15 +788,15 @@ async function testEmptyAndDisconnectedGraphs(): Promise<void> {
 async function testPinAwareNodeSizing(): Promise<void> {
     const denseNode = (id: string): GraphNode => node(id, 'instance', [
         ...Array.from({ length: 10 }, (_, index) =>
-            pin(id, `input-${index}`, 'load', 'left')),
+            pin(id, `input-${index}`, 'load')),
         ...Array.from({ length: 8 }, (_, index) =>
-            pin(id, `output-${index}`, 'driver', 'right')),
+            pin(id, `output-${index}`, 'driver')),
         ...Array.from({ length: 12 }, (_, index) =>
-            pin(id, `inout-${index}`, 'bidirectional', 'bottom')),
+            pin(id, `inout-${index}`, 'bidirectional')),
     ]);
     const first = denseNode('instance:dense-a');
     const second = denseNode('instance:dense-b');
-    assert.deepStrictEqual(schematicNodeSize(first), { width: 234, height: 216 });
+    assert.deepStrictEqual(schematicNodeSize(first), { width: 160, height: 492 });
 
     const graph: SchematicGraph = {
         fileUri: 'file:///dense.sv',

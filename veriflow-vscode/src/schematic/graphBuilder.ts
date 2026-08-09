@@ -66,16 +66,6 @@ function instancePinRole(direction: IndexedPortSummary['direction']): PinDirecti
     return 'bidirectional';
 }
 
-function pinSide(role: PinDirection): GraphPin['side'] {
-    if (role === 'load') {
-        return 'left';
-    }
-    if (role === 'driver') {
-        return 'right';
-    }
-    return 'bottom';
-}
-
 function localDefinition(document: HdlDocument, name: string): DefinitionBinding | undefined {
     const matches = document.modules.filter(candidate => candidate.name === name);
     if (matches.length !== 1) {
@@ -159,7 +149,6 @@ function portNode(port: PortModel, module: ModuleModel, documentUri: string): Gr
             id: `${id}:${port.name}`,
             name: port.name,
             direction: role,
-            side: pinSide(role),
             width: port.width,
             readOnly,
             sourceSpan: port.nameSpan,
@@ -190,7 +179,6 @@ function instanceNode(
             id: `${id}:${port.name}`,
             name: port.name,
             direction: role,
-            side: pinSide(role),
             width: port.width,
             readOnly: pinReadOnly,
             sourceSpan,
@@ -269,7 +257,6 @@ function sourceNode(
         id: `${id}:${reference.name}`,
         name: reference.name,
         direction: 'load',
-        side: 'left',
         width: scopeNetworks.get(reference.name)?.width ?? unknownWidth,
         readOnly: readOnly || isForeign(reference.sourceSpan, documentUri),
         sourceSpan: reference.sourceSpan,
@@ -282,7 +269,6 @@ function sourceNode(
             id: `${id}:value`,
             name: 'value',
             direction: 'driver',
-            side: 'right',
             width: expression.width,
             readOnly,
             sourceSpan: expression.span,
@@ -308,7 +294,6 @@ function targetBoundaryNode(
         id: `${id}:${reference.name}`,
         name: reference.name,
         direction: referenceRole,
-        side: pinSide(referenceRole),
         width: scopeNetworks.get(reference.name)?.width ?? unknownWidth,
         readOnly: readOnly || isForeign(reference.sourceSpan, documentUri),
         sourceSpan: reference.sourceSpan,
@@ -322,7 +307,6 @@ function targetBoundaryNode(
             id: `${id}:value`,
             name: 'value',
             direction: valueRole,
-            side: pinSide(valueRole),
             width: expression.width,
             readOnly,
             sourceSpan: expression.span,
@@ -608,7 +592,6 @@ export function buildSchematicGraph(
             id: `${id}:${name}`,
             name,
             direction: 'bidirectional' as const,
-            side: 'bottom' as const,
             width: scopeNetworks.get(name)?.width ?? unknownWidth,
             readOnly,
             sourceSpan: opaque.span,

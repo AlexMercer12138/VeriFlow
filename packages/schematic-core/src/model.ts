@@ -10,11 +10,12 @@ export type GraphNodeKind =
 
 export type PinDirection = 'driver' | 'load' | 'bidirectional';
 
+export type PinSide = 'left' | 'right';
+
 export type GraphPin = {
     id: string;
     name: string;
     direction: PinDirection;
-    side: 'left' | 'right' | 'bottom';
     width: WidthValue;
     readOnly: boolean;
     sourceSpan?: SourceSpan;
