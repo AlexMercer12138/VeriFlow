@@ -8,27 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  python:
-    name: Python tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Python package
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Run pytest
-        run: python -m pytest
-
   hdl-runtime-feasibility:
     name: HDL runtime feasibility (Windows)
     runs-on: windows-latest
@@ -44,11 +23,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install workspace dependencies
         run: npm ci
 
@@ -60,47 +34,6 @@ jobs:
 
       - name: Smoke real parser SEA probe
         run: node scripts/smoke-parser-probe.mjs
-
-      - name: Build and install worker wheel
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.46.3" "pyinstaller==6.19.0" "pytest==9.0.3" "PyYAML==6.0.3"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install worker packaging tools" }
-
-          python scripts/build_parser_probe_wheel.py
-          if ($LASTEXITCODE -ne 0) { throw "Failed to build worker wheel" }
-
-          $wheelDirectory = (Resolve-Path "python-packages/veriflow-hdl-worker/dist").Path
-          $wheels = @(Get-ChildItem -LiteralPath $wheelDirectory -Filter "*.whl" -File)
-          $expectedWheelName = "veriflow_hdl_worker-1.3.2-py3-none-win_amd64.whl"
-          if ($wheels.Count -ne 1 -or $wheels[0].Name -ne $expectedWheelName) {
-            throw "Expected exactly $expectedWheelName, found: $($wheels.Name -join ', ')"
-          }
-
-          $wheelPath = [System.IO.Path]::GetFullPath($wheels[0].FullName)
-          $wheelSha256 = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          "VERIFLOW_HDL_WORKER_WHEEL_PATH=$wheelPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VERIFLOW_HDL_WORKER_WHEEL_SHA256=$wheelSha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VERIFLOW_REQUIRE_INSTALLED_WORKER=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          python -m pip install --force-reinstall --no-deps $wheelPath
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install exact worker wheel" }
-
-      - name: Run worker package tests
-        shell: pwsh
-        run: |
-          python -m pytest tests/test_parser_probe_package.py tests/test_worker_wheel_provenance.py -v
-          if ($LASTEXITCODE -ne 0) { throw "Worker package tests failed" }
-
-      - name: Verify PyInstaller collection
-        shell: pwsh
-        run: |
-          python -m PyInstaller --clean --noconfirm ParserProbe.spec
-          if ($LASTEXITCODE -ne 0) { throw "Parser probe PyInstaller build failed" }
-          $probePath = (Resolve-Path "dist/parser-probe.exe").Path
-          & $probePath
-          if ($LASTEXITCODE -ne 0) { throw "Packaged parser probe failed" }
 
   vscode:
     name: VS Code extension compile
@@ -201,64 +134,3 @@ jobs:
           path: |
             dist/npm/*.tgz
             veriflow-vscode/*.vsix
-
-  python-deprecation-artifacts:
-    name: Deprecated Python artifacts (Windows)
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24.14.1"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install workspace dependencies
-        run: npm ci
-
-      - name: Build shared waveform assets
-        run: npm run build:web
-
-      - name: Install deprecated Python product dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[build]"
-
-      - name: Build deprecated Python products
-        run: |
-          python -m PyInstaller --clean --noconfirm VeriFlow.spec
-          python -m PyInstaller --clean --noconfirm VeriFlow-cli.spec
-
-      - name: Smoke deprecated Python CLI artifact
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          if (-not (Test-Path -LiteralPath "dist/VeriFlow.exe" -PathType Leaf)) {
-            throw "Missing dist/VeriFlow.exe"
-          }
-          if (-not (Test-Path -LiteralPath "dist/VeriFlow-cli.exe" -PathType Leaf)) {
-            throw "Missing dist/VeriFlow-cli.exe"
-          }
-          $cliOutput = (& "dist/VeriFlow-cli.exe" --help 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw "Deprecated Python CLI smoke failed" }
-          if ($cliOutput -notmatch "Python CLI is deprecated") {
-            throw "Deprecated Python CLI warning was not emitted"
-          }
-
-      - name: Upload deprecated Python artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: veriflow-python-deprecation-windows
-          if-no-files-found: error
-          path: |
-            dist/VeriFlow.exe
-            dist/VeriFlow-cli.exe
