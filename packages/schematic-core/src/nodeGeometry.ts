@@ -1,7 +1,15 @@
 import type { GraphNode, GraphPin, PinSide } from './model';
 import { pinKey, type PinKey } from './pins';
 
-export type TextMeasurer = (text: string) => number;
+export type TextMeasurementStyle = Readonly<{
+    fontSize: number;
+    fontWeight: 400 | 600;
+}>;
+
+export type TextMeasurer = (
+    text: string,
+    style: TextMeasurementStyle
+) => number;
 
 export type Point = {
     x: number;
@@ -58,31 +66,44 @@ export const SCHEMATIC_NODE_LAYOUT = {
     pinLabelInset: 10,
     minimumCenterGap: 24,
     labelHeight: 14,
+    titleCenterY: 17,
+    subtitleCenterY: 33,
 } as const;
 
-function measuredWidth(measure: TextMeasurer, text: string): number {
-    const width = measure(text);
+export const SCHEMATIC_TEXT_STYLES = {
+    title: { fontSize: 12, fontWeight: 600 },
+    subtitle: { fontSize: 10, fontWeight: 400 },
+    pin: { fontSize: 10, fontWeight: 400 },
+} as const satisfies Record<string, TextMeasurementStyle>;
+
+function measuredWidth(
+    measure: TextMeasurer,
+    text: string,
+    style: TextMeasurementStyle
+): number {
+    const width = measure(text, style);
     return Number.isFinite(width) ? Math.max(0, width) : 0;
 }
 
 function fitText(
     text: string,
     maximumWidth: number,
-    measure: TextMeasurer
+    measure: TextMeasurer,
+    style: TextMeasurementStyle
 ): { visibleText: string; truncated: boolean } {
     const available = Number.isFinite(maximumWidth) ? Math.max(0, maximumWidth) : 0;
-    if (measuredWidth(measure, text) <= available) {
+    if (measuredWidth(measure, text, style) <= available) {
         return { visibleText: text, truncated: false };
     }
     const ellipsis = '...';
-    if (measuredWidth(measure, ellipsis) > available) {
+    if (measuredWidth(measure, ellipsis, style) > available) {
         return { visibleText: '', truncated: true };
     }
     let lower = 0;
     let upper = text.length;
     while (lower < upper) {
         const candidate = Math.ceil((lower + upper) / 2);
-        if (measuredWidth(measure, `${text.slice(0, candidate)}${ellipsis}`)
+        if (measuredWidth(measure, `${text.slice(0, candidate)}${ellipsis}`, style)
             <= available) {
             lower = candidate;
         } else {
@@ -125,9 +146,10 @@ function allocateLabelWidths(
 function measuredLabel(
     fullText: string,
     clipBounds: ClipBounds,
-    measure: TextMeasurer
+    measure: TextMeasurer,
+    style: TextMeasurementStyle
 ): MeasuredLabel {
-    const fitted = fitText(fullText, clipBounds.width, measure);
+    const fitted = fitText(fullText, clipBounds.width, measure, style);
     return { fullText, ...fitted, clipBounds };
 }
 
@@ -145,15 +167,27 @@ export function measureSchematicNode(
     const isPort = node.kind === 'port';
     const leftNatural = isPort ? 0 : Math.max(
         0,
-        ...leftPins.map(pin => measuredWidth(measure, pin.source.name))
+        ...leftPins.map(pin => measuredWidth(
+            measure,
+            pin.source.name,
+            SCHEMATIC_TEXT_STYLES.pin
+        ))
     );
     const rightNatural = isPort ? 0 : Math.max(
         0,
-        ...rightPins.map(pin => measuredWidth(measure, pin.source.name))
+        ...rightPins.map(pin => measuredWidth(
+            measure,
+            pin.source.name,
+            SCHEMATIC_TEXT_STYLES.pin
+        ))
     );
     const headingWidth = Math.max(
-        measuredWidth(measure, node.label),
-        measuredWidth(measure, node.subtitle ?? '')
+        measuredWidth(measure, node.label, SCHEMATIC_TEXT_STYLES.title),
+        measuredWidth(
+            measure,
+            node.subtitle ?? '',
+            SCHEMATIC_TEXT_STYLES.subtitle
+        )
     ) + 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding;
     const pinWidth = leftNatural
         + rightNatural
@@ -192,13 +226,15 @@ export function measureSchematicNode(
     );
     const titleBounds: ClipBounds = {
         x: SCHEMATIC_NODE_LAYOUT.horizontalPadding,
-        y: 5,
+        y: (isPort ? height / 2 : SCHEMATIC_NODE_LAYOUT.titleCenterY)
+            - SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
         width: Math.max(0, width - 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding),
         height: SCHEMATIC_NODE_LAYOUT.labelHeight,
     };
     const subtitleBounds: ClipBounds = {
         ...titleBounds,
-        y: 22,
+        y: SCHEMATIC_NODE_LAYOUT.subtitleCenterY
+            - SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
     };
     const sideIndexes: Record<PinSide, number> = { left: 0, right: 0 };
     const pins: ResolvedPin[] = sidePins.map(({ source, side }) => {
@@ -222,7 +258,12 @@ export function measureSchematicNode(
         };
         const fitted = isPort
             ? { visibleText: '', truncated: false }
-            : fitText(source.name, clipBounds.width, measure);
+            : fitText(
+                source.name,
+                clipBounds.width,
+                measure,
+                SCHEMATIC_TEXT_STYLES.pin
+            );
         return {
             source,
             side,
@@ -238,10 +279,20 @@ export function measureSchematicNode(
         source: node,
         width,
         height,
-        title: measuredLabel(node.label, titleBounds, measure),
+        title: measuredLabel(
+            node.label,
+            titleBounds,
+            measure,
+            SCHEMATIC_TEXT_STYLES.title
+        ),
         subtitle: node.subtitle === undefined
             ? undefined
-            : measuredLabel(node.subtitle, subtitleBounds, measure),
+            : measuredLabel(
+                node.subtitle,
+                subtitleBounds,
+                measure,
+                SCHEMATIC_TEXT_STYLES.subtitle
+            ),
         pins,
         leftLabelWidth: labelWidths.left,
         rightLabelWidth: labelWidths.right,

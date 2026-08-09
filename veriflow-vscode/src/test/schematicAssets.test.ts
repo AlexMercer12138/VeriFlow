@@ -250,6 +250,23 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /resolvePinSides\(model\)/);
     assert.match(webviewSource, /measureSchematicNode\(/);
     assert.match(webviewSource, /SCHEMATIC_NODE_LAYOUT/);
+    assert.ok(
+        webviewSource.includes(
+            'textMeasureContext.font = '
+                + '`${style.fontWeight} ${style.fontSize}px ${fontFamily}`;'
+        )
+    );
+    for (const clipSelector of [
+        'labelClipRect',
+        'subtitleClipRect',
+        'portLabelClipRect',
+    ]) {
+        assert.ok(
+            webviewSource.includes(clipSelector),
+            `schematic text is missing ${clipSelector}`
+        );
+    }
+    assert.ok(webviewSource.includes('clipPath: `url(#${'));
     assert.doesNotMatch(
         webviewSource,
         /bottom:\s*{\s*position:\s*{\s*name:\s*'absolute'/

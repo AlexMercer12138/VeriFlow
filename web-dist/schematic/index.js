@@ -609,7 +609,7 @@
     "packages/schematic-core/dist/nodeGeometry.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.SCHEMATIC_NODE_LAYOUT = void 0;
+      exports2.SCHEMATIC_TEXT_STYLES = exports2.SCHEMATIC_NODE_LAYOUT = void 0;
       exports2.measureSchematicNode = measureSchematicNode3;
       var pins_1 = require_pins();
       exports2.SCHEMATIC_NODE_LAYOUT = {
@@ -625,26 +625,33 @@
         horizontalPadding: 12,
         pinLabelInset: 10,
         minimumCenterGap: 24,
-        labelHeight: 14
+        labelHeight: 14,
+        titleCenterY: 17,
+        subtitleCenterY: 33
       };
-      function measuredWidth(measure, text3) {
-        const width2 = measure(text3);
+      exports2.SCHEMATIC_TEXT_STYLES = {
+        title: { fontSize: 12, fontWeight: 600 },
+        subtitle: { fontSize: 10, fontWeight: 400 },
+        pin: { fontSize: 10, fontWeight: 400 }
+      };
+      function measuredWidth(measure, text3, style2) {
+        const width2 = measure(text3, style2);
         return Number.isFinite(width2) ? Math.max(0, width2) : 0;
       }
-      function fitText(text3, maximumWidth, measure) {
+      function fitText(text3, maximumWidth, measure, style2) {
         const available = Number.isFinite(maximumWidth) ? Math.max(0, maximumWidth) : 0;
-        if (measuredWidth(measure, text3) <= available) {
+        if (measuredWidth(measure, text3, style2) <= available) {
           return { visibleText: text3, truncated: false };
         }
         const ellipsis = "...";
-        if (measuredWidth(measure, ellipsis) > available) {
+        if (measuredWidth(measure, ellipsis, style2) > available) {
           return { visibleText: "", truncated: true };
         }
         let lower = 0;
         let upper = text3.length;
         while (lower < upper) {
           const candidate = Math.ceil((lower + upper) / 2);
-          if (measuredWidth(measure, `${text3.slice(0, candidate)}${ellipsis}`) <= available) {
+          if (measuredWidth(measure, `${text3.slice(0, candidate)}${ellipsis}`, style2) <= available) {
             lower = candidate;
           } else {
             upper = candidate - 1;
@@ -672,8 +679,8 @@
         right4 += Math.min(rightNatural - right4, remaining);
         return { left: left4, right: right4 };
       }
-      function measuredLabel(fullText, clipBounds, measure) {
-        const fitted = fitText(fullText, clipBounds.width, measure);
+      function measuredLabel(fullText, clipBounds, measure, style2) {
+        const fitted = fitText(fullText, clipBounds.width, measure, style2);
         return { fullText, ...fitted, clipBounds };
       }
       function measureSchematicNode3(node, sideMap, measure) {
@@ -684,9 +691,9 @@
         const leftPins = sidePins.filter((pin2) => pin2.side === "left");
         const rightPins = sidePins.filter((pin2) => pin2.side === "right");
         const isPort = node.kind === "port";
-        const leftNatural = isPort ? 0 : Math.max(0, ...leftPins.map((pin2) => measuredWidth(measure, pin2.source.name)));
-        const rightNatural = isPort ? 0 : Math.max(0, ...rightPins.map((pin2) => measuredWidth(measure, pin2.source.name)));
-        const headingWidth = Math.max(measuredWidth(measure, node.label), measuredWidth(measure, node.subtitle ?? "")) + 2 * exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding;
+        const leftNatural = isPort ? 0 : Math.max(0, ...leftPins.map((pin2) => measuredWidth(measure, pin2.source.name, exports2.SCHEMATIC_TEXT_STYLES.pin)));
+        const rightNatural = isPort ? 0 : Math.max(0, ...rightPins.map((pin2) => measuredWidth(measure, pin2.source.name, exports2.SCHEMATIC_TEXT_STYLES.pin)));
+        const headingWidth = Math.max(measuredWidth(measure, node.label, exports2.SCHEMATIC_TEXT_STYLES.title), measuredWidth(measure, node.subtitle ?? "", exports2.SCHEMATIC_TEXT_STYLES.subtitle)) + 2 * exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding;
         const pinWidth = leftNatural + rightNatural + exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap + 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset;
         const width2 = isPort ? exports2.SCHEMATIC_NODE_LAYOUT.portWidth : Math.min(exports2.SCHEMATIC_NODE_LAYOUT.maximumWidth, Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumWidth, headingWidth, pinWidth));
         const sideRows = Math.max(leftPins.length, rightPins.length);
@@ -696,13 +703,13 @@
         const centerWidth = Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset - labelWidths.left - labelWidths.right);
         const titleBounds = {
           x: exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding,
-          y: 5,
+          y: (isPort ? height2 / 2 : exports2.SCHEMATIC_NODE_LAYOUT.titleCenterY) - exports2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
           width: Math.max(0, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.horizontalPadding),
           height: exports2.SCHEMATIC_NODE_LAYOUT.labelHeight
         };
         const subtitleBounds = {
           ...titleBounds,
-          y: 22
+          y: exports2.SCHEMATIC_NODE_LAYOUT.subtitleCenterY - exports2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2
         };
         const sideIndexes = { left: 0, right: 0 };
         const pins = sidePins.map(({ source, side }) => {
@@ -718,7 +725,7 @@
             width: labelWidth,
             height: Math.min(exports2.SCHEMATIC_NODE_LAYOUT.labelHeight, height2)
           };
-          const fitted = isPort ? { visibleText: "", truncated: false } : fitText(source.name, clipBounds.width, measure);
+          const fitted = isPort ? { visibleText: "", truncated: false } : fitText(source.name, clipBounds.width, measure, exports2.SCHEMATIC_TEXT_STYLES.pin);
           return {
             source,
             side,
@@ -733,8 +740,8 @@
           source: node,
           width: width2,
           height: height2,
-          title: measuredLabel(node.label, titleBounds, measure),
-          subtitle: node.subtitle === void 0 ? void 0 : measuredLabel(node.subtitle, subtitleBounds, measure),
+          title: measuredLabel(node.label, titleBounds, measure, exports2.SCHEMATIC_TEXT_STYLES.title),
+          subtitle: node.subtitle === void 0 ? void 0 : measuredLabel(node.subtitle, subtitleBounds, measure, exports2.SCHEMATIC_TEXT_STYLES.subtitle),
           pins,
           leftLabelWidth: labelWidths.left,
           rightLabelWidth: labelWidths.right,
@@ -41285,17 +41292,23 @@
     return limit <= 3 ? value.slice(0, limit) : `${value.slice(0, limit - 3)}...`;
   }
   var textMeasureContext;
-  function measureNodeText(text3) {
+  function measureNodeText(text3, style2) {
     if (textMeasureContext === void 0) {
       textMeasureContext = document.createElement("canvas").getContext("2d");
     }
     if (textMeasureContext) {
       const fontFamily = getComputedStyle(document.documentElement).getPropertyValue("--vscode-font-family").trim() || "sans-serif";
-      textMeasureContext.font = `12px ${fontFamily}`;
+      textMeasureContext.font = `${style2.fontWeight} ${style2.fontSize}px ${fontFamily}`;
       const width2 = textMeasureContext.measureText(text3).width;
       if (Number.isFinite(width2) && width2 >= 0) return width2;
     }
-    return text3.length * 7;
+    const weightFactor = style2.fontWeight === 600 ? 0.62 : 0.56;
+    return text3.length * style2.fontSize * weightFactor;
+  }
+  var clipPathSequence = 0;
+  function nextClipPathId(kind) {
+    clipPathSequence += 1;
+    return `veriflow-${kind}-clip-${clipPathSequence}`;
   }
   function registerShapes() {
     for (const [kind, shapeName] of Object.entries(shapeNames)) {
@@ -41306,11 +41319,31 @@
         markup: [
           { tagName: "rect", selector: "body" },
           { tagName: "rect", selector: "accent" },
+          {
+            tagName: "clipPath",
+            selector: "labelClip",
+            children: [{ tagName: "rect", selector: "labelClipRect" }]
+          },
+          {
+            tagName: "clipPath",
+            selector: "subtitleClip",
+            children: [{ tagName: "rect", selector: "subtitleClipRect" }]
+          },
           { tagName: "text", selector: "label" },
           { tagName: "text", selector: "subtitle" }
         ],
         portMarkup: [{ tagName: "circle", selector: "portBody" }],
-        portLabelMarkup: [{ tagName: "text", selector: "portLabel" }],
+        portLabelMarkup: [
+          {
+            tagName: "clipPath",
+            selector: "portLabelClip",
+            children: [{
+              tagName: "rect",
+              selector: "portLabelClipRect"
+            }]
+          },
+          { tagName: "text", selector: "portLabel" }
+        ],
         attrs: {
           body: {
             fill: "var(--vscode-editor-background, #ffffff)",
@@ -41329,21 +41362,22 @@
           },
           label: {
             x: 12,
-            y: kind === "port" ? 20 : 17,
+            y: kind === "port" ? import_schematic_core2.SCHEMATIC_NODE_LAYOUT.portHeight / 2 : import_schematic_core2.SCHEMATIC_NODE_LAYOUT.titleCenterY,
             fill: "var(--vscode-editor-foreground, #202124)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: 12,
-            fontWeight: 600,
+            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.title.fontSize,
+            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.title.fontWeight,
             textAnchor: "start",
             textVerticalAnchor: "middle",
             pointerEvents: "none"
           },
           subtitle: {
             x: 12,
-            y: 33,
+            y: import_schematic_core2.SCHEMATIC_NODE_LAYOUT.subtitleCenterY,
             fill: "var(--vscode-descriptionForeground, #616161)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: 10,
+            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
+            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.subtitle.fontWeight,
             textAnchor: "start",
             textVerticalAnchor: "middle"
           }
@@ -41377,12 +41411,22 @@
       left: {
         position: { name: "absolute" },
         attrs: { portBody: body },
-        label: { position: { name: "right", args: { x: 7 } } }
+        label: {
+          position: {
+            name: "right",
+            args: { x: import_schematic_core2.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
+          }
+        }
       },
       right: {
         position: { name: "absolute" },
         attrs: { portBody: body },
-        label: { position: { name: "left", args: { x: -7 } } }
+        label: {
+          position: {
+            name: "left",
+            args: { x: -import_schematic_core2.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
+          }
+        }
       }
     };
   }
@@ -41391,6 +41435,7 @@
     const items = node.pins.map((resolved) => {
       const pin2 = resolved.source;
       const position2 = resolved.anchor;
+      const clipPathId = nextClipPathId("pin");
       positions.set(pin2.id, position2);
       return {
         id: pin2.id,
@@ -41400,12 +41445,22 @@
           portBody: {
             strokeDasharray: pin2.readOnly ? "2 1" : void 0
           },
+          portLabelClip: { id: clipPathId },
+          portLabelClipRect: {
+            x: resolved.side === "left" ? 0 : -resolved.clipBounds.width,
+            y: -resolved.clipBounds.height / 2,
+            width: resolved.clipBounds.width,
+            height: resolved.clipBounds.height
+          },
           portLabel: {
             text: resolved.visibleLabel,
             title: pin2.name,
+            clipPath: `url(#${clipPathId})`,
             fill: "var(--vscode-editor-foreground, #202124)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: 10,
+            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.pin.fontSize,
+            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
+            textAnchor: resolved.side === "left" ? "start" : "end",
             textVerticalAnchor: "middle",
             pointerEvents: "none"
           }
@@ -41422,6 +41477,8 @@
     const displayModel = subtitle === model.subtitle ? model : { ...model, subtitle };
     const measured = (0, import_schematic_core2.measureSchematicNode)(displayModel, pinSides, measureNodeText);
     const { width: width2, height: height2 } = measured;
+    const labelClipPathId = nextClipPathId("label");
+    const subtitleClipPathId = nextClipPathId("subtitle");
     const center2 = positionFor(layout, model.id);
     const ports = pinItems(measured);
     const cell = graph.addNode({
@@ -41447,13 +41504,24 @@
           strokeDasharray: model.readOnly ? "4 2" : void 0
         },
         accent: { height: height2 },
+        labelClip: { id: labelClipPathId },
+        labelClipRect: measured.title.clipBounds,
         label: {
           text: measured.title.visibleText,
-          title: model.label
+          title: model.label,
+          clipPath: `url(#${labelClipPathId})`
+        },
+        subtitleClip: { id: subtitleClipPathId },
+        subtitleClipRect: measured.subtitle?.clipBounds ?? {
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0
         },
         subtitle: {
           text: measured.subtitle?.visibleText ?? "",
           title: subtitle ?? "",
+          clipPath: `url(#${subtitleClipPathId})`,
           cursor: model.kind === "instance" && model.definitionKey ? "pointer" : "default",
           textDecoration: model.kind === "instance" && model.definitionKey ? "underline" : "none",
           event: model.kind === "instance" && model.definitionKey ? "node:open-definition" : void 0

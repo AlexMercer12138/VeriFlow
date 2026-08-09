@@ -4,12 +4,14 @@ import test from 'node:test';
 import {
     measureSchematicNode,
     SCHEMATIC_NODE_LAYOUT,
+    type TextMeasurementStyle,
     type TextMeasurer,
 } from '../src/nodeGeometry';
 import type { GraphNode, GraphPin, PinSide } from '../src/model';
 import { pinKey, type PinKey } from '../src/pins';
 
-const measure: TextMeasurer = text => text.length * 7;
+const measureWidth = (text: string): number => text.length * 7;
+const measure: TextMeasurer = text => measureWidth(text);
 
 function pin(nodeId: string, name: string): GraphPin {
     return {
@@ -63,6 +65,23 @@ test('sizes height from header and the larger side pin count', () => {
     );
 });
 
+test('measures the title with its rendered bold font weight', () => {
+    const node = instance('instance:bold', [], 'bold title width', undefined);
+    const styles: TextMeasurementStyle[] = [];
+    const styleAwareMeasure: TextMeasurer = (text, style) => {
+        styles.push(style);
+        return text.length * (style.fontWeight === 600 ? 9 : 5);
+    };
+    const measured = measureSchematicNode(node, new Map(), styleAwareMeasure);
+
+    assert.equal(
+        measured.width,
+        node.label.length * 9
+            + 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding
+    );
+    assert.ok(styles.some(style => style.fontWeight === 600));
+});
+
 test('accounts for headings and both pin-label columns in node width', () => {
     const node = instance(
         'instance:wide',
@@ -77,11 +96,11 @@ test('accounts for headings and both pin-label columns in node width', () => {
     );
 
     assert.ok(
-        measured.width >= measure(node.label)
+        measured.width >= measureWidth(node.label)
             + 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding
     );
     assert.ok(
-        measured.width >= measure(node.subtitle!)
+        measured.width >= measureWidth(node.subtitle!)
             + 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding
     );
     assert.ok(
@@ -146,13 +165,13 @@ test('ellipsizes measured labels at maximum width and keeps clips inside the nod
         assert.ok(clip.x >= 0 && clip.width >= 0);
         assert.ok(clip.x + clip.width <= measured.width);
         assert.ok(clip.y >= 0 && clip.y + clip.height <= measured.height);
-        assert.ok(measure(label.visibleText) <= clip.width);
+        assert.ok(measureWidth(label.visibleText) <= clip.width);
     }
     for (const candidate of measured.pins) {
         const clip = candidate.clipBounds;
         assert.ok(clip.x >= 0 && clip.x + clip.width <= measured.width);
         assert.ok(clip.y >= 0 && clip.y + clip.height <= measured.height);
-        assert.ok(measure(candidate.visibleLabel) <= clip.width);
+        assert.ok(measureWidth(candidate.visibleLabel) <= clip.width);
         assert.equal(candidate.truncated, true);
         assert.ok(candidate.visibleLabel.endsWith('...'));
     }
