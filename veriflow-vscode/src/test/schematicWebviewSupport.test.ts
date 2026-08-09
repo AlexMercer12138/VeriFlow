@@ -68,17 +68,18 @@ function testSecureSchematicWebviewHtml(): void {
     );
 }
 
-function layout(x: number): SchematicLayout {
+function layout(x: number, selectedObjectId?: string): SchematicLayout {
     return {
         nodes: { node: { x, y: 20, fixed: true } },
         viewport: { x: 1, y: 2, zoom: 1 },
         minimap: true,
+        ...(selectedObjectId === undefined ? {} : { selectedObjectId }),
     };
 }
 
 function testSynchronousWebviewLayoutSnapshot(): void {
-    const previous = layout(5);
-    const current = layout(10);
+    const previous = layout(5, 'instance:previous');
+    const current = layout(10, 'network:data');
     const merged = mergeSchematicWebviewLayouts(
         { 'module:previous': previous },
         'module:current',
@@ -88,8 +89,8 @@ function testSynchronousWebviewLayoutSnapshot(): void {
     current.nodes.node.x = 1_000;
 
     assert.deepStrictEqual(merged, {
-        'module:previous': layout(5),
-        'module:current': layout(10),
+        'module:previous': layout(5, 'instance:previous'),
+        'module:current': layout(10, 'network:data'),
     });
 }
 
@@ -196,6 +197,13 @@ function testSelectionStatusSummary(): void {
         summarizeSchematicSelection([]),
         { statusText: 'No selection' }
     );
+    assert.deepStrictEqual(summarizeSchematicSelection([{
+        objectId: 'network:data',
+        description: 'network: data',
+    }]), {
+        selectedObjectId: 'network:data',
+        statusText: 'network: data',
+    });
     assert.deepStrictEqual(summarizeSchematicSelection([{
         objectId: 'instance:new',
         description: 'instance: new',

@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import type { SchematicLayout } from '../schematic/layoutStore';
 import { createSchematicProviderHarness } from './helpers/schematicProviderHarness';
 
 async function testRevealSourceUsesOwningDocumentOffsets(): Promise<void> {
@@ -135,9 +136,17 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
         event => event.type === 'graph' && event.graph.moduleKey === firstKey
     );
     assert.ok(firstGraph?.type === 'graph');
-    const firstLayout = {
+    const firstLayout: SchematicLayout = {
         ...firstGraph.layout,
+        nodes: Object.fromEntries(Object.entries(firstGraph.layout.nodes).map(
+            ([id, position]) => [id, {
+                x: position.x + 101,
+                y: position.y + 17,
+                fixed: true,
+            }]
+        )),
         viewport: { x: 120, y: 240, zoom: 1.5 },
+        minimap: false,
         selectedObjectId: `node:${firstKey}`,
     };
 
@@ -154,9 +163,20 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
         event => event.type === 'graph' && event.graph.moduleKey === secondKey
     );
     assert.ok(secondGraph?.type === 'graph');
-    const secondLayout = {
+    const secondLayout: SchematicLayout = {
         ...secondGraph.layout,
+        nodes: {
+            ...Object.fromEntries(Object.entries(secondGraph.layout.nodes).map(
+                ([id, position]) => [id, {
+                    x: position.x + 202,
+                    y: position.y + 29,
+                    fixed: true,
+                }]
+            )),
+            'node:removed': { x: 999, y: 999, fixed: true },
+        },
         viewport: { x: -80, y: 60, zoom: 0.75 },
+        minimap: true,
         selectedObjectId: `node:${secondKey}`,
     };
     await harness.dispatch(panel, {
@@ -171,6 +191,11 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     ).at(-1);
     assert.ok(restoredFirst?.type === 'graph');
     assert.deepStrictEqual(restoredFirst.layout.viewport, firstLayout.viewport);
+    assert.strictEqual(restoredFirst.layout.minimap, firstLayout.minimap);
+    assert.deepStrictEqual(
+        restoredFirst.layout.nodes[`node:${firstKey}`],
+        firstLayout.nodes[`node:${firstKey}`]
+    );
     assert.strictEqual(
         restoredFirst.layout.selectedObjectId,
         firstLayout.selectedObjectId
@@ -182,6 +207,12 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     ).at(-1);
     assert.ok(restoredSecond?.type === 'graph');
     assert.deepStrictEqual(restoredSecond.layout.viewport, secondLayout.viewport);
+    assert.strictEqual(restoredSecond.layout.minimap, secondLayout.minimap);
+    assert.deepStrictEqual(
+        restoredSecond.layout.nodes[`node:${secondKey}`],
+        secondLayout.nodes[`node:${secondKey}`]
+    );
+    assert.strictEqual('node:removed' in restoredSecond.layout.nodes, false);
     assert.strictEqual(
         restoredSecond.layout.selectedObjectId,
         secondLayout.selectedObjectId

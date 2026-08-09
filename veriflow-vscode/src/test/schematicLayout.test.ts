@@ -210,7 +210,9 @@ async function testRoundTripAndRematch(): Promise<void> {
     const store = new SchematicLayoutStore(state);
     await store.save('file:///top.sv', 'module:top:0', {
         nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
-        viewport: { x: 10, y: 20, zoom: 1.25 }, minimap: false,
+        viewport: { x: 10, y: 20, zoom: 1.25 },
+        minimap: false,
+        selectedObjectId: 'network:done',
     });
     const storageKey = [
         'veriflow.schematicLayout',
@@ -224,13 +226,20 @@ async function testRoundTripAndRematch(): Promise<void> {
             nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
             viewport: { x: 10, y: 20, zoom: 1.25 },
             minimap: false,
+            selectedObjectId: 'network:done',
         },
     });
-    assert.deepStrictEqual(store.load('file:///top.sv', 'module:top:0')?.viewport,
-        { x: 10, y: 20, zoom: 1.25 });
-    const merged = mergeLayout(graph, store.load('file:///top.sv', 'module:top:0'));
+    const persisted = store.load('file:///top.sv', 'module:top:0');
+    assert.deepStrictEqual(persisted, {
+        nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
+        viewport: { x: 10, y: 20, zoom: 1.25 },
+        minimap: false,
+        selectedObjectId: 'network:done',
+    });
+    const merged = mergeLayout(graph, persisted);
     assert.deepStrictEqual(merged.nodes['instance:u_child'],
         { x: 320, y: 120, fixed: true });
+    assert.strictEqual(merged.selectedObjectId, 'network:done');
     assert.ok(merged.nodes['port:clk'].x < merged.nodes['instance:u_child'].x);
 
     const loaded = store.load('file:///top.sv', 'module:top:0')!;
@@ -240,6 +249,7 @@ async function testRoundTripAndRematch(): Promise<void> {
         nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
         viewport: { x: 10, y: 20, zoom: 1.25 },
         minimap: false,
+        selectedObjectId: 'network:done',
     });
 
     const callerLayout = defaultLayout();
@@ -307,6 +317,13 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
             endpoints: [],
         }],
     };
+    // Untrusted webview saves are all-or-nothing; the host store separately
+    // tolerates malformed entries in legacy persisted data by dropping them.
+    assert.strictEqual(parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:normalize:0',
+        layout: input,
+    }), undefined);
     await store.save(
         'file:///normalize.sv',
         'module:normalize:0',
@@ -416,6 +433,11 @@ async function testStaleObjectCleanupAndClearFixed(): Promise<void> {
     };
     const merged = mergeLayout(graph, staleLayout);
     assert.strictEqual('instance:removed' in merged.nodes, false);
+    assert.deepStrictEqual(merged.nodes['instance:u_child'], {
+        x: 300,
+        y: 100,
+        fixed: true,
+    });
     assert.strictEqual(merged.selectedObjectId, undefined);
     assert.deepStrictEqual(merged.viewport, staleLayout.viewport);
     assert.strictEqual(merged.minimap, false);
@@ -550,6 +572,7 @@ async function testPartialAndFullRelayout(): Promise<void> {
         },
         viewport: { x: 10, y: 20, zoom: 2 },
         minimap: false,
+        selectedObjectId: 'network:done',
     };
     const partial = autoLayout(graph, existing);
     assert.deepStrictEqual(partial.nodes['instance:u_child'], {
@@ -566,6 +589,8 @@ async function testPartialAndFullRelayout(): Promise<void> {
     assert.notDeepStrictEqual(full.nodes['instance:u_child'],
         existing.nodes['instance:u_child']);
     assert.deepStrictEqual(full.viewport, existing.viewport);
+    assert.strictEqual(full.minimap, false);
+    assert.strictEqual(full.selectedObjectId, 'network:done');
 }
 
 async function testPartialLayoutAvoidsFixedObstacles(): Promise<void> {
