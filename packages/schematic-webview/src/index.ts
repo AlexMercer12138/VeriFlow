@@ -18,7 +18,8 @@ import {
 } from 'lucide';
 
 import {
-    measureSchematicNode,
+    fitSchematicNode,
+    measureSchematicNodeSize,
     resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
     SCHEMATIC_TEXT_STYLES,
@@ -170,13 +171,6 @@ function measureNodeText(text: string, style: TextMeasurementStyle): number {
     return text.length * style.fontSize * weightFactor;
 }
 
-let clipPathSequence = 0;
-
-function nextClipPathId(kind: string): string {
-    clipPathSequence += 1;
-    return `veriflow-${kind}-clip-${clipPathSequence}`;
-}
-
 function registerShapes(): void {
     for (const [kind, shapeName] of Object.entries(shapeNames) as Array<[
         GraphNodeKind,
@@ -194,29 +188,33 @@ function registerShapes(): void {
                 { tagName: 'rect', selector: 'body' },
                 { tagName: 'rect', selector: 'accent' },
                 {
-                    tagName: 'clipPath',
+                    tagName: 'svg',
                     selector: 'labelClip',
-                    children: [{ tagName: 'rect', selector: 'labelClipRect' }],
+                    className: ['veriflow-text-clip', 'veriflow-title-clip'],
+                    attrs: { overflow: 'hidden' },
+                    children: [{ tagName: 'text', selector: 'label' }],
                 },
                 {
-                    tagName: 'clipPath',
+                    tagName: 'svg',
                     selector: 'subtitleClip',
-                    children: [{ tagName: 'rect', selector: 'subtitleClipRect' }],
+                    className: ['veriflow-text-clip', 'veriflow-subtitle-clip'],
+                    attrs: { overflow: 'hidden' },
+                    children: [{ tagName: 'text', selector: 'subtitle' }],
                 },
-                { tagName: 'text', selector: 'label' },
-                { tagName: 'text', selector: 'subtitle' },
             ],
             portMarkup: [{ tagName: 'circle', selector: 'portBody' }],
             portLabelMarkup: [
                 {
-                    tagName: 'clipPath',
-                    selector: 'portLabelClip',
+                    tagName: 'g',
+                    selector: 'portLabelContainer',
                     children: [{
-                        tagName: 'rect',
-                        selector: 'portLabelClipRect',
+                        tagName: 'svg',
+                        selector: 'portLabelClip',
+                        className: ['veriflow-text-clip', 'veriflow-pin-clip'],
+                        attrs: { overflow: 'hidden' },
+                        children: [{ tagName: 'text', selector: 'text' }],
                     }],
                 },
-                { tagName: 'text', selector: 'text' },
             ],
             attrs: {
                 body: {
@@ -235,10 +233,8 @@ function registerShapes(): void {
                     stroke: 'none',
                 },
                 label: {
-                    x: 12,
-                    y: kind === 'port'
-                        ? SCHEMATIC_NODE_LAYOUT.portHeight / 2
-                        : SCHEMATIC_NODE_LAYOUT.titleCenterY,
+                    x: 0,
+                    y: SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
                     fill: 'var(--vscode-editor-foreground, #202124)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.title.fontSize,
@@ -248,8 +244,8 @@ function registerShapes(): void {
                     pointerEvents: 'none',
                 },
                 subtitle: {
-                    x: 12,
-                    y: SCHEMATIC_NODE_LAYOUT.subtitleCenterY,
+                    x: 0,
+                    y: SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
                     fill: 'var(--vscode-descriptionForeground, #616161)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
@@ -317,7 +313,6 @@ function pinItems(
     const items = node.pins.map(resolved => {
         const pin = resolved.source;
         const position = resolved.anchor;
-        const clipPathId = nextClipPathId('pin');
         positions.set(pin.id, position);
         return {
             id: pin.id,
@@ -327,8 +322,7 @@ function pinItems(
                 portBody: {
                     strokeDasharray: pin.readOnly ? '2 1' : undefined,
                 },
-                portLabelClip: { id: clipPathId },
-                portLabelClipRect: {
+                portLabelClip: {
                     x: resolved.side === 'left' ? 0 : -resolved.clipBounds.width,
                     y: -resolved.clipBounds.height / 2,
                     width: resolved.clipBounds.width,
@@ -337,7 +331,8 @@ function pinItems(
                 text: {
                     text: resolved.visibleLabel,
                     title: pin.name,
-                    clipPath: `url(#${clipPathId})`,
+                    x: resolved.side === 'left' ? 0 : resolved.clipBounds.width,
+                    y: resolved.clipBounds.height / 2,
                     fill: 'var(--vscode-editor-foreground, #202124)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.pin.fontSize,
@@ -365,10 +360,14 @@ function createRenderedNode(
     const displayModel = subtitle === model.subtitle
         ? model
         : { ...model, subtitle };
-    const measured = measureSchematicNode(displayModel, pinSides, measureNodeText);
+    const layoutSize = measureSchematicNodeSize(model, pinSides);
+    const measured = fitSchematicNode(
+        displayModel,
+        pinSides,
+        layoutSize,
+        measureNodeText
+    );
     const { width, height } = measured;
-    const labelClipPathId = nextClipPathId('label');
-    const subtitleClipPathId = nextClipPathId('subtitle');
     const center = positionFor(layout, model.id);
     const ports = pinItems(measured);
     const cell = graph.addNode({
@@ -394,15 +393,12 @@ function createRenderedNode(
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
             },
             accent: { height },
-            labelClip: { id: labelClipPathId },
-            labelClipRect: measured.title.clipBounds,
+            labelClip: measured.title.clipBounds,
             label: {
                 text: measured.title.visibleText,
                 title: model.label,
-                clipPath: `url(#${labelClipPathId})`,
             },
-            subtitleClip: { id: subtitleClipPathId },
-            subtitleClipRect: measured.subtitle?.clipBounds ?? {
+            subtitleClip: measured.subtitle?.clipBounds ?? {
                 x: 0,
                 y: 0,
                 width: 0,
@@ -411,7 +407,6 @@ function createRenderedNode(
             subtitle: {
                 text: measured.subtitle?.visibleText ?? '',
                 title: subtitle ?? '',
-                clipPath: `url(#${subtitleClipPathId})`,
                 cursor: model.kind === 'instance' && model.definitionKey
                     ? 'pointer'
                     : 'default',

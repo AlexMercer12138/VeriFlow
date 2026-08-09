@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    fitSchematicNode,
     measureSchematicNode,
+    measureSchematicNodeSize,
     SCHEMATIC_NODE_LAYOUT,
     type TextMeasurementStyle,
     type TextMeasurer,
@@ -80,6 +82,28 @@ test('measures the title with its rendered bold font weight', () => {
             + 2 * SCHEMATIC_NODE_LAYOUT.horizontalPadding
     );
     assert.ok(styles.some(style => style.fontWeight === 600));
+});
+
+test('fits real font widths inside the deterministic layout size', () => {
+    const node = instance('instance:wide-font', [], 'W'.repeat(25), undefined);
+    const sideMap = new Map<PinKey, PinSide>();
+    const layoutSize = measureSchematicNodeSize(node, sideMap);
+    const fitted = fitSchematicNode(
+        node,
+        sideMap,
+        layoutSize,
+        (text: string) => text.length * 12
+    );
+
+    assert.deepEqual(layoutSize, { width: 199, height: 72 });
+    assert.deepEqual(
+        { width: fitted.width, height: fitted.height },
+        layoutSize
+    );
+    assert.equal(fitted.title.truncated, true);
+    assert.ok(
+        fitted.title.visibleText.length * 12 <= fitted.title.clipBounds.width
+    );
 });
 
 test('accounts for headings and both pin-label columns in node width', () => {

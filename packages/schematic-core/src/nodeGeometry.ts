@@ -52,6 +52,11 @@ export type MeasuredNode = {
     centerWidth: number;
 };
 
+export type SchematicNodeSize = {
+    width: number;
+    height: number;
+};
+
 export const SCHEMATIC_NODE_LAYOUT = {
     gridSize: 2,
     minimumWidth: 160,
@@ -75,6 +80,8 @@ export const SCHEMATIC_TEXT_STYLES = {
     subtitle: { fontSize: 10, fontWeight: 400 },
     pin: { fontSize: 10, fontWeight: 400 },
 } as const satisfies Record<string, TextMeasurementStyle>;
+
+const LAYOUT_CHARACTER_WIDTH = 7;
 
 function measuredWidth(
     measure: TextMeasurer,
@@ -153,10 +160,11 @@ function measuredLabel(
     return { fullText, ...fitted, clipBounds };
 }
 
-export function measureSchematicNode(
+function calculateSchematicNode(
     node: GraphNode,
     sideMap: ReadonlyMap<PinKey, PinSide>,
-    measure: TextMeasurer
+    measure: TextMeasurer,
+    fixedSize?: Readonly<SchematicNodeSize>
 ): MeasuredNode {
     const sidePins = node.pins.map(source => ({
         source,
@@ -193,14 +201,14 @@ export function measureSchematicNode(
         + rightNatural
         + SCHEMATIC_NODE_LAYOUT.minimumCenterGap
         + 2 * SCHEMATIC_NODE_LAYOUT.pinLabelInset;
-    const width = isPort
+    const naturalWidth = isPort
         ? SCHEMATIC_NODE_LAYOUT.portWidth
         : Math.min(
             SCHEMATIC_NODE_LAYOUT.maximumWidth,
             Math.max(SCHEMATIC_NODE_LAYOUT.minimumWidth, headingWidth, pinWidth)
         );
     const sideRows = Math.max(leftPins.length, rightPins.length);
-    const height = isPort
+    const naturalHeight = isPort
         ? SCHEMATIC_NODE_LAYOUT.portHeight
         : Math.max(
             SCHEMATIC_NODE_LAYOUT.minimumHeight,
@@ -208,6 +216,8 @@ export function measureSchematicNode(
                 + sideRows * SCHEMATIC_NODE_LAYOUT.pinRowHeight
                 + SCHEMATIC_NODE_LAYOUT.verticalPadding
         );
+    const width = fixedSize?.width ?? naturalWidth;
+    const height = fixedSize?.height ?? naturalHeight;
     const availableForPins = Math.max(
         0,
         width
@@ -298,4 +308,34 @@ export function measureSchematicNode(
         rightLabelWidth: labelWidths.right,
         centerWidth,
     };
+}
+
+export function measureSchematicNode(
+    node: GraphNode,
+    sideMap: ReadonlyMap<PinKey, PinSide>,
+    measure: TextMeasurer
+): MeasuredNode {
+    return calculateSchematicNode(node, sideMap, measure);
+}
+
+export function measureSchematicNodeSize(
+    node: GraphNode,
+    sideMap: ReadonlyMap<PinKey, PinSide>
+): SchematicNodeSize {
+    // Layout must be reproducible in Node and browsers; real fonts only affect fitting.
+    const measured = measureSchematicNode(
+        node,
+        sideMap,
+        text => text.length * LAYOUT_CHARACTER_WIDTH
+    );
+    return { width: measured.width, height: measured.height };
+}
+
+export function fitSchematicNode(
+    node: GraphNode,
+    sideMap: ReadonlyMap<PinKey, PinSide>,
+    size: Readonly<SchematicNodeSize>,
+    measure: TextMeasurer
+): MeasuredNode {
+    return calculateSchematicNode(node, sideMap, measure, size);
 }

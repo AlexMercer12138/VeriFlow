@@ -6,7 +6,7 @@ import {
     type NodeLabel,
 } from '@dagrejs/dagre';
 import {
-    measureSchematicNode,
+    measureSchematicNodeSize,
     pinKey,
     resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
@@ -233,8 +233,7 @@ export function schematicNodeSize(
         pinKey(node.id, pin.id),
         pin.direction === 'driver' ? 'right' : 'left',
     ]));
-    const measured = measureSchematicNode(node, sides, text => text.length * 7);
-    return { width: measured.width, height: measured.height };
+    return measureSchematicNodeSize(node, sides);
 }
 
 function resolvedNodeSizes(

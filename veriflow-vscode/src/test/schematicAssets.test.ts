@@ -248,7 +248,8 @@ async function testSchematicAssets(): Promise<void> {
         'packages/schematic-webview/src/index.ts',
     ]);
     assert.match(webviewSource, /resolvePinSides\(model\)/);
-    assert.match(webviewSource, /measureSchematicNode\(/);
+    assert.match(webviewSource, /measureSchematicNodeSize\(/);
+    assert.match(webviewSource, /fitSchematicNode\(/);
     assert.match(webviewSource, /SCHEMATIC_NODE_LAYOUT/);
     assert.ok(
         webviewSource.includes(
@@ -256,19 +257,21 @@ async function testSchematicAssets(): Promise<void> {
                 + '`${style.fontWeight} ${style.fontSize}px ${fontFamily}`;'
         )
     );
-    for (const clipSelector of [
-        'labelClipRect',
-        'subtitleClipRect',
-        'portLabelClipRect',
+    for (const clipClass of [
+        'veriflow-title-clip',
+        'veriflow-subtitle-clip',
+        'veriflow-pin-clip',
     ]) {
         assert.ok(
-            webviewSource.includes(clipSelector),
-            `schematic text is missing ${clipSelector}`
+            webviewSource.includes(clipClass),
+            `schematic text is missing ${clipClass}`
         );
     }
     assert.match(webviewSource, /{ tagName: 'text', selector: 'text' }/);
     assert.doesNotMatch(webviewSource, /selector: 'portLabel'/);
-    assert.ok(webviewSource.includes('clipPath: `url(#${'));
+    assert.doesNotMatch(webviewSource, /tagName: 'clipPath'/);
+    assert.doesNotMatch(webviewSource, /clipPath:/);
+    assert.doesNotMatch(webviewSource, /nextClipPathId/);
     assert.doesNotMatch(
         webviewSource,
         /bottom:\s*{\s*position:\s*{\s*name:\s*'absolute'/
