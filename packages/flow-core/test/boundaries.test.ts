@@ -51,7 +51,9 @@ test('shared package public imports compile for a host consumer', () => {
         }
         writeFileSync(path.join(consumerRoot, 'consumer.ts'), [
             ...sharedPackages.map(packageName => `import '${packageName}';`),
-            'export {};',
+            "import * as schematicModel from '@veriflow/schematic-core/model';",
+            "export type SchematicGraph = import('@veriflow/schematic-core/model').SchematicGraph;",
+            'export const schematicModelRuntime = schematicModel;',
             '',
         ].join('\n'));
         writeFileSync(path.join(consumerRoot, 'tsconfig.json'), JSON.stringify({

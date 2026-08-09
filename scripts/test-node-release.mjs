@@ -27,6 +27,11 @@ const publishable = [
         requiredFiles: ['dist/index.js'],
     },
     {
+        name: '@veriflow/schematic-core',
+        workspace: 'packages/schematic-core',
+        requiredFiles: ['dist/index.js', 'dist/model.js'],
+    },
+    {
         name: '@veriflow/hdl-runtime',
         workspace: 'packages/hdl-runtime',
         requiredFiles: ['dist/index.js', 'dist/parserWorker.js'],
@@ -55,6 +60,15 @@ const publishable = [
         requiredFiles: ['dist/main.js'],
     },
 ];
+
+const packScript = readFileSync(path.join(repositoryRoot, 'scripts', 'pack-node-release.mjs'), 'utf8');
+const packedWorkspaces = [...packScript.matchAll(/^\s{4}'(@veriflow\/[^']+)',$/gm)]
+    .map(match => match[1]);
+assert.deepEqual(
+    packedWorkspaces,
+    publishable.map(entry => entry.name),
+    'pack-node-release workspaces must match release smoke packages'
+);
 
 function run(command, args, cwd = repositoryRoot, env = process.env) {
     try {

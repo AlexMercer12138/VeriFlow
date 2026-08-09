@@ -9,6 +9,7 @@ const destination = path.join(repositoryRoot, 'dist', 'npm');
 const workspaces = [
     '@veriflow/flow-core',
     '@veriflow/hdl-core',
+    '@veriflow/schematic-core',
     '@veriflow/hdl-runtime',
     '@veriflow/waveform-runtime',
     '@veriflow/waveform-desktop',
