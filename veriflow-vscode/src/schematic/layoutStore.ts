@@ -214,20 +214,29 @@ function normalizeLegacyNodes(
     if (!isRecord(value)) return undefined;
     const nodes: Record<string, LegacyNodePlacement> = {};
     let nodeCount = 0;
-    for (const [id, candidate] of Object.entries(value)) {
+    for (const id of Object.keys(value)) {
         nodeCount += 1;
         if (nodeCount > MAX_LAYOUT_NODES) return undefined;
-        if (!isRecord(candidate)
-            || !finiteNumber(candidate.y)
-            || typeof candidate.fixed !== 'boolean') {
+        try {
+            if (!Object.prototype.propertyIsEnumerable.call(value, id)) continue;
+            const candidate = value[id];
+            if (!isRecord(candidate)
+                || !Object.prototype.propertyIsEnumerable.call(candidate, 'y')
+                || !Object.prototype.propertyIsEnumerable.call(candidate, 'fixed')) {
+                continue;
+            }
+            const y = candidate.y;
+            const fixed = candidate.fixed;
+            if (!finiteNumber(y) || typeof fixed !== 'boolean') continue;
+            Object.defineProperty(nodes, id, {
+                value: { y, fixed },
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
+        } catch {
             continue;
         }
-        Object.defineProperty(nodes, id, {
-            value: { y: candidate.y, fixed: candidate.fixed },
-            enumerable: true,
-            configurable: true,
-            writable: true,
-        });
     }
     return nodes;
 }

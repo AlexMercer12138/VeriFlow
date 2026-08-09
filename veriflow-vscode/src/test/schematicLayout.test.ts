@@ -447,6 +447,80 @@ async function testLoadDropsOnlyMalformedLegacyNodeEntries(): Promise<void> {
     assert.strictEqual(loaded.selectedObjectId, 'valid');
 }
 
+async function testLegacyMigrationIsolatesHostileNodeGetters(): Promise<void> {
+    const uri = 'file:///legacy-hostile-nodes.sv';
+    const moduleKey = 'module:legacy-hostile-nodes:0';
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    const storageKey = [
+        'veriflow.schematicLayout',
+        encodeURIComponent(uri),
+        encodeURIComponent(moduleKey),
+    ].join(':');
+    const hostileY = { fixed: true } as Record<string, unknown>;
+    Object.defineProperty(hostileY, 'y', {
+        enumerable: true,
+        get(): never { throw new Error('hostile legacy y'); },
+    });
+    const hostileFixed = { y: 30 } as Record<string, unknown>;
+    Object.defineProperty(hostileFixed, 'fixed', {
+        enumerable: true,
+        get(): never { throw new Error('hostile legacy fixed'); },
+    });
+    let xWasRead = false;
+    const validWithHostileX = { y: 20, fixed: true } as Record<string, unknown>;
+    Object.defineProperty(validWithHostileX, 'x', {
+        enumerable: true,
+        get(): never {
+            xWasRead = true;
+            throw new Error('legacy x must not be read');
+        },
+    });
+    const legacyNodes = Object.assign(Object.create({
+        inherited: { y: 0, fixed: true },
+    }), {
+        valid: { y: 10, fixed: true },
+        hostileY,
+        hostileFixed,
+        validWithHostileX,
+    }) as Record<string, unknown>;
+    Object.defineProperty(legacyNodes, 'hostileValue', {
+        enumerable: true,
+        get(): never { throw new Error('hostile legacy node value'); },
+    });
+    state.set(storageKey, {
+        schemaVersion: 1,
+        layout: {
+            nodes: legacyNodes,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+    const graph: SchematicGraph = {
+        ...createGraph(),
+        fileUri: uri,
+        moduleKey,
+        nodes: [
+            'valid',
+            'hostileValue',
+            'hostileY',
+            'hostileFixed',
+            'validWithHostileX',
+            'inherited',
+        ].map(id => node(id, 'opaque')),
+        networks: [],
+    };
+
+    const loaded = store.load(uri, moduleKey, graph)!;
+
+    assert.strictEqual(xWasRead, false);
+    assert.strictEqual(loaded.nodes.valid.fixed, true);
+    assert.strictEqual(loaded.nodes.validWithHostileX.fixed, true);
+    for (const id of ['hostileValue', 'hostileY', 'hostileFixed', 'inherited']) {
+        assert.strictEqual(loaded.nodes[id].fixed, false);
+    }
+}
+
 function testHostileStoredPlacementIsRejected(): void {
     const graph = createGraph();
     const state = createMemoryMemento();
@@ -1169,6 +1243,7 @@ async function main(): Promise<void> {
     await testLegacyMigrationUsesAutomaticColumnsAndYOrder();
     await testVersionValidationAndKeyIsolation();
     await testLoadDropsOnlyMalformedLegacyNodeEntries();
+    await testLegacyMigrationIsolatesHostileNodeGetters();
     testHostileStoredPlacementIsRejected();
     await testNormalizationAndNoEdgePersistence();
     await testProtocolSpecialNodeRoundTrip();
