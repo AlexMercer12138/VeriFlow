@@ -220,6 +220,21 @@ test('prefers a bidirectional endpoint over a load as driverless source', () => 
     assert.equal(assignment.nodeColumn.get(load.id), 2);
 });
 
+test('does not treat a driverless placement source as self-cycle feedback', () => {
+    const shared = node('instance:shared', 'instance', [
+        'bidirectional',
+        'load',
+    ]);
+    const model = graph([shared], [network('network:driverless-self', [
+        endpoint(shared, 0),
+        endpoint(shared, 1),
+    ])]);
+
+    const assignment = assignColumns(model);
+
+    assert.deepEqual([...assignment.feedbackNetworkIds], []);
+});
+
 test('deduplicates endpoint pairs and retains self-cycle feedback semantics', () => {
     const source = node('instance:source', 'instance', ['driver', 'driver']);
     const target = node('instance:target', 'instance', ['load', 'load', 'driver']);

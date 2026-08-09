@@ -79,6 +79,7 @@ function buildDependencyEdges(graph: SchematicGraph): {
         let sources = endpoints.filter(candidate =>
             candidate.endpoint.role === 'driver'
         );
+        const hasExplicitDriver = sources.length > 0;
         let targets = endpoints.filter(candidate =>
             candidate.endpoint.role !== 'driver'
         );
@@ -96,7 +97,10 @@ function buildDependencyEdges(graph: SchematicGraph): {
         for (const source of sources) {
             for (const target of targets) {
                 if (source.nodeIndex === target.nodeIndex) {
-                    selfCycleNetworkIds.add(network.id);
+                    if (hasExplicitDriver
+                        && target.endpoint.role === 'load') {
+                        selfCycleNetworkIds.add(network.id);
+                    }
                     continue;
                 }
                 const key = `${source.nodeIndex}\0${target.nodeIndex}`;
