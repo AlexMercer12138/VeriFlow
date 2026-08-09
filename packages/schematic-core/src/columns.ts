@@ -23,6 +23,25 @@ type DependencyEdge = {
     networkIds: Set<string>;
 };
 
+function addDependencyEdge(
+    edgesByPair: Map<string, DependencyEdge>,
+    source: OrderedEndpoint,
+    target: OrderedEndpoint,
+    networkId: string
+): void {
+    const key = `${source.nodeIndex}\0${target.nodeIndex}`;
+    let edge = edgesByPair.get(key);
+    if (!edge) {
+        edge = {
+            from: source.nodeIndex,
+            to: target.nodeIndex,
+            networkIds: new Set(),
+        };
+        edgesByPair.set(key, edge);
+    }
+    edge.networkIds.add(networkId);
+}
+
 function isInputBoundary(node: GraphNode): boolean {
     return node.kind === 'port' && node.pins[0]?.direction === 'driver';
 }
@@ -60,15 +79,17 @@ function orderedEndpoints(
 }
 
 function buildDependencyEdges(graph: SchematicGraph): {
-    edges: DependencyEdge[];
-    selfCycleNetworkIds: Set<string>;
+    placementEdges: DependencyEdge[];
+    semanticEdges: DependencyEdge[];
+    semanticSelfCycleNetworkIds: Set<string>;
 } {
     const nodeIndexes = new Map(graph.nodes.map((node, index) => [node.id, index]));
     const pinIndexes = new Map(graph.nodes.flatMap(node =>
         node.pins.map((pin, index) => [`${node.id}\0${pin.id}`, index] as const)
     ));
-    const edgesByPair = new Map<string, DependencyEdge>();
-    const selfCycleNetworkIds = new Set<string>();
+    const placementEdgesByPair = new Map<string, DependencyEdge>();
+    const semanticEdgesByPair = new Map<string, DependencyEdge>();
+    const semanticSelfCycleNetworkIds = new Set<string>();
 
     for (const network of graph.networks) {
         const endpoints = orderedEndpoints(
@@ -76,49 +97,60 @@ function buildDependencyEdges(graph: SchematicGraph): {
             nodeIndexes,
             pinIndexes
         );
-        let sources = endpoints.filter(candidate =>
+        const explicitSources = endpoints.filter(candidate =>
             candidate.endpoint.role === 'driver'
         );
-        const hasExplicitDriver = sources.length > 0;
-        let targets = endpoints.filter(candidate =>
+        const targets = endpoints.filter(candidate =>
             candidate.endpoint.role !== 'driver'
         );
-        if (sources.length === 0 && endpoints.length > 0) {
+        if (explicitSources.length === 0 && endpoints.length > 0) {
             const source = endpoints.find(candidate =>
                 candidate.endpoint.role === 'bidirectional'
                 && !isRightBoundary(graph.nodes[candidate.nodeIndex])
             ) ?? endpoints.find(candidate =>
                 !isRightBoundary(graph.nodes[candidate.nodeIndex])
             ) ?? endpoints[0];
-            sources = [source];
-            targets = endpoints.filter(candidate => candidate !== source);
-        }
-
-        for (const source of sources) {
-            for (const target of targets) {
-                if (source.nodeIndex === target.nodeIndex) {
-                    if (hasExplicitDriver
-                        && target.endpoint.role === 'load') {
-                        selfCycleNetworkIds.add(network.id);
-                    }
+            for (const target of endpoints) {
+                if (target === source || source.nodeIndex === target.nodeIndex) {
                     continue;
                 }
-                const key = `${source.nodeIndex}\0${target.nodeIndex}`;
-                let edge = edgesByPair.get(key);
-                if (!edge) {
-                    edge = {
-                        from: source.nodeIndex,
-                        to: target.nodeIndex,
-                        networkIds: new Set(),
-                    };
-                    edgesByPair.set(key, edge);
+                addDependencyEdge(
+                    placementEdgesByPair,
+                    source,
+                    target,
+                    network.id
+                );
+            }
+            continue;
+        }
+
+        for (const source of explicitSources) {
+            for (const target of targets) {
+                if (source.nodeIndex === target.nodeIndex) {
+                    semanticSelfCycleNetworkIds.add(network.id);
+                    continue;
                 }
-                edge.networkIds.add(network.id);
+                addDependencyEdge(
+                    placementEdgesByPair,
+                    source,
+                    target,
+                    network.id
+                );
+                addDependencyEdge(
+                    semanticEdgesByPair,
+                    source,
+                    target,
+                    network.id
+                );
             }
         }
     }
 
-    return { edges: [...edgesByPair.values()], selfCycleNetworkIds };
+    return {
+        placementEdges: [...placementEdgesByPair.values()],
+        semanticEdges: [...semanticEdgesByPair.values()],
+        semanticSelfCycleNetworkIds,
+    };
 }
 
 function stronglyConnectedComponents(
@@ -128,8 +160,14 @@ function stronglyConnectedComponents(
     components: number[][];
     componentByNode: number[];
 } {
-    const adjacency = Array.from({ length: nodeCount }, () => new Set<number>());
-    for (const edge of edges) adjacency[edge.from].add(edge.to);
+    const adjacencySets = Array.from(
+        { length: nodeCount },
+        () => new Set<number>()
+    );
+    for (const edge of edges) adjacencySets[edge.from].add(edge.to);
+    const adjacency = adjacencySets.map(targets =>
+        [...targets].sort((left, right) => left - right)
+    );
 
     const visitIndex = new Array<number>(nodeCount).fill(-1);
     const lowLink = new Array<number>(nodeCount).fill(-1);
@@ -138,36 +176,65 @@ function stronglyConnectedComponents(
     const components: number[][] = [];
     let nextVisitIndex = 0;
 
-    const visit = (nodeIndex: number): void => {
+    type VisitFrame = {
+        nodeIndex: number;
+        parentIndex?: number;
+        nextTargetIndex: number;
+    };
+    const beginVisit = (
+        frames: VisitFrame[],
+        nodeIndex: number,
+        parentIndex?: number
+    ): void => {
         visitIndex[nodeIndex] = nextVisitIndex;
         lowLink[nodeIndex] = nextVisitIndex;
         nextVisitIndex += 1;
         stack.push(nodeIndex);
         onStack[nodeIndex] = true;
-
-        for (const target of [...adjacency[nodeIndex]].sort((left, right) => left - right)) {
-            if (visitIndex[target] < 0) {
-                visit(target);
-                lowLink[nodeIndex] = Math.min(lowLink[nodeIndex], lowLink[target]);
-            } else if (onStack[target]) {
-                lowLink[nodeIndex] = Math.min(lowLink[nodeIndex], visitIndex[target]);
-            }
-        }
-
-        if (lowLink[nodeIndex] !== visitIndex[nodeIndex]) return;
-        const component: number[] = [];
-        while (stack.length > 0) {
-            const member = stack.pop()!;
-            onStack[member] = false;
-            component.push(member);
-            if (member === nodeIndex) break;
-        }
-        component.sort((left, right) => left - right);
-        components.push(component);
+        frames.push({ nodeIndex, parentIndex, nextTargetIndex: 0 });
     };
 
-    for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex += 1) {
-        if (visitIndex[nodeIndex] < 0) visit(nodeIndex);
+    for (let startIndex = 0; startIndex < nodeCount; startIndex += 1) {
+        if (visitIndex[startIndex] >= 0) continue;
+        const frames: VisitFrame[] = [];
+        beginVisit(frames, startIndex);
+        while (frames.length > 0) {
+            const frame = frames[frames.length - 1];
+            const targets = adjacency[frame.nodeIndex];
+            if (frame.nextTargetIndex < targets.length) {
+                const target = targets[frame.nextTargetIndex];
+                frame.nextTargetIndex += 1;
+                if (visitIndex[target] < 0) {
+                    beginVisit(frames, target, frame.nodeIndex);
+                } else if (onStack[target]) {
+                    lowLink[frame.nodeIndex] = Math.min(
+                        lowLink[frame.nodeIndex],
+                        visitIndex[target]
+                    );
+                }
+                continue;
+            }
+
+            frames.pop();
+            if (frame.parentIndex !== undefined) {
+                lowLink[frame.parentIndex] = Math.min(
+                    lowLink[frame.parentIndex],
+                    lowLink[frame.nodeIndex]
+                );
+            }
+            if (lowLink[frame.nodeIndex] !== visitIndex[frame.nodeIndex]) {
+                continue;
+            }
+            const component: number[] = [];
+            while (stack.length > 0) {
+                const member = stack.pop()!;
+                onStack[member] = false;
+                component.push(member);
+                if (member === frame.nodeIndex) break;
+            }
+            component.sort((left, right) => left - right);
+            components.push(component);
+        }
     }
 
     components.sort((left, right) => left[0] - right[0]);
@@ -178,53 +245,113 @@ function stronglyConnectedComponents(
     return { components, componentByNode };
 }
 
+function componentPrecedes(
+    left: number,
+    right: number,
+    components: readonly (readonly number[])[]
+): boolean {
+    return components[left][0] < components[right][0];
+}
+
+function siftReadyDown(
+    ready: number[],
+    startIndex: number,
+    components: readonly (readonly number[])[]
+): void {
+    let parent = startIndex;
+    while (true) {
+        const left = parent * 2 + 1;
+        if (left >= ready.length) return;
+        const right = left + 1;
+        const child = right < ready.length
+            && componentPrecedes(ready[right], ready[left], components)
+            ? right
+            : left;
+        if (componentPrecedes(ready[parent], ready[child], components)) return;
+        [ready[parent], ready[child]] = [ready[child], ready[parent]];
+        parent = child;
+    }
+}
+
+function pushReady(
+    ready: number[],
+    component: number,
+    components: readonly (readonly number[])[]
+): void {
+    ready.push(component);
+    let child = ready.length - 1;
+    while (child > 0) {
+        const parent = Math.floor((child - 1) / 2);
+        if (componentPrecedes(ready[parent], ready[child], components)) return;
+        [ready[parent], ready[child]] = [ready[child], ready[parent]];
+        child = parent;
+    }
+}
+
+function popReady(
+    ready: number[],
+    components: readonly (readonly number[])[]
+): number | undefined {
+    const first = ready[0];
+    const last = ready.pop();
+    if (ready.length > 0) {
+        ready[0] = last!;
+        siftReadyDown(ready, 0, components);
+    }
+    return first;
+}
+
 function topologicalComponents(
     components: readonly (readonly number[])[],
     componentByNode: readonly number[],
     edges: readonly DependencyEdge[]
-): { order: number[]; adjacency: readonly ReadonlySet<number>[] } {
-    const adjacency = components.map(() => new Set<number>());
+): { order: number[]; adjacency: readonly (readonly number[])[] } {
+    const adjacencySets = components.map(() => new Set<number>());
     const indegree = components.map(() => 0);
     for (const edge of edges) {
         const source = componentByNode[edge.from];
         const target = componentByNode[edge.to];
-        if (source === target || adjacency[source].has(target)) continue;
-        adjacency[source].add(target);
+        if (source === target || adjacencySets[source].has(target)) continue;
+        adjacencySets[source].add(target);
         indegree[target] += 1;
     }
+    const adjacency = adjacencySets.map(targets => [...targets].sort(
+        (left, right) => components[left][0] - components[right][0]
+    ));
 
     const ready = components
         .map((_, index) => index)
-        .filter(index => indegree[index] === 0)
-        .sort((left, right) => components[left][0] - components[right][0]);
+        .filter(index => indegree[index] === 0);
+    for (let index = Math.floor(ready.length / 2) - 1; index >= 0; index -= 1) {
+        siftReadyDown(ready, index, components);
+    }
     const order: number[] = [];
     while (ready.length > 0) {
-        const component = ready.shift()!;
+        const component = popReady(ready, components)!;
         order.push(component);
-        for (const target of [...adjacency[component]].sort((left, right) =>
-            components[left][0] - components[right][0]
-        )) {
+        for (const target of adjacency[component]) {
             indegree[target] -= 1;
             if (indegree[target] !== 0) continue;
-            ready.push(target);
-            ready.sort((left, right) =>
-                components[left][0] - components[right][0]
-            );
+            pushReady(ready, target, components);
         }
     }
     return { order, adjacency };
 }
 
 export function assignColumns(graph: SchematicGraph): ColumnAssignment {
-    const { edges, selfCycleNetworkIds } = buildDependencyEdges(graph);
+    const {
+        placementEdges,
+        semanticEdges,
+        semanticSelfCycleNetworkIds,
+    } = buildDependencyEdges(graph);
     const { components, componentByNode } = stronglyConnectedComponents(
         graph.nodes.length,
-        edges
+        placementEdges
     );
     const { order, adjacency } = topologicalComponents(
         components,
         componentByNode,
-        edges
+        placementEdges
     );
     const hasInternal = components.map(component => component.some(nodeIndex =>
         graph.nodes[nodeIndex].kind !== 'port'
@@ -232,8 +359,10 @@ export function assignColumns(graph: SchematicGraph): ColumnAssignment {
     const hasInput = components.map(component => component.some(nodeIndex =>
         isInputBoundary(graph.nodes[nodeIndex])
     ));
+    const hasInputBoundary = graph.nodes.some(isInputBoundary);
+    const internalBaseRank = hasInputBoundary ? 1 : 0;
     const componentRank: number[] = components.map((_, index) =>
-        hasInternal[index] ? 1 : 0
+        hasInternal[index] ? internalBaseRank : 0
     );
 
     for (const source of order) {
@@ -250,7 +379,7 @@ export function assignColumns(graph: SchematicGraph): ColumnAssignment {
         }
     }
 
-    let deepestInternalRank = 0;
+    let deepestInternalRank = -1;
     components.forEach((_, componentIndex) => {
         if (hasInternal[componentIndex]) {
             deepestInternalRank = Math.max(
@@ -259,7 +388,9 @@ export function assignColumns(graph: SchematicGraph): ColumnAssignment {
             );
         }
     });
-    const rightBoundaryRank = deepestInternalRank + 1;
+    const rightBoundaryRank = deepestInternalRank >= 0
+        ? deepestInternalRank + 1
+        : hasInputBoundary ? 1 : 0;
     const nodeColumn = new Map<string, number>();
     graph.nodes.forEach((node, nodeIndex) => {
         const rank = isInputBoundary(node)
@@ -270,18 +401,29 @@ export function assignColumns(graph: SchematicGraph): ColumnAssignment {
         nodeColumn.set(node.id, rank);
     });
 
-    const maximumRank = Math.max(...nodeColumn.values());
+    let maximumRank = -1;
+    for (const rank of nodeColumn.values()) {
+        maximumRank = Math.max(maximumRank, rank);
+    }
     const columns = Array.from({ length: maximumRank + 1 }, () => [] as string[]);
     for (const node of graph.nodes) columns[nodeColumn.get(node.id)!].push(node.id);
 
-    const feedbackCandidates = new Set(selfCycleNetworkIds);
-    for (const edge of edges) {
-        const component = componentByNode[edge.from];
-        if (component !== componentByNode[edge.to]
-            || components[component].length < 2) {
-            continue;
+    const feedbackCandidates = new Set(semanticSelfCycleNetworkIds);
+    if (semanticEdges.length > 0) {
+        const semanticComponents = stronglyConnectedComponents(
+            graph.nodes.length,
+            semanticEdges
+        );
+        for (const edge of semanticEdges) {
+            const component = semanticComponents.componentByNode[edge.from];
+            if (component !== semanticComponents.componentByNode[edge.to]
+                || semanticComponents.components[component].length < 2) {
+                continue;
+            }
+            for (const networkId of edge.networkIds) {
+                feedbackCandidates.add(networkId);
+            }
         }
-        for (const networkId of edge.networkIds) feedbackCandidates.add(networkId);
     }
     const feedbackNetworkIds = new Set(graph.networks
         .map(network => network.id)
