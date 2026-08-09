@@ -23,6 +23,18 @@
 
 ---
 
+## 2026-08-09: Complete the Python product retirement
+
+**Context:** The v1.4.0 compatibility release published the Node CLI, shared TypeScript packages, VS Code extension, and one final set of deprecated Python artifacts. The Node CLI contract and cross-platform release gates passed, so the temporary rollback window is complete.
+
+**Decision:** Remove the Python GUI/CLI, Python packages and tests, worker-wheel and PyInstaller paths, and deprecated release artifacts. Maintain only the Node CLI and VS Code extension, with the 85-case Node CLI contract as the compatibility boundary for existing projects and automation.
+
+**Affects:** `packages/`, `scripts/`, `.github/workflows/`, `README.md`
+
+**Tags:** #architecture #tooling #migration #retirement
+
+---
+
 ## 2026-08-08: Run release npm commands through Node
 
 **Context:** The cross-platform clean-install gate exposed that Windows `.cmd` shims cannot be passed directly to `execFileSync` or to `spawnSync` without a shell. The release scripts must run identically on Linux, macOS, and Windows without shell-specific quoting.
