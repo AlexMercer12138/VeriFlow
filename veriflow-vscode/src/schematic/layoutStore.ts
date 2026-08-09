@@ -709,15 +709,25 @@ function materializeStoredLayout(
 
 function nearestColumn(
     x: number,
-    candidates: readonly number[],
-    centers: ReadonlyMap<number, number>,
+    candidates: readonly { column: number; center: number }[],
     fallback: number
 ): number {
-    return candidates.reduce((selected, candidate) => {
-        const selectedDistance = Math.abs(x - (centers.get(selected) ?? x));
-        const candidateDistance = Math.abs(x - (centers.get(candidate) ?? x));
-        return candidateDistance < selectedDistance ? candidate : selected;
-    }, candidates[0] ?? fallback);
+    if (candidates.length === 0) return fallback;
+    let low = 0;
+    let high = candidates.length;
+    while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (candidates[middle].center < x) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if (low === 0) return candidates[0].column;
+    if (low === candidates.length) return candidates[candidates.length - 1].column;
+    const left = candidates[low - 1];
+    const right = candidates[low];
+    return x - left.center <= right.center - x ? left.column : right.column;
 }
 
 function storedLayoutFromAbsolute(
@@ -733,6 +743,10 @@ function storedLayoutFromAbsolute(
         .filter(node => node.kind !== 'port')
         .map(node => assignment.nodeColumn.get(node.id) ?? 0))]
         .sort((left, right) => left - right);
+    const internalColumnCenters = internalColumns.flatMap(column => {
+        const center = centers.get(column);
+        return center === undefined ? [] : [{ column, center }];
+    });
     const targetColumns = new Map<string, number>();
 
     for (const node of graph.nodes) {
@@ -740,7 +754,7 @@ function storedLayoutFromAbsolute(
         const automaticColumn = assignment.nodeColumn.get(node.id) ?? 0;
         const column = !absolute?.fixed || node.kind === 'port'
             ? automaticColumn
-            : nearestColumn(absolute.x, internalColumns, centers, automaticColumn);
+            : nearestColumn(absolute.x, internalColumnCenters, automaticColumn);
         targetColumns.set(node.id, column);
     }
 

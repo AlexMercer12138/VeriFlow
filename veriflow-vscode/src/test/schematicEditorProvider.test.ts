@@ -73,6 +73,7 @@ type ProviderHarness = {
     setOpenTextGate(uri: string, gate: Gate): void;
     setShowTextGate(uri: string, gate: Gate): void;
     setDefinitionGate(definitionKey: string, gate: Gate): void;
+    setIndexGate(gate: Gate): void;
     setPostGate(predicate: (event: HostEvent) => boolean, gate: Gate): void;
     setSaveGate(gate: Gate): void;
     setIndexDefinitions(definitions: HdlDefinitionSummary[]): void;
@@ -115,6 +116,7 @@ async function createProviderHarness(
         ? { text: initialParseRace.text, gate: initialParseRace.gate }
         : undefined;
     let saveGate: Gate | undefined;
+    let indexGate: Gate | undefined;
     const openTextGates = new Map<string, Gate>();
     const showTextGates = new Map<string, Gate>();
     const definitionGates = new Map<string, Gate>();
@@ -353,7 +355,15 @@ async function createProviderHarness(
         },
     };
     const provider = new SchematicEditorProvider(context, navigation, {
-        getIndex: async () => index,
+        getIndex: async () => {
+            const pending = indexGate;
+            if (pending) {
+                indexGate = undefined;
+                pending.markStarted();
+                await pending.release;
+            }
+            return index;
+        },
         onDidInvalidate(listener: (invalidatedIndex?: object) => void) {
             indexInvalidationListener = listener;
             return {
@@ -399,6 +409,7 @@ async function createProviderHarness(
         setDefinitionGate(definitionKey, gate): void {
             definitionGates.set(definitionKey, gate);
         },
+        setIndexGate(gate): void { indexGate = gate; },
         setPostGate(predicate, gate): void { postGate = { predicate, gate }; },
         setSaveGate(gate): void { saveGate = gate; },
         setIndexDefinitions(definitions): void { indexDefinitions = definitions; },
@@ -1775,6 +1786,70 @@ async function testDelayedSaveRebasesAfterModuleRoundTrip(): Promise<void> {
     }
 }
 
+async function testDelayedSaveDoesNotRebaseOntoOutgoingGraphDuringSelection(): Promise<void> {
+    const text = [
+        'module first(input logic first_i); endmodule',
+        'module second(input logic second_i); endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('file:///workspace/design.sv', text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    const indexGate = createGate();
+    const saveGate = createGate();
+    try {
+        const [firstKey, secondKey] = harness.moduleKeys;
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages).at(-1) === secondKey,
+            'second module before delayed save race'
+        );
+        const oldSecond = harness.messages.filter(event =>
+            event.type === 'graph' && event.graph.moduleKey === secondKey
+        ).at(-1);
+        assert.ok(oldSecond?.type === 'graph');
+
+        harness.send({ type: 'selectModule', moduleKey: firstKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages).at(-1) === firstKey,
+            'first module before delayed save race'
+        );
+
+        harness.setIndexGate(indexGate);
+        harness.setSaveGate(saveGate);
+        const start = harness.messages.length;
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await indexGate.started;
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: secondKey,
+            revision: oldSecond.revision,
+            layout: oldSecond.layout,
+        });
+        await saveGate.started;
+        saveGate.allow();
+        await waitFor(
+            () => harness.storedValues().length > 0,
+            'delayed save completion during module selection'
+        );
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.deepStrictEqual(graphModuleKeys(harness.messages.slice(start)), []);
+
+        indexGate.allow();
+        await waitFor(
+            () => graphModuleKeys(harness.messages.slice(start)).includes(secondKey),
+            'selected module graph after delayed save race'
+        );
+        assert.deepStrictEqual(
+            graphModuleKeys(harness.messages.slice(start)),
+            [secondKey]
+        );
+    } finally {
+        saveGate.allow();
+        indexGate.allow();
+        await harness.dispose();
+    }
+}
+
 function graphModuleKeys(messages: HostEvent[]): string[] {
     return messages.flatMap(event => event.type === 'graph' ? [event.graph.moduleKey] : []);
 }
@@ -1976,6 +2051,7 @@ void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
     .then(testRapidRefreshStopsStalePublish)
     .then(testDelayedSaveRebasesOntoCurrentGraphRevision)
     .then(testDelayedSaveRebasesAfterModuleRoundTrip)
+    .then(testDelayedSaveDoesNotRebaseOntoOutgoingGraphDuringSelection)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)
     .then(testRelayoutRejectsDelayedSaveFromPreviousRevision)

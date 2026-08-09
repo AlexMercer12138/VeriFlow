@@ -614,7 +614,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             || command.revision === state.graphRevision
                             || latestSaveSequenceByModule.get(command.moduleKey)
                                 !== commandSnapshot.sequence
-                            || !state.graph) {
+                            || !state.graph
+                            || state.graph.moduleKey !== command.moduleKey) {
                             return;
                         }
                         const graph = state.graph;
