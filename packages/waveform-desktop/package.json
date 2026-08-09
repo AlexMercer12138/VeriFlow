@@ -1,8 +1,19 @@
 {
   "name": "@veriflow/waveform-desktop",
-  "version": "1.3.2",
+  "version": "1.4.0",
+  "description": "Electron waveform host for the Vik-VeriFlow CLI.",
   "type": "commonjs",
   "license": "MIT",
+  "author": "AlexMercer12138",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow.git",
+    "directory": "packages/waveform-desktop"
+  },
+  "homepage": "https://github.com/AlexMercer12138/Vik-VeriFlow#readme",
+  "bugs": {
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow/issues"
+  },
   "engines": {
     "node": ">=24.14.1"
   },
@@ -34,7 +45,7 @@
     "scripts/install-electron.cjs"
   ],
   "dependencies": {
-    "@veriflow/waveform-runtime": "1.3.2",
+    "@veriflow/waveform-runtime": "1.4.0",
     "electron": "43.3.0"
   },
   "scripts": {

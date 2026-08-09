@@ -32,6 +32,7 @@ WORKSPACE_PACKAGE_FILES = sorted((ROOT / "packages").glob("*/package.json"))
 PACKAGE_FILES = [ROOT_PACKAGE_FILE, *WORKSPACE_PACKAGE_FILES, VSCODE_PACKAGE_FILE]
 VSCODE_DIR = ROOT / "veriflow-vscode"
 VSCODE_CHANGELOG_FILE = VSCODE_DIR / "CHANGELOG.md"
+CLI_CONTRACT_FILE = ROOT / "tests" / "cli_contract" / "cases.json"
 CRLF_WARNING_RE = re.compile(
     r"^warning: in the working copy of '.+', LF will be replaced by CRLF the next time Git touches it$"
 )
@@ -127,6 +128,28 @@ def next_patch_version(current: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def update_cli_contract_version(path: Path, current: str, new: str) -> None:
+    contract = json.loads(read_text(path))
+    version_cases = {
+        case.get("id"): case
+        for case in contract.get("cases", [])
+        if case.get("id") in {"version", "version_short"}
+    }
+    if set(version_cases) != {"version", "version_short"}:
+        raise ReleaseError(f"CLI contract is missing version cases: {path}")
+
+    expected_current = f"VeriFlow {current}\n"
+    for case_id, case in version_cases.items():
+        expected = case.get("expected")
+        if not isinstance(expected, dict) or expected.get("stdout") != expected_current:
+            raise ReleaseError(
+                f"CLI contract {case_id} does not contain {expected_current!r}"
+            )
+        expected["stdout"] = f"VeriFlow {new}\n"
+
+    write_text(path, json.dumps(contract, indent=2, ensure_ascii=False) + "\n")
+
+
 def ensure_versions_match() -> str:
     versions = read_versions()
     unique = set(versions.values())
@@ -197,6 +220,8 @@ def update_version(target_version: Optional[str]) -> str:
             package_file,
             json.dumps(package_json, indent=2, ensure_ascii=False) + "\n",
         )
+
+    update_cli_contract_version(CLI_CONTRACT_FILE, current, new_version)
 
     run(["npm", "install", "--package-lock-only", "--ignore-scripts"])
 

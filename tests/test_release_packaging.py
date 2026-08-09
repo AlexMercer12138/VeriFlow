@@ -1,5 +1,7 @@
 import json
+import sys
 import tomllib
+import types
 from pathlib import Path
 from typing import List, Tuple
 
@@ -14,7 +16,9 @@ ROOT_VSCODE_BUILD = ROOT / "scripts" / "build-vscode.mjs"
 README = ROOT / "README.md"
 CLI_MAIN = ROOT / "packages" / "cli" / "src" / "main.ts"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 CHANGELOG = ROOT / "veriflow-vscode" / "CHANGELOG.md"
+CLI_CONTRACT = ROOT / "tests" / "cli_contract" / "cases.json"
 PUBLISHABLE_WORKSPACES = {
     "packages/flow-core/package.json",
     "packages/hdl-core/package.json",
@@ -120,7 +124,27 @@ def test_release_versions_cover_root_and_all_workspaces() -> None:
     assert "pyproject.toml" in versions
     assert "veriflow-vscode/package.json" in versions
     assert PUBLISHABLE_WORKSPACES <= versions.keys()
-    assert set(versions.values()) == {"1.3.2"}
+    assert set(versions.values()) == {"1.4.0"}
+
+
+def test_version_update_rewrites_only_cli_version_contract_cases(tmp_path: Path) -> None:
+    contract_path = tmp_path / "cases.json"
+    contract = {
+        "schema_version": 1,
+        "cases": [
+            {"id": "version", "expected": {"stdout": "VeriFlow 1.3.2\n"}},
+            {"id": "version_short", "expected": {"stdout": "VeriFlow 1.3.2\n"}},
+            {"id": "legacy_config", "expected": {"version": "1.3.2"}},
+        ],
+    }
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    run_release.update_cli_contract_version(contract_path, "1.3.2", "1.4.0")
+
+    updated = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert updated["cases"][0]["expected"]["stdout"] == "VeriFlow 1.4.0\n"
+    assert updated["cases"][1]["expected"]["stdout"] == "VeriFlow 1.4.0\n"
+    assert updated["cases"][2]["expected"]["version"] == "1.3.2"
 
 
 def test_node_cli_version_comes_from_its_package_manifest() -> None:
@@ -149,6 +173,38 @@ def test_python_cli_deprecation_wrapper_preserves_exit_code(monkeypatch, capsys)
     assert captured.out == ""
     assert "Python CLI is deprecated" in captured.err
     assert "@veriflow/cli" in captured.err
+
+
+def test_python_gui_deprecation_is_visible_at_both_entrypoints(monkeypatch) -> None:
+    from src.presentation import deprecation
+
+    calls = []
+
+    class FakeMessageBox:
+        @staticmethod
+        def warning(parent, title, message):
+            calls.append((parent, title, message))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide6.QtWidgets",
+        types.SimpleNamespace(QMessageBox=FakeMessageBox),
+    )
+    parent = object()
+
+    deprecation.show_python_gui_deprecation(parent)
+
+    assert calls == [
+        (
+            parent,
+            "VeriFlow Python GUI deprecated",
+            deprecation.python_product_deprecation_message("GUI"),
+        )
+    ]
+    for entrypoint in [ROOT / "run_gui.py", ROOT / "src/presentation/gui/__main__.py"]:
+        assert "show_python_gui_deprecation(window)" in entrypoint.read_text(
+            encoding="utf-8"
+        )
 
 
 def test_ci_builds_and_smokes_release_artifacts() -> None:
@@ -181,6 +237,83 @@ def test_ci_builds_and_smokes_release_artifacts() -> None:
     assert "dist/npm/*.tgz" in workflow_source
     assert "veriflow-vscode/*.vsix" in workflow_source
 
+    python_artifacts = workflow["jobs"]["python-deprecation-artifacts"]
+    python_commands = "\n".join(
+        step["run"] for step in python_artifacts["steps"] if "run" in step
+    )
+    assert python_artifacts["runs-on"] == "windows-latest"
+    assert "npm run build:web" in python_commands
+    assert 'python -m pip install -e ".[build]"' in python_commands
+    assert "python -m PyInstaller --clean --noconfirm VeriFlow.spec" in python_commands
+    assert "python -m PyInstaller --clean --noconfirm VeriFlow-cli.spec" in python_commands
+    assert "dist/VeriFlow.exe" in workflow_source
+    assert "dist/VeriFlow-cli.exe" in workflow_source
+
+
+def test_tag_release_publishes_node_vscode_and_python_deprecation_artifacts() -> None:
+    workflow_source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_source)
+
+    assert 'tags: ["v*"]' in workflow_source
+    assert "contents: write" in workflow_source
+    assert "actions: read" in workflow_source
+    assert set(workflow["jobs"]) == {
+        "verify-main-ci",
+        "node-artifacts",
+        "python-deprecation-artifacts",
+        "github-release",
+    }
+    assert workflow["jobs"]["node-artifacts"]["needs"] == "verify-main-ci"
+    assert workflow["jobs"]["python-deprecation-artifacts"]["needs"] == "verify-main-ci"
+    assert "git merge-base --is-ancestor" in workflow_source
+    assert "gh run list" in workflow_source
+    assert workflow["jobs"]["python-deprecation-artifacts"]["runs-on"] == "windows-latest"
+    assert "npm run pack:node" in workflow_source
+    assert "npm run package --workspace veriflow-vscode" in workflow_source
+    assert "python -m PyInstaller --clean --noconfirm VeriFlow.spec" in workflow_source
+    assert "python -m PyInstaller --clean --noconfirm VeriFlow-cli.spec" in workflow_source
+    assert "dist/npm/*.tgz" in workflow_source
+    assert "veriflow-vscode/*.vsix" in workflow_source
+    assert "dist/VeriFlow.exe" in workflow_source
+    assert "dist/VeriFlow-cli.exe" in workflow_source
+    assert "cp dist/npm/*.tgz release-assets/" in workflow_source
+    assert "cp veriflow-vscode/*.vsix release-assets/" in workflow_source
+    assert "Copy-Item -LiteralPath \"dist/VeriFlow.exe\" -Destination \"release-assets/\"" in workflow_source
+    assert "Copy-Item -LiteralPath \"dist/VeriFlow-cli.exe\" -Destination \"release-assets/\"" in workflow_source
+    assert workflow_source.count("path: release-assets/*") == 2
+    assert "SHA256SUMS.txt" in workflow_source
+    assert "! -name SHA256SUMS.txt" in workflow_source
+    assert "GH_REPO: ${{ github.repository }}" in workflow_source
+    assert "gh release create" in workflow_source
+
+
+def test_branding_changes_display_text_without_changing_compatibility_ids() -> None:
+    root_package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    vscode_package = json.loads(VSCODE_PACKAGE.read_text(encoding="utf-8"))
+    readme = README.read_text(encoding="utf-8")
+
+    assert root_package["name"] == "vik-veriflow-workspace"
+    assert vscode_package["displayName"] == "Verilog Design Flow"
+    assert vscode_package["name"] == "veriflow"
+    assert vscode_package["publisher"] == "Vikai-mercer"
+    assert vscode_package["repository"]["url"].endswith("/Vik-VeriFlow.git")
+    assert readme.startswith("# Vik-VeriFlow\n")
+    assert "`veriflow` CLI" in readme
+
+
+def test_publishable_packages_have_first_release_metadata() -> None:
+    for relative_manifest in PUBLISHABLE_WORKSPACES:
+        manifest = json.loads((ROOT / relative_manifest).read_text(encoding="utf-8"))
+        assert manifest["description"], relative_manifest
+        assert manifest["author"] == "AlexMercer12138", relative_manifest
+        assert manifest["repository"]["url"].endswith("/Vik-VeriFlow.git")
+        assert manifest["homepage"].endswith("/Vik-VeriFlow#readme")
+        assert manifest["bugs"]["url"].endswith("/Vik-VeriFlow/issues")
+
+    cli_readme = (ROOT / "packages" / "cli" / "README.md").read_text(encoding="utf-8")
+    assert "npm install --global @veriflow/cli" in cli_readme
+    assert "veriflow --help" in cli_readme
+
 
 def test_publishable_node_packages_declare_supported_engine() -> None:
     root_manifest = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -211,6 +344,14 @@ def test_deprecation_release_is_recorded_without_retiring_python_early() -> None
     assert "Python GUI/CLI" in changelog
     assert "retirement gate" in gui_spec
     assert "retirement gate" in cli_spec
+
+
+def test_python_deprecation_specs_keep_legacy_executable_names() -> None:
+    gui_spec = (ROOT / "VeriFlow.spec").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "VeriFlow-cli.spec").read_text(encoding="utf-8")
+
+    assert "name='VeriFlow'" in gui_spec
+    assert "name='VeriFlow-cli'" in cli_spec
 
 
 def test_vscode_packaging_lifecycle_uses_root_web_asset_orchestration() -> None:

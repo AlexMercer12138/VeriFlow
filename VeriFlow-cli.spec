@@ -42,7 +42,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='veriflow',
+    name='VeriFlow-cli',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

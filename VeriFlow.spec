@@ -57,7 +57,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='veriflow-gui',
+    name='VeriFlow',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

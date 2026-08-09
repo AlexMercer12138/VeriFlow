@@ -201,3 +201,64 @@ jobs:
           path: |
             dist/npm/*.tgz
             veriflow-vscode/*.vsix
+
+  python-deprecation-artifacts:
+    name: Deprecated Python artifacts (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build shared waveform assets
+        run: npm run build:web
+
+      - name: Install deprecated Python product dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Build deprecated Python products
+        run: |
+          python -m PyInstaller --clean --noconfirm VeriFlow.spec
+          python -m PyInstaller --clean --noconfirm VeriFlow-cli.spec
+
+      - name: Smoke deprecated Python CLI artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path -LiteralPath "dist/VeriFlow.exe" -PathType Leaf)) {
+            throw "Missing dist/VeriFlow.exe"
+          }
+          if (-not (Test-Path -LiteralPath "dist/VeriFlow-cli.exe" -PathType Leaf)) {
+            throw "Missing dist/VeriFlow-cli.exe"
+          }
+          $cliOutput = (& "dist/VeriFlow-cli.exe" --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "Deprecated Python CLI smoke failed" }
+          if ($cliOutput -notmatch "Python CLI is deprecated") {
+            throw "Deprecated Python CLI warning was not emitted"
+          }
+
+      - name: Upload deprecated Python artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: veriflow-python-deprecation-windows
+          if-no-files-found: error
+          path: |
+            dist/VeriFlow.exe
+            dist/VeriFlow-cli.exe

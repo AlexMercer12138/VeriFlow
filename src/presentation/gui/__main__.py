@@ -12,7 +12,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from PySide6.QtWidgets import QApplication
 from src.presentation.gui.main_window import MainWindow
-from src.presentation.deprecation import warn_python_product
+from src.presentation.deprecation import (
+    show_python_gui_deprecation,
+    warn_python_product,
+)
 
 
 def _configure_qt_webengine() -> None:
@@ -37,6 +40,7 @@ def main():
 
     window = MainWindow()
     window.show()
+    show_python_gui_deprecation(window)
 
     return app.exec()
 

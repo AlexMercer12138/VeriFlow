@@ -1,8 +1,19 @@
 {
   "name": "@veriflow/hdl-runtime",
-  "version": "1.3.2",
+  "version": "1.4.0",
+  "description": "Tree-sitter HDL parsing, indexing, and dependency runtime for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",
+  "author": "AlexMercer12138",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow.git",
+    "directory": "packages/hdl-runtime"
+  },
+  "homepage": "https://github.com/AlexMercer12138/Vik-VeriFlow#readme",
+  "bugs": {
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow/issues"
+  },
   "engines": {
     "node": ">=24.14.1"
   },
@@ -60,17 +71,35 @@
   },
   "typesVersions": {
     "*": {
-      "dependencyAnalyzer": ["dist/dependencyAnalyzer.d.ts"],
-      "parserClient": ["dist/parserClient.d.ts"],
-      "parserQueue": ["dist/parserQueue.d.ts"],
-      "parserWorker": ["dist/parserWorker.d.ts"],
-      "protocol": ["dist/protocol.d.ts"],
-      "workspaceHdlIndex": ["dist/workspaceHdlIndex.d.ts"],
-      "workspaceIndexStore": ["dist/workspaceIndexStore.d.ts"],
-      "workspaceIndexTypes": ["dist/workspaceIndexTypes.d.ts"]
+      "dependencyAnalyzer": [
+        "dist/dependencyAnalyzer.d.ts"
+      ],
+      "parserClient": [
+        "dist/parserClient.d.ts"
+      ],
+      "parserQueue": [
+        "dist/parserQueue.d.ts"
+      ],
+      "parserWorker": [
+        "dist/parserWorker.d.ts"
+      ],
+      "protocol": [
+        "dist/protocol.d.ts"
+      ],
+      "workspaceHdlIndex": [
+        "dist/workspaceHdlIndex.d.ts"
+      ],
+      "workspaceIndexStore": [
+        "dist/workspaceIndexStore.d.ts"
+      ],
+      "workspaceIndexTypes": [
+        "dist/workspaceIndexTypes.d.ts"
+      ]
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
@@ -78,8 +107,8 @@
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
-    "@veriflow/flow-core": "1.3.2",
-    "@veriflow/hdl-core": "1.3.2",
+    "@veriflow/flow-core": "1.4.0",
+    "@veriflow/hdl-core": "1.4.0",
     "web-tree-sitter": "0.26.11"
   }
 }

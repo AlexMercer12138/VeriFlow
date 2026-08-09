@@ -1,8 +1,19 @@
 {
   "name": "@veriflow/waveform-runtime",
-  "version": "1.3.2",
+  "version": "1.4.0",
+  "description": "Indexed VCD waveform runtime for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",
+  "author": "AlexMercer12138",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow.git",
+    "directory": "packages/waveform-runtime"
+  },
+  "homepage": "https://github.com/AlexMercer12138/Vik-VeriFlow#readme",
+  "bugs": {
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow/issues"
+  },
   "engines": {
     "node": ">=24.14.1"
   },
@@ -45,14 +56,26 @@
   },
   "typesVersions": {
     "*": {
-      "vcdIndex": ["dist/vcdIndex.d.ts"],
-      "vcdIndexFormat": ["dist/vcdIndexFormat.d.ts"],
-      "waveformCache": ["dist/waveformCache.d.ts"],
-      "waveformWorker": ["dist/waveformWorker.d.ts"],
-      "waveformWorkerClient": ["dist/waveformWorkerClient.d.ts"]
+      "vcdIndex": [
+        "dist/vcdIndex.d.ts"
+      ],
+      "vcdIndexFormat": [
+        "dist/vcdIndexFormat.d.ts"
+      ],
+      "waveformCache": [
+        "dist/waveformCache.d.ts"
+      ],
+      "waveformWorker": [
+        "dist/waveformWorker.d.ts"
+      ],
+      "waveformWorkerClient": [
+        "dist/waveformWorkerClient.d.ts"
+      ]
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",

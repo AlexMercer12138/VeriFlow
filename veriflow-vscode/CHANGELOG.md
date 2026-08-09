@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-09
+
 - 发布共享 TypeScript 核心、Node CLI 和 context-isolated Electron 波形窗口。
 - Node CLI 与 VS Code 扩展共享 HDL、仿真和波形 runtime。
 - Python GUI/CLI 进入弃用周期，在 retirement gate 完成前继续提供兼容制品。
+- 扩展展示名由 Verilog Simulation Flow 更新为 Verilog Design Flow，扩展 ID 和配置键保持不变。
 
 ## [1.3.2]
 

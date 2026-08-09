@@ -1,8 +1,19 @@
 {
   "name": "@veriflow/cli",
-  "version": "1.3.2",
+  "version": "1.4.0",
+  "description": "Node.js CLI for Vik-VeriFlow Verilog design workflows.",
   "type": "commonjs",
   "license": "MIT",
+  "author": "AlexMercer12138",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/AlexMercer12138/Vik-VeriFlow#readme",
+  "bugs": {
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow/issues"
+  },
   "engines": {
     "node": ">=24.14.1"
   },
@@ -22,12 +33,14 @@
   "bin": {
     "veriflow": "dist/main.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@veriflow/flow-core": "1.3.2",
-    "@veriflow/hdl-core": "1.3.2",
-    "@veriflow/hdl-runtime": "1.3.2",
-    "@veriflow/waveform-desktop": "1.3.2",
+    "@veriflow/flow-core": "1.4.0",
+    "@veriflow/hdl-core": "1.4.0",
+    "@veriflow/hdl-runtime": "1.4.0",
+    "@veriflow/waveform-desktop": "1.4.0",
     "tree-sitter-systemverilog": "0.4.0",
     "web-tree-sitter": "0.26.11"
   },

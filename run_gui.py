@@ -18,7 +18,10 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
     from src.presentation.gui.main_window import MainWindow
-    from src.presentation.deprecation import warn_python_product
+    from src.presentation.deprecation import (
+        show_python_gui_deprecation,
+        warn_python_product,
+    )
 
     warn_python_product("GUI")
 
@@ -34,6 +37,7 @@ def main():
 
     window = MainWindow()
     window.show()
+    show_python_gui_deprecation(window)
 
     sys.exit(app.exec())
 

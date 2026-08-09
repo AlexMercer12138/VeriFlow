@@ -1,10 +1,10 @@
 # VeriFlow - VS Code Extension
 
-[简体中文](https://github.com/AlexMercer12138/VeriFlow/blob/main/veriflow-vscode/README_zh-CN.md)
+[简体中文](https://github.com/AlexMercer12138/Vik-VeriFlow/blob/main/veriflow-vscode/README_zh-CN.md)
 
 <div align="center">
 
-**Run a lightweight Verilog simulation flow inside VS Code: scan modules, analyze dependencies, compile, simulate, open waveforms, and generate testbenches.**
+**Run a focused Verilog design flow inside VS Code: scan modules, analyze dependencies, edit schematics, compile, simulate, open waveforms, and generate testbenches.**
 
 [![VS Code](https://img.shields.io/badge/VS_Code-^1.80.0-007ACC.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -197,4 +197,4 @@ MIT
 
 ## Feedback
 
-Issues and suggestions are welcome on [GitHub Issues](https://github.com/AlexMercer12138/VeriFlow/issues).
+Issues and suggestions are welcome on [GitHub Issues](https://github.com/AlexMercer12138/Vik-VeriFlow/issues).

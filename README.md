@@ -1,8 +1,8 @@
-# VeriFlow
+# Vik-VeriFlow
 
 <div align="center">
 
-**轻量级跨平台 Verilog 仿真工程管理器，支持 Node CLI 和 VS Code 扩展**
+**跨平台 Verilog 设计流程工具，支持 Node CLI 和 VS Code 扩展**
 
 [![Node.js](https://img.shields.io/badge/Node.js-24.14.1-green.svg)](https://nodejs.org/)
 [![Electron](https://img.shields.io/badge/Waveform-Electron-47848F.svg)](https://www.electronjs.org/)
@@ -15,7 +15,7 @@
 
 ## 概述
 
-**VeriFlow**是一个专为简化 Verilog 开发流程而设计的工具。它能自动完成依赖解析、编译排序、仿真执行和波形查看，并通过 Node CLI 或 VS Code 侧边栏提供一致的 TypeScript 核心能力。
+**Vik-VeriFlow** 是一个专为简化 Verilog 开发流程而设计的工具。它能自动完成依赖解析、编译排序、仿真执行和波形查看，并通过 `veriflow` CLI 或 VS Code 侧边栏提供一致的 TypeScript 核心能力。
 
 > **产品状态：** Node CLI 和 VS Code 扩展是持续维护的产品形态。Python GUI/CLI 已弃用，仅在首个弃用版本中保留兼容制品；完成 retirement gate 后将删除。
 
@@ -135,8 +135,8 @@ Node CLI 安装会同时安装 Electron 波形宿主，因此安装体积较大�
 从源码开发时使用仓库根目录唯一的 lockfile：
 
 ```bash
-git clone https://github.com/AlexMercer12138/VeriFlow.git
-cd VeriFlow
+git clone https://github.com/AlexMercer12138/Vik-VeriFlow.git
+cd Vik-VeriFlow
 npm ci
 npm run build:cli
 ```

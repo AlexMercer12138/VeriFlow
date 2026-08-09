@@ -1,10 +1,10 @@
 # VeriFlow - VS Code 扩展
 
-[English](https://github.com/AlexMercer12138/VeriFlow/blob/main/veriflow-vscode/README.md)
+[English](https://github.com/AlexMercer12138/Vik-VeriFlow/blob/main/veriflow-vscode/README.md)
 
 <div align="center">
 
-**在 VS Code 中完成轻量级 Verilog 仿真流程：模块扫描、依赖分析、编译仿真、波形查看和 Testbench 生成。**
+**在 VS Code 中完成专注的 Verilog 设计流程：模块扫描、依赖分析、原理图编辑、编译仿真、波形查看和 Testbench 生成。**
 
 [![VS Code](https://img.shields.io/badge/VS_Code-^1.80.0-007ACC.svg)](https://code.visualstudio.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -197,4 +197,4 @@ MIT
 
 ## 反馈
 
-有问题或建议，欢迎在 [GitHub Issues](https://github.com/AlexMercer12138/VeriFlow/issues) 反馈。
+有问题或建议，欢迎在 [GitHub Issues](https://github.com/AlexMercer12138/Vik-VeriFlow/issues) 反馈。
