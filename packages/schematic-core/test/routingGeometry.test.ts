@@ -1,0 +1,312 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+    deriveJunctions,
+    horizontal,
+    HorizontalReservationIndex,
+    segmentIntersectsRectangleInterior,
+    simplifySegments,
+    splitSegmentsAtBranchPoints,
+    vertical,
+    VerticalReservationIndex,
+    type Rectangle,
+    type RouteSegment,
+} from '../src';
+
+test('normalizes and merges same-network collinear intervals', () => {
+    const input: RouteSegment[] = [
+        { orientation: 'horizontal', networkId: 'n', x1: 20, x2: 0, y: 10 },
+        { orientation: 'horizontal', networkId: 'n', x1: 40, x2: 20, y: 10 },
+        { orientation: 'vertical', networkId: 'n', x: 40, y1: 30, y2: 10 },
+    ];
+    const original = structuredClone(input);
+
+    const simplified = simplifySegments(input);
+
+    assert.deepEqual(simplified, [
+        horizontal('n', 0, 40, 10),
+        vertical('n', 40, 10, 30),
+    ]);
+    assert.deepEqual(input, original);
+});
+
+test('removes zero-length segments', () => {
+    assert.deepEqual(simplifySegments([
+        horizontal('n', 10, 10, 20),
+        vertical('n', 30, 40, 40),
+    ]), []);
+});
+
+test('rejects coordinates outside the finite integer grid', () => {
+    for (const build of [
+        () => horizontal('n', 0.5, 10, 20),
+        () => horizontal('n', 0, Number.NaN, 20),
+        () => horizontal('n', 0, Number.MAX_SAFE_INTEGER + 1, 20),
+        () => vertical('n', Number.POSITIVE_INFINITY, 0, 10),
+        () => simplifySegments([{
+            orientation: 'vertical' as const,
+            networkId: 'n',
+            x: 10,
+            y1: 0,
+            y2: Number.NEGATIVE_INFINITY,
+        }]),
+    ]) {
+        assert.throws(build, {
+            name: 'RangeError',
+            message: /finite integer grid coordinate/,
+        });
+    }
+});
+
+test('unions duplicate contained overlapping and adjacent same-network intervals', () => {
+    assert.deepEqual(simplifySegments([
+        horizontal('n', 0, 50, 10),
+        horizontal('n', 10, 20, 10),
+        horizontal('n', 20, 60, 10),
+        horizontal('n', 0, 50, 10),
+    ]), [horizontal('n', 0, 60, 10)]);
+});
+
+test('rejects different-network collinear open-interval overlap', () => {
+    for (const segments of [
+        [
+            horizontal('first', 0, 20, 10),
+            horizontal('second', 10, 30, 10),
+        ],
+        [
+            vertical('first', 10, 0, 20),
+            vertical('second', 10, 10, 30),
+        ],
+    ]) {
+        assert.throws(() => simplifySegments(segments), {
+            name: 'RangeError',
+            message: /different networks.*collinear open interval/,
+        });
+    }
+});
+
+test('returns canonical segment order independently of input order', () => {
+    const segments = [
+        vertical('z-network', 20, 0, 10),
+        horizontal('a-network', 20, 0, 10),
+        vertical('a-network', 30, 20, 0),
+    ];
+
+    assert.deepEqual(
+        simplifySegments(segments),
+        simplifySegments([...segments].reverse())
+    );
+});
+
+test('allows different networks to touch at endpoints and cross perpendicularly', () => {
+    assert.deepEqual(simplifySegments([
+        horizontal('__proto__', 0, 20, 10),
+        horizontal('constructor', 20, 40, 10),
+        vertical('crossing', 10, 0, 20),
+    ]), [
+        horizontal('__proto__', 0, 20, 10),
+        horizontal('constructor', 20, 40, 10),
+        vertical('crossing', 10, 0, 20),
+    ]);
+});
+
+test('detects only intersections with a module rectangle interior', () => {
+    const moduleBounds: Rectangle = { x: 10, y: 10, width: 20, height: 20 };
+
+    assert.equal(segmentIntersectsRectangleInterior(
+        horizontal('n', 0, 40, 20), moduleBounds
+    ), true);
+    assert.equal(segmentIntersectsRectangleInterior(
+        vertical('n', 20, 0, 40), moduleBounds
+    ), true);
+    assert.equal(segmentIntersectsRectangleInterior(
+        horizontal('n', 10, 20, 20), moduleBounds
+    ), true, 'a boundary endpoint followed by interior wire is blocked');
+    assert.equal(segmentIntersectsRectangleInterior(
+        horizontal('n', 15, 15, 20), moduleBounds
+    ), false, 'a zero-length segment has no occupied interior');
+});
+
+test('allows module boundary and pin endpoint touches', () => {
+    const moduleBounds: Rectangle = { x: 10, y: 10, width: 20, height: 20 };
+
+    for (const segment of [
+        horizontal('n', 0, 10, 20),
+        horizontal('n', 0, 40, 10),
+        horizontal('n', 0, 40, 30),
+        vertical('n', 10, 0, 40),
+        vertical('n', 30, 0, 40),
+        horizontal('n', 0, 10, 10),
+    ]) {
+        assert.equal(
+            segmentIntersectsRectangleInterior(segment, moduleBounds),
+            false
+        );
+    }
+});
+
+test('rejects invalid module rectangles', () => {
+    const segment = horizontal('n', 0, 10, 0);
+    for (const rectangle of [
+        { x: 0.5, y: 0, width: 10, height: 10 },
+        { x: 0, y: Number.NaN, width: 10, height: 10 },
+        { x: 0, y: 0, width: -1, height: 10 },
+        { x: 0, y: 0, width: 10, height: Number.POSITIVE_INFINITY },
+        { x: Number.MAX_SAFE_INTEGER, y: 0, width: 10, height: 10 },
+    ]) {
+        assert.throws(
+            () => segmentIntersectsRectangleInterior(segment, rectangle),
+            RangeError
+        );
+    }
+});
+
+test('reserves vertical channel tracks using open-interval conflicts', () => {
+    const reservations = new VerticalReservationIndex();
+
+    assert.equal(reservations.reserve('channel:0', 0, 'first', 20, 0), true);
+    assert.equal(
+        reservations.hasConflict('channel:0', 0, 'first', 10, 30),
+        false,
+        'a network may reuse its own track interval'
+    );
+    assert.equal(
+        reservations.reserve('channel:0', 0, 'first', 10, 30),
+        true
+    );
+    assert.equal(
+        reservations.hasConflict('channel:0', 0, 'second', 20, 40),
+        true
+    );
+    assert.equal(
+        reservations.reserve('channel:0', 0, 'second', 20, 40),
+        false
+    );
+    assert.equal(
+        reservations.hasConflict('channel:0', 0, 'second', 30, 40),
+        false,
+        'different networks may touch at interval endpoints'
+    );
+});
+
+test('isolates vertical reservations by channel and track with prototype-safe keys', () => {
+    const reservations = new VerticalReservationIndex();
+    assert.equal(reservations.reserve('__proto__', 0, 'constructor', 0, 20), true);
+
+    assert.equal(
+        reservations.hasConflict('__proto__', 0, '__proto__', 10, 15),
+        true
+    );
+    assert.equal(
+        reservations.hasConflict('__proto__', 1, '__proto__', 10, 15),
+        false
+    );
+    assert.equal(
+        reservations.hasConflict('constructor', 0, '__proto__', 10, 15),
+        false
+    );
+});
+
+test('reserves horizontal corridor tracks independently from vertical crossings', () => {
+    const horizontalReservations = new HorizontalReservationIndex();
+    const verticalReservations = new VerticalReservationIndex();
+
+    assert.equal(
+        horizontalReservations.reserve('corridor:0', 2, 'horizontal', 0, 40),
+        true
+    );
+    assert.equal(
+        verticalReservations.reserve('channel:0', 2, 'vertical', 0, 40),
+        true
+    );
+    assert.equal(
+        horizontalReservations.hasConflict(
+            'corridor:0', 2, 'other', 10, 20
+        ),
+        true
+    );
+    assert.equal(
+        horizontalReservations.hasConflict(
+            'corridor:1', 2, 'other', 10, 20
+        ),
+        false
+    );
+});
+
+test('rejects invalid reservation tracks and interval coordinates', () => {
+    const verticalReservations = new VerticalReservationIndex();
+    const horizontalReservations = new HorizontalReservationIndex();
+
+    for (const reserve of [
+        () => verticalReservations.reserve('channel', -1, 'n', 0, 10),
+        () => verticalReservations.reserve('channel', 0.5, 'n', 0, 10),
+        () => horizontalReservations.reserve('corridor', 0, 'n', 0, Number.NaN),
+        () => horizontalReservations.hasConflict(
+            'corridor', Number.POSITIVE_INFINITY, 'n', 0, 10
+        ),
+    ]) {
+        assert.throws(reserve, RangeError);
+    }
+});
+
+test('splits merged same-network segments at branch points', () => {
+    const input = [
+        horizontal('n', 20, 0, 10),
+        horizontal('n', 0, 20, 10),
+        vertical('n', 10, 0, 10),
+    ];
+
+    assert.deepEqual(splitSegmentsAtBranchPoints(input), [
+        horizontal('n', 0, 10, 10),
+        horizontal('n', 10, 20, 10),
+        vertical('n', 10, 0, 10),
+    ]);
+    assert.deepEqual(input, [
+        horizontal('n', 0, 20, 10),
+        horizontal('n', 0, 20, 10),
+        vertical('n', 10, 0, 10),
+    ]);
+});
+
+test('derives junctions only from at least three same-network directions', () => {
+    const junctions = deriveJunctions([
+        horizontal('four', 0, 20, 20),
+        vertical('four', 10, 10, 30),
+        horizontal('tee', 0, 20, 10),
+        vertical('tee', 10, 0, 10),
+        horizontal('straight', 0, 20, 0),
+        horizontal('bend', 0, 10, 30),
+        vertical('bend', 10, 30, 40),
+    ]);
+
+    assert.deepEqual(junctions, [
+        {
+            networkId: 'four',
+            point: { x: 10, y: 20 },
+            directions: new Set(['north', 'east', 'south', 'west']),
+        },
+        {
+            networkId: 'tee',
+            point: { x: 10, y: 10 },
+            directions: new Set(['north', 'east', 'west']),
+        },
+    ]);
+});
+
+test('does not derive junctions from different-network crossings', () => {
+    assert.deepEqual(deriveJunctions([
+        horizontal('__proto__', 0, 20, 10),
+        vertical('constructor', 10, 0, 20),
+    ]), []);
+});
+
+test('does not let duplicate or overlapping segments invent directions', () => {
+    assert.deepEqual(deriveJunctions([
+        horizontal('n', 0, 10, 10),
+        horizontal('n', 0, 10, 10),
+        horizontal('n', 5, 10, 10),
+        vertical('n', 10, 10, 20),
+        vertical('n', 10, 10, 20),
+    ]), []);
+});
