@@ -69,3 +69,32 @@
 **Tags:** #architecture #tooling #migration #branding
 
 ---
+
+## 2026-08-09: Share a TypeScript schematic core and author Arch Designs
+
+**Context:** The current Dagre/X6 schematic splits networks into independent
+edges, fixes bidirectional pins to the bottom, and cannot guarantee compact
+column layout, obstacle-free orthogonal routes, or correct junctions. Visual
+composition also needs a source format that can generate explicit interface
+defaults without rewriting arbitrary hand-written HDL.
+
+**Decision:** Build a host-neutral TypeScript schematic core for column
+placement, channel routing, interface recognition, and rendering geometry.
+Keep `.v/.sv` schematics as inspection views, and use versioned `.ad` Arch
+Design files as the source of truth for visual module composition and
+deterministic RTL generation, defaulting to sibling Verilog-2001 `.v` output.
+
+**Why not:**
+- Port the Vik-SchGen router directly: its BFS placement, pairwise MST routes, whole-column bypasses, and post-route shrink do not match directed HDL flow or the required geometry guarantees.
+- Continue patching Dagre and X6 edges: presentation-layer routing cannot reliably model shared network trees, track occupancy, or direction-based junctions.
+- Edit existing HDL directly: safe source rewriting across macros, includes, and arbitrary coding styles is outside the focused design-to-export workflow.
+- Use Vivado `.bd`: VeriFlow does not implement that format and should not imply compatibility.
+- Show implicit defaults only on the canvas: generated HDL must explicitly implement every default shown by the editor.
+
+**Affects:** `packages/schematic-core/`, `packages/schematic-webview/`,
+`packages/cli/`, `veriflow-vscode/src/schematic/`,
+`docs/plans/2026-08-09-schematic-arch-design-design.md`
+
+**Tags:** #architecture #tooling #schematic #routing #code-generation
+
+---
