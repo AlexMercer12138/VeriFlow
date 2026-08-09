@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(__dirname, '../../../..');
 const sharedPackages = [
     '@veriflow/flow-core',
     '@veriflow/hdl-core',
+    '@veriflow/schematic-core',
     '@veriflow/hdl-runtime',
     '@veriflow/waveform-runtime',
 ] as const;

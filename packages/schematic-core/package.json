@@ -1,0 +1,56 @@
+{
+  "name": "@veriflow/schematic-core",
+  "version": "1.4.0",
+  "description": "Host-neutral schematic graph and layout core for Vik-VeriFlow.",
+  "type": "commonjs",
+  "license": "MIT",
+  "author": "AlexMercer12138",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow.git",
+    "directory": "packages/schematic-core"
+  },
+  "homepage": "https://github.com/AlexMercer12138/Vik-VeriFlow#readme",
+  "bugs": {
+    "url": "https://github.com/AlexMercer12138/Vik-VeriFlow/issues"
+  },
+  "engines": {
+    "node": ">=24.14.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "require": "./dist/model.js",
+      "default": "./dist/model.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "model": [
+        "dist/model.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+  },
+  "dependencies": {
+    "@veriflow/hdl-core": "1.4.0"
+  }
+}
