@@ -266,6 +266,8 @@ async function testSchematicAssets(): Promise<void> {
             `schematic text is missing ${clipSelector}`
         );
     }
+    assert.match(webviewSource, /{ tagName: 'text', selector: 'text' }/);
+    assert.doesNotMatch(webviewSource, /selector: 'portLabel'/);
     assert.ok(webviewSource.includes('clipPath: `url(#${'));
     assert.doesNotMatch(
         webviewSource,

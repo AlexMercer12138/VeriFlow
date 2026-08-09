@@ -503,7 +503,7 @@
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.pinKey = pinKey2;
-      exports2.resolvePinSides = resolvePinSides2;
+      exports2.resolvePinSides = resolvePinSides3;
       function pinKey2(nodeId, pinId) {
         return `${nodeId}\0${pinId}`;
       }
@@ -515,7 +515,7 @@
       function compareEndpoints(left4, right4) {
         return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
       }
-      function resolvePinSides2(graph2) {
+      function resolvePinSides3(graph2) {
         const orderedPins = [];
         const networksByPin = /* @__PURE__ */ new Map();
         const nodeIndexes = /* @__PURE__ */ new Map();
@@ -41005,13 +41005,20 @@
   function compareIds(left4, right4) {
     return left4 < right4 ? -1 : left4 > right4 ? 1 : 0;
   }
-  function schematicNodeSize(node) {
-    const sides = new Map(node.pins.map((pin2) => [
+  function schematicNodeSize(node, resolvedSides) {
+    const sides = resolvedSides ?? new Map(node.pins.map((pin2) => [
       (0, import_schematic_core.pinKey)(node.id, pin2.id),
       pin2.direction === "driver" ? "right" : "left"
     ]));
     const measured = (0, import_schematic_core.measureSchematicNode)(node, sides, (text3) => text3.length * 7);
     return { width: measured.width, height: measured.height };
+  }
+  function resolvedNodeSizes(graph2) {
+    const resolvedSides = (0, import_schematic_core.resolvePinSides)(graph2);
+    return new Map(graph2.nodes.map((node) => [
+      node.id,
+      schematicNodeSize(node, resolvedSides)
+    ]));
   }
   function deriveFeedbackRoutes(graph2, layout) {
     const normalizedLayout = normalizeLayout(layout);
@@ -41019,6 +41026,7 @@
       return [];
     }
     const nodesById = new Map(graph2.nodes.map((node) => [node.id, node]));
+    const nodeSizes = resolvedNodeSizes(graph2);
     const positionedNodes = graph2.nodes.flatMap((node) => {
       const position2 = normalizedLayout.nodes[node.id];
       return position2 ? [{ node, position: position2 }] : [];
@@ -41026,8 +41034,8 @@
     if (positionedNodes.length === 0) {
       return [];
     }
-    const minY = Math.min(...positionedNodes.map(({ node, position: position2 }) => position2.y - schematicNodeSize(node).height / 2));
-    const maxY = Math.max(...positionedNodes.map(({ node, position: position2 }) => position2.y + schematicNodeSize(node).height / 2));
+    const minY = Math.min(...positionedNodes.map(({ node, position: position2 }) => position2.y - nodeSizes.get(node.id).height / 2));
+    const maxY = Math.max(...positionedNodes.map(({ node, position: position2 }) => position2.y + nodeSizes.get(node.id).height / 2));
     const feedbackNetworks = [...graph2.networks].sort((left4, right4) => compareIds(left4.id, right4.id)).flatMap((network) => {
       const endpoints = network.endpoints.filter(
         (endpoint) => (endpoint.role === "driver" || endpoint.role === "load") && nodesById.has(endpoint.nodeId) && normalizedLayout.nodes[endpoint.nodeId] !== void 0
@@ -41051,7 +41059,7 @@
           pinId: endpoint.pinId,
           role: endpoint.role,
           x: position2.x,
-          y: position2.y + verticalDirection * schematicNodeSize(selectedNode).height / 2
+          y: position2.y + verticalDirection * nodeSizes.get(selectedNode.id).height / 2
         };
       });
       const trunkY = side === "top" ? minY - (lane + 1) * FEEDBACK_LANE_SEPARATION : maxY + (lane + 1) * FEEDBACK_LANE_SEPARATION;
@@ -41342,7 +41350,7 @@
               selector: "portLabelClipRect"
             }]
           },
-          { tagName: "text", selector: "portLabel" }
+          { tagName: "text", selector: "text" }
         ],
         attrs: {
           body: {
@@ -41452,7 +41460,7 @@
             width: resolved.clipBounds.width,
             height: resolved.clipBounds.height
           },
-          portLabel: {
+          text: {
             text: resolved.visibleLabel,
             title: pin2.name,
             clipPath: `url(#${clipPathId})`,

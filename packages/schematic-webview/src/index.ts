@@ -216,7 +216,7 @@ function registerShapes(): void {
                         selector: 'portLabelClipRect',
                     }],
                 },
-                { tagName: 'text', selector: 'portLabel' },
+                { tagName: 'text', selector: 'text' },
             ],
             attrs: {
                 body: {
@@ -334,7 +334,7 @@ function pinItems(
                     width: resolved.clipBounds.width,
                     height: resolved.clipBounds.height,
                 },
-                portLabel: {
+                text: {
                     text: resolved.visibleLabel,
                     title: pin.name,
                     clipPath: `url(#${clipPathId})`,

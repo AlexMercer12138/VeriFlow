@@ -1,5 +1,10 @@
 import * as assert from 'assert';
 
+import {
+    measureSchematicNode,
+    resolvePinSides,
+} from '@veriflow/schematic-core';
+
 import type {
     GraphNode,
     GraphPin,
@@ -13,6 +18,7 @@ import {
     relayoutAll,
     schematicNodeSize,
     SchematicLayout,
+    SchematicNodeSize,
     SchematicLayoutStore,
 } from '../schematic/layoutStore';
 import { parseWebviewCommand } from '../schematic/protocol';
@@ -810,6 +816,74 @@ async function testPinAwareNodeSizing(): Promise<void> {
     assertNodePairSeparated(graph, layout, first.id, second.id);
 }
 
+async function testResolvedBidirectionalSizingPreventsDagreOverlap(): Promise<void> {
+    const mixedNode = (id: string): GraphNode => node(id, 'instance', [
+        ...Array.from({ length: 5 }, (_, index) =>
+            pin(id, `output-${index}`, 'driver')),
+        ...Array.from({ length: 5 }, (_, index) =>
+            pin(id, `shared-${index}`, 'bidirectional')),
+    ]);
+    const first = mixedNode('instance:mixed-a');
+    const second = mixedNode('instance:mixed-b');
+    const sinkId = 'instance:sink';
+    const sink = node(sinkId, 'instance', [
+        ...Array.from({ length: 10 }, (_, index) =>
+            pin(sinkId, `input-${index}`, 'load')),
+    ]);
+    const graph: SchematicGraph = {
+        fileUri: 'file:///mixed-bidirectional.sv',
+        moduleKey: 'module:mixed-bidirectional:0',
+        moduleName: 'mixed_bidirectional',
+        nodes: [first, second, sink],
+        networks: [first, second].flatMap((source, sourceIndex) =>
+            Array.from({ length: 5 }, (_, pinIndex) => ({
+                id: `network:shared-${sourceIndex}-${pinIndex}`,
+                name: `shared-${sourceIndex}-${pinIndex}`,
+                width: { kind: 'known' as const, bits: 1 },
+                endpoints: [
+                    {
+                        nodeId: source.id,
+                        pinId: `${source.id}:shared-${pinIndex}`,
+                        role: 'bidirectional' as const,
+                    },
+                    {
+                        nodeId: sinkId,
+                        pinId: `${sinkId}:input-${sourceIndex * 5 + pinIndex}`,
+                        role: 'load' as const,
+                    },
+                ],
+            }))
+        ),
+        diagnostics: [],
+    };
+
+    const layout = autoLayout(graph);
+    const pinSides = resolvePinSides(graph);
+    const actualSize = (selected: GraphNode): SchematicNodeSize => {
+        const measured = measureSchematicNode(
+            selected,
+            pinSides,
+            text => text.length * 7
+        );
+        return { width: measured.width, height: measured.height };
+    };
+    const firstSize = actualSize(first);
+    const secondSize = actualSize(second);
+    assert.deepStrictEqual(firstSize, { width: 160, height: 252 });
+    assert.deepStrictEqual(secondSize, firstSize);
+
+    const firstPosition = layout.nodes[first.id];
+    const secondPosition = layout.nodes[second.id];
+    const horizontalGap = Math.abs(firstPosition.x - secondPosition.x)
+        - (firstSize.width + secondSize.width) / 2;
+    const verticalGap = Math.abs(firstPosition.y - secondPosition.y)
+        - (firstSize.height + secondSize.height) / 2;
+    assert.ok(
+        horizontalGap >= 24 || verticalGap >= 24,
+        `resolved nodes overlap: horizontal=${horizontalGap}, vertical=${verticalGap}`
+    );
+}
+
 async function testDeterministicFeedbackRoutes(): Promise<void> {
     const nodeA = 'opaque:a';
     const nodeB = 'opaque:b';
@@ -925,6 +999,7 @@ async function main(): Promise<void> {
     await testPartialLayoutAvoidsFixedObstacles();
     await testEmptyAndDisconnectedGraphs();
     await testPinAwareNodeSizing();
+    await testResolvedBidirectionalSizingPreventsDagreOverlap();
     await testDeterministicFeedbackRoutes();
 
     console.log('Schematic layout tests passed');

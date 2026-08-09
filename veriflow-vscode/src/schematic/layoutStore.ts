@@ -8,6 +8,7 @@ import {
 import {
     measureSchematicNode,
     pinKey,
+    resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
     type PinKey,
     type PinSide,
@@ -224,13 +225,26 @@ function boundarySide(node: GraphNode): BoundarySide | undefined {
     return node.pins[0].direction === 'load' ? 'right' : 'left';
 }
 
-export function schematicNodeSize(node: GraphNode): SchematicNodeSize {
-    const sides = new Map<PinKey, PinSide>(node.pins.map(pin => [
+export function schematicNodeSize(
+    node: GraphNode,
+    resolvedSides?: ReadonlyMap<PinKey, PinSide>
+): SchematicNodeSize {
+    const sides = resolvedSides ?? new Map<PinKey, PinSide>(node.pins.map(pin => [
         pinKey(node.id, pin.id),
         pin.direction === 'driver' ? 'right' : 'left',
     ]));
     const measured = measureSchematicNode(node, sides, text => text.length * 7);
     return { width: measured.width, height: measured.height };
+}
+
+function resolvedNodeSizes(
+    graph: SchematicGraph
+): ReadonlyMap<string, SchematicNodeSize> {
+    const resolvedSides = resolvePinSides(graph);
+    return new Map(graph.nodes.map(node => [
+        node.id,
+        schematicNodeSize(node, resolvedSides),
+    ]));
 }
 
 function addNetworkEdges(
@@ -270,7 +284,10 @@ function addNetworkEdges(
     }
 }
 
-function dagrePositions(graph: SchematicGraph): Record<string, NodeLayout> {
+function dagrePositions(
+    graph: SchematicGraph,
+    nodeSizes: ReadonlyMap<string, SchematicNodeSize>
+): Record<string, NodeLayout> {
     const layoutGraph = new Graph<GraphLabel, NodeLabel, EdgeLabel>({ directed: true });
     layoutGraph.setGraph({
         rankdir: 'LR',
@@ -284,7 +301,7 @@ function dagrePositions(graph: SchematicGraph): Record<string, NodeLayout> {
     const nodeById = new Map(sortedNodes.map(node => [node.id, node]));
     const nodeIds = new Set(nodeById.keys());
     for (const node of sortedNodes) {
-        layoutGraph.setNode(node.id, schematicNodeSize(node));
+        layoutGraph.setNode(node.id, nodeSizes.get(node.id)!);
     }
     const seenEdges = new Set<string>();
     for (const network of [...graph.networks].sort((left, right) =>
@@ -324,17 +341,18 @@ function placeBoundaryColumn(
 function applyBoundaryColumns(
     graph: SchematicGraph,
     positions: Record<string, NodeLayout>,
-    fixedNodes: ReadonlySet<string>
+    fixedNodes: ReadonlySet<string>,
+    nodeSizes: ReadonlyMap<string, SchematicNodeSize>
 ): void {
     const interiorNodes = graph.nodes
         .filter(node => boundarySide(node) === undefined);
     const minInteriorX = interiorNodes.length > 0
         ? Math.min(...interiorNodes.map(node =>
-            positions[node.id].x - schematicNodeSize(node).width / 2))
+            positions[node.id].x - nodeSizes.get(node.id)!.width / 2))
         : SCHEMATIC_PORT_SIZE.width / 2;
     const maxInteriorX = interiorNodes.length > 0
         ? Math.max(...interiorNodes.map(node =>
-            positions[node.id].x + schematicNodeSize(node).width / 2))
+            positions[node.id].x + nodeSizes.get(node.id)!.width / 2))
         : SCHEMATIC_PORT_SIZE.width / 2;
     const boundaryOffset = RANK_SEPARATION + SCHEMATIC_PORT_SIZE.width / 2;
     const leftIds = graph.nodes
@@ -349,13 +367,11 @@ function applyBoundaryColumns(
 }
 
 function nodesAreSeparated(
-    firstNode: GraphNode,
+    firstSize: SchematicNodeSize,
     firstPosition: NodeLayout,
-    secondNode: GraphNode,
+    secondSize: SchematicNodeSize,
     secondPosition: NodeLayout
 ): boolean {
-    const firstSize = schematicNodeSize(firstNode);
-    const secondSize = schematicNodeSize(secondNode);
     const horizontalGap = Math.abs(firstPosition.x - secondPosition.x)
         - (firstSize.width + secondSize.width) / 2;
     const verticalGap = Math.abs(firstPosition.y - secondPosition.y)
@@ -366,7 +382,8 @@ function nodesAreSeparated(
 function avoidNodeOverlaps(
     graph: SchematicGraph,
     positions: Record<string, NodeLayout>,
-    anchoredNodeIds: ReadonlySet<string>
+    anchoredNodeIds: ReadonlySet<string>,
+    nodeSizes: ReadonlyMap<string, SchematicNodeSize>
 ): void {
     const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
     const acceptedIds = [...anchoredNodeIds]
@@ -382,19 +399,18 @@ function avoidNodeOverlaps(
         let selectedPosition = positions[id];
         while (true) {
             const obstacles = acceptedIds.filter(acceptedId => !nodesAreSeparated(
-                selectedNode,
+                nodeSizes.get(selectedNode.id)!,
                 selectedPosition,
-                nodesById.get(acceptedId)!,
+                nodeSizes.get(acceptedId)!,
                 positions[acceptedId]
             ));
             if (obstacles.length === 0) {
                 break;
             }
-            const selectedHeight = schematicNodeSize(selectedNode).height;
+            const selectedHeight = nodeSizes.get(selectedNode.id)!.height;
             const nextY = Math.max(...obstacles.map(obstacleId => {
-                const obstacle = nodesById.get(obstacleId)!;
                 return positions[obstacleId].y
-                    + (selectedHeight + schematicNodeSize(obstacle).height) / 2
+                    + (selectedHeight + nodeSizes.get(obstacleId)!.height) / 2
                     + NODE_SEPARATION;
             }));
             selectedPosition = { ...selectedPosition, y: nextY };
@@ -422,7 +438,8 @@ function layoutWithAnchors(
     normalizedExisting: SchematicLayout,
     preserveEveryMatchedNode: boolean
 ): SchematicLayout {
-    const positions = dagrePositions(graph);
+    const nodeSizes = resolvedNodeSizes(graph);
+    const positions = dagrePositions(graph, nodeSizes);
     const graphNodeIds = new Set(graph.nodes.map(node => node.id));
     const anchoredNodes = new Set<string>();
     for (const [id, position] of Object.entries(normalizedExisting.nodes)) {
@@ -431,8 +448,8 @@ function layoutWithAnchors(
             anchoredNodes.add(id);
         }
     }
-    applyBoundaryColumns(graph, positions, anchoredNodes);
-    avoidNodeOverlaps(graph, positions, anchoredNodes);
+    applyBoundaryColumns(graph, positions, anchoredNodes, nodeSizes);
+    avoidNodeOverlaps(graph, positions, anchoredNodes, nodeSizes);
 
     const selectedObjectId = cleanSelection(graph, normalizedExisting.selectedObjectId);
     return {
@@ -485,6 +502,7 @@ export function deriveFeedbackRoutes(
         return [];
     }
     const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
+    const nodeSizes = resolvedNodeSizes(graph);
     const positionedNodes = graph.nodes.flatMap(node => {
         const position = normalizedLayout.nodes[node.id];
         return position ? [{ node, position }] : [];
@@ -493,9 +511,9 @@ export function deriveFeedbackRoutes(
         return [];
     }
     const minY = Math.min(...positionedNodes.map(({ node, position }) =>
-        position.y - schematicNodeSize(node).height / 2));
+        position.y - nodeSizes.get(node.id)!.height / 2));
     const maxY = Math.max(...positionedNodes.map(({ node, position }) =>
-        position.y + schematicNodeSize(node).height / 2));
+        position.y + nodeSizes.get(node.id)!.height / 2));
     const feedbackNetworks = [...graph.networks]
         .sort((left, right) => compareIds(left.id, right.id))
         .flatMap(network => {
@@ -530,7 +548,7 @@ export function deriveFeedbackRoutes(
                 role: endpoint.role as 'driver' | 'load',
                 x: position.x,
                 y: position.y
-                    + verticalDirection * schematicNodeSize(selectedNode).height / 2,
+                    + verticalDirection * nodeSizes.get(selectedNode.id)!.height / 2,
             };
         });
         const trunkY = side === 'top'
