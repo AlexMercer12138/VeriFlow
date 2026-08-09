@@ -122,7 +122,7 @@ export function navigationCommandForCell(
 export function summarizeSchematicSelection(
     items: readonly SchematicSelectionItem[]
 ): SchematicSelectionSummary {
-    const last = items.at(-1);
+    const last = items[items.length - 1];
     if (!last) return { statusText: 'No selection' };
     return {
         selectedObjectId: last.objectId,
@@ -319,6 +319,11 @@ export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
         for (const [moduleKey, pending] of [...this.pending]) {
             this.commit(moduleKey, pending);
         }
+    }
+
+    flushModule(moduleKey: string): void {
+        const pending = this.pending.get(moduleKey);
+        if (pending) this.commit(moduleKey, pending);
     }
 
     dispose(): void {

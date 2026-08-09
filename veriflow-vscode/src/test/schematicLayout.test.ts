@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 
 import {
+    assignColumns,
     measureSchematicNode,
     resolvePinSides,
 } from '@veriflow/schematic-core';
@@ -300,6 +301,80 @@ async function testSemanticStorageEnvelopeRoundTrip(): Promise<void> {
     assert.ok(loaded.nodes['port:done'].x > loaded.nodes['instance:u_child'].x);
     assert.ok(loaded.nodes['port:shared'].x > loaded.nodes['instance:u_child'].x);
     assert.strictEqual(loaded.nodes['port:done'].x, loaded.nodes['port:shared'].x);
+}
+
+async function testSemanticMaterializationSeparatesAdjacentColumns(): Promise<void> {
+    const inputId = 'port:in';
+    const outputId = 'port:out';
+    const n0 = 'instance:n0';
+    const n1 = 'instance:n1';
+    const n2 = 'instance:n2';
+    const n3 = 'instance:n3';
+    const graph: SchematicGraph = {
+        fileUri: 'file:///adjacent-columns.sv',
+        moduleKey: 'module:adjacent-columns:0',
+        moduleName: 'adjacent_columns',
+        nodes: [
+            node(inputId, 'port', [pin(inputId, 'out', 'driver')]),
+            node(n0, 'instance', [pin(n0, 'out', 'driver')]),
+            node(n1, 'instance', [pin(n1, 'in', 'load')]),
+            node(n2, 'instance', [pin(n2, 'out', 'driver')]),
+            node(n3, 'instance', [pin(n3, 'in0', 'load'), pin(n3, 'in2', 'load')]),
+            node(outputId, 'port', [pin(outputId, 'in', 'load')]),
+        ],
+        networks: [
+            {
+                id: 'network:input-n1',
+                name: 'input_n1',
+                width: { kind: 'known', bits: 1 },
+                endpoints: [
+                    { nodeId: inputId, pinId: `${inputId}:out`, role: 'driver' },
+                    { nodeId: n1, pinId: `${n1}:in`, role: 'load' },
+                ],
+            },
+            ...[[n0, 'in0'], [n2, 'in2']].map(([source, sinkPin]) => ({
+                id: `network:${source}-${n3}`,
+                name: `${source}_${n3}`,
+                width: { kind: 'known' as const, bits: 1 },
+                endpoints: [
+                    { nodeId: source, pinId: `${source}:out`, role: 'driver' as const },
+                    { nodeId: n3, pinId: `${n3}:${sinkPin}`, role: 'load' as const },
+                ],
+            })),
+        ],
+        diagnostics: [],
+    };
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+
+    await store.save(
+        graph.fileUri,
+        graph.moduleKey,
+        graph,
+        autoLayout(graph)
+    );
+    const loaded = store.load(graph.fileUri, graph.moduleKey, graph)!;
+    const assignment = assignColumns(graph);
+
+    for (let column = 0; column + 1 < assignment.columns.length; column += 1) {
+        const leftIds = assignment.columns[column];
+        const rightIds = assignment.columns[column + 1];
+        if (leftIds.length === 0 || rightIds.length === 0) continue;
+        const leftEdge = Math.max(...leftIds.map(id =>
+            loaded.nodes[id].x
+                + schematicNodeSize(graph.nodes.find(candidate => candidate.id === id)!)
+                    .width / 2
+        ));
+        const rightEdge = Math.min(...rightIds.map(id =>
+            loaded.nodes[id].x
+                - schematicNodeSize(graph.nodes.find(candidate => candidate.id === id)!)
+                    .width / 2
+        ));
+        assert.ok(
+            rightEdge - leftEdge >= 48,
+            `columns ${column}/${column + 1} gap=${rightEdge - leftEdge}`
+        );
+    }
 }
 
 async function testLegacyMigrationUsesAutomaticColumnsAndYOrder(): Promise<void> {
@@ -1240,6 +1315,7 @@ async function testDeterministicFeedbackRoutes(): Promise<void> {
 async function main(): Promise<void> {
     await testRoundTripAndRematch();
     await testSemanticStorageEnvelopeRoundTrip();
+    await testSemanticMaterializationSeparatesAdjacentColumns();
     await testLegacyMigrationUsesAutomaticColumnsAndYOrder();
     await testVersionValidationAndKeyIsolation();
     await testLoadDropsOnlyMalformedLegacyNodeEntries();

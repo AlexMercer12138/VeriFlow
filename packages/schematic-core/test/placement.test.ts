@@ -6,6 +6,7 @@ import {
     mergePlacement,
     migrateLegacyPlacement,
     moveNodeToColumn,
+    moveNodesToColumns,
     type ColumnAssignment,
     type SchematicPlacement,
 } from '../src';
@@ -226,6 +227,49 @@ test('replaces non-finite offsets with a deterministic safe default', () => {
             .nodes[first.id].yOffset,
         0
     );
+});
+
+test('moves a large batch with a constant number of whole-graph passes', () => {
+    const nodeCount = 1_200;
+    const sourceNodes = Array.from({ length: nodeCount }, (_, index) =>
+        node(`instance:bulk-${index}`, 'instance')
+    );
+    const model = graph(sourceNodes);
+    const columns = assignment(Array.from({ length: 12 }, (_, column) =>
+        sourceNodes
+            .filter((_, index) => index % 12 === column)
+            .map(candidate => candidate.id)
+    ));
+    const placement = createPlacement(model, columns);
+    let nodeReads = 0;
+    const observedNodes = new Proxy(sourceNodes, {
+        get(target, property, receiver) {
+            if (typeof property === 'string' && /^\d+$/.test(property)) {
+                nodeReads += 1;
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const observedGraph = { ...model, nodes: observedNodes };
+
+    const moved = moveNodesToColumns(
+        observedGraph,
+        columns,
+        placement,
+        sourceNodes.map((candidate, index) => ({
+            nodeId: candidate.id,
+            column: 11 - (index % 12),
+            order: nodeCount - index,
+            yOffset: index % 2 === 0 ? index : Number.NaN,
+        }))
+    );
+
+    assert.ok(nodeReads <= nodeCount * 8, `graph node reads=${nodeReads}`);
+    assert.equal(Object.keys(moved.nodes).length, nodeCount);
+    assert.ok(Object.values(moved.nodes).every(candidate => candidate.fixed));
+    assert.ok(Object.values(moved.nodes).every(candidate =>
+        Number.isFinite(candidate.yOffset)
+    ));
 });
 
 test('relayout is represented by recreating placement without manual intent', () => {

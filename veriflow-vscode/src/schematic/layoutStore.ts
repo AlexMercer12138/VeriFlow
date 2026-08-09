@@ -11,12 +11,13 @@ import {
     measureSchematicNodeSize,
     mergePlacement,
     migrateLegacyPlacement,
-    moveNodeToColumn,
+    moveNodesToColumns,
     pinKey,
     resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
     type ColumnAssignment,
     type LegacyNodePlacement,
+    type SchematicNodePlacementMove,
     type PinKey,
     type PinSide,
     type SchematicPlacement,
@@ -599,17 +600,39 @@ function layoutWithAnchors(
 function automaticColumnCenters(
     graph: SchematicGraph,
     assignment: ColumnAssignment,
-    nodeSizes: ReadonlyMap<string, SchematicNodeSize>
+    nodeSizes: ReadonlyMap<string, SchematicNodeSize>,
+    placement?: SchematicPlacement
 ): { positions: Record<string, NodeLayout>; centers: ReadonlyMap<number, number> } {
     const positions = dagrePositions(graph, nodeSizes);
     applyBoundaryColumns(graph, positions, new Set(), nodeSizes);
+    const nodeIdsByColumn = new Map<number, string[]>();
+    for (const node of graph.nodes) {
+        const column = placement?.nodes[node.id]?.column
+            ?? assignment.nodeColumn.get(node.id);
+        if (column === undefined) continue;
+        const nodeIds = nodeIdsByColumn.get(column) ?? [];
+        nodeIds.push(node.id);
+        nodeIdsByColumn.set(column, nodeIds);
+    }
     const centers = new Map<number, number>();
-    assignment.columns.forEach((nodeIds, column) => {
+    let previous: { center: number; halfWidth: number } | undefined;
+    for (const [column, nodeIds] of [...nodeIdsByColumn.entries()]
+        .sort((left, right) => left[0] - right[0])) {
         const xs = nodeIds.flatMap(id => positions[id] ? [positions[id].x] : []);
-        if (xs.length > 0) {
-            centers.set(column, xs.reduce((sum, x) => sum + x, 0) / xs.length);
-        }
-    });
+        if (xs.length === 0) continue;
+        const dagreCenter = xs.reduce((sum, x) => sum + x, 0) / xs.length;
+        const halfWidth = nodeIds.reduce((maximum, id) =>
+            Math.max(maximum, nodeSizes.get(id)!.width / 2), 0
+        );
+        const center = previous === undefined
+            ? dagreCenter
+            : Math.max(
+                dagreCenter,
+                previous.center + previous.halfWidth + RANK_SEPARATION + halfWidth
+            );
+        centers.set(column, center);
+        previous = { center, halfWidth };
+    }
     return { positions, centers };
 }
 
@@ -624,7 +647,12 @@ function layoutFromPlacement(
         ? placement
         : mergePlacement(graph, assignment, placement);
     const nodeSizes = resolvedNodeSizes(graph);
-    const automatic = automaticColumnCenters(graph, assignment, nodeSizes);
+    const automatic = automaticColumnCenters(
+        graph,
+        assignment,
+        nodeSizes,
+        normalized
+    );
     const sourceIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
     const nodesByColumn = new Map<number, GraphNode[]>();
     for (const node of graph.nodes) {
@@ -698,7 +726,7 @@ function storedLayoutFromAbsolute(
 ): StoredLayoutEnvelopeV2 {
     const assignment = assignColumns(graph);
     let placement = createPlacement(graph, assignment);
-    const baseline = layoutFromPlacement(graph, placement, layout);
+    const baseline = layoutFromPlacement(graph, placement, layout, true);
     const nodeSizes = resolvedNodeSizes(graph);
     const { centers } = automaticColumnCenters(graph, assignment, nodeSizes);
     const internalColumns = [...new Set(graph.nodes
@@ -724,6 +752,7 @@ function storedLayoutFromAbsolute(
         nodes.push(node);
         byColumn.set(column, nodes);
     }
+    const moves: SchematicNodePlacementMove[] = [];
     for (const [column, nodes] of byColumn) {
         nodes.sort((left, right) => {
             const leftLayout = layout.nodes[left.id]?.fixed
@@ -738,35 +767,26 @@ function storedLayoutFromAbsolute(
         nodes.forEach((node, order) => {
             const absolute = layout.nodes[node.id];
             if (!absolute?.fixed) return;
-            placement = moveNodeToColumn(
-                graph,
-                assignment,
-                placement,
-                node.id,
+            moves.push({
+                nodeId: node.id,
                 column,
                 order,
-                0
-            );
+                yOffset: 0,
+            });
         });
     }
-    placement = mergePlacement(graph, assignment, placement);
+    placement = moveNodesToColumns(graph, assignment, placement, moves);
 
-    const positioned = layoutFromPlacement(graph, placement, layout);
+    const positioned = layoutFromPlacement(graph, placement, layout, true);
     for (const node of graph.nodes) {
         const absolute = layout.nodes[node.id];
         if (!absolute?.fixed) continue;
         const semantic = placement.nodes[node.id];
-        placement = moveNodeToColumn(
-            graph,
-            assignment,
-            placement,
-            node.id,
-            semantic.column,
-            semantic.order,
-            absolute.y - positioned.nodes[node.id].y
-        );
+        placement.nodes[node.id] = {
+            ...semantic,
+            yOffset: absolute.y - positioned.nodes[node.id].y,
+        };
     }
-    placement = mergePlacement(graph, assignment, placement);
 
     return {
         schemaVersion: SCHEMA_VERSION,

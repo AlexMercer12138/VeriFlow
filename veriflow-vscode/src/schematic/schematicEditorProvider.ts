@@ -609,6 +609,34 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             && layoutIntents.get(command.moduleKey) === command.layout) {
                             layoutIntents.delete(command.moduleKey);
                         }
+                        if (state.disposed
+                            || command.moduleKey !== state.selectedModuleKey
+                            || command.revision === state.graphRevision
+                            || latestSaveSequenceByModule.get(command.moduleKey)
+                                !== commandSnapshot.sequence
+                            || !state.graph) {
+                            return;
+                        }
+                        const graph = state.graph;
+                        const layout = this.layoutStore.load(
+                            uri,
+                            command.moduleKey,
+                            graph
+                        );
+                        if (!layout) return;
+                        const rebaseGeneration = publishGeneration;
+                        state.layout = layout;
+                        state.graphRevision = rememberGraphSnapshot(graph);
+                        currentPublishSnapshot = capturePublishSnapshot(
+                            rebaseGeneration
+                        );
+                        if (!isCurrentPublish(rebaseGeneration)) return;
+                        await panel.webview.postMessage({
+                            type: 'graph',
+                            revision: state.graphRevision,
+                            graph,
+                            layout,
+                        });
                         return;
                     case 'relayoutAll': {
                         if (command.moduleKey !== state.selectedModuleKey

@@ -954,6 +954,9 @@ function clearSchematicState(): void {
 }
 
 function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
+    if (currentGraph && currentGraph.moduleKey !== event.selectedModuleKey) {
+        layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    }
     dom.moduleSelector.replaceChildren();
     for (const module of event.modules) {
         const option = document.createElement('option');
@@ -978,6 +981,10 @@ function handleHostEvent(event: HostEvent): void {
             initialize(event);
             return;
         case 'graph':
+            if (currentGraph) {
+                layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+            }
+            layoutSaveScheduler.flushModule(event.graph.moduleKey);
             currentRevision = event.revision;
             renderSchematic(event.graph, event.layout);
             return;
@@ -1016,6 +1023,9 @@ function installIcons(): void {
 installIcons();
 
 dom.moduleSelector.addEventListener('change', () => {
+    if (currentGraph) {
+        layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    }
     selectedModuleKey = dom.moduleSelector.value;
     setCanvasState('Loading schematic');
     post({ type: 'selectModule', moduleKey: selectedModuleKey });

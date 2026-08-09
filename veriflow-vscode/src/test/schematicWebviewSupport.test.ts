@@ -173,10 +173,27 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
     runPending();
     assert.strictEqual(saves.length, saveCountAfterFlush);
 
+    scheduler.schedule('module:a', 'revision:a-before-switch', layout(75));
+    scheduler.schedule('module:b', 'revision:b-still-pending', layout(76));
+    scheduler.flushModule('module:a');
+    assert.deepStrictEqual(saves.at(-1), {
+        moduleKey: 'module:a',
+        revision: 'revision:a-before-switch',
+        layout: layout(75),
+    });
+    assert.strictEqual(pending.size, 1, 'module B must remain pending');
+    runPending();
+    assert.deepStrictEqual(saves.at(-1), {
+        moduleKey: 'module:b',
+        revision: 'revision:b-still-pending',
+        layout: layout(76),
+    });
+    const saveCountAfterModuleFlush = saves.length;
+
     scheduler.schedule('module:a', 'revision:a4', layout(80));
     scheduler.dispose();
     assert.strictEqual(pending.size, 0);
-    assert.strictEqual(saves.length, saveCountAfterFlush);
+    assert.strictEqual(saves.length, saveCountAfterModuleFlush);
 }
 
 function testExactCellNavigationCommands(): void {

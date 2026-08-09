@@ -1042,7 +1042,8 @@
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.createPlacement = createPlacement2;
       exports2.mergePlacement = mergePlacement2;
-      exports2.moveNodeToColumn = moveNodeToColumn2;
+      exports2.moveNodeToColumn = moveNodeToColumn;
+      exports2.moveNodesToColumns = moveNodesToColumns2;
       exports2.migrateLegacyPlacement = migrateLegacyPlacement2;
       function setOwn(target, id, value) {
         Object.defineProperty(target, id, {
@@ -1111,11 +1112,24 @@
         if (legalInternalColumns.length === 0)
           return automatic;
         const column = safeInteger(requested, automatic);
-        return legalInternalColumns.reduce((selected, candidate) => {
-          const selectedDistance = Math.abs(column - selected);
-          const candidateDistance = Math.abs(column - candidate);
-          return candidateDistance < selectedDistance ? candidate : selected;
-        }, legalInternalColumns[0]);
+        let low = 0;
+        let high = legalInternalColumns.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (legalInternalColumns[middle] < column) {
+            low = middle + 1;
+          } else {
+            high = middle;
+          }
+        }
+        if (low === 0)
+          return legalInternalColumns[0];
+        if (low === legalInternalColumns.length) {
+          return legalInternalColumns[legalInternalColumns.length - 1];
+        }
+        const left4 = legalInternalColumns[low - 1];
+        const right4 = legalInternalColumns[low];
+        return column - left4 <= right4 - column ? left4 : right4;
       }
       function createPlacement2(graph2, assignment) {
         const nodes = {};
@@ -1134,11 +1148,14 @@
         return { nodes };
       }
       function mergePlacement2(graph2, assignment, persisted) {
+        const nodes = mergedPlacementNodes(graph2, assignment, persisted, internalColumns(graph2, assignment));
+        return { nodes: normalizeOrders(graph2, nodes) };
+      }
+      function mergedPlacementNodes(graph2, assignment, persisted, legalInternalColumns) {
         const automatic = createPlacement2(graph2, assignment);
         if (!persisted || typeof persisted !== "object" || persisted === null || typeof persisted.nodes !== "object" || persisted.nodes === null) {
-          return automatic;
+          return automatic.nodes;
         }
-        const legalInternalColumns = internalColumns(graph2, assignment);
         for (const node of graph2.nodes) {
           const candidate = Object.prototype.hasOwnProperty.call(persisted.nodes, node.id) ? persisted.nodes[node.id] : void 0;
           if (!candidate || typeof candidate.fixed !== "boolean")
@@ -1152,21 +1169,32 @@
             fixed: true
           });
         }
-        return { nodes: normalizeOrders(graph2, automatic.nodes) };
+        return automatic.nodes;
       }
-      function moveNodeToColumn2(graph2, assignment, placement, nodeId, column, order, yOffset) {
-        const normalized = mergePlacement2(graph2, assignment, placement);
-        const selectedNode = graph2.nodes.find((node) => node.id === nodeId);
-        const current = selectedNode ? normalized.nodes[nodeId] : void 0;
-        if (!selectedNode || !current)
-          return normalized;
-        const nodes = normalized.nodes;
-        setOwn(nodes, nodeId, {
-          column: clampNodeColumn(selectedNode, assignment, column, internalColumns(graph2, assignment)),
-          order: safeInteger(order, current.order),
-          yOffset: safeOffset(yOffset),
-          fixed: true
-        });
+      function moveNodeToColumn(graph2, assignment, placement, nodeId, column, order, yOffset) {
+        return moveNodesToColumns2(graph2, assignment, placement, [{
+          nodeId,
+          column,
+          order,
+          yOffset
+        }]);
+      }
+      function moveNodesToColumns2(graph2, assignment, placement, moves) {
+        const legalInternalColumns = internalColumns(graph2, assignment);
+        const nodes = mergedPlacementNodes(graph2, assignment, placement, legalInternalColumns);
+        const nodesById = new Map(graph2.nodes.map((node) => [node.id, node]));
+        for (const move of moves) {
+          const selectedNode = nodesById.get(move.nodeId);
+          const current = selectedNode ? nodes[move.nodeId] : void 0;
+          if (!selectedNode || !current)
+            continue;
+          setOwn(nodes, move.nodeId, {
+            column: clampNodeColumn(selectedNode, assignment, move.column, legalInternalColumns),
+            order: safeInteger(move.order, current.order),
+            yOffset: safeOffset(move.yOffset),
+            fixed: true
+          });
+        }
         return { nodes: normalizeOrders(graph2, nodes) };
       }
       function migrateLegacyPlacement2(graph2, assignment, legacyNodes) {
@@ -41546,7 +41574,7 @@
     return target.sourceSpan ? { type: "revealSource", span: target.sourceSpan } : void 0;
   }
   function summarizeSchematicSelection(items) {
-    const last = items.at(-1);
+    const last = items[items.length - 1];
     if (!last) return { statusText: "No selection" };
     return {
       selectedObjectId: last.objectId,
@@ -41670,6 +41698,10 @@
       for (const [moduleKey, pending] of [...this.pending]) {
         this.commit(moduleKey, pending);
       }
+    }
+    flushModule(moduleKey) {
+      const pending = this.pending.get(moduleKey);
+      if (pending) this.commit(moduleKey, pending);
     }
     dispose() {
       for (const pending of this.pending.values()) {
@@ -42447,6 +42479,9 @@
     updateDiagnostics(0, 0, []);
   }
   function initialize(event) {
+    if (currentGraph && currentGraph.moduleKey !== event.selectedModuleKey) {
+      layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    }
     dom.moduleSelector.replaceChildren();
     for (const module2 of event.modules) {
       const option = document.createElement("option");
@@ -42470,6 +42505,10 @@
         initialize(event);
         return;
       case "graph":
+        if (currentGraph) {
+          layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+        }
+        layoutSaveScheduler.flushModule(event.graph.moduleKey);
         currentRevision = event.revision;
         renderSchematic(event.graph, event.layout);
         return;
@@ -42505,6 +42544,9 @@
   }
   installIcons();
   dom.moduleSelector.addEventListener("change", () => {
+    if (currentGraph) {
+      layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    }
     selectedModuleKey = dom.moduleSelector.value;
     setCanvasState("Loading schematic");
     post({ type: "selectModule", moduleKey: selectedModuleKey });

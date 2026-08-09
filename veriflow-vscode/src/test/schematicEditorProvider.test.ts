@@ -1568,9 +1568,12 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
     }
 }
 
-async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
-    const firstText = 'module top(input logic old_i); endmodule';
-    const refreshedText = 'module top(input logic new_i); endmodule';
+async function testDelayedSaveRebasesOntoCurrentGraphRevision(): Promise<void> {
+    const firstText = 'module top(input logic shared_i); endmodule';
+    const refreshedText = [
+        'module top(input logic shared_i, output logic new_o);',
+        'endmodule',
+    ].join('\n');
     const documents = new Map<string, HdlDocument>([
         [firstText, await parseWithRealWorker('file:///workspace/design.sv', firstText)],
         [refreshedText, await parseWithRealWorker(
@@ -1586,7 +1589,11 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         const oldLayout = {
             ...oldEvent.layout,
             nodes: Object.fromEntries(Object.entries(oldEvent.layout.nodes).map(
-                ([id, position]) => [id, { ...position, fixed: true }]
+                ([id, position]) => [id, {
+                    ...position,
+                    y: position.y + 123,
+                    fixed: true,
+                }]
             )),
         };
 
@@ -1594,7 +1601,7 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         await waitFor(
             () => harness.messages.some(event =>
                 event.type === 'graph'
-                && event.graph.nodes.some(node => node.id === 'port:new_i')
+                && event.graph.nodes.some(node => node.id === 'port:new_o')
             ),
             'same-module refreshed graph'
         );
@@ -1602,6 +1609,7 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         assert.ok(newEvent?.type === 'graph');
         assert.notStrictEqual(newEvent.revision, oldEvent.revision);
 
+        const rebaseStart = harness.messages.length;
         const saveGate = createGate();
         harness.setSaveGate(saveGate);
         harness.send({
@@ -1612,7 +1620,12 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         });
         await saveGate.started;
         saveGate.allow();
-        await new Promise<void>(resolve => setImmediate(resolve));
+        await waitFor(
+            () => harness.messages.slice(rebaseStart).some(event =>
+                event.type === 'graph' && event.revision !== newEvent.revision
+            ),
+            'stale layout rebased onto current graph'
+        );
 
         const stored = harness.storedValues().at(-1) as {
             schemaVersion: number;
@@ -1620,12 +1633,26 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         };
         assert.strictEqual(stored.schemaVersion, 2);
         assert.strictEqual(
-            Object.prototype.hasOwnProperty.call(stored.placement.nodes, 'port:old_i'),
+            Object.prototype.hasOwnProperty.call(
+                stored.placement.nodes,
+                'port:shared_i'
+            ),
             true
         );
         assert.strictEqual(
-            Object.prototype.hasOwnProperty.call(stored.placement.nodes, 'port:new_i'),
+            Object.prototype.hasOwnProperty.call(stored.placement.nodes, 'port:new_o'),
             false
+        );
+        const rebased = harness.messages.slice(rebaseStart).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.revision !== newEvent.revision
+        )!;
+        assert.notStrictEqual(rebased.revision, oldEvent.revision);
+        assert.ok(rebased.graph.nodes.some(node => node.id === 'port:new_o'));
+        assert.strictEqual(rebased.layout.nodes['port:shared_i'].fixed, true);
+        assert.strictEqual(
+            rebased.layout.nodes['port:shared_i'].y,
+            oldLayout.nodes['port:shared_i'].y
         );
 
         const replayStart = harness.messages.length;
@@ -1638,18 +1665,18 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
             (event): event is Extract<HostEvent, { type: 'graph' }> =>
                 event.type === 'graph'
         )!;
-        assert.strictEqual(replayed.revision, newEvent.revision);
-        assert.ok(replayed.graph.nodes.some(node => node.id === 'port:new_i'));
-        assert.deepStrictEqual(replayed.layout, newEvent.layout);
+        assert.strictEqual(replayed.revision, rebased.revision);
+        assert.ok(replayed.graph.nodes.some(node => node.id === 'port:new_o'));
+        assert.deepStrictEqual(replayed.layout, rebased.layout);
 
         const currentLayout = {
-            ...newEvent.layout,
+            ...rebased.layout,
             viewport: { x: 91, y: 37, zoom: 1.5 },
         };
         harness.send({
             type: 'saveLayout',
             moduleKey: newEvent.graph.moduleKey,
-            revision: newEvent.revision,
+            revision: rebased.revision,
             layout: currentLayout,
         });
         await new Promise<void>(resolve => setImmediate(resolve));
@@ -1666,12 +1693,83 @@ async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
         const beforeUnknown = JSON.stringify(harness.storedValues());
         harness.send({
             type: 'saveLayout',
-            moduleKey: newEvent.graph.moduleKey,
+            moduleKey: rebased.graph.moduleKey,
             revision: 'unknown-snapshot-revision',
-            layout: newEvent.layout,
+            layout: rebased.layout,
         });
         await new Promise<void>(resolve => setImmediate(resolve));
         assert.strictEqual(JSON.stringify(harness.storedValues()), beforeUnknown);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDelayedSaveRebasesAfterModuleRoundTrip(): Promise<void> {
+    const text = [
+        'module first(input logic first_i); endmodule',
+        'module second(input logic second_i); endmodule',
+    ].join('\n');
+    const document = await parseWithRealWorker('file:///workspace/design.sv', text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    try {
+        const [firstKey, secondKey] = harness.moduleKeys;
+        const firstEvent = harness.messages.find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.graph.moduleKey === firstKey
+        )!;
+        const delayedLayout = {
+            ...firstEvent.layout,
+            nodes: {
+                ...firstEvent.layout.nodes,
+                'port:first_i': {
+                    ...firstEvent.layout.nodes['port:first_i'],
+                    y: firstEvent.layout.nodes['port:first_i'].y + 144,
+                    fixed: true,
+                },
+            },
+        };
+
+        harness.send({ type: 'selectModule', moduleKey: secondKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages).at(-1) === secondKey,
+            'second module before delayed save'
+        );
+        const returnStart = harness.messages.length;
+        harness.send({ type: 'selectModule', moduleKey: firstKey });
+        await waitFor(
+            () => graphModuleKeys(harness.messages.slice(returnStart)).includes(firstKey),
+            'first module before delayed save'
+        );
+        const returned = harness.messages.filter(event =>
+            event.type === 'graph' && event.graph.moduleKey === firstKey
+        ).at(-1);
+        assert.ok(returned?.type === 'graph');
+        assert.notStrictEqual(returned.revision, firstEvent.revision);
+
+        const rebaseStart = harness.messages.length;
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: firstKey,
+            revision: firstEvent.revision,
+            layout: delayedLayout,
+        });
+        await waitFor(
+            () => harness.messages.slice(rebaseStart).some(event =>
+                event.type === 'graph'
+                && event.graph.moduleKey === firstKey
+                && event.revision !== returned.revision
+            ),
+            'first module rebase after round trip'
+        );
+        const rebased = harness.messages.filter(event =>
+            event.type === 'graph' && event.graph.moduleKey === firstKey
+        ).at(-1);
+        assert.ok(rebased?.type === 'graph');
+        assert.strictEqual(rebased.layout.nodes['port:first_i'].fixed, true);
+        assert.strictEqual(
+            rebased.layout.nodes['port:first_i'].y,
+            delayedLayout.nodes['port:first_i'].y
+        );
     } finally {
         await harness.dispose();
     }
@@ -1876,7 +1974,8 @@ void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
     .then(testDiagnosticSourceFailureDoesNotBlockGraph)
     .then(testInitialParseReplaysTargetedIndexInvalidation)
     .then(testRapidRefreshStopsStalePublish)
-    .then(testDelayedSaveUsesItsExactGraphRevision)
+    .then(testDelayedSaveRebasesOntoCurrentGraphRevision)
+    .then(testDelayedSaveRebasesAfterModuleRoundTrip)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)
     .then(testRelayoutRejectsDelayedSaveFromPreviousRevision)

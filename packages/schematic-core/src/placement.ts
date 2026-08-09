@@ -12,6 +12,13 @@ export type SchematicPlacement = {
     nodes: Record<string, SchematicNodePlacement>;
 };
 
+export type SchematicNodePlacementMove = {
+    nodeId: string;
+    column: number;
+    order: number;
+    yOffset: number;
+};
+
 export type LegacyNodePlacement = {
     /** Retained for v1 callers, but migration deliberately never reads it. */
     x?: unknown;
@@ -123,11 +130,23 @@ function clampNodeColumn(
     const automatic = automaticColumn(assignment, node.id);
     if (legalInternalColumns.length === 0) return automatic;
     const column = safeInteger(requested, automatic);
-    return legalInternalColumns.reduce((selected, candidate) => {
-        const selectedDistance = Math.abs(column - selected);
-        const candidateDistance = Math.abs(column - candidate);
-        return candidateDistance < selectedDistance ? candidate : selected;
-    }, legalInternalColumns[0]);
+    let low = 0;
+    let high = legalInternalColumns.length;
+    while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (legalInternalColumns[middle] < column) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if (low === 0) return legalInternalColumns[0];
+    if (low === legalInternalColumns.length) {
+        return legalInternalColumns[legalInternalColumns.length - 1];
+    }
+    const left = legalInternalColumns[low - 1];
+    const right = legalInternalColumns[low];
+    return column - left <= right - column ? left : right;
 }
 
 export function createPlacement(
@@ -155,13 +174,27 @@ export function mergePlacement(
     assignment: ColumnAssignment,
     persisted?: SchematicPlacement
 ): SchematicPlacement {
+    const nodes = mergedPlacementNodes(
+        graph,
+        assignment,
+        persisted,
+        internalColumns(graph, assignment)
+    );
+    return { nodes: normalizeOrders(graph, nodes) };
+}
+
+function mergedPlacementNodes(
+    graph: SchematicGraph,
+    assignment: ColumnAssignment,
+    persisted: SchematicPlacement | undefined,
+    legalInternalColumns: readonly number[]
+): Record<string, SchematicNodePlacement> {
     const automatic = createPlacement(graph, assignment);
     if (!persisted || typeof persisted !== 'object' || persisted === null
         || typeof persisted.nodes !== 'object' || persisted.nodes === null) {
-        return automatic;
+        return automatic.nodes;
     }
 
-    const legalInternalColumns = internalColumns(graph, assignment);
     for (const node of graph.nodes) {
         const candidate = Object.prototype.hasOwnProperty.call(persisted.nodes, node.id)
             ? persisted.nodes[node.id]
@@ -180,7 +213,7 @@ export function mergePlacement(
             fixed: true,
         });
     }
-    return { nodes: normalizeOrders(graph, automatic.nodes) };
+    return automatic.nodes;
 }
 
 export function moveNodeToColumn(
@@ -192,23 +225,44 @@ export function moveNodeToColumn(
     order: number,
     yOffset: number
 ): SchematicPlacement {
-    const normalized = mergePlacement(graph, assignment, placement);
-    const selectedNode = graph.nodes.find(node => node.id === nodeId);
-    const current = selectedNode ? normalized.nodes[nodeId] : undefined;
-    if (!selectedNode || !current) return normalized;
+    return moveNodesToColumns(graph, assignment, placement, [{
+        nodeId,
+        column,
+        order,
+        yOffset,
+    }]);
+}
 
-    const nodes = normalized.nodes;
-    setOwn(nodes, nodeId, {
-        column: clampNodeColumn(
-            selectedNode,
-            assignment,
-            column,
-            internalColumns(graph, assignment)
-        ),
-        order: safeInteger(order, current.order),
-        yOffset: safeOffset(yOffset),
-        fixed: true,
-    });
+export function moveNodesToColumns(
+    graph: SchematicGraph,
+    assignment: ColumnAssignment,
+    placement: SchematicPlacement,
+    moves: readonly SchematicNodePlacementMove[]
+): SchematicPlacement {
+    const legalInternalColumns = internalColumns(graph, assignment);
+    const nodes = mergedPlacementNodes(
+        graph,
+        assignment,
+        placement,
+        legalInternalColumns
+    );
+    const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
+    for (const move of moves) {
+        const selectedNode = nodesById.get(move.nodeId);
+        const current = selectedNode ? nodes[move.nodeId] : undefined;
+        if (!selectedNode || !current) continue;
+        setOwn(nodes, move.nodeId, {
+            column: clampNodeColumn(
+                selectedNode,
+                assignment,
+                move.column,
+                legalInternalColumns
+            ),
+            order: safeInteger(move.order, current.order),
+            yOffset: safeOffset(move.yOffset),
+            fixed: true,
+        });
+    }
 
     return { nodes: normalizeOrders(graph, nodes) };
 }
