@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
 import {
@@ -97,6 +98,19 @@ test('returns canonical segment order independently of input order', () => {
         simplifySegments(segments),
         simplifySegments([...segments].reverse())
     );
+});
+
+test('simplifies many unrelated lanes without a global quadratic scan', () => {
+    const segments = Array.from({ length: 32_000 }, (_, index) =>
+        horizontal(`network:${index}`, 0, 10, index)
+    );
+    const startedAt = performance.now();
+
+    const simplified = simplifySegments(segments);
+    const elapsed = performance.now() - startedAt;
+
+    assert.equal(simplified.length, segments.length);
+    assert.ok(elapsed < 1_000, `unrelated lane simplification took ${elapsed}ms`);
 });
 
 test('allows different networks to touch at endpoints and cross perpendicularly', () => {
@@ -250,6 +264,82 @@ test('rejects invalid reservation tracks and interval coordinates', () => {
     }
 });
 
+test('keeps vertical reservations as canonical same-network unions', () => {
+    const reservations = new VerticalReservationIndex();
+    assert.equal(reservations.reserve('channel', 0, 'n', 20, 30), true);
+    assert.equal(reservations.reserve('channel', 0, 'n', 0, 10), true);
+    assert.equal(reservations.reserve('channel', 0, 'n', 10, 20), true);
+    assert.equal(reservations.reserve('channel', 0, 'point', 15, 15), true);
+
+    assert.deepEqual(reservations.reservations('channel', 0), [
+        { networkId: 'n', y1: 0, y2: 30 },
+    ]);
+});
+
+test('merges same-network reservations transitively', () => {
+    const reservations = new VerticalReservationIndex();
+    reservations.reserve('channel', 0, 'n', 0, 10);
+    reservations.reserve('channel', 0, 'n', 20, 30);
+    reservations.reserve('channel', 0, 'n', 40, 50);
+
+    assert.equal(reservations.reserve('channel', 0, 'n', 5, 45), true);
+    assert.deepEqual(reservations.reservations('channel', 0), [
+        { networkId: 'n', y1: 0, y2: 50 },
+    ]);
+});
+
+test('leaves reservation state unchanged when a merge candidate conflicts', () => {
+    const reservations = new VerticalReservationIndex();
+    reservations.reserve('channel', 0, 'first', 0, 10);
+    reservations.reserve('channel', 0, 'second', 20, 30);
+    const before = reservations.reservations('channel', 0);
+
+    assert.equal(
+        reservations.reserve('channel', 0, 'first', 5, 25),
+        false
+    );
+    assert.deepEqual(reservations.reservations('channel', 0), before);
+    assert.equal(
+        reservations.reserve('channel', 0, 'first', 10, 20),
+        true,
+        'endpoint contact may extend up to another network'
+    );
+    assert.deepEqual(reservations.reservations('channel', 0), [
+        { networkId: 'first', y1: 0, y2: 20 },
+        { networkId: 'second', y1: 20, y2: 30 },
+    ]);
+});
+
+test('returns detached readonly reservation snapshots', () => {
+    const reservations = new HorizontalReservationIndex();
+    reservations.reserve('corridor', 0, '__proto__', 0, 20);
+    const snapshot = reservations.reservations('corridor', 0) as Array<{
+        networkId: string;
+        x1: number;
+        x2: number;
+    }>;
+    snapshot[0].x1 = 999;
+    snapshot.push({ networkId: 'constructor', x1: 20, x2: 30 });
+
+    assert.deepEqual(reservations.reservations('corridor', 0), [
+        { networkId: '__proto__', x1: 0, x2: 20 },
+    ]);
+});
+
+test('deduplicates a large repeated reservation without linear growth', () => {
+    const reservations = new VerticalReservationIndex();
+    const startedAt = performance.now();
+    for (let index = 0; index < 50_000; index += 1) {
+        assert.equal(reservations.reserve('channel', 0, 'n', 0, 10), true);
+    }
+    const elapsed = performance.now() - startedAt;
+
+    assert.deepEqual(reservations.reservations('channel', 0), [
+        { networkId: 'n', y1: 0, y2: 10 },
+    ]);
+    assert.ok(elapsed < 750, `repeated reservation took ${elapsed}ms`);
+});
+
 test('splits merged same-network segments at branch points', () => {
     const input = [
         horizontal('n', 20, 0, 10),
@@ -309,4 +399,66 @@ test('does not let duplicate or overlapping segments invent directions', () => {
         vertical('n', 10, 10, 20),
         vertical('n', 10, 10, 20),
     ]), []);
+});
+
+test('enumerates every active horizontal at endpoint junctions', () => {
+    assert.deepEqual(deriveJunctions([
+        horizontal('grid', 0, 20, 0),
+        horizontal('grid', 0, 20, 10),
+        vertical('grid', 5, 0, 10),
+        vertical('grid', 15, 0, 10),
+    ]), [
+        {
+            networkId: 'grid',
+            point: { x: 5, y: 0 },
+            directions: new Set(['east', 'south', 'west']),
+        },
+        {
+            networkId: 'grid',
+            point: { x: 5, y: 10 },
+            directions: new Set(['north', 'east', 'west']),
+        },
+        {
+            networkId: 'grid',
+            point: { x: 15, y: 0 },
+            directions: new Set(['east', 'south', 'west']),
+        },
+        {
+            networkId: 'grid',
+            point: { x: 15, y: 10 },
+            directions: new Set(['north', 'east', 'west']),
+        },
+    ]);
+});
+
+test('derives junctions across many unrelated networks without global pair scans', () => {
+    const segments = Array.from({ length: 32_000 }, (_, index) =>
+        horizontal(`network:${index}`, 0, 10, index)
+    );
+    const startedAt = performance.now();
+
+    const junctions = deriveJunctions(segments);
+    const elapsed = performance.now() - startedAt;
+
+    assert.deepEqual(junctions, []);
+    assert.ok(elapsed < 1_000, `unrelated junction scan took ${elapsed}ms`);
+});
+
+test('indexes perpendicular candidates within one large network', () => {
+    const segmentCount = 16_000;
+    const segments: RouteSegment[] = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+            horizontal('shared', 0, 10, index)
+    );
+    for (let index = 0; index < segmentCount; index += 1) {
+        segments.push(vertical('shared', 100 + index, 0, segmentCount));
+    }
+    const startedAt = performance.now();
+
+    const junctions = deriveJunctions(segments);
+    const elapsed = performance.now() - startedAt;
+
+    assert.deepEqual(junctions, []);
+    assert.ok(elapsed < 1_000, `single-network junction scan took ${elapsed}ms`);
 });

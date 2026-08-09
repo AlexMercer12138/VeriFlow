@@ -96,23 +96,51 @@ function haveOpenIntervalOverlap(
     return Math.max(firstStart, secondStart) < Math.min(firstEnd, secondEnd);
 }
 
-function haveDifferentNetworkCollinearOverlap(
-    left: RouteSegment,
-    right: RouteSegment
-): boolean {
-    if (left.networkId === right.networkId
-        || left.orientation !== right.orientation) {
-        return false;
+type LaneInterval = {
+    networkId: string;
+    start: number;
+    end: number;
+};
+
+function compareLaneIntervals(left: LaneInterval, right: LaneInterval): number {
+    return left.start - right.start
+        || left.end - right.end
+        || (left.networkId < right.networkId
+            ? -1
+            : left.networkId > right.networkId ? 1 : 0);
+}
+
+function simplifyLane(intervals: readonly LaneInterval[]): LaneInterval[] {
+    const byNetwork = new Map<string, LaneInterval[]>();
+    for (const interval of intervals) {
+        const networkIntervals = byNetwork.get(interval.networkId) ?? [];
+        networkIntervals.push(interval);
+        byNetwork.set(interval.networkId, networkIntervals);
     }
-    if (left.orientation === 'horizontal' && right.orientation === 'horizontal') {
-        return left.y === right.y
-            && haveOpenIntervalOverlap(left.x1, left.x2, right.x1, right.x2);
+
+    const merged: LaneInterval[] = [];
+    for (const networkIntervals of byNetwork.values()) {
+        networkIntervals.sort(compareLaneIntervals);
+        for (const interval of networkIntervals) {
+            const previous = merged[merged.length - 1];
+            if (previous?.networkId === interval.networkId
+                && interval.start <= previous.end) {
+                previous.end = Math.max(previous.end, interval.end);
+            } else {
+                merged.push({ ...interval });
+            }
+        }
     }
-    if (left.orientation === 'vertical' && right.orientation === 'vertical') {
-        return left.x === right.x
-            && haveOpenIntervalOverlap(left.y1, left.y2, right.y1, right.y2);
+
+    const byStart = merged.slice().sort(compareLaneIntervals);
+    for (let index = 1; index < byStart.length; index += 1) {
+        if (byStart[index].start < byStart[index - 1].end) {
+            throw new RangeError(
+                'different networks cannot share a collinear open interval'
+            );
+        }
     }
-    return false;
+    return merged;
 }
 
 export function segmentIntersectsRectangleInterior(
@@ -168,45 +196,63 @@ export function segmentIntersectsRectangleInterior(
 export function simplifySegments(
     segments: readonly RouteSegment[]
 ): RouteSegment[] {
-    const normalized = segments.map(segment => segment.orientation === 'horizontal'
-        ? horizontal(segment.networkId, segment.x1, segment.x2, segment.y)
-        : vertical(segment.networkId, segment.x, segment.y1, segment.y2)
-    ).filter(segment => segment.orientation === 'horizontal'
-        ? segment.x1 !== segment.x2
-        : segment.y1 !== segment.y2
-    ).sort(compareSegments);
-    for (let leftIndex = 0; leftIndex < normalized.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1;
-            rightIndex < normalized.length;
-            rightIndex += 1) {
-            if (haveDifferentNetworkCollinearOverlap(
-                normalized[leftIndex],
-                normalized[rightIndex]
-            )) {
-                throw new RangeError(
-                    'different networks cannot share a collinear open interval'
-                );
-            }
-        }
-    }
-    const merged: RouteSegment[] = [];
-    for (const segment of normalized) {
-        const previous = merged[merged.length - 1];
-        if (previous?.orientation === 'horizontal'
-            && segment.orientation === 'horizontal'
-            && previous.networkId === segment.networkId
-            && previous.y === segment.y
-            && segment.x1 <= previous.x2) {
-            previous.x2 = Math.max(previous.x2, segment.x2);
-        } else if (previous?.orientation === 'vertical'
-            && segment.orientation === 'vertical'
-            && previous.networkId === segment.networkId
-            && previous.x === segment.x
-            && segment.y1 <= previous.y2) {
-            previous.y2 = Math.max(previous.y2, segment.y2);
+    const horizontalLanes = new Map<number, LaneInterval[]>();
+    const verticalLanes = new Map<number, LaneInterval[]>();
+    for (const segment of segments) {
+        if (segment.orientation === 'horizontal') {
+            const normalized = horizontal(
+                segment.networkId,
+                segment.x1,
+                segment.x2,
+                segment.y
+            );
+            if (normalized.x1 === normalized.x2) continue;
+            const lane = horizontalLanes.get(normalized.y) ?? [];
+            lane.push({
+                networkId: normalized.networkId,
+                start: normalized.x1,
+                end: normalized.x2,
+            });
+            horizontalLanes.set(normalized.y, lane);
         } else {
-            merged.push(segment);
+            const normalized = vertical(
+                segment.networkId,
+                segment.x,
+                segment.y1,
+                segment.y2
+            );
+            if (normalized.y1 === normalized.y2) continue;
+            const lane = verticalLanes.get(normalized.x) ?? [];
+            lane.push({
+                networkId: normalized.networkId,
+                start: normalized.y1,
+                end: normalized.y2,
+            });
+            verticalLanes.set(normalized.x, lane);
         }
     }
-    return merged;
+
+    const result: RouteSegment[] = [];
+    for (const [y, lane] of horizontalLanes) {
+        for (const interval of simplifyLane(lane)) {
+            result.push(horizontal(
+                interval.networkId,
+                interval.start,
+                interval.end,
+                y
+            ));
+        }
+    }
+    for (const [x, lane] of verticalLanes) {
+        for (const interval of simplifyLane(lane)) {
+            result.push(vertical(
+                interval.networkId,
+                x,
+                interval.start,
+                interval.end
+            ));
+        }
+    }
+    result.sort(compareSegments);
+    return result;
 }

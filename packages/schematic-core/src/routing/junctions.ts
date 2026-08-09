@@ -2,8 +2,10 @@ import {
     horizontal,
     simplifySegments,
     vertical,
+    type HorizontalSegment,
     type Point,
     type RouteSegment,
+    type VerticalSegment,
 } from './geometry';
 
 export type Direction = 'north' | 'east' | 'south' | 'west';
@@ -21,6 +23,181 @@ const DIRECTION_ORDER: readonly Direction[] = [
     'west',
 ];
 
+type IndexedHorizontal = {
+    index: number;
+    segment: HorizontalSegment;
+};
+
+type IndexedVertical = {
+    index: number;
+    segment: VerticalSegment;
+};
+
+type NetworkSegments = {
+    horizontals: IndexedHorizontal[];
+    verticals: IndexedVertical[];
+};
+
+type SweepEvent = {
+    x: number;
+    kind: 0 | 1 | 2;
+    segmentIndex: number;
+};
+
+class ActiveCoordinateIndex {
+    private readonly tree: Int32Array;
+    private readonly segmentByCoordinate: number[];
+
+    constructor(size: number) {
+        this.tree = new Int32Array(size + 1);
+        this.segmentByCoordinate = new Array<number>(size).fill(-1);
+    }
+
+    activate(coordinateIndex: number, segmentIndex: number): void {
+        this.segmentByCoordinate[coordinateIndex] = segmentIndex;
+        this.update(coordinateIndex, 1);
+    }
+
+    deactivate(coordinateIndex: number): void {
+        this.segmentByCoordinate[coordinateIndex] = -1;
+        this.update(coordinateIndex, -1);
+    }
+
+    forEachActive(
+        startIndex: number,
+        endIndex: number,
+        visit: (segmentIndex: number) => void
+    ): void {
+        let order = this.prefixSum(startIndex) + 1;
+        const finalOrder = this.prefixSum(endIndex);
+        while (order <= finalOrder) {
+            const coordinateIndex = this.findByOrder(order);
+            visit(this.segmentByCoordinate[coordinateIndex]);
+            order += 1;
+        }
+    }
+
+    private update(coordinateIndex: number, delta: number): void {
+        for (let index = coordinateIndex + 1;
+            index < this.tree.length;
+            index += index & -index) {
+            this.tree[index] += delta;
+        }
+    }
+
+    private prefixSum(endIndex: number): number {
+        let sum = 0;
+        for (let index = endIndex; index > 0; index -= index & -index) {
+            sum += this.tree[index];
+        }
+        return sum;
+    }
+
+    private findByOrder(order: number): number {
+        let index = 0;
+        let step = 1;
+        while (step * 2 < this.tree.length) step *= 2;
+        for (; step > 0; step = Math.floor(step / 2)) {
+            const next = index + step;
+            if (next < this.tree.length && this.tree[next] < order) {
+                index = next;
+                order -= this.tree[next];
+            }
+        }
+        return index;
+    }
+}
+
+function lowerBound(values: readonly number[], target: number): number {
+    let low = 0;
+    let high = values.length;
+    while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (values[middle] < target) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
+function upperBound(values: readonly number[], target: number): number {
+    let low = 0;
+    let high = values.length;
+    while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (values[middle] <= target) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
+function splitAtOrthogonalIntersections(
+    network: NetworkSegments,
+    segments: readonly RouteSegment[],
+    splitCoordinates: readonly Set<number>[]
+): void {
+    if (network.horizontals.length === 0 || network.verticals.length === 0) {
+        return;
+    }
+
+    const horizontalYs = network.horizontals.map(({ segment }) => segment.y);
+    horizontalYs.sort((left, right) => left - right);
+    const uniqueYs: number[] = [];
+    for (const y of horizontalYs) {
+        if (uniqueYs[uniqueYs.length - 1] !== y) uniqueYs.push(y);
+    }
+    const yIndex = new Map<number, number>();
+    uniqueYs.forEach((y, index) => yIndex.set(y, index));
+
+    const events: SweepEvent[] = [];
+    for (const horizontalSegment of network.horizontals) {
+        events.push({
+            x: horizontalSegment.segment.x1,
+            kind: 0,
+            segmentIndex: horizontalSegment.index,
+        });
+        events.push({
+            x: horizontalSegment.segment.x2,
+            kind: 2,
+            segmentIndex: horizontalSegment.index,
+        });
+    }
+    for (const verticalSegment of network.verticals) {
+        events.push({
+            x: verticalSegment.segment.x,
+            kind: 1,
+            segmentIndex: verticalSegment.index,
+        });
+    }
+    events.sort((left, right) =>
+        left.x - right.x
+        || left.kind - right.kind
+        || left.segmentIndex - right.segmentIndex
+    );
+
+    const active = new ActiveCoordinateIndex(uniqueYs.length);
+    for (const event of events) {
+        const segment = segments[event.segmentIndex];
+        if (segment.orientation === 'horizontal') {
+            const coordinateIndex = yIndex.get(segment.y)!;
+            if (event.kind === 0) {
+                active.activate(coordinateIndex, event.segmentIndex);
+            } else {
+                active.deactivate(coordinateIndex);
+            }
+            continue;
+        }
+
+        const firstY = lowerBound(uniqueYs, segment.y1);
+        const afterLastY = upperBound(uniqueYs, segment.y2);
+        active.forEachActive(firstY, afterLastY, horizontalIndex => {
+            const horizontalSegment = segments[horizontalIndex];
+            if (horizontalSegment.orientation !== 'horizontal') return;
+            splitCoordinates[horizontalIndex].add(segment.x);
+            splitCoordinates[event.segmentIndex].add(horizontalSegment.y);
+        });
+    }
+}
+
 export function splitSegmentsAtBranchPoints(
     segments: readonly RouteSegment[]
 ): RouteSegment[] {
@@ -31,38 +208,21 @@ export function splitSegmentsAtBranchPoints(
             : new Set([segment.y1, segment.y2])
     );
 
-    for (let leftIndex = 0; leftIndex < simplified.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1;
-            rightIndex < simplified.length;
-            rightIndex += 1) {
-            const left = simplified[leftIndex];
-            const right = simplified[rightIndex];
-            if (left.networkId !== right.networkId
-                || left.orientation === right.orientation) {
-                continue;
-            }
-            const horizontalSegment = left.orientation === 'horizontal'
-                ? left
-                : right.orientation === 'horizontal' ? right : undefined;
-            const verticalSegment = left.orientation === 'vertical'
-                ? left
-                : right.orientation === 'vertical' ? right : undefined;
-            if (!horizontalSegment || !verticalSegment
-                || verticalSegment.x < horizontalSegment.x1
-                || verticalSegment.x > horizontalSegment.x2
-                || horizontalSegment.y < verticalSegment.y1
-                || horizontalSegment.y > verticalSegment.y2) {
-                continue;
-            }
-            splitCoordinates[leftIndex].add(left.orientation === 'horizontal'
-                ? verticalSegment.x
-                : horizontalSegment.y
-            );
-            splitCoordinates[rightIndex].add(right.orientation === 'horizontal'
-                ? verticalSegment.x
-                : horizontalSegment.y
-            );
+    const byNetwork = new Map<string, NetworkSegments>();
+    simplified.forEach((segment, index) => {
+        let network = byNetwork.get(segment.networkId);
+        if (!network) {
+            network = { horizontals: [], verticals: [] };
+            byNetwork.set(segment.networkId, network);
         }
+        if (segment.orientation === 'horizontal') {
+            network.horizontals.push({ index, segment });
+        } else {
+            network.verticals.push({ index, segment });
+        }
+    });
+    for (const network of byNetwork.values()) {
+        splitAtOrthogonalIntersections(network, simplified, splitCoordinates);
     }
 
     return simplified.flatMap((segment, index) => {
