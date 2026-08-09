@@ -1806,6 +1806,57 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
     }
 }
 
+async function testRelayoutRejectsDelayedSaveFromPreviousRevision(): Promise<void> {
+    const text = 'module top(input logic a); endmodule';
+    const document = await parseWithRealWorker('file:///workspace/design.sv', text);
+    const harness = await createProviderHarness(new Map([[text, document]]), text);
+    try {
+        const initial = harness.messages.find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        const delayedLayout = {
+            ...initial.layout,
+            viewport: { x: 701, y: 702, zoom: 1.75 },
+        };
+        const start = harness.messages.length;
+
+        harness.send({ type: 'relayoutAll', moduleKey: initial.graph.moduleKey });
+        await waitFor(
+            () => harness.messages.slice(start).some(event => event.type === 'graph'),
+            'relayout graph publication'
+        );
+        const relayout = harness.messages.slice(start).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> => event.type === 'graph'
+        )!;
+        assert.notStrictEqual(relayout.revision, initial.revision);
+        const storedAfterRelayout = JSON.stringify(harness.storedValues());
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: initial.graph.moduleKey,
+            revision: initial.revision,
+            layout: delayedLayout,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.strictEqual(JSON.stringify(harness.storedValues()), storedAfterRelayout);
+        const replayStart = harness.messages.length;
+        harness.send({ type: 'ready' });
+        await waitFor(
+            () => harness.messages.slice(replayStart).some(event => event.type === 'graph'),
+            'relayout replay after delayed save'
+        );
+        const replayed = harness.messages.slice(replayStart).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph'
+        )!;
+        assert.strictEqual(replayed.revision, relayout.revision);
+        assert.deepStrictEqual(replayed.layout, relayout.layout);
+    } finally {
+        await harness.dispose();
+    }
+}
+
 void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
     .then(testWebviewSelectionRestoresFocusAfterInFlightOpenEffect)
     .then(testQueuedPanelSelectionReportsWhenNewerSelectionSkipsItsFocus)
@@ -1828,6 +1879,7 @@ void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
     .then(testDelayedSaveUsesItsExactGraphRevision)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)
+    .then(testRelayoutRejectsDelayedSaveFromPreviousRevision)
     .then(testRelayoutDuringRefreshPublishesRefreshedGraph)
     .then(testSelectionDuringRefreshPublishesRefreshedIntent)
     .then(testIndexInvalidationRefreshesAndSupersedesInFlightConfiguration)

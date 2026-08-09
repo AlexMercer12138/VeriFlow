@@ -316,13 +316,20 @@ async function testLegacyMigrationUsesAutomaticColumnsAndYOrder(): Promise<void>
         encodeURIComponent(graph.fileUri),
         encodeURIComponent(graph.moduleKey),
     ].join(':');
+    const legacyClock = { y: 0, fixed: true } as Record<string, unknown>;
+    Object.defineProperty(legacyClock, 'x', {
+        enumerable: true,
+        get(): never {
+            throw new Error('legacy x must not be read');
+        },
+    });
     state.set(key, {
         schemaVersion: 1,
         layout: {
             nodes: {
                 'instance:u_child': { x: 50_000, y: 90, fixed: true },
                 'instance:later': { x: -50_000, y: 10, fixed: false },
-                'port:clk': { x: 'bad', y: 0, fixed: true },
+                'port:clk': legacyClock,
             },
             viewport: { x: 4, y: 5, zoom: 1.5 },
             minimap: false,
@@ -339,7 +346,7 @@ async function testLegacyMigrationUsesAutomaticColumnsAndYOrder(): Promise<void>
     assert.ok(migrated.nodes['instance:later'].y
         < migrated.nodes['instance:u_child'].y);
     assert.strictEqual(migrated.nodes['instance:later'].fixed, false);
-    assert.strictEqual(migrated.nodes['port:clk'].fixed, false);
+    assert.strictEqual(migrated.nodes['port:clk'].fixed, true);
     assert.deepStrictEqual(migrated.viewport, { x: 4, y: 5, zoom: 1.5 });
 
     await store.save(graph.fileUri, graph.moduleKey, graph, migrated);
@@ -418,7 +425,7 @@ async function testLoadDropsOnlyMalformedLegacyNodeEntries(): Promise<void> {
         layout: {
             nodes: {
                 valid: { x: 40, y: 80, fixed: true },
-                malformed: { x: 'not-a-coordinate', y: 10, fixed: false },
+                malformed: { x: 'not-used', y: 'not-a-coordinate', fixed: false },
             },
             viewport: { x: 5, y: 6, zoom: 1.25 },
             minimap: false,

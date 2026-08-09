@@ -1176,7 +1176,7 @@
         const byColumn = /* @__PURE__ */ new Map();
         for (const node of graph2.nodes) {
           const candidate = Object.prototype.hasOwnProperty.call(legacyNodes, node.id) ? legacyNodes[node.id] : void 0;
-          if (!candidate || !Number.isFinite(candidate.x) || !Number.isFinite(candidate.y) || typeof candidate.fixed !== "boolean") {
+          if (!candidate || !Number.isFinite(candidate.y) || typeof candidate.fixed !== "boolean") {
             continue;
           }
           const column = placement.nodes[node.id].column;

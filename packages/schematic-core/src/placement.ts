@@ -13,7 +13,8 @@ export type SchematicPlacement = {
 };
 
 export type LegacyNodePlacement = {
-    x: number;
+    /** Retained for v1 callers, but migration deliberately never reads it. */
+    x?: unknown;
     y: number;
     fixed: boolean;
 };
@@ -226,8 +227,8 @@ export function migrateLegacyPlacement(
         const candidate = Object.prototype.hasOwnProperty.call(legacyNodes, node.id)
             ? legacyNodes[node.id]
             : undefined;
-        if (!candidate || !Number.isFinite(candidate.x)
-            || !Number.isFinite(candidate.y) || typeof candidate.fixed !== 'boolean') {
+        if (!candidate || !Number.isFinite(candidate.y)
+            || typeof candidate.fixed !== 'boolean') {
             continue;
         }
         const column = placement.nodes[node.id].column;

@@ -16,6 +16,7 @@ import {
     resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
     type ColumnAssignment,
+    type LegacyNodePlacement,
     type PinKey,
     type PinSide,
     type SchematicPlacement,
@@ -207,6 +208,30 @@ function normalizeStoredV2(value: unknown): StoredLayoutEnvelopeV2 | undefined {
         : undefined;
 }
 
+function normalizeLegacyNodes(
+    value: unknown
+): Record<string, LegacyNodePlacement> | undefined {
+    if (!isRecord(value)) return undefined;
+    const nodes: Record<string, LegacyNodePlacement> = {};
+    let nodeCount = 0;
+    for (const [id, candidate] of Object.entries(value)) {
+        nodeCount += 1;
+        if (nodeCount > MAX_LAYOUT_NODES) return undefined;
+        if (!isRecord(candidate)
+            || !finiteNumber(candidate.y)
+            || typeof candidate.fixed !== 'boolean') {
+            continue;
+        }
+        Object.defineProperty(nodes, id, {
+            value: { y: candidate.y, fixed: candidate.fixed },
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return nodes;
+}
+
 function migrateStoredV1(
     graph: SchematicGraph,
     value: unknown
@@ -215,17 +240,16 @@ function migrateStoredV1(
         || !Object.prototype.hasOwnProperty.call(value, 'layout')) {
         return undefined;
     }
-    const legacy = normalizeLayout(value.layout);
-    if (!legacy) return undefined;
+    const legacy = value.layout;
+    if (!isRecord(legacy)) return undefined;
+    const legacyNodes = normalizeLegacyNodes(legacy.nodes);
+    const presentation = presentationFrom(legacy);
+    if (!legacyNodes || !presentation) return undefined;
     const assignment = assignColumns(graph);
     return {
         schemaVersion: SCHEMA_VERSION,
-        placement: migrateLegacyPlacement(graph, assignment, legacy.nodes),
-        viewport: { ...legacy.viewport },
-        minimap: legacy.minimap,
-        ...(legacy.selectedObjectId === undefined
-            ? {}
-            : { selectedObjectId: legacy.selectedObjectId }),
+        placement: migrateLegacyPlacement(graph, assignment, legacyNodes),
+        ...presentation,
     };
 }
 
