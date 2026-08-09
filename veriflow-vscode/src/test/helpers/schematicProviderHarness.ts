@@ -78,6 +78,26 @@ function nodeFor(moduleKey: string): GraphNode {
     };
 }
 
+function boundaryNode(
+    moduleKey: string,
+    side: 'input' | 'output'
+): GraphNode {
+    const id = `port:${side}:${moduleKey}`;
+    return {
+        id,
+        kind: 'port',
+        label: side,
+        pins: [{
+            id: `${id}:pin`,
+            name: side,
+            direction: side === 'input' ? 'driver' : 'load',
+            width: { kind: 'known', bits: 1 },
+            readOnly: true,
+        }],
+        readOnly: true,
+    };
+}
+
 function graphDiagnostics(uri: string): HdlDiagnostic[] {
     return [{
         severity: 'error',
@@ -105,7 +125,11 @@ function graphFor(uri: string, moduleKey: string): SchematicGraph {
         fileUri: uri,
         moduleKey,
         moduleName: moduleKey,
-        nodes: [nodeFor(moduleKey)],
+        nodes: [
+            boundaryNode(moduleKey, 'input'),
+            nodeFor(moduleKey),
+            boundaryNode(moduleKey, 'output'),
+        ],
         networks: [],
         diagnostics: graphDiagnostics(uri),
     };
@@ -140,7 +164,7 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
     };
     const publishGraph = async (panel: TestPanelHandle): Promise<void> => {
         const graph = graphFor(panel.uri, panel.selectedModuleKey);
-        const persisted = layoutStore.load(panel.uri, panel.selectedModuleKey)
+        const persisted = layoutStore.load(panel.uri, panel.selectedModuleKey, graph)
             ?? layoutsByPanel.get(panel)?.get(panel.selectedModuleKey);
         const layout = mergeLayout(graph, persisted);
         let panelLayouts = layoutsByPanel.get(panel);
@@ -217,7 +241,13 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
                         layoutsByPanel.set(panel, panelLayouts);
                     }
                     panelLayouts.set(command.moduleKey, command.layout);
-                    await layoutStore.save(panel.uri, command.moduleKey, command.layout);
+                    const graph = graphFor(panel.uri, command.moduleKey);
+                    await layoutStore.save(
+                        panel.uri,
+                        command.moduleKey,
+                        graph,
+                        command.layout
+                    );
                     return;
                 }
                 case 'ready':

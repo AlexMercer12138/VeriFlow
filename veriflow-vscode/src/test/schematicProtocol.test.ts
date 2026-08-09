@@ -167,6 +167,27 @@ function testLayoutValidation(): void {
     });
 }
 
+function testSemanticPlacementIsNotAnAbsoluteWireLayout(): void {
+    assertRejected({
+        type: 'saveLayout',
+        moduleKey: 'module:top',
+        layout: {
+            placement: {
+                nodes: {
+                    'instance:u0': {
+                        column: 2,
+                        order: 1,
+                        yOffset: 12,
+                        fixed: true,
+                    },
+                },
+            },
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: true,
+        },
+    });
+}
+
 function testLayoutBreadthLimit(): void {
     const boundedNodes: Record<string, unknown> = {};
     for (let index = 0; index < 50_000; index += 1) {
@@ -504,6 +525,7 @@ async function main(): Promise<void> {
     testInitialContract();
     testEveryCommandAndSanitization();
     testLayoutValidation();
+    testSemanticPlacementIsNotAnAbsoluteWireLayout();
     testLayoutBreadthLimit();
     testSourceSpanValidation();
     testCompositePartsBreadthLimit();

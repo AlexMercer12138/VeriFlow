@@ -212,58 +212,138 @@ async function testRoundTripAndRematch(): Promise<void> {
     const graph = createGraph();
     const state = createMemoryMemento();
     const store = new SchematicLayoutStore(state);
-    await store.save('file:///top.sv', 'module:top:0', {
-        nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
-        viewport: { x: 10, y: 20, zoom: 1.25 },
-        minimap: false,
-        selectedObjectId: 'network:done',
-    });
+    const layout = autoLayout(graph);
+    layout.nodes['instance:u_child'].y += 31;
+    layout.nodes['instance:u_child'].fixed = true;
+    layout.viewport = { x: 10, y: 20, zoom: 1.25 };
+    layout.minimap = false;
+    layout.selectedObjectId = 'network:done';
+    await store.save(graph.fileUri, graph.moduleKey, graph, layout);
     const storageKey = [
         'veriflow.schematicLayout',
         encodeURIComponent('file:///top.sv'),
         encodeURIComponent('module:top:0'),
     ].join(':');
     assert.deepStrictEqual(state.keys(), [storageKey]);
-    assert.deepStrictEqual(state.get<unknown>(storageKey), {
-        schemaVersion: 1,
-        layout: {
-            nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
-            viewport: { x: 10, y: 20, zoom: 1.25 },
-            minimap: false,
-            selectedObjectId: 'network:done',
-        },
-    });
-    const persisted = store.load('file:///top.sv', 'module:top:0');
-    assert.deepStrictEqual(persisted, {
-        nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
-        viewport: { x: 10, y: 20, zoom: 1.25 },
-        minimap: false,
-        selectedObjectId: 'network:done',
-    });
+    const persisted = store.load(graph.fileUri, graph.moduleKey, graph);
     const merged = mergeLayout(graph, persisted);
-    assert.deepStrictEqual(merged.nodes['instance:u_child'],
-        { x: 320, y: 120, fixed: true });
+    assert.strictEqual(merged.nodes['instance:u_child'].fixed, true);
+    assert.strictEqual(merged.nodes['instance:u_child'].y,
+        layout.nodes['instance:u_child'].y);
     assert.strictEqual(merged.selectedObjectId, 'network:done');
     assert.ok(merged.nodes['port:clk'].x < merged.nodes['instance:u_child'].x);
 
-    const loaded = store.load('file:///top.sv', 'module:top:0')!;
+    const loaded = store.load(graph.fileUri, graph.moduleKey, graph)!;
     loaded.nodes['instance:u_child'].x = -1;
     loaded.viewport.x = -1;
-    assert.deepStrictEqual(store.load('file:///top.sv', 'module:top:0'), {
-        nodes: { 'instance:u_child': { x: 320, y: 120, fixed: true } },
-        viewport: { x: 10, y: 20, zoom: 1.25 },
-        minimap: false,
-        selectedObjectId: 'network:done',
+    const reloaded = store.load(graph.fileUri, graph.moduleKey, graph)!;
+    assert.strictEqual(reloaded.nodes['instance:u_child'].y,
+        layout.nodes['instance:u_child'].y);
+    assert.deepStrictEqual(reloaded.viewport, { x: 10, y: 20, zoom: 1.25 });
+
+    const copyGraph = {
+        ...graph,
+        fileUri: 'file:///copy.sv',
+        moduleKey: 'module:copy:0',
+    };
+    const callerLayout = autoLayout(copyGraph);
+    callerLayout.nodes['port:clk'].y = 34;
+    callerLayout.nodes['port:clk'].fixed = true;
+    await store.save(copyGraph.fileUri, copyGraph.moduleKey, copyGraph, callerLayout);
+    callerLayout.nodes['port:clk'].y = 999;
+    assert.strictEqual(store.load(
+        copyGraph.fileUri,
+        copyGraph.moduleKey,
+        copyGraph
+    )?.nodes['port:clk'].y, 34);
+}
+
+async function testSemanticStorageEnvelopeRoundTrip(): Promise<void> {
+    const graph = createGraph();
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    const layout = autoLayout(graph);
+    layout.nodes['instance:u_child'] = {
+        ...layout.nodes['instance:u_child'],
+        y: layout.nodes['instance:u_child'].y + 37,
+        fixed: true,
+    };
+    layout.viewport = { x: 10, y: 20, zoom: 1.25 };
+    layout.minimap = false;
+    layout.selectedObjectId = 'network:done';
+
+    await store.save(graph.fileUri, graph.moduleKey, graph, layout);
+
+    const envelope = state.get<Record<string, unknown>>(state.keys()[0])!;
+    assert.strictEqual(envelope.schemaVersion, 2);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(envelope, 'layout'), false);
+    assert.deepStrictEqual(envelope.viewport, layout.viewport);
+    assert.strictEqual(envelope.minimap, false);
+    assert.strictEqual(envelope.selectedObjectId, 'network:done');
+    const placement = envelope.placement as {
+        nodes: Record<string, Record<string, unknown>>;
+    };
+    assert.strictEqual(placement.nodes['instance:u_child'].fixed, true);
+    for (const nodePlacement of Object.values(placement.nodes)) {
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(nodePlacement, 'x'), false);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(nodePlacement, 'y'), false);
+    }
+
+    const loaded = store.load(graph.fileUri, graph.moduleKey, graph)!;
+    assert.deepStrictEqual(loaded.viewport, layout.viewport);
+    assert.strictEqual(loaded.minimap, false);
+    assert.strictEqual(loaded.selectedObjectId, 'network:done');
+    assert.strictEqual(loaded.nodes['instance:u_child'].fixed, true);
+    assert.strictEqual(loaded.nodes['instance:u_child'].y,
+        layout.nodes['instance:u_child'].y);
+}
+
+async function testLegacyMigrationUsesAutomaticColumnsAndYOrder(): Promise<void> {
+    const base = createGraph();
+    const later = node('instance:later', 'instance');
+    const graph: SchematicGraph = {
+        ...base,
+        nodes: [...base.nodes.slice(0, 3), later, ...base.nodes.slice(3)],
+    };
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    const key = [
+        'veriflow.schematicLayout',
+        encodeURIComponent(graph.fileUri),
+        encodeURIComponent(graph.moduleKey),
+    ].join(':');
+    state.set(key, {
+        schemaVersion: 1,
+        layout: {
+            nodes: {
+                'instance:u_child': { x: 50_000, y: 90, fixed: true },
+                'instance:later': { x: -50_000, y: 10, fixed: false },
+                'port:clk': { x: 'bad', y: 0, fixed: true },
+            },
+            viewport: { x: 4, y: 5, zoom: 1.5 },
+            minimap: false,
+            selectedObjectId: 'instance:u_child',
+        },
     });
 
-    const callerLayout = defaultLayout();
-    callerLayout.nodes['port:clk'] = { x: 12, y: 34, fixed: true };
-    await store.save('file:///copy.sv', 'module:copy:0', callerLayout);
-    callerLayout.nodes['port:clk'].x = 999;
+    const migrated = store.load(graph.fileUri, graph.moduleKey, graph)!;
+
     assert.strictEqual(
-        store.load('file:///copy.sv', 'module:copy:0')?.nodes['port:clk'].x,
-        12
+        migrated.nodes['instance:u_child'].x,
+        migrated.nodes['instance:later'].x
     );
+    assert.ok(migrated.nodes['instance:later'].y
+        < migrated.nodes['instance:u_child'].y);
+    assert.strictEqual(migrated.nodes['instance:later'].fixed, false);
+    assert.strictEqual(migrated.nodes['port:clk'].fixed, false);
+    assert.deepStrictEqual(migrated.viewport, { x: 4, y: 5, zoom: 1.5 });
+
+    await store.save(graph.fileUri, graph.moduleKey, graph, migrated);
+    const rewritten = state.get<Record<string, unknown>>(key)!;
+    assert.strictEqual(rewritten.schemaVersion, 2);
+    const serialized = JSON.stringify(rewritten);
+    assert.strictEqual(serialized.includes('50000'), false);
+    assert.strictEqual(serialized.includes('-50000'), false);
 }
 
 async function testVersionValidationAndKeyIsolation(): Promise<void> {
@@ -274,21 +354,39 @@ async function testVersionValidationAndKeyIsolation(): Promise<void> {
     const second = defaultLayout();
     second.viewport.x = 2;
 
+    const firstGraph = { ...createGraph(), fileUri: 'file:///a:b', moduleKey: 'module:c' };
+    const secondGraph = { ...createGraph(), fileUri: 'file:///a', moduleKey: 'b:module:c' };
+    first.nodes = autoLayout(firstGraph).nodes;
+    second.nodes = autoLayout(secondGraph).nodes;
     await Promise.all([
-        store.save('file:///a:b', 'module:c', first),
-        store.save('file:///a', 'b:module:c', second),
+        store.save(firstGraph.fileUri, firstGraph.moduleKey, firstGraph, first),
+        store.save(secondGraph.fileUri, secondGraph.moduleKey, secondGraph, second),
     ]);
-    assert.strictEqual(store.load('file:///a:b', 'module:c')?.viewport.x, 1);
-    assert.strictEqual(store.load('file:///a', 'b:module:c')?.viewport.x, 2);
+    assert.strictEqual(store.load(
+        firstGraph.fileUri, firstGraph.moduleKey, firstGraph
+    )?.viewport.x, 1);
+    assert.strictEqual(store.load(
+        secondGraph.fileUri, secondGraph.moduleKey, secondGraph
+    )?.viewport.x, 2);
     assert.strictEqual(state.keys().length, 2);
 
     const isolatedState = createMemoryMemento();
     const isolatedStore = new SchematicLayoutStore(isolatedState);
-    await isolatedStore.save('file:///version.sv', 'module:version:0', defaultLayout());
+    const versionGraph = {
+        ...createGraph(),
+        fileUri: 'file:///version.sv',
+        moduleKey: 'module:version:0',
+    };
+    await isolatedStore.save(
+        versionGraph.fileUri,
+        versionGraph.moduleKey,
+        versionGraph,
+        autoLayout(versionGraph)
+    );
     const key = isolatedState.keys()[0];
-    isolatedState.set(key, { schemaVersion: 2, layout: defaultLayout() });
+    isolatedState.set(key, { schemaVersion: 3, placement: { nodes: {} } });
     assert.strictEqual(
-        isolatedStore.load('file:///version.sv', 'module:version:0'),
+        isolatedStore.load(versionGraph.fileUri, versionGraph.moduleKey, versionGraph),
         undefined
     );
     isolatedState.set(key, {
@@ -296,7 +394,7 @@ async function testVersionValidationAndKeyIsolation(): Promise<void> {
         layout: { nodes: [], viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
     });
     assert.strictEqual(
-        isolatedStore.load('file:///version.sv', 'module:version:0'),
+        isolatedStore.load(versionGraph.fileUri, versionGraph.moduleKey, versionGraph),
         undefined
     );
 }
@@ -324,17 +422,56 @@ async function testLoadDropsOnlyMalformedLegacyNodeEntries(): Promise<void> {
         },
     });
 
-    assert.deepStrictEqual(store.load(uri, moduleKey), {
-        nodes: { valid: { x: 40, y: 80, fixed: true } },
-        viewport: { x: 5, y: 6, zoom: 1.25 },
-        minimap: false,
-        selectedObjectId: 'valid',
+    const graph: SchematicGraph = {
+        ...createGraph(),
+        fileUri: uri,
+        moduleKey,
+        nodes: [node('valid', 'opaque'), node('malformed', 'opaque')],
+        networks: [],
+    };
+    const loaded = store.load(uri, moduleKey, graph)!;
+    assert.strictEqual(loaded.nodes.valid.fixed, true);
+    assert.strictEqual(loaded.nodes.malformed.fixed, false);
+    assert.deepStrictEqual(loaded.viewport, { x: 5, y: 6, zoom: 1.25 });
+    assert.strictEqual(loaded.selectedObjectId, 'valid');
+}
+
+function testHostileStoredPlacementIsRejected(): void {
+    const graph = createGraph();
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    const key = [
+        'veriflow.schematicLayout',
+        encodeURIComponent(graph.fileUri),
+        encodeURIComponent(graph.moduleKey),
+    ].join(':');
+    const nodes = new Proxy({}, {
+        ownKeys(): never {
+            throw new Error('hostile stored placement');
+        },
+    });
+    state.set(key, {
+        schemaVersion: 2,
+        placement: { nodes },
+        viewport: { x: 0, y: 0, zoom: 1 },
+        minimap: true,
+    });
+
+    assert.doesNotThrow(() => {
+        assert.strictEqual(store.load(graph.fileUri, graph.moduleKey, graph), undefined);
     });
 }
 
 async function testNormalizationAndNoEdgePersistence(): Promise<void> {
     const state = createMemoryMemento();
     const store = new SchematicLayoutStore(state);
+    const graph: SchematicGraph = {
+        ...createGraph(),
+        fileUri: 'file:///normalize.sv',
+        moduleKey: 'module:normalize:0',
+        nodes: [node('valid', 'opaque')],
+        networks: [],
+    };
     const input = {
         nodes: {
             valid: { x: 4, y: 8, fixed: false },
@@ -360,8 +497,9 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         layout: input,
     }), undefined);
     await store.save(
-        'file:///normalize.sv',
-        'module:normalize:0',
+        graph.fileUri,
+        graph.moduleKey,
+        graph,
         input as SchematicLayout
     );
     const storageKey = [
@@ -369,38 +507,41 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
         encodeURIComponent('file:///normalize.sv'),
         encodeURIComponent('module:normalize:0'),
     ].join(':');
-    assert.deepStrictEqual(state.get<unknown>(storageKey), {
-        schemaVersion: 1,
-        layout: {
-            nodes: { valid: { x: 4, y: 8, fixed: false } },
-            viewport: { x: 0, y: 0, zoom: 4 },
-            minimap: true,
-        },
-    });
-    const loaded = store.load('file:///normalize.sv', 'module:normalize:0')!;
-    assert.deepStrictEqual(loaded.nodes, {
-        valid: { x: 4, y: 8, fixed: false },
-    });
+    const stored = state.get<Record<string, unknown>>(storageKey)!;
+    assert.strictEqual(stored.schemaVersion, 2);
+    assert.deepStrictEqual(stored.viewport, { x: 0, y: 0, zoom: 4 });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(stored, 'edges'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(stored, 'feedbackRoutes'), false);
+    const loaded = store.load(graph.fileUri, graph.moduleKey, graph)!;
+    assert.deepStrictEqual(Object.keys(loaded.nodes), ['valid']);
     assert.strictEqual(loaded.viewport.zoom, 4);
     assert.strictEqual('edges' in loaded, false);
 
     loaded.viewport.zoom = -100;
-    await store.save('file:///normalize.sv', 'module:low-zoom:0', loaded);
+    const lowZoomGraph = { ...graph, moduleKey: 'module:low-zoom:0' };
+    await store.save(
+        lowZoomGraph.fileUri,
+        lowZoomGraph.moduleKey,
+        lowZoomGraph,
+        loaded
+    );
     assert.strictEqual(
-        store.load('file:///normalize.sv', 'module:low-zoom:0')?.viewport.zoom,
+        store.load(
+            lowZoomGraph.fileUri,
+            lowZoomGraph.moduleKey,
+            lowZoomGraph
+        )?.viewport.zoom,
         0.1
     );
 
     state.set(storageKey, {
-        schemaVersion: 1,
-        layout: {
-            nodes: {},
-            viewport: { x: Number.NaN, y: 0, zoom: 1 },
-            minimap: true,
-        },
+        schemaVersion: 2,
+        placement: { nodes: {} },
+        viewport: { x: Number.NaN, y: 0, zoom: 1 },
+        minimap: true,
     });
     assert.strictEqual(
-        store.load('file:///normalize.sv', 'module:normalize:0'),
+        store.load(graph.fileUri, graph.moduleKey, graph),
         undefined
     );
 }
@@ -427,31 +568,36 @@ async function testProtocolSpecialNodeRoundTrip(): Promise<void> {
 
     const state = createMemoryMemento();
     const store = new SchematicLayoutStore(state);
-    await store.save('file:///special.sv', command.moduleKey, command.layout);
+    const graph: SchematicGraph = {
+        ...createGraph(),
+        fileUri: 'file:///special.sv',
+        moduleKey: command.moduleKey,
+        nodes: [node('__proto__', 'opaque')],
+        networks: [],
+    };
+    await store.save(graph.fileUri, command.moduleKey, graph, command.layout);
 
-    const persisted = state.get<{ layout: SchematicLayout }>(state.keys()[0])!;
-    assert.strictEqual(Object.getPrototypeOf(persisted.layout.nodes), Object.prototype);
+    const persisted = state.get<{
+        placement: { nodes: Record<string, unknown> };
+    }>(state.keys()[0])!;
+    assert.strictEqual(Object.getPrototypeOf(persisted.placement.nodes), Object.prototype);
     assert.strictEqual(
-        Object.prototype.propertyIsEnumerable.call(persisted.layout.nodes, '__proto__'),
+        Object.prototype.propertyIsEnumerable.call(persisted.placement.nodes, '__proto__'),
         true
     );
-    assert.deepStrictEqual(persisted.layout.nodes['__proto__'], {
-        x: 17,
-        y: 23,
-        fixed: true,
-    });
+    assert.strictEqual(
+        (persisted.placement.nodes['__proto__'] as { fixed: boolean }).fixed,
+        true
+    );
 
-    const loaded = store.load('file:///special.sv', command.moduleKey)!;
+    const loaded = store.load(graph.fileUri, command.moduleKey, graph)!;
     assert.strictEqual(Object.getPrototypeOf(loaded.nodes), Object.prototype);
     assert.strictEqual(
         Object.prototype.propertyIsEnumerable.call(loaded.nodes, '__proto__'),
         true
     );
-    assert.deepStrictEqual(loaded.nodes['__proto__'], {
-        x: 17,
-        y: 23,
-        fixed: true,
-    });
+    assert.strictEqual(loaded.nodes['__proto__'].fixed, true);
+    assert.strictEqual(loaded.nodes['__proto__'].y, 23);
     assert.strictEqual(({} as { x?: number }).x, undefined);
 }
 
@@ -490,20 +636,34 @@ async function testStaleObjectCleanupAndClearFixed(): Promise<void> {
 
     const state = createMemoryMemento();
     const store = new SchematicLayoutStore(state);
-    await store.save(graph.fileUri, graph.moduleKey, staleLayout);
-    const cleared = await store.clearFixed(graph.fileUri, graph.moduleKey);
+    await store.save(graph.fileUri, graph.moduleKey, graph, staleLayout);
+    const cleared = await store.clearFixed(graph.fileUri, graph.moduleKey, graph);
     assert.ok(cleared);
     assert.ok(Object.values(cleared.nodes).every(layout => !layout.fixed));
     assert.ok(Object.values(
-        store.load(graph.fileUri, graph.moduleKey)!.nodes
+        store.load(graph.fileUri, graph.moduleKey, graph)!.nodes
     ).every(layout => !layout.fixed));
+    const storedX = store.load(
+        graph.fileUri,
+        graph.moduleKey,
+        graph
+    )!.nodes['instance:u_child'].x;
     cleared.nodes['instance:u_child'].x = -100;
     assert.strictEqual(
-        store.load(graph.fileUri, graph.moduleKey)?.nodes['instance:u_child'].x,
-        300
+        store.load(graph.fileUri, graph.moduleKey, graph)?.nodes['instance:u_child'].x,
+        storedX
     );
+    const missingGraph = {
+        ...graph,
+        fileUri: 'file:///missing.sv',
+        moduleKey: 'module:missing:0',
+    };
     assert.strictEqual(
-        await store.clearFixed('file:///missing.sv', 'module:missing:0'),
+        await store.clearFixed(
+            missingGraph.fileUri,
+            missingGraph.moduleKey,
+            missingGraph
+        ),
         undefined
     );
 }
@@ -560,11 +720,18 @@ async function testClearFixedWaitsForPriorSave(): Promise<void> {
     const store = new SchematicLayoutStore(state);
     const uri = 'file:///queued.sv';
     const moduleKey = 'module:queued:0';
-    const layout = defaultLayout();
+    const graph: SchematicGraph = {
+        ...createGraph(),
+        fileUri: uri,
+        moduleKey,
+        nodes: [node('queued', 'opaque')],
+        networks: [],
+    };
+    const layout = autoLayout(graph);
     layout.nodes.queued = { x: 10, y: 20, fixed: true };
 
-    const save = store.save(uri, moduleKey, layout);
-    const clear = store.clearFixed(uri, moduleKey);
+    const save = store.save(uri, moduleKey, graph, layout);
+    const clear = store.clearFixed(uri, moduleKey, graph);
     await Promise.resolve();
     assert.strictEqual(state.pendingCount(), 1);
 
@@ -574,11 +741,10 @@ async function testClearFixedWaitsForPriorSave(): Promise<void> {
     assert.strictEqual(state.pendingCount(), 1);
 
     state.resolveNext();
-    assert.deepStrictEqual(await clear, {
-        ...layout,
-        nodes: { queued: { x: 10, y: 20, fixed: false } },
-    });
-    assert.strictEqual(store.load(uri, moduleKey)?.nodes.queued.fixed, false);
+    const cleared = await clear;
+    assert.ok(cleared);
+    assert.strictEqual(cleared.nodes.queued.fixed, false);
+    assert.strictEqual(store.load(uri, moduleKey, graph)?.nodes.queued.fixed, false);
 }
 
 async function testDeterministicAutoLayoutAndColumns(): Promise<void> {
@@ -986,8 +1152,11 @@ async function testDeterministicFeedbackRoutes(): Promise<void> {
 
 async function main(): Promise<void> {
     await testRoundTripAndRematch();
+    await testSemanticStorageEnvelopeRoundTrip();
+    await testLegacyMigrationUsesAutomaticColumnsAndYOrder();
     await testVersionValidationAndKeyIsolation();
     await testLoadDropsOnlyMalformedLegacyNodeEntries();
+    testHostileStoredPlacementIsRejected();
     await testNormalizationAndNoEdgePersistence();
     await testProtocolSpecialNodeRoundTrip();
     await testStaleObjectCleanupAndClearFixed();

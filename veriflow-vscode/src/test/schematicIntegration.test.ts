@@ -192,10 +192,19 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(restoredFirst?.type === 'graph');
     assert.deepStrictEqual(restoredFirst.layout.viewport, firstLayout.viewport);
     assert.strictEqual(restoredFirst.layout.minimap, firstLayout.minimap);
-    assert.deepStrictEqual(
-        restoredFirst.layout.nodes[`node:${firstKey}`],
-        firstLayout.nodes[`node:${firstKey}`]
-    );
+    assert.deepStrictEqual(restoredFirst.layout.nodes[`node:${firstKey}`], {
+        ...firstLayout.nodes[`node:${firstKey}`],
+        x: firstGraph.layout.nodes[`node:${firstKey}`].x,
+    });
+    for (const side of ['input', 'output'] as const) {
+        const id = `port:${side}:${firstKey}`;
+        assert.strictEqual(
+            restoredFirst.layout.nodes[id].x,
+            firstGraph.layout.nodes[id].x,
+            `${side} boundary must remain on its automatic side`
+        );
+        assert.strictEqual(restoredFirst.layout.nodes[id].y, firstLayout.nodes[id].y);
+    }
     assert.strictEqual(
         restoredFirst.layout.selectedObjectId,
         firstLayout.selectedObjectId
@@ -208,10 +217,19 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(restoredSecond?.type === 'graph');
     assert.deepStrictEqual(restoredSecond.layout.viewport, secondLayout.viewport);
     assert.strictEqual(restoredSecond.layout.minimap, secondLayout.minimap);
-    assert.deepStrictEqual(
-        restoredSecond.layout.nodes[`node:${secondKey}`],
-        secondLayout.nodes[`node:${secondKey}`]
-    );
+    assert.deepStrictEqual(restoredSecond.layout.nodes[`node:${secondKey}`], {
+        ...secondLayout.nodes[`node:${secondKey}`],
+        x: secondGraph.layout.nodes[`node:${secondKey}`].x,
+    });
+    for (const side of ['input', 'output'] as const) {
+        const id = `port:${side}:${secondKey}`;
+        assert.strictEqual(
+            restoredSecond.layout.nodes[id].x,
+            secondGraph.layout.nodes[id].x,
+            `${side} boundary must remain on its automatic side`
+        );
+        assert.strictEqual(restoredSecond.layout.nodes[id].y, secondLayout.nodes[id].y);
+    }
     assert.strictEqual('node:removed' in restoredSecond.layout.nodes, false);
     assert.strictEqual(
         restoredSecond.layout.selectedObjectId,

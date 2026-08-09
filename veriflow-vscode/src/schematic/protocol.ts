@@ -10,6 +10,8 @@ const MAX_COMPOSITE_PARTS = 5_000;
 export type WebviewCommand =
     | { type: 'ready' }
     | { type: 'selectModule'; moduleKey: string }
+    // The Task 5 bridge keeps the webview wire payload absolute. The provider
+    // converts it to semantic placement before schema-v2 persistence.
     | { type: 'saveLayout'; moduleKey: string; layout: SchematicLayout }
     | { type: 'revealSource'; span: SourceSpan }
     | { type: 'openDefinition'; definitionKey: string }
@@ -76,7 +78,7 @@ function defineOwnNode(
     });
 }
 
-function normalizeLayout(value: unknown): SchematicLayout | undefined {
+function normalizeAbsoluteLayout(value: unknown): SchematicLayout | undefined {
     if (!isRecord(value)) {
         return undefined;
     }
@@ -219,7 +221,7 @@ export function parseWebviewCommand(value: unknown): WebviewCommand | undefined 
                 if (!nonEmptyString(moduleKey)) {
                     return undefined;
                 }
-                const layout = normalizeLayout(ownValue(value, 'layout'));
+                const layout = normalizeAbsoluteLayout(ownValue(value, 'layout'));
                 return layout ? { type: 'saveLayout', moduleKey, layout } : undefined;
             }
             case 'revealSource': {

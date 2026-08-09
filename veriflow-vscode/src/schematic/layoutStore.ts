@@ -6,12 +6,19 @@ import {
     type NodeLabel,
 } from '@dagrejs/dagre';
 import {
+    assignColumns,
+    createPlacement,
     measureSchematicNodeSize,
+    mergePlacement,
+    migrateLegacyPlacement,
+    moveNodeToColumn,
     pinKey,
     resolvePinSides,
     SCHEMATIC_NODE_LAYOUT,
+    type ColumnAssignment,
     type PinKey,
     type PinSide,
+    type SchematicPlacement,
 } from '@veriflow/schematic-core';
 
 import type { GraphNode, SchematicGraph, SchematicNetwork } from './graphModel';
@@ -56,15 +63,19 @@ interface MementoLike {
     update(key: string, value: unknown): PromiseLike<void>;
 }
 
-type StoredLayoutEnvelope = {
-    schemaVersion: 1;
-    layout: SchematicLayout;
+type StoredLayoutEnvelopeV2 = {
+    schemaVersion: 2;
+    placement: SchematicPlacement;
+    viewport: SchematicLayout['viewport'];
+    minimap: boolean;
+    selectedObjectId?: string;
 };
 
 type BoundarySide = 'left' | 'right';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const STORAGE_PREFIX = 'veriflow.schematicLayout:';
+const MAX_LAYOUT_NODES = 50_000;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const RANK_SEPARATION = 48;
@@ -133,6 +144,105 @@ function normalizeLayout(value: unknown): SchematicLayout | undefined {
     return normalized;
 }
 
+function normalizePlacement(value: unknown): SchematicPlacement | undefined {
+    if (!isRecord(value) || !isRecord(value.nodes)) return undefined;
+    const nodes: SchematicPlacement['nodes'] = {};
+    let nodeCount = 0;
+    for (const [id, candidate] of Object.entries(value.nodes)) {
+        nodeCount += 1;
+        if (nodeCount > MAX_LAYOUT_NODES) return undefined;
+        if (!isRecord(candidate)
+            || !finiteNumber(candidate.column)
+            || !finiteNumber(candidate.order)
+            || !finiteNumber(candidate.yOffset)
+            || typeof candidate.fixed !== 'boolean') {
+            continue;
+        }
+        Object.defineProperty(nodes, id, {
+            value: {
+                column: Math.trunc(candidate.column),
+                order: Math.trunc(candidate.order),
+                yOffset: candidate.yOffset,
+                fixed: candidate.fixed,
+            },
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return { nodes };
+}
+
+function presentationFrom(value: unknown): Omit<StoredLayoutEnvelopeV2,
+    'schemaVersion' | 'placement'> | undefined {
+    if (!isRecord(value)
+        || !isRecord(value.viewport)
+        || !finiteNumber(value.viewport.x)
+        || !finiteNumber(value.viewport.y)
+        || !finiteNumber(value.viewport.zoom)
+        || typeof value.minimap !== 'boolean'
+        || (value.selectedObjectId !== undefined
+            && typeof value.selectedObjectId !== 'string')) {
+        return undefined;
+    }
+    return {
+        viewport: {
+            x: value.viewport.x,
+            y: value.viewport.y,
+            zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value.viewport.zoom)),
+        },
+        minimap: value.minimap,
+        ...(value.selectedObjectId === undefined
+            ? {}
+            : { selectedObjectId: value.selectedObjectId }),
+    };
+}
+
+function normalizeStoredV2(value: unknown): StoredLayoutEnvelopeV2 | undefined {
+    if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION) return undefined;
+    const placement = normalizePlacement(value.placement);
+    const presentation = presentationFrom(value);
+    return placement && presentation
+        ? { schemaVersion: SCHEMA_VERSION, placement, ...presentation }
+        : undefined;
+}
+
+function migrateStoredV1(
+    graph: SchematicGraph,
+    value: unknown
+): StoredLayoutEnvelopeV2 | undefined {
+    if (!isRecord(value) || value.schemaVersion !== 1
+        || !Object.prototype.hasOwnProperty.call(value, 'layout')) {
+        return undefined;
+    }
+    const legacy = normalizeLayout(value.layout);
+    if (!legacy) return undefined;
+    const assignment = assignColumns(graph);
+    return {
+        schemaVersion: SCHEMA_VERSION,
+        placement: migrateLegacyPlacement(graph, assignment, legacy.nodes),
+        viewport: { ...legacy.viewport },
+        minimap: legacy.minimap,
+        ...(legacy.selectedObjectId === undefined
+            ? {}
+            : { selectedObjectId: legacy.selectedObjectId }),
+    };
+}
+
+function readStoredLayout(
+    graph: SchematicGraph,
+    value: unknown
+): { stored: StoredLayoutEnvelopeV2; migratedFromV1: boolean } | undefined {
+    try {
+        const current = normalizeStoredV2(value);
+        if (current) return { stored: current, migratedFromV1: false };
+        const migrated = migrateStoredV1(graph, value);
+        return migrated ? { stored: migrated, migratedFromV1: true } : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 function defaultLayout(): SchematicLayout {
     return {
         nodes: {},
@@ -160,21 +270,28 @@ export class SchematicLayoutStore {
         return result;
     }
 
-    load(uri: string, moduleKey: string): SchematicLayout | undefined {
+    load(
+        uri: string,
+        moduleKey: string,
+        graph: SchematicGraph
+    ): SchematicLayout | undefined {
         const persisted = this.state.get<unknown>(storageKey(uri, moduleKey));
-        if (!isRecord(persisted)
-            || persisted.schemaVersion !== SCHEMA_VERSION
-            || !Object.prototype.hasOwnProperty.call(persisted, 'layout')) {
-            return undefined;
-        }
-        return normalizeLayout(persisted.layout);
+        const read = readStoredLayout(graph, persisted);
+        return read
+            ? materializeStoredLayout(graph, read.stored, read.migratedFromV1)
+            : undefined;
     }
 
-    save(uri: string, moduleKey: string, layout: SchematicLayout): Promise<void> {
+    save(
+        uri: string,
+        moduleKey: string,
+        graph: SchematicGraph,
+        layout: SchematicLayout
+    ): Promise<void> {
         const normalized = normalizeLayout(layout);
         const key = storageKey(uri, moduleKey);
-        const envelope: StoredLayoutEnvelope | undefined = normalized
-            ? { schemaVersion: SCHEMA_VERSION, layout: normalized }
+        const envelope: StoredLayoutEnvelopeV2 | undefined = normalized
+            ? storedLayoutFromAbsolute(graph, normalized)
             : undefined;
         return this.enqueue(async () => {
             await this.state.update(key, envelope);
@@ -183,37 +300,24 @@ export class SchematicLayoutStore {
 
     async clearFixed(
         uri: string,
-        moduleKey: string
+        moduleKey: string,
+        graph: SchematicGraph
     ): Promise<SchematicLayout | undefined> {
         return this.enqueue(async () => {
-            const current = this.load(uri, moduleKey);
-            if (!current) {
-                return undefined;
-            }
-            const cleared: SchematicLayout = {
-                ...current,
-                nodes: Object.fromEntries(
-                    Object.entries(current.nodes).map(([id, node]) => [
-                        id,
-                        { ...node, fixed: false },
-                    ])
-                ),
-            };
-            const envelope: StoredLayoutEnvelope = {
+            const current = this.state.get<unknown>(storageKey(uri, moduleKey));
+            const read = readStoredLayout(graph, current);
+            if (!read) return undefined;
+            const envelope: StoredLayoutEnvelopeV2 = {
                 schemaVersion: SCHEMA_VERSION,
-                layout: {
-                    ...cleared,
-                    nodes: Object.fromEntries(
-                        Object.entries(cleared.nodes).map(([id, node]) => [
-                            id,
-                            { ...node },
-                        ])
-                    ),
-                    viewport: { ...cleared.viewport },
-                },
+                placement: createPlacement(graph, assignColumns(graph)),
+                viewport: { ...read.stored.viewport },
+                minimap: read.stored.minimap,
+                ...(read.stored.selectedObjectId === undefined
+                    ? {}
+                    : { selectedObjectId: read.stored.selectedObjectId }),
             };
             await this.state.update(storageKey(uri, moduleKey), envelope);
-            return cleared;
+            return materializeStoredLayout(graph, envelope);
         });
     }
 }
@@ -456,6 +560,179 @@ function layoutWithAnchors(
         viewport: { ...normalizedExisting.viewport },
         minimap: normalizedExisting.minimap,
         ...(selectedObjectId === undefined ? {} : { selectedObjectId }),
+    };
+}
+
+function automaticColumnCenters(
+    graph: SchematicGraph,
+    assignment: ColumnAssignment,
+    nodeSizes: ReadonlyMap<string, SchematicNodeSize>
+): { positions: Record<string, NodeLayout>; centers: ReadonlyMap<number, number> } {
+    const positions = dagrePositions(graph, nodeSizes);
+    applyBoundaryColumns(graph, positions, new Set(), nodeSizes);
+    const centers = new Map<number, number>();
+    assignment.columns.forEach((nodeIds, column) => {
+        const xs = nodeIds.flatMap(id => positions[id] ? [positions[id].x] : []);
+        if (xs.length > 0) {
+            centers.set(column, xs.reduce((sum, x) => sum + x, 0) / xs.length);
+        }
+    });
+    return { positions, centers };
+}
+
+function layoutFromPlacement(
+    graph: SchematicGraph,
+    placement: SchematicPlacement,
+    presentation: Pick<SchematicLayout, 'viewport' | 'minimap' | 'selectedObjectId'>,
+    preservePlacement = false
+): SchematicLayout {
+    const assignment = assignColumns(graph);
+    const normalized = preservePlacement
+        ? placement
+        : mergePlacement(graph, assignment, placement);
+    const nodeSizes = resolvedNodeSizes(graph);
+    const automatic = automaticColumnCenters(graph, assignment, nodeSizes);
+    const sourceIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
+    const nodesByColumn = new Map<number, GraphNode[]>();
+    for (const node of graph.nodes) {
+        const column = normalized.nodes[node.id].column;
+        const nodes = nodesByColumn.get(column) ?? [];
+        nodes.push(node);
+        nodesByColumn.set(column, nodes);
+    }
+
+    const positions: Record<string, NodeLayout> = {};
+    for (const [column, nodes] of nodesByColumn) {
+        nodes.sort((left, right) =>
+            normalized.nodes[left.id].order - normalized.nodes[right.id].order
+            || sourceIndex.get(left.id)! - sourceIndex.get(right.id)!
+        );
+        const totalHeight = nodes.reduce((sum, node) =>
+            sum + nodeSizes.get(node.id)!.height, 0)
+            + Math.max(0, nodes.length - 1) * NODE_SEPARATION;
+        let cursor = -totalHeight / 2;
+        for (const node of nodes) {
+            const size = nodeSizes.get(node.id)!;
+            const semantic = normalized.nodes[node.id];
+            const automaticPosition = automatic.positions[node.id];
+            Object.defineProperty(positions, node.id, {
+                value: {
+                    x: automatic.centers.get(column) ?? automaticPosition.x,
+                    y: cursor + size.height / 2 + semantic.yOffset,
+                    fixed: semantic.fixed,
+                },
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
+            cursor += size.height + NODE_SEPARATION;
+        }
+    }
+
+    const selectedObjectId = cleanSelection(graph, presentation.selectedObjectId);
+    return {
+        nodes: positions,
+        viewport: { ...presentation.viewport },
+        minimap: presentation.minimap,
+        ...(selectedObjectId === undefined ? {} : { selectedObjectId }),
+    };
+}
+
+function materializeStoredLayout(
+    graph: SchematicGraph,
+    stored: StoredLayoutEnvelopeV2,
+    migratedFromV1 = false
+): SchematicLayout {
+    return layoutFromPlacement(graph, stored.placement, stored, migratedFromV1);
+}
+
+function nearestColumn(
+    x: number,
+    candidates: readonly number[],
+    centers: ReadonlyMap<number, number>,
+    fallback: number
+): number {
+    return candidates.reduce((selected, candidate) => {
+        const selectedDistance = Math.abs(x - (centers.get(selected) ?? x));
+        const candidateDistance = Math.abs(x - (centers.get(candidate) ?? x));
+        return candidateDistance < selectedDistance ? candidate : selected;
+    }, candidates[0] ?? fallback);
+}
+
+function storedLayoutFromAbsolute(
+    graph: SchematicGraph,
+    layout: SchematicLayout
+): StoredLayoutEnvelopeV2 {
+    const assignment = assignColumns(graph);
+    let placement = createPlacement(graph, assignment);
+    const baseline = layoutFromPlacement(graph, placement, layout);
+    const nodeSizes = resolvedNodeSizes(graph);
+    const { centers } = automaticColumnCenters(graph, assignment, nodeSizes);
+    const internalColumns = [...new Set(graph.nodes
+        .filter(node => node.kind !== 'port')
+        .map(node => assignment.nodeColumn.get(node.id) ?? 0))]
+        .sort((left, right) => left - right);
+    const targetColumns = new Map<string, number>();
+
+    for (const node of graph.nodes) {
+        const absolute = layout.nodes[node.id];
+        const automaticColumn = assignment.nodeColumn.get(node.id) ?? 0;
+        const column = !absolute?.fixed || node.kind === 'port'
+            ? automaticColumn
+            : nearestColumn(absolute.x, internalColumns, centers, automaticColumn);
+        targetColumns.set(node.id, column);
+    }
+
+    const sourceIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
+    const byColumn = new Map<number, GraphNode[]>();
+    for (const node of graph.nodes) {
+        const column = targetColumns.get(node.id)!;
+        const nodes = byColumn.get(column) ?? [];
+        nodes.push(node);
+        byColumn.set(column, nodes);
+    }
+    for (const [column, nodes] of byColumn) {
+        nodes.sort((left, right) => {
+            const leftLayout = layout.nodes[left.id]?.fixed
+                ? layout.nodes[left.id]
+                : baseline.nodes[left.id];
+            const rightLayout = layout.nodes[right.id]?.fixed
+                ? layout.nodes[right.id]
+                : baseline.nodes[right.id];
+            return leftLayout.y - rightLayout.y
+                || sourceIndex.get(left.id)! - sourceIndex.get(right.id)!;
+        });
+        nodes.forEach((node, order) => {
+            const absolute = layout.nodes[node.id];
+            if (!absolute?.fixed) return;
+            placement = moveNodeToColumn(placement, node.id, column, order, 0);
+        });
+    }
+    placement = mergePlacement(graph, assignment, placement);
+
+    const positioned = layoutFromPlacement(graph, placement, layout);
+    for (const node of graph.nodes) {
+        const absolute = layout.nodes[node.id];
+        if (!absolute?.fixed) continue;
+        const semantic = placement.nodes[node.id];
+        placement = moveNodeToColumn(
+            placement,
+            node.id,
+            semantic.column,
+            semantic.order,
+            absolute.y - positioned.nodes[node.id].y
+        );
+    }
+    placement = mergePlacement(graph, assignment, placement);
+
+    return {
+        schemaVersion: SCHEMA_VERSION,
+        placement,
+        viewport: { ...layout.viewport },
+        minimap: layout.minimap,
+        ...(layout.selectedObjectId === undefined
+            ? {}
+            : { selectedObjectId: layout.selectedObjectId }),
     };
 }
 

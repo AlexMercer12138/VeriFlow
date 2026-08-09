@@ -7,6 +7,7 @@ import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { buildSchematicGraph, type InstanceDefinitionBinding } from './graphBuilder';
+import type { SchematicGraph } from './graphModel';
 import {
     mergeLayout,
     relayoutAll,
@@ -211,6 +212,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let navigationEffectQueue: Promise<void> = Promise.resolve();
         let activePendingLease: SchematicPendingNavigationLease | undefined;
         const layoutIntents = new Map<string, SchematicLayout>();
+        const graphsByModule = new Map<string, SchematicGraph>();
 
         const clearPendingSelectionLease = (): void => {
             if (!pendingSelectionLease) return;
@@ -339,8 +341,9 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 ),
                 moduleKey: selected.key,
             };
+            graphsByModule.set(selected.key, graph);
             const intendedLayout = layoutIntents.get(selected.key)
-                ?? this.layoutStore.load(uri, selected.key);
+                ?? this.layoutStore.load(uri, selected.key, graph);
             const layout = mergeLayout(
                 graph,
                 intendedLayout
@@ -542,6 +545,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         )) {
                             return;
                         }
+                        const commandGraph = graphsByModule.get(command.moduleKey);
+                        if (!commandGraph) return;
                         layoutIntents.set(command.moduleKey, command.layout);
                         if (command.moduleKey === state.selectedModuleKey) {
                             state.layout = command.layout;
@@ -549,7 +554,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                                 publishGeneration
                             );
                         }
-                        await this.layoutStore.save(uri, command.moduleKey, command.layout);
+                        await this.layoutStore.save(
+                            uri,
+                            command.moduleKey,
+                            commandGraph,
+                            command.layout
+                        );
                         if (layoutIntents.get(command.moduleKey) === command.layout) {
                             layoutIntents.delete(command.moduleKey);
                         }
@@ -567,7 +577,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         currentPublishSnapshot = capturePublishSnapshot(
                             invocationGeneration
                         );
-                        await this.layoutStore.save(uri, command.moduleKey, layout);
+                        await this.layoutStore.save(uri, command.moduleKey, graph, layout);
                         if (layoutIntents.get(command.moduleKey) === layout) {
                             layoutIntents.delete(command.moduleKey);
                         }
