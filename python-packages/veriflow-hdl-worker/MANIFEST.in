@@ -1,4 +1,0 @@
-include src/veriflow_hdl_worker/bin/parser-worker.exe
-include src/veriflow_hdl_worker/bin/web-tree-sitter.wasm
-include src/veriflow_hdl_worker/bin/tree-sitter-systemverilog.wasm
-include src/veriflow_hdl_worker/bin/manifest.json
