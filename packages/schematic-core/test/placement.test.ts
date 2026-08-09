@@ -61,6 +61,7 @@ const first = node('instance:first', 'instance');
 const second = node('instance:second', 'instance');
 const third = node('instance:third', 'instance');
 const output = node('port:output', 'port', 'load');
+const inout = node('port:inout', 'port', 'bidirectional');
 
 test('creates automatic placement for every graph node in source order', () => {
     const model = graph([input, first, second, output]);
@@ -146,23 +147,23 @@ test('normalizes duplicate orders independently within each column', () => {
 });
 
 test('clamps internal columns and keeps boundary ports on their assigned side', () => {
-    const model = graph([input, first, second, output]);
+    const model = graph([input, first, second, output, inout]);
     const columns = assignment([
         [input.id],
         [first.id],
         [second.id],
-        [output.id],
+        [output.id, inout.id],
     ]);
     let moved = createPlacement(model, columns);
-    moved = moveNodeToColumn(moved, input.id, 2, 0, 5);
-    moved = moveNodeToColumn(moved, first.id, 99, 0, 6);
-    moved = moveNodeToColumn(moved, output.id, 1, 0, 7);
+    moved = moveNodeToColumn(model, columns, moved, input.id, 2, 0, 5);
+    moved = moveNodeToColumn(model, columns, moved, first.id, 99, 0, 6);
+    moved = moveNodeToColumn(model, columns, moved, output.id, 1, 0, 7);
+    moved = moveNodeToColumn(model, columns, moved, inout.id, 0, 0, 8);
 
-    const normalized = mergePlacement(model, columns, moved);
-
-    assert.equal(normalized.nodes[input.id].column, 0);
-    assert.equal(normalized.nodes[first.id].column, 2);
-    assert.equal(normalized.nodes[output.id].column, 3);
+    assert.equal(moved.nodes[input.id].column, 0);
+    assert.equal(moved.nodes[first.id].column, 2);
+    assert.equal(moved.nodes[output.id].column, 3);
+    assert.equal(moved.nodes[inout.id].column, 3);
 });
 
 test('snaps persisted internal placement away from unoccupied columns', () => {
@@ -180,7 +181,21 @@ test('snaps persisted internal placement away from unoccupied columns', () => {
         },
     };
 
-    assert.equal(mergePlacement(model, columns, persisted).nodes[first.id].column, 1);
+    const moved = moveNodeToColumn(model, columns, persisted, first.id, 2, 0, 0);
+
+    assert.equal(moved.nodes[first.id].column, 1);
+});
+
+test('allows boundary column numbers when they are actual internal columns', () => {
+    const model = graph([first, second]);
+    const columns = assignment([[first.id], [], [second.id]]);
+    let moved = createPlacement(model, columns);
+
+    moved = moveNodeToColumn(model, columns, moved, first.id, 99, 0, 0);
+    moved = moveNodeToColumn(model, columns, moved, second.id, -99, 0, 0);
+
+    assert.equal(moved.nodes[first.id].column, 2);
+    assert.equal(moved.nodes[second.id].column, 0);
 });
 
 test('replaces non-finite offsets with a deterministic safe default', () => {
@@ -199,7 +214,15 @@ test('replaces non-finite offsets with a deterministic safe default', () => {
 
     assert.equal(mergePlacement(model, columns, persisted).nodes[first.id].yOffset, 0);
     assert.equal(
-        moveNodeToColumn(createPlacement(model, columns), first.id, 0, 0, Number.NaN)
+        moveNodeToColumn(
+            model,
+            columns,
+            createPlacement(model, columns),
+            first.id,
+            0,
+            0,
+            Number.NaN
+        )
             .nodes[first.id].yOffset,
         0
     );
@@ -209,6 +232,8 @@ test('relayout is represented by recreating placement without manual intent', ()
     const model = graph([first, second]);
     const columns = assignment([[first.id, second.id]]);
     const manual = moveNodeToColumn(
+        model,
+        columns,
         createPlacement(model, columns),
         second.id,
         0,

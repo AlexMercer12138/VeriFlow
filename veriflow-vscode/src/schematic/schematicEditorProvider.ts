@@ -54,6 +54,7 @@ type PanelState = {
     modules: SelectableModule[];
     selectedModuleKey?: string;
     graph?: ReturnType<typeof buildSchematicGraph>;
+    graphRevision?: string;
     layout?: SchematicLayout;
     errorMessage?: string;
     index?: WorkspaceHdlIndex;
@@ -64,9 +65,12 @@ type SchematicPublishSnapshot = {
     generation: number;
     initialize: Extract<HostEvent, { type: 'initialize' }>;
     graph?: ReturnType<typeof buildSchematicGraph>;
+    graphRevision?: string;
     layout?: SchematicLayout;
     diagnostics: Extract<HostEvent, { type: 'diagnostics' }>;
 };
+
+const MAX_GRAPH_SNAPSHOTS = 32;
 
 function instanceBindings(
     document: HdlDocument,
@@ -212,7 +216,29 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
         let navigationEffectQueue: Promise<void> = Promise.resolve();
         let activePendingLease: SchematicPendingNavigationLease | undefined;
         const layoutIntents = new Map<string, SchematicLayout>();
-        const graphsByModule = new Map<string, SchematicGraph>();
+        const graphSnapshots = new Map<string, {
+            sequence: number;
+            moduleKey: string;
+            graph: SchematicGraph;
+        }>();
+        const latestSaveSequenceByModule = new Map<string, number>();
+        const revisionNamespace = crypto.randomBytes(12).toString('hex');
+        let revisionSequence = 0;
+        const rememberGraphSnapshot = (graph: SchematicGraph): string => {
+            revisionSequence += 1;
+            const revision = `${revisionNamespace}:${revisionSequence.toString(36)}`;
+            graphSnapshots.set(revision, {
+                sequence: revisionSequence,
+                moduleKey: graph.moduleKey,
+                graph,
+            });
+            while (graphSnapshots.size > MAX_GRAPH_SNAPSHOTS) {
+                const oldest = graphSnapshots.keys().next().value as string | undefined;
+                if (oldest === undefined) break;
+                graphSnapshots.delete(oldest);
+            }
+            return revision;
+        };
 
         const clearPendingSelectionLease = (): void => {
             if (!pendingSelectionLease) return;
@@ -291,8 +317,12 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 })),
                 selectedModuleKey: state.selectedModuleKey ?? '',
             },
-            ...(state.graph && state.layout
-                ? { graph: state.graph, layout: state.layout }
+            ...(state.graph && state.graphRevision && state.layout
+                ? {
+                    graph: state.graph,
+                    graphRevision: state.graphRevision,
+                    layout: state.layout,
+                }
                 : {}),
             diagnostics: {
                 type: 'diagnostics',
@@ -309,6 +339,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             if (!selected || !state.parsedDocument || state.disposed) {
                 graphBuilds.invalidate();
                 state.graph = undefined;
+                state.graphRevision = undefined;
                 state.layout = undefined;
                 state.diagnosticCounts = await this.diagnosticPublisher.publish(
                     diagnosticOwner,
@@ -341,7 +372,6 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                 ),
                 moduleKey: selected.key,
             };
-            graphsByModule.set(selected.key, graph);
             const intendedLayout = layoutIntents.get(selected.key)
                 ?? this.layoutStore.load(uri, selected.key, graph);
             const layout = mergeLayout(
@@ -356,6 +386,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             );
             if (!isCurrentPublish(generation)) return undefined;
             state.graph = graph;
+            state.graphRevision = rememberGraphSnapshot(graph);
             state.layout = layout;
             const snapshot = capturePublishSnapshot(generation);
             currentPublishSnapshot = snapshot;
@@ -367,9 +398,10 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             if (!isCurrentPublish(snapshot.generation)) return;
             await panel.webview.postMessage(snapshot.initialize);
             if (!isCurrentPublish(snapshot.generation)) return;
-            if (snapshot.graph && snapshot.layout) {
+            if (snapshot.graph && snapshot.graphRevision && snapshot.layout) {
                 await panel.webview.postMessage({
                     type: 'graph',
+                    revision: snapshot.graphRevision,
                     graph: snapshot.graph,
                     layout: snapshot.layout,
                 });
@@ -545,10 +577,23 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         )) {
                             return;
                         }
-                        const commandGraph = graphsByModule.get(command.moduleKey);
-                        if (!commandGraph) return;
-                        layoutIntents.set(command.moduleKey, command.layout);
-                        if (command.moduleKey === state.selectedModuleKey) {
+                        const commandSnapshot = graphSnapshots.get(command.revision);
+                        if (!commandSnapshot
+                            || commandSnapshot.moduleKey !== command.moduleKey
+                            || commandSnapshot.sequence < (
+                                latestSaveSequenceByModule.get(command.moduleKey) ?? 0
+                            )) {
+                            return;
+                        }
+                        latestSaveSequenceByModule.set(
+                            command.moduleKey,
+                            commandSnapshot.sequence
+                        );
+                        const isCurrentSnapshot = command.moduleKey
+                            === state.selectedModuleKey
+                            && command.revision === state.graphRevision;
+                        if (isCurrentSnapshot) {
+                            layoutIntents.set(command.moduleKey, command.layout);
                             state.layout = command.layout;
                             currentPublishSnapshot = capturePublishSnapshot(
                                 publishGeneration
@@ -557,10 +602,11 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         await this.layoutStore.save(
                             uri,
                             command.moduleKey,
-                            commandGraph,
+                            commandSnapshot.graph,
                             command.layout
                         );
-                        if (layoutIntents.get(command.moduleKey) === command.layout) {
+                        if (isCurrentSnapshot
+                            && layoutIntents.get(command.moduleKey) === command.layout) {
                             layoutIntents.delete(command.moduleKey);
                         }
                         return;
@@ -582,7 +628,14 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                             layoutIntents.delete(command.moduleKey);
                         }
                         if (!isCurrentPublish(invocationGeneration)) return;
-                        await panel.webview.postMessage({ type: 'graph', graph, layout });
+                        const revision = state.graphRevision;
+                        if (!revision) return;
+                        await panel.webview.postMessage({
+                            type: 'graph',
+                            revision,
+                            graph,
+                            layout,
+                        });
                         if (!isCurrentPublish(invocationGeneration)) return;
                         return;
                     }
@@ -688,6 +741,8 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
             clearPendingSelectionLease();
             invalidateNavigation();
             graphBuilds.invalidate();
+            graphSnapshots.clear();
+            latestSaveSequenceByModule.clear();
             void this.diagnosticPublisher.clear(diagnosticOwner);
             registration?.dispose();
             this.services.releaseIndex?.(indexOwner);

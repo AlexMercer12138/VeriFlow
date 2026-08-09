@@ -628,6 +628,7 @@ graph.use(selection);
 
 let currentGraph: SchematicGraph | undefined;
 let currentLayout: SchematicLayout | undefined;
+let currentRevision = '';
 let selectedModuleKey = '';
 let applyingLayout = false;
 let minimapPlugin: MiniMap | undefined;
@@ -643,11 +644,16 @@ function post(message: WebviewCommand): void {
 
 const layoutSaveScheduler = new DebouncedLayoutSaveScheduler(
     SAVE_DELAY_MS,
-    (moduleKey, layout) => post({ type: 'saveLayout', moduleKey, layout })
+    (moduleKey, revision, layout) => post({
+        type: 'saveLayout',
+        moduleKey,
+        revision,
+        layout,
+    })
 );
 
 function scheduleLayoutSave(): void {
-    if (!currentLayout || !currentGraph || applyingLayout) return;
+    if (!currentLayout || !currentGraph || !currentRevision || applyingLayout) return;
     const moduleKey = currentGraph.moduleKey;
     const layouts = mergeSchematicWebviewLayouts(
         vscode.getState()?.layouts,
@@ -655,7 +661,7 @@ function scheduleLayoutSave(): void {
         currentLayout
     );
     vscode.setState({ layouts });
-    layoutSaveScheduler.schedule(moduleKey, layouts[moduleKey]);
+    layoutSaveScheduler.schedule(moduleKey, currentRevision, layouts[moduleKey]);
 }
 
 function flushLayoutSaves(): void {
@@ -924,6 +930,7 @@ function clearSchematicState(): void {
     applyingLayout = false;
     currentGraph = undefined;
     currentLayout = undefined;
+    currentRevision = '';
     selectedModuleKey = '';
     searchMatches = [];
     searchIndex = -1;
@@ -971,6 +978,7 @@ function handleHostEvent(event: HostEvent): void {
             initialize(event);
             return;
         case 'graph':
+            currentRevision = event.revision;
             renderSchematic(event.graph, event.layout);
             return;
         case 'diagnostics':

@@ -12,7 +12,12 @@ export type WebviewCommand =
     | { type: 'selectModule'; moduleKey: string }
     // The Task 5 bridge keeps the webview wire payload absolute. The provider
     // converts it to semantic placement before schema-v2 persistence.
-    | { type: 'saveLayout'; moduleKey: string; layout: SchematicLayout }
+    | {
+        type: 'saveLayout';
+        moduleKey: string;
+        revision: string;
+        layout: SchematicLayout;
+    }
     | { type: 'revealSource'; span: SourceSpan }
     | { type: 'openDefinition'; definitionKey: string }
     | { type: 'search'; query: string }
@@ -25,7 +30,12 @@ export type HostEvent =
         modules: Array<{ key: string; name: string }>;
         selectedModuleKey: string;
     }
-    | { type: 'graph'; graph: SchematicGraph; layout: SchematicLayout }
+    | {
+        type: 'graph';
+        revision: string;
+        graph: SchematicGraph;
+        layout: SchematicLayout;
+    }
     | { type: 'diagnostics'; errors: number; warnings: number }
     | { type: 'hostError'; message: string };
 
@@ -218,11 +228,14 @@ export function parseWebviewCommand(value: unknown): WebviewCommand | undefined 
             }
             case 'saveLayout': {
                 const moduleKey = ownValue(value, 'moduleKey');
-                if (!nonEmptyString(moduleKey)) {
+                const revision = ownValue(value, 'revision');
+                if (!nonEmptyString(moduleKey) || !nonEmptyString(revision)) {
                     return undefined;
                 }
                 const layout = normalizeAbsoluteLayout(ownValue(value, 'layout'));
-                return layout ? { type: 'saveLayout', moduleKey, layout } : undefined;
+                return layout
+                    ? { type: 'saveLayout', moduleKey, revision, layout }
+                    : undefined;
             }
             case 'revealSource': {
                 const span = normalizeSourceSpan(ownValue(value, 'span'));

@@ -282,21 +282,31 @@ export function mergeSchematicWebviewLayouts(
 export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
     private readonly pending = new Map<string, {
         handle?: Handle;
+        revision: string;
         layout: SchematicLayout;
     }>();
 
     constructor(
         private readonly delayMs: number,
-        private readonly save: (moduleKey: string, layout: SchematicLayout) => void,
+        private readonly save: (
+            moduleKey: string,
+            revision: string,
+            layout: SchematicLayout
+        ) => void,
         private readonly timers: TimerAdapter<Handle> = defaultTimers as unknown as
             TimerAdapter<Handle>
     ) {}
 
-    schedule(moduleKey: string, layout: SchematicLayout): void {
+    schedule(moduleKey: string, revision: string, layout: SchematicLayout): void {
         const previous = this.pending.get(moduleKey);
         if (previous?.handle !== undefined) this.timers.clear(previous.handle);
 
-        const pending: { handle?: Handle; layout: SchematicLayout } = {
+        const pending: {
+            handle?: Handle;
+            revision: string;
+            layout: SchematicLayout;
+        } = {
+            revision,
             layout: cloneSchematicLayout(layout),
         };
         this.pending.set(moduleKey, pending);
@@ -320,11 +330,11 @@ export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
 
     private commit(
         moduleKey: string,
-        pending: { handle?: Handle; layout: SchematicLayout }
+        pending: { handle?: Handle; revision: string; layout: SchematicLayout }
     ): void {
         if (this.pending.get(moduleKey) !== pending) return;
         if (pending.handle !== undefined) this.timers.clear(pending.handle);
         this.pending.delete(moduleKey);
-        this.save(moduleKey, pending.layout);
+        this.save(moduleKey, pending.revision, pending.layout);
     }
 }

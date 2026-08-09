@@ -107,10 +107,18 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
             pending.delete(handle);
         },
     };
-    const saves: Array<{ moduleKey: string; layout: SchematicLayout }> = [];
+    const saves: Array<{
+        moduleKey: string;
+        revision: string;
+        layout: SchematicLayout;
+    }> = [];
     const scheduler = new DebouncedLayoutSaveScheduler(
         250,
-        (moduleKey, savedLayout) => saves.push({ moduleKey, layout: savedLayout }),
+        (moduleKey, revision, savedLayout) => saves.push({
+            moduleKey,
+            revision,
+            layout: savedLayout,
+        }),
         timers
     );
     const runPending = (): void => {
@@ -121,47 +129,51 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
     };
 
     const moduleA = layout(10);
-    scheduler.schedule('module:a', moduleA);
+    scheduler.schedule('module:a', 'revision:a1', moduleA);
     moduleA.nodes.node.x = 999;
-    scheduler.schedule('module:b', layout(30));
+    scheduler.schedule('module:b', 'revision:b1', layout(30));
     assert.strictEqual(pending.size, 2, 'module B must not cancel module A');
 
     runPending();
     assert.deepStrictEqual(saves.map(save => [
         save.moduleKey,
+        save.revision,
         save.layout.nodes.node.x,
     ]), [
-        ['module:a', 10],
-        ['module:b', 30],
+        ['module:a', 'revision:a1', 10],
+        ['module:b', 'revision:b1', 30],
     ]);
 
-    scheduler.schedule('module:a', layout(40));
-    scheduler.schedule('module:a', layout(50));
+    scheduler.schedule('module:a', 'revision:a1', layout(40));
+    scheduler.schedule('module:a', 'revision:a2', layout(50));
     assert.strictEqual(pending.size, 1, 'same-module changes must debounce');
     runPending();
     assert.deepStrictEqual(saves.at(-1), {
         moduleKey: 'module:a',
+        revision: 'revision:a2',
         layout: layout(50),
     });
 
     const flushedA = layout(60);
-    scheduler.schedule('module:a', flushedA);
+    scheduler.schedule('module:a', 'revision:a3', flushedA);
     flushedA.nodes.node.x = 600;
-    scheduler.schedule('module:b', layout(70));
+    scheduler.schedule('module:b', 'revision:b2', layout(70));
     scheduler.flush();
     assert.strictEqual(pending.size, 0);
     assert.deepStrictEqual(saves.slice(-2), [{
         moduleKey: 'module:a',
+        revision: 'revision:a3',
         layout: layout(60),
     }, {
         moduleKey: 'module:b',
+        revision: 'revision:b2',
         layout: layout(70),
     }]);
     const saveCountAfterFlush = saves.length;
     runPending();
     assert.strictEqual(saves.length, saveCountAfterFlush);
 
-    scheduler.schedule('module:a', layout(80));
+    scheduler.schedule('module:a', 'revision:a4', layout(80));
     scheduler.dispose();
     assert.strictEqual(pending.size, 0);
     assert.strictEqual(saves.length, saveCountAfterFlush);

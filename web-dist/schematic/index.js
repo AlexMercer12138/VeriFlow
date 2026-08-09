@@ -489,6 +489,275 @@
     }
   });
 
+  // packages/schematic-core/dist/columns.js
+  var require_columns = __commonJS({
+    "packages/schematic-core/dist/columns.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.assignColumns = assignColumns2;
+      function addDependencyEdge(edgesByPair, source, target, networkId) {
+        const key = `${source.nodeIndex}\0${target.nodeIndex}`;
+        let edge = edgesByPair.get(key);
+        if (!edge) {
+          edge = {
+            from: source.nodeIndex,
+            to: target.nodeIndex,
+            networkIds: /* @__PURE__ */ new Set()
+          };
+          edgesByPair.set(key, edge);
+        }
+        edge.networkIds.add(networkId);
+      }
+      function isInputBoundary(node) {
+        return node.kind === "port" && node.pins[0]?.direction === "driver";
+      }
+      function isRightBoundary(node) {
+        return node.kind === "port" && !isInputBoundary(node);
+      }
+      function compareEndpoints(left4, right4) {
+        return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.endpoint.pinId < right4.endpoint.pinId ? -1 : left4.endpoint.pinId > right4.endpoint.pinId ? 1 : 0) || left4.endpointIndex - right4.endpointIndex;
+      }
+      function orderedEndpoints(endpoints, nodeIndexes, pinIndexes) {
+        const seen = /* @__PURE__ */ new Set();
+        const ordered = [];
+        endpoints.forEach((endpoint, endpointIndex) => {
+          const nodeIndex = nodeIndexes.get(endpoint.nodeId);
+          const pinIndex = pinIndexes.get(`${endpoint.nodeId}\0${endpoint.pinId}`);
+          if (nodeIndex === void 0 || pinIndex === void 0)
+            return;
+          const key = `${nodeIndex}\0${endpoint.pinId}\0${endpoint.role}`;
+          if (seen.has(key))
+            return;
+          seen.add(key);
+          ordered.push({ endpoint, nodeIndex, pinIndex, endpointIndex });
+        });
+        return ordered.sort(compareEndpoints);
+      }
+      function buildDependencyEdges(graph2) {
+        const nodeIndexes = new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
+        const pinIndexes = new Map(graph2.nodes.flatMap((node) => node.pins.map((pin2, index2) => [`${node.id}\0${pin2.id}`, index2])));
+        const placementEdgesByPair = /* @__PURE__ */ new Map();
+        const semanticEdgesByPair = /* @__PURE__ */ new Map();
+        const semanticSelfCycleNetworkIds = /* @__PURE__ */ new Set();
+        for (const network of graph2.networks) {
+          const endpoints = orderedEndpoints(network.endpoints, nodeIndexes, pinIndexes);
+          const explicitSources = endpoints.filter((candidate) => candidate.endpoint.role === "driver");
+          const targets = endpoints.filter((candidate) => candidate.endpoint.role !== "driver");
+          if (explicitSources.length === 0 && endpoints.length > 0) {
+            const source = endpoints.find((candidate) => candidate.endpoint.role === "bidirectional" && !isRightBoundary(graph2.nodes[candidate.nodeIndex])) ?? endpoints.find((candidate) => !isRightBoundary(graph2.nodes[candidate.nodeIndex])) ?? endpoints[0];
+            for (const target of endpoints) {
+              if (target === source || source.nodeIndex === target.nodeIndex) {
+                continue;
+              }
+              addDependencyEdge(placementEdgesByPair, source, target, network.id);
+            }
+            continue;
+          }
+          for (const source of explicitSources) {
+            for (const target of targets) {
+              if (source.nodeIndex === target.nodeIndex) {
+                semanticSelfCycleNetworkIds.add(network.id);
+                continue;
+              }
+              addDependencyEdge(placementEdgesByPair, source, target, network.id);
+              addDependencyEdge(semanticEdgesByPair, source, target, network.id);
+            }
+          }
+        }
+        return {
+          placementEdges: [...placementEdgesByPair.values()],
+          semanticEdges: [...semanticEdgesByPair.values()],
+          semanticSelfCycleNetworkIds
+        };
+      }
+      function stronglyConnectedComponents(nodeCount, edges) {
+        const adjacencySets = Array.from({ length: nodeCount }, () => /* @__PURE__ */ new Set());
+        for (const edge of edges)
+          adjacencySets[edge.from].add(edge.to);
+        const adjacency = adjacencySets.map((targets) => [...targets].sort((left4, right4) => left4 - right4));
+        const visitIndex = new Array(nodeCount).fill(-1);
+        const lowLink = new Array(nodeCount).fill(-1);
+        const onStack = new Array(nodeCount).fill(false);
+        const stack = [];
+        const components = [];
+        let nextVisitIndex = 0;
+        const beginVisit = (frames, nodeIndex, parentIndex) => {
+          visitIndex[nodeIndex] = nextVisitIndex;
+          lowLink[nodeIndex] = nextVisitIndex;
+          nextVisitIndex += 1;
+          stack.push(nodeIndex);
+          onStack[nodeIndex] = true;
+          frames.push({ nodeIndex, parentIndex, nextTargetIndex: 0 });
+        };
+        for (let startIndex = 0; startIndex < nodeCount; startIndex += 1) {
+          if (visitIndex[startIndex] >= 0)
+            continue;
+          const frames = [];
+          beginVisit(frames, startIndex);
+          while (frames.length > 0) {
+            const frame = frames[frames.length - 1];
+            const targets = adjacency[frame.nodeIndex];
+            if (frame.nextTargetIndex < targets.length) {
+              const target = targets[frame.nextTargetIndex];
+              frame.nextTargetIndex += 1;
+              if (visitIndex[target] < 0) {
+                beginVisit(frames, target, frame.nodeIndex);
+              } else if (onStack[target]) {
+                lowLink[frame.nodeIndex] = Math.min(lowLink[frame.nodeIndex], visitIndex[target]);
+              }
+              continue;
+            }
+            frames.pop();
+            if (frame.parentIndex !== void 0) {
+              lowLink[frame.parentIndex] = Math.min(lowLink[frame.parentIndex], lowLink[frame.nodeIndex]);
+            }
+            if (lowLink[frame.nodeIndex] !== visitIndex[frame.nodeIndex]) {
+              continue;
+            }
+            const component = [];
+            while (stack.length > 0) {
+              const member = stack.pop();
+              onStack[member] = false;
+              component.push(member);
+              if (member === frame.nodeIndex)
+                break;
+            }
+            component.sort((left4, right4) => left4 - right4);
+            components.push(component);
+          }
+        }
+        components.sort((left4, right4) => left4[0] - right4[0]);
+        const componentByNode = new Array(nodeCount);
+        components.forEach((component, componentIndex) => {
+          for (const nodeIndex of component)
+            componentByNode[nodeIndex] = componentIndex;
+        });
+        return { components, componentByNode };
+      }
+      function componentPrecedes(left4, right4, components) {
+        return components[left4][0] < components[right4][0];
+      }
+      function siftReadyDown(ready, startIndex, components) {
+        let parent = startIndex;
+        while (true) {
+          const left4 = parent * 2 + 1;
+          if (left4 >= ready.length)
+            return;
+          const right4 = left4 + 1;
+          const child = right4 < ready.length && componentPrecedes(ready[right4], ready[left4], components) ? right4 : left4;
+          if (componentPrecedes(ready[parent], ready[child], components))
+            return;
+          [ready[parent], ready[child]] = [ready[child], ready[parent]];
+          parent = child;
+        }
+      }
+      function pushReady(ready, component, components) {
+        ready.push(component);
+        let child = ready.length - 1;
+        while (child > 0) {
+          const parent = Math.floor((child - 1) / 2);
+          if (componentPrecedes(ready[parent], ready[child], components))
+            return;
+          [ready[parent], ready[child]] = [ready[child], ready[parent]];
+          child = parent;
+        }
+      }
+      function popReady(ready, components) {
+        const first = ready[0];
+        const last = ready.pop();
+        if (ready.length > 0) {
+          ready[0] = last;
+          siftReadyDown(ready, 0, components);
+        }
+        return first;
+      }
+      function topologicalComponents(components, componentByNode, edges) {
+        const adjacencySets = components.map(() => /* @__PURE__ */ new Set());
+        const indegree = components.map(() => 0);
+        for (const edge of edges) {
+          const source = componentByNode[edge.from];
+          const target = componentByNode[edge.to];
+          if (source === target || adjacencySets[source].has(target))
+            continue;
+          adjacencySets[source].add(target);
+          indegree[target] += 1;
+        }
+        const adjacency = adjacencySets.map((targets) => [...targets].sort((left4, right4) => components[left4][0] - components[right4][0]));
+        const ready = components.map((_, index2) => index2).filter((index2) => indegree[index2] === 0);
+        for (let index2 = Math.floor(ready.length / 2) - 1; index2 >= 0; index2 -= 1) {
+          siftReadyDown(ready, index2, components);
+        }
+        const order = [];
+        while (ready.length > 0) {
+          const component = popReady(ready, components);
+          order.push(component);
+          for (const target of adjacency[component]) {
+            indegree[target] -= 1;
+            if (indegree[target] !== 0)
+              continue;
+            pushReady(ready, target, components);
+          }
+        }
+        return { order, adjacency };
+      }
+      function assignColumns2(graph2) {
+        const { placementEdges, semanticEdges, semanticSelfCycleNetworkIds } = buildDependencyEdges(graph2);
+        const { components, componentByNode } = stronglyConnectedComponents(graph2.nodes.length, placementEdges);
+        const { order, adjacency } = topologicalComponents(components, componentByNode, placementEdges);
+        const hasInternal = components.map((component) => component.some((nodeIndex) => graph2.nodes[nodeIndex].kind !== "port"));
+        const hasInput = components.map((component) => component.some((nodeIndex) => isInputBoundary(graph2.nodes[nodeIndex])));
+        const hasInputBoundary = graph2.nodes.some(isInputBoundary);
+        const internalBaseRank = hasInputBoundary ? 1 : 0;
+        const componentRank = components.map((_, index2) => hasInternal[index2] ? internalBaseRank : 0);
+        for (const source of order) {
+          for (const target of adjacency[source]) {
+            if (!hasInternal[target])
+              continue;
+            if (hasInternal[source]) {
+              componentRank[target] = Math.max(componentRank[target], componentRank[source] + 1);
+            } else if (hasInput[source]) {
+              componentRank[target] = Math.max(componentRank[target], 1);
+            }
+          }
+        }
+        let deepestInternalRank = -1;
+        components.forEach((_, componentIndex) => {
+          if (hasInternal[componentIndex]) {
+            deepestInternalRank = Math.max(deepestInternalRank, componentRank[componentIndex]);
+          }
+        });
+        const rightBoundaryRank = deepestInternalRank >= 0 ? deepestInternalRank + 1 : hasInputBoundary ? 1 : 0;
+        const nodeColumn = /* @__PURE__ */ new Map();
+        graph2.nodes.forEach((node, nodeIndex) => {
+          const rank = isInputBoundary(node) ? 0 : isRightBoundary(node) ? rightBoundaryRank : componentRank[componentByNode[nodeIndex]];
+          nodeColumn.set(node.id, rank);
+        });
+        let maximumRank = -1;
+        for (const rank of nodeColumn.values()) {
+          maximumRank = Math.max(maximumRank, rank);
+        }
+        const columns = Array.from({ length: maximumRank + 1 }, () => []);
+        for (const node of graph2.nodes)
+          columns[nodeColumn.get(node.id)].push(node.id);
+        const feedbackCandidates = new Set(semanticSelfCycleNetworkIds);
+        if (semanticEdges.length > 0) {
+          const semanticComponents = stronglyConnectedComponents(graph2.nodes.length, semanticEdges);
+          for (const edge of semanticEdges) {
+            const component = semanticComponents.componentByNode[edge.from];
+            if (component !== semanticComponents.componentByNode[edge.to] || semanticComponents.components[component].length < 2) {
+              continue;
+            }
+            for (const networkId of edge.networkIds) {
+              feedbackCandidates.add(networkId);
+            }
+          }
+        }
+        const feedbackNetworkIds = new Set(graph2.networks.map((network) => network.id).filter((networkId) => feedbackCandidates.has(networkId)));
+        return { columns, nodeColumn, feedbackNetworkIds };
+      }
+    }
+  });
+
   // packages/schematic-core/dist/model.js
   var require_model = __commonJS({
     "packages/schematic-core/dist/model.js"(exports2) {
@@ -766,6 +1035,173 @@
     }
   });
 
+  // packages/schematic-core/dist/placement.js
+  var require_placement = __commonJS({
+    "packages/schematic-core/dist/placement.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.createPlacement = createPlacement2;
+      exports2.mergePlacement = mergePlacement2;
+      exports2.moveNodeToColumn = moveNodeToColumn2;
+      exports2.migrateLegacyPlacement = migrateLegacyPlacement2;
+      function setOwn(target, id, value) {
+        Object.defineProperty(target, id, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true
+        });
+      }
+      function safeInteger(value, fallback) {
+        return Number.isFinite(value) ? Math.trunc(value) : fallback;
+      }
+      function safeOffset(value) {
+        return Number.isFinite(value) ? value : 0;
+      }
+      function automaticColumn(assignment, nodeId) {
+        const assigned = assignment.nodeColumn.get(nodeId);
+        if (assigned !== void 0 && Number.isFinite(assigned)) {
+          return Math.max(0, Math.trunc(assigned));
+        }
+        const fallback = assignment.columns.findIndex((column) => column.includes(nodeId));
+        return Math.max(0, fallback);
+      }
+      function sourceIndexes(graph2) {
+        return new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
+      }
+      function normalizeOrdersByIds(nodeIds, nodes) {
+        const indexes = new Map(nodeIds.map((id, index2) => [id, index2]));
+        const byColumn = /* @__PURE__ */ new Map();
+        for (const id of nodeIds) {
+          const placement = nodes[id];
+          if (!placement)
+            continue;
+          const column = safeInteger(placement.column, 0);
+          const entries = byColumn.get(column) ?? [];
+          entries.push([id, { ...placement, column }]);
+          byColumn.set(column, entries);
+        }
+        const normalized = {};
+        for (const entries of byColumn.values()) {
+          entries.sort((left4, right4) => safeInteger(left4[1].order, indexes.get(left4[0]) ?? 0) - safeInteger(right4[1].order, indexes.get(right4[0]) ?? 0) || Number(right4[1].fixed) - Number(left4[1].fixed) || (indexes.get(left4[0]) ?? 0) - (indexes.get(right4[0]) ?? 0));
+          entries.forEach(([id, placement], order) => {
+            setOwn(normalized, id, {
+              ...placement,
+              order,
+              yOffset: safeOffset(placement.yOffset)
+            });
+          });
+        }
+        return normalized;
+      }
+      function normalizeOrders(graph2, nodes) {
+        return normalizeOrdersByIds(graph2.nodes.map((node) => node.id), nodes);
+      }
+      function boundaryColumn(node, assignment) {
+        return node.kind === "port" ? automaticColumn(assignment, node.id) : void 0;
+      }
+      function internalColumns(graph2, assignment) {
+        return [...new Set(graph2.nodes.filter((node) => node.kind !== "port").map((node) => automaticColumn(assignment, node.id)))].sort((left4, right4) => left4 - right4);
+      }
+      function clampNodeColumn(node, assignment, requested, legalInternalColumns) {
+        const boundary2 = boundaryColumn(node, assignment);
+        if (boundary2 !== void 0)
+          return boundary2;
+        const automatic = automaticColumn(assignment, node.id);
+        if (legalInternalColumns.length === 0)
+          return automatic;
+        const column = safeInteger(requested, automatic);
+        return legalInternalColumns.reduce((selected, candidate) => {
+          const selectedDistance = Math.abs(column - selected);
+          const candidateDistance = Math.abs(column - candidate);
+          return candidateDistance < selectedDistance ? candidate : selected;
+        }, legalInternalColumns[0]);
+      }
+      function createPlacement2(graph2, assignment) {
+        const nodes = {};
+        const orderByColumn = /* @__PURE__ */ new Map();
+        for (const node of graph2.nodes) {
+          const column = automaticColumn(assignment, node.id);
+          const order = orderByColumn.get(column) ?? 0;
+          orderByColumn.set(column, order + 1);
+          setOwn(nodes, node.id, {
+            column,
+            order,
+            yOffset: 0,
+            fixed: false
+          });
+        }
+        return { nodes };
+      }
+      function mergePlacement2(graph2, assignment, persisted) {
+        const automatic = createPlacement2(graph2, assignment);
+        if (!persisted || typeof persisted !== "object" || persisted === null || typeof persisted.nodes !== "object" || persisted.nodes === null) {
+          return automatic;
+        }
+        const legalInternalColumns = internalColumns(graph2, assignment);
+        for (const node of graph2.nodes) {
+          const candidate = Object.prototype.hasOwnProperty.call(persisted.nodes, node.id) ? persisted.nodes[node.id] : void 0;
+          if (!candidate || typeof candidate.fixed !== "boolean")
+            continue;
+          if (!candidate.fixed)
+            continue;
+          setOwn(automatic.nodes, node.id, {
+            column: clampNodeColumn(node, assignment, candidate.column, legalInternalColumns),
+            order: safeInteger(candidate.order, automatic.nodes[node.id].order),
+            yOffset: safeOffset(candidate.yOffset),
+            fixed: true
+          });
+        }
+        return { nodes: normalizeOrders(graph2, automatic.nodes) };
+      }
+      function moveNodeToColumn2(graph2, assignment, placement, nodeId, column, order, yOffset) {
+        const normalized = mergePlacement2(graph2, assignment, placement);
+        const selectedNode = graph2.nodes.find((node) => node.id === nodeId);
+        const current = selectedNode ? normalized.nodes[nodeId] : void 0;
+        if (!selectedNode || !current)
+          return normalized;
+        const nodes = normalized.nodes;
+        setOwn(nodes, nodeId, {
+          column: clampNodeColumn(selectedNode, assignment, column, internalColumns(graph2, assignment)),
+          order: safeInteger(order, current.order),
+          yOffset: safeOffset(yOffset),
+          fixed: true
+        });
+        return { nodes: normalizeOrders(graph2, nodes) };
+      }
+      function migrateLegacyPlacement2(graph2, assignment, legacyNodes) {
+        const placement = createPlacement2(graph2, assignment);
+        const sourceIndex = sourceIndexes(graph2);
+        const legacyOrder = /* @__PURE__ */ new Map();
+        const byColumn = /* @__PURE__ */ new Map();
+        for (const node of graph2.nodes) {
+          const candidate = Object.prototype.hasOwnProperty.call(legacyNodes, node.id) ? legacyNodes[node.id] : void 0;
+          if (!candidate || !Number.isFinite(candidate.x) || !Number.isFinite(candidate.y) || typeof candidate.fixed !== "boolean") {
+            continue;
+          }
+          const column = placement.nodes[node.id].column;
+          const entries = byColumn.get(column) ?? [];
+          entries.push({ id: node.id, y: candidate.y });
+          byColumn.set(column, entries);
+          placement.nodes[node.id] = {
+            ...placement.nodes[node.id],
+            fixed: candidate.fixed
+          };
+        }
+        for (const entries of byColumn.values()) {
+          entries.sort((left4, right4) => left4.y - right4.y || (sourceIndex.get(left4.id) ?? 0) - (sourceIndex.get(right4.id) ?? 0));
+          entries.forEach((entry, order) => legacyOrder.set(entry.id, order));
+        }
+        for (const node of graph2.nodes) {
+          const order = legacyOrder.get(node.id);
+          if (order !== void 0)
+            placement.nodes[node.id].order = order;
+        }
+        return { nodes: normalizeOrders(graph2, placement.nodes) };
+      }
+    }
+  });
+
   // packages/schematic-core/dist/index.js
   var require_dist = __commonJS({
     "packages/schematic-core/dist/index.js"(exports2) {
@@ -787,9 +1223,11 @@
         for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports3, p)) __createBinding(exports3, m, p);
       };
       Object.defineProperty(exports2, "__esModule", { value: true });
+      __exportStar(require_columns(), exports2);
       __exportStar(require_model(), exports2);
       __exportStar(require_nodeGeometry(), exports2);
       __exportStar(require_pins(), exports2);
+      __exportStar(require_placement(), exports2);
     }
   });
 
@@ -41216,10 +41654,11 @@
       this.timers = timers;
       this.pending = /* @__PURE__ */ new Map();
     }
-    schedule(moduleKey, layout) {
+    schedule(moduleKey, revision, layout) {
       const previous = this.pending.get(moduleKey);
       if (previous?.handle !== void 0) this.timers.clear(previous.handle);
       const pending = {
+        revision,
         layout: cloneSchematicLayout(layout)
       };
       this.pending.set(moduleKey, pending);
@@ -41242,7 +41681,7 @@
       if (this.pending.get(moduleKey) !== pending) return;
       if (pending.handle !== void 0) this.timers.clear(pending.handle);
       this.pending.delete(moduleKey);
-      this.save(moduleKey, pending.layout);
+      this.save(moduleKey, pending.revision, pending.layout);
     }
   };
 
@@ -41724,6 +42163,7 @@
   graph.use(selection);
   var currentGraph;
   var currentLayout;
+  var currentRevision = "";
   var selectedModuleKey = "";
   var applyingLayout = false;
   var minimapPlugin;
@@ -41737,10 +42177,15 @@
   }
   var layoutSaveScheduler = new DebouncedLayoutSaveScheduler(
     SAVE_DELAY_MS,
-    (moduleKey, layout) => post({ type: "saveLayout", moduleKey, layout })
+    (moduleKey, revision, layout) => post({
+      type: "saveLayout",
+      moduleKey,
+      revision,
+      layout
+    })
   );
   function scheduleLayoutSave() {
-    if (!currentLayout || !currentGraph || applyingLayout) return;
+    if (!currentLayout || !currentGraph || !currentRevision || applyingLayout) return;
     const moduleKey = currentGraph.moduleKey;
     const layouts = mergeSchematicWebviewLayouts(
       vscode.getState()?.layouts,
@@ -41748,7 +42193,7 @@
       currentLayout
     );
     vscode.setState({ layouts });
-    layoutSaveScheduler.schedule(moduleKey, layouts[moduleKey]);
+    layoutSaveScheduler.schedule(moduleKey, currentRevision, layouts[moduleKey]);
   }
   function flushLayoutSaves() {
     layoutSaveScheduler.flush();
@@ -41979,6 +42424,7 @@
     applyingLayout = false;
     currentGraph = void 0;
     currentLayout = void 0;
+    currentRevision = "";
     selectedModuleKey = "";
     searchMatches = [];
     searchIndex = -1;
@@ -42024,6 +42470,7 @@
         initialize(event);
         return;
       case "graph":
+        currentRevision = event.revision;
         renderSchematic(event.graph, event.layout);
         return;
       case "diagnostics":

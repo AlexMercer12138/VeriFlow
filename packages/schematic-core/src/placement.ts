@@ -183,33 +183,33 @@ export function mergePlacement(
 }
 
 export function moveNodeToColumn(
+    graph: SchematicGraph,
+    assignment: ColumnAssignment,
     placement: SchematicPlacement,
     nodeId: string,
     column: number,
     order: number,
     yOffset: number
 ): SchematicPlacement {
-    const nodes: Record<string, SchematicNodePlacement> = {};
-    for (const [id, candidate] of Object.entries(placement.nodes)) {
-        setOwn(nodes, id, { ...candidate });
-    }
-    const current = Object.prototype.hasOwnProperty.call(nodes, nodeId)
-        ? nodes[nodeId]
-        : undefined;
-    if (!current) return { nodes };
+    const normalized = mergePlacement(graph, assignment, placement);
+    const selectedNode = graph.nodes.find(node => node.id === nodeId);
+    const current = selectedNode ? normalized.nodes[nodeId] : undefined;
+    if (!selectedNode || !current) return normalized;
 
-    const occupiedColumns = Object.values(nodes)
-        .map(candidate => safeInteger(candidate.column, 0));
-    const minimum = occupiedColumns.length > 0 ? Math.min(...occupiedColumns) : 0;
-    const maximum = occupiedColumns.length > 0 ? Math.max(...occupiedColumns) : 0;
+    const nodes = normalized.nodes;
     setOwn(nodes, nodeId, {
-        column: Math.min(maximum, Math.max(minimum, safeInteger(column, current.column))),
+        column: clampNodeColumn(
+            selectedNode,
+            assignment,
+            column,
+            internalColumns(graph, assignment)
+        ),
         order: safeInteger(order, current.order),
         yOffset: safeOffset(yOffset),
         fixed: true,
     });
 
-    return { nodes: normalizeOrdersByIds(Object.keys(nodes), nodes) };
+    return { nodes: normalizeOrders(graph, nodes) };
 }
 
 export function migrateLegacyPlacement(

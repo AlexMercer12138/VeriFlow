@@ -173,7 +173,12 @@ export function createSchematicProviderHarness(): SchematicProviderHarness {
             layoutsByPanel.set(panel, panelLayouts);
         }
         panelLayouts.set(panel.selectedModuleKey, layout);
-        post(panel, { type: 'graph', graph, layout });
+        post(panel, {
+            type: 'graph',
+            revision: `test:${panel.selectedModuleKey}`,
+            graph,
+            layout,
+        });
         const counts = await diagnosticPublisher.publish(panel, panel.uri, graph.diagnostics);
         post(panel, { type: 'diagnostics', ...counts });
     };

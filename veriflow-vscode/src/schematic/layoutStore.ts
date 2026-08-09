@@ -326,7 +326,7 @@ function boundarySide(node: GraphNode): BoundarySide | undefined {
     if (node.kind !== 'port' || node.pins.length === 0) {
         return undefined;
     }
-    return node.pins[0].direction === 'load' ? 'right' : 'left';
+    return node.pins[0].direction === 'driver' ? 'left' : 'right';
 }
 
 export function schematicNodeSize(
@@ -705,7 +705,15 @@ function storedLayoutFromAbsolute(
         nodes.forEach((node, order) => {
             const absolute = layout.nodes[node.id];
             if (!absolute?.fixed) return;
-            placement = moveNodeToColumn(placement, node.id, column, order, 0);
+            placement = moveNodeToColumn(
+                graph,
+                assignment,
+                placement,
+                node.id,
+                column,
+                order,
+                0
+            );
         });
     }
     placement = mergePlacement(graph, assignment, placement);
@@ -716,6 +724,8 @@ function storedLayoutFromAbsolute(
         if (!absolute?.fixed) continue;
         const semantic = placement.nodes[node.id];
         placement = moveNodeToColumn(
+            graph,
+            assignment,
             placement,
             node.id,
             semantic.column,

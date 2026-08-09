@@ -3,6 +3,8 @@ import * as assert from 'assert';
 import { preprocessForParsing } from '../core/hdl/preprocessor';
 import { parseWebviewCommand } from '../schematic/protocol';
 
+const TEST_REVISION = 'snapshot:test';
+
 function assertRejected(value: unknown): void {
     let result: ReturnType<typeof parseWebviewCommand>;
     assert.doesNotThrow(() => {
@@ -75,6 +77,7 @@ function testLayoutValidation(): void {
     const parsed = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:top',
+        revision: TEST_REVISION,
         layout: {
             nodes: {
                 '': { x: -1, y: -2, fixed: false },
@@ -94,6 +97,7 @@ function testLayoutValidation(): void {
     assert.deepStrictEqual(parsed, {
         type: 'saveLayout',
         moduleKey: 'module:top',
+        revision: TEST_REVISION,
         layout: {
             nodes: {
                 '': { x: -1, y: -2, fixed: false },
@@ -110,6 +114,7 @@ function testLayoutValidation(): void {
         parseWebviewCommand({
             type: 'saveLayout',
             moduleKey: 'module:top',
+            revision: TEST_REVISION,
             layout: {
                 nodes: {},
                 viewport: { x: 0, y: 0, zoom: -50 },
@@ -119,6 +124,7 @@ function testLayoutValidation(): void {
         {
             type: 'saveLayout',
             moduleKey: 'module:top',
+            revision: TEST_REVISION,
             layout: {
                 nodes: {},
                 viewport: { x: 0, y: 0, zoom: 0.1 },
@@ -158,19 +164,53 @@ function testLayoutValidation(): void {
         },
     ];
     for (const layout of invalidLayouts) {
-        assertRejected({ type: 'saveLayout', moduleKey: 'module:top', layout });
+        assertRejected({
+            type: 'saveLayout',
+            moduleKey: 'module:top',
+            revision: TEST_REVISION,
+            layout,
+        });
     }
     assertRejected({
         type: 'saveLayout',
         moduleKey: '  ',
+        revision: TEST_REVISION,
         layout: { nodes: {}, viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
     });
+}
+
+function testLayoutRevisionValidation(): void {
+    const layout = {
+        nodes: {},
+        viewport: { x: 0, y: 0, zoom: 1 },
+        minimap: true,
+    };
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'saveLayout',
+        moduleKey: 'module:top',
+        revision: 'snapshot:opaque',
+        layout,
+    }), {
+        type: 'saveLayout',
+        moduleKey: 'module:top',
+        revision: 'snapshot:opaque',
+        layout,
+    });
+    for (const revision of [undefined, '', '  ', 1, null]) {
+        assertRejected({
+            type: 'saveLayout',
+            moduleKey: 'module:top',
+            ...(revision === undefined ? {} : { revision }),
+            layout,
+        });
+    }
 }
 
 function testSemanticPlacementIsNotAnAbsoluteWireLayout(): void {
     assertRejected({
         type: 'saveLayout',
         moduleKey: 'module:top',
+        revision: TEST_REVISION,
         layout: {
             placement: {
                 nodes: {
@@ -196,6 +236,7 @@ function testLayoutBreadthLimit(): void {
     const atLimit = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:at-limit',
+        revision: TEST_REVISION,
         layout: {
             nodes: boundedNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -208,6 +249,7 @@ function testLayoutBreadthLimit(): void {
     const overLimit = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:over-limit',
+        revision: TEST_REVISION,
         layout: {
             nodes: boundedNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -224,6 +266,7 @@ function testLayoutBreadthLimit(): void {
     const inheritedOverLimit = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:inherited-over-limit',
+        revision: TEST_REVISION,
         layout: {
             nodes: inheritedOnlyNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -410,6 +453,7 @@ function testHostileInputs(): void {
     assertRejected({
         type: 'saveLayout',
         moduleKey: 'module:inherited-node',
+        revision: TEST_REVISION,
         layout: {
             nodes: { inherited: inheritedNode },
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -436,6 +480,7 @@ function testHostileInputs(): void {
     const parsedSpecialNode = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:special',
+        revision: TEST_REVISION,
         layout: {
             nodes: specialNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -466,6 +511,7 @@ function testHostileInputs(): void {
     assertRejected({
         type: 'saveLayout',
         moduleKey: 'module:cycle',
+        revision: TEST_REVISION,
         layout: {
             nodes: { cycle: cyclicNode },
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -492,6 +538,7 @@ function testHostileInputs(): void {
     assertRejected({
         type: 'saveLayout',
         moduleKey: 'module:getter',
+        revision: TEST_REVISION,
         layout: {
             nodes: { hostile: throwingX },
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -507,6 +554,7 @@ function testHostileInputs(): void {
     assertRejected({
         type: 'saveLayout',
         moduleKey: 'module:proxy',
+        revision: TEST_REVISION,
         layout: {
             nodes: throwingEntries,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -525,6 +573,7 @@ async function main(): Promise<void> {
     testInitialContract();
     testEveryCommandAndSanitization();
     testLayoutValidation();
+    testLayoutRevisionValidation();
     testSemanticPlacementIsNotAnAbsoluteWireLayout();
     testLayoutBreadthLimit();
     testSourceSpanValidation();

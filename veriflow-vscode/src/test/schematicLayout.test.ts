@@ -296,6 +296,10 @@ async function testSemanticStorageEnvelopeRoundTrip(): Promise<void> {
     assert.strictEqual(loaded.nodes['instance:u_child'].fixed, true);
     assert.strictEqual(loaded.nodes['instance:u_child'].y,
         layout.nodes['instance:u_child'].y);
+    assert.ok(loaded.nodes['port:clk'].x < loaded.nodes['instance:u_child'].x);
+    assert.ok(loaded.nodes['port:done'].x > loaded.nodes['instance:u_child'].x);
+    assert.ok(loaded.nodes['port:shared'].x > loaded.nodes['instance:u_child'].x);
+    assert.strictEqual(loaded.nodes['port:done'].x, loaded.nodes['port:shared'].x);
 }
 
 async function testLegacyMigrationUsesAutomaticColumnsAndYOrder(): Promise<void> {
@@ -494,6 +498,7 @@ async function testNormalizationAndNoEdgePersistence(): Promise<void> {
     assert.strictEqual(parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:normalize:0',
+        revision: 'snapshot:normalize',
         layout: input,
     }), undefined);
     await store.save(
@@ -555,6 +560,7 @@ async function testProtocolSpecialNodeRoundTrip(): Promise<void> {
     const command = parseWebviewCommand({
         type: 'saveLayout',
         moduleKey: 'module:special-node',
+        revision: 'snapshot:special-node',
         layout: {
             nodes: inputNodes,
             viewport: { x: 0, y: 0, zoom: 1 },
@@ -757,9 +763,9 @@ async function testDeterministicAutoLayoutAndColumns(): Promise<void> {
     const inout = first.nodes['port:shared'];
     const instance = first.nodes['instance:u_child'];
     const output = first.nodes['port:done'];
-    assert.strictEqual(input.x, inout.x);
     assert.ok(input.x < instance.x);
     assert.ok(instance.x < output.x);
+    assert.strictEqual(output.x, inout.x);
     assert.ok(Object.values(first.nodes).every(layout =>
         Number.isFinite(layout.x) && Number.isFinite(layout.y) && !layout.fixed
     ));

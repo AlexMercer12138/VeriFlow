@@ -157,6 +157,7 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     await harness.dispatch(panel, {
         type: 'saveLayout',
         moduleKey: firstKey,
+        revision: firstGraph.revision,
         layout: firstLayout,
     });
     const secondGraph = panel.messages.find(
@@ -182,6 +183,7 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     await harness.dispatch(panel, {
         type: 'saveLayout',
         moduleKey: secondKey,
+        revision: secondGraph.revision,
         layout: secondLayout,
     });
 
@@ -239,6 +241,7 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     await harness.dispatch(panel, {
         type: 'saveLayout',
         moduleKey: secondKey,
+        revision: secondGraph.revision,
         layout: { ...secondLayout, selectedObjectId: 'network:removed' },
     });
     await harness.dispatch(panel, { type: 'selectModule', moduleKey: firstKey });

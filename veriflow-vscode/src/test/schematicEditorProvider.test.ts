@@ -68,6 +68,7 @@ type ProviderHarness = {
     diagnostics: Array<{ uri: string; count: number }>;
     deletedDiagnosticUris: string[];
     parseCallCount(): number;
+    storedValues(): unknown[];
     setParseGate(text: string, gate: Gate): void;
     setOpenTextGate(uri: string, gate: Gate): void;
     setShowTextGate(uri: string, gate: Gate): void;
@@ -129,6 +130,7 @@ async function createProviderHarness(
     let focusedSurface: string | undefined;
     const diagnostics: ProviderHarness['diagnostics'] = [];
     const deletedDiagnosticUris: string[] = [];
+    const workspaceValues = new Map<string, unknown>();
     const disposable = { dispose(): void {} };
     const document = {
         uri: resource,
@@ -298,10 +300,8 @@ async function createProviderHarness(
         extensionUri: FakeUri.file(extensionRoot),
         subscriptions: [] as Array<{ dispose(): void }>,
         workspaceState: new class {
-            private readonly values = new Map<string, unknown>();
-
             get<T>(key: string): T | undefined {
-                return this.values.get(key) as T | undefined;
+                return workspaceValues.get(key) as T | undefined;
             }
 
             async update(key: string, value: unknown): Promise<void> {
@@ -311,7 +311,7 @@ async function createProviderHarness(
                     pending.markStarted();
                     await pending.release;
                 }
-                this.values.set(key, value);
+                workspaceValues.set(key, value);
             }
         }(),
     };
@@ -392,6 +392,7 @@ async function createProviderHarness(
         diagnostics,
         deletedDiagnosticUris,
         parseCallCount(): number { return parseCalls; },
+        storedValues(): unknown[] { return [...workspaceValues.values()]; },
         setParseGate(text, gate): void { parseGate = { text, gate }; },
         setOpenTextGate(uri, gate): void { openTextGates.set(uri, gate); },
         setShowTextGate(uri, gate): void { showTextGates.set(uri, gate); },
@@ -1313,7 +1314,12 @@ async function testLayoutIntentRemainsScopedToItsModuleWhileSaveIsPending(): Pro
             )),
         };
         harness.setSaveGate(firstSaveGate);
-        harness.send({ type: 'saveLayout', moduleKey: firstKey, layout: firstLayout });
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: firstKey,
+            revision: firstGraph.revision,
+            layout: firstLayout,
+        });
         await firstSaveGate.started;
 
         harness.send({ type: 'selectModule', moduleKey: secondKey });
@@ -1354,7 +1360,12 @@ async function testRepeatedReadyPublishesLatestAcceptedLayout(): Promise<void> {
             viewport: { x: 321, y: 654, zoom: 1.75 },
             minimap: !initial.layout.minimap,
         };
-        harness.send({ type: 'saveLayout', moduleKey, layout: accepted });
+        harness.send({
+            type: 'saveLayout',
+            moduleKey,
+            revision: initial.revision,
+            layout: accepted,
+        });
         await new Promise<void>(resolve => setImmediate(resolve));
 
         const start = harness.messages.length;
@@ -1512,7 +1523,12 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
         };
         const initialSaveGate = createGate();
         harness.setSaveGate(initialSaveGate);
-        harness.send({ type: 'saveLayout', moduleKey, layout: pinnedLayout });
+        harness.send({
+            type: 'saveLayout',
+            moduleKey,
+            revision: initialGraph.revision,
+            layout: pinnedLayout,
+        });
         await initialSaveGate.started;
         initialSaveGate.allow();
         await new Promise<void>(resolve => setImmediate(resolve));
@@ -1548,6 +1564,115 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
         await new Promise<void>(resolve => setImmediate(resolve));
     } finally {
         relayoutSaveGate?.allow();
+        await harness.dispose();
+    }
+}
+
+async function testDelayedSaveUsesItsExactGraphRevision(): Promise<void> {
+    const firstText = 'module top(input logic old_i); endmodule';
+    const refreshedText = 'module top(input logic new_i); endmodule';
+    const documents = new Map<string, HdlDocument>([
+        [firstText, await parseWithRealWorker('file:///workspace/design.sv', firstText)],
+        [refreshedText, await parseWithRealWorker(
+            'file:///workspace/design.sv',
+            refreshedText
+        )],
+    ]);
+    const harness = await createProviderHarness(documents, firstText);
+    try {
+        const oldEvent = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.ok(oldEvent?.type === 'graph');
+        assert.ok(oldEvent.revision.length > 0);
+        const oldLayout = {
+            ...oldEvent.layout,
+            nodes: Object.fromEntries(Object.entries(oldEvent.layout.nodes).map(
+                ([id, position]) => [id, { ...position, fixed: true }]
+            )),
+        };
+
+        harness.changeDocument(refreshedText, 2);
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'graph'
+                && event.graph.nodes.some(node => node.id === 'port:new_i')
+            ),
+            'same-module refreshed graph'
+        );
+        const newEvent = harness.messages.filter(event => event.type === 'graph').at(-1);
+        assert.ok(newEvent?.type === 'graph');
+        assert.notStrictEqual(newEvent.revision, oldEvent.revision);
+
+        const saveGate = createGate();
+        harness.setSaveGate(saveGate);
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: oldEvent.graph.moduleKey,
+            revision: oldEvent.revision,
+            layout: oldLayout,
+        });
+        await saveGate.started;
+        saveGate.allow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        const stored = harness.storedValues().at(-1) as {
+            schemaVersion: number;
+            placement: { nodes: Record<string, unknown> };
+        };
+        assert.strictEqual(stored.schemaVersion, 2);
+        assert.strictEqual(
+            Object.prototype.hasOwnProperty.call(stored.placement.nodes, 'port:old_i'),
+            true
+        );
+        assert.strictEqual(
+            Object.prototype.hasOwnProperty.call(stored.placement.nodes, 'port:new_i'),
+            false
+        );
+
+        const replayStart = harness.messages.length;
+        harness.send({ type: 'ready' });
+        await waitFor(
+            () => harness.messages.slice(replayStart).some(event => event.type === 'graph'),
+            'current graph replay after delayed old save'
+        );
+        const replayed = harness.messages.slice(replayStart).find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph'
+        )!;
+        assert.strictEqual(replayed.revision, newEvent.revision);
+        assert.ok(replayed.graph.nodes.some(node => node.id === 'port:new_i'));
+        assert.deepStrictEqual(replayed.layout, newEvent.layout);
+
+        const currentLayout = {
+            ...newEvent.layout,
+            viewport: { x: 91, y: 37, zoom: 1.5 },
+        };
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: newEvent.graph.moduleKey,
+            revision: newEvent.revision,
+            layout: currentLayout,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const afterCurrentSave = JSON.stringify(harness.storedValues());
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: oldEvent.graph.moduleKey,
+            revision: oldEvent.revision,
+            layout: oldLayout,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(JSON.stringify(harness.storedValues()), afterCurrentSave);
+
+        const beforeUnknown = JSON.stringify(harness.storedValues());
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: newEvent.graph.moduleKey,
+            revision: 'unknown-snapshot-revision',
+            layout: newEvent.layout,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(JSON.stringify(harness.storedValues()), beforeUnknown);
+    } finally {
         await harness.dispose();
     }
 }
@@ -1700,6 +1825,7 @@ void testWebviewSelectionRestoresFocusAfterInFlightTextEffect()
     .then(testDiagnosticSourceFailureDoesNotBlockGraph)
     .then(testInitialParseReplaysTargetedIndexInvalidation)
     .then(testRapidRefreshStopsStalePublish)
+    .then(testDelayedSaveUsesItsExactGraphRevision)
     .then(testDisposalStopsPublishAfterAwait)
     .then(testRelayoutSaveCannotPublishNewerMutableState)
     .then(testRelayoutDuringRefreshPublishesRefreshedGraph)
