@@ -16,6 +16,7 @@ import {
     nextPatchVersion,
     parseArguments,
     parseVersion,
+    resolveReleaseNpmInvocation,
     runRelease,
     updateVersionFiles,
 } from './release.mjs';
@@ -166,6 +167,20 @@ test('release arguments preserve long and short action forms', () => {
         showHelp: true,
     });
     assert.throws(() => parseArguments(['--unknown']), /unknown argument/);
+});
+
+test('direct Windows release commands resolve npm through node.exe', () => {
+    const nodeExecutable = 'C:\\Program Files\\nodejs\\node.exe';
+    const npmCli = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+    assert.deepEqual(resolveReleaseNpmInvocation(['run', 'build'], {
+        nodeExecutable,
+        npmExecutable: '',
+        platform: 'win32',
+        fileExists: candidate => candidate === npmCli,
+    }), {
+        executable: nodeExecutable,
+        args: [npmCli, 'run', 'build'],
+    });
 });
 
 test('release check executes only the Node product gates', () => {

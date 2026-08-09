@@ -12,7 +12,8 @@ Vik-VeriFlow 是面向 Verilog/SystemVerilog 项目的一键分析、仿真与�
 
 ## 环境要求
 
-- CLI 与源码开发：Node.js `24.14.1` 或更高版本、npm
+- CLI：Node.js `24.14.1` 或更高版本、npm
+- 源码与发布构建：使用 `.nvmrc` 指定的 Node.js `24.14.1`，确保 parser SEA 可复现
 - VS Code 扩展：VS Code `1.82.0` 或更高版本
 - 仿真：安装至少一种受支持的 HDL 仿真器；推荐开源的 Icarus Verilog
 
@@ -86,6 +87,7 @@ CLI 工程使用 JSON 保存。相对路径以工程文件所在目录为基准�
 ## 源码开发
 
 ```bash
+nvm use
 npm ci
 npm run build
 npm run test:shared

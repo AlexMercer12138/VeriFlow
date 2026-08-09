@@ -221,15 +221,43 @@ export function parseArguments(argv) {
 
 export const releaseUsage = `Usage: node scripts/run-release.mjs [options]\n\nOptions:\n  -c, --check             Run Node product release checks\n  -u, --update [VERSION]  Update versions; defaults to next patch\n  -p, --package           Build npm tarballs and the VSIX\n  -a, --all [VERSION]     Run update, check, then package\n  -h, --help              Show this help\n`;
 
+export function resolveReleaseNpmInvocation(args, options = {}) {
+    const nodeExecutable = options.nodeExecutable ?? process.execPath;
+    const npmExecutable = options.npmExecutable ?? process.env.npm_execpath;
+    if (npmExecutable) {
+        return resolveNpmInvocation(args, { nodeExecutable, npmExecutable });
+    }
+
+    const platform = options.platform ?? process.platform;
+    const pathApi = platform === 'win32' ? path.win32 : path.posix;
+    const nodeDirectory = pathApi.dirname(nodeExecutable);
+    const candidates = platform === 'win32'
+        ? [pathApi.join(nodeDirectory, 'node_modules', 'npm', 'bin', 'npm-cli.js')]
+        : [
+            pathApi.resolve(nodeDirectory, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+            pathApi.resolve(nodeDirectory, '..', 'share', 'nodejs', 'npm', 'bin', 'npm-cli.js'),
+        ];
+    const fileExists = options.fileExists ?? existsSync;
+    const discovered = candidates.find(candidate => fileExists(candidate));
+    if (discovered) {
+        return resolveNpmInvocation(args, {
+            nodeExecutable,
+            npmExecutable: discovered,
+        });
+    }
+    if (platform !== 'win32') {
+        return { executable: 'npm', args };
+    }
+    throw new ReleaseError('could not locate npm-cli.js; run this command through npm');
+}
+
 function defaultRunCommand(command, args, cwd) {
     let executable = command;
     let invocationArgs = args;
-    if (command === 'npm' && process.env.npm_execpath) {
-        const invocation = resolveNpmInvocation(args);
+    if (command === 'npm') {
+        const invocation = resolveReleaseNpmInvocation(args);
         executable = invocation.executable;
         invocationArgs = invocation.args;
-    } else if (command === 'npm' && process.platform === 'win32') {
-        executable = 'npm.cmd';
     }
     const completed = spawnSync(executable, invocationArgs, {
         cwd,
