@@ -297,6 +297,37 @@ async function testVersionValidationAndKeyIsolation(): Promise<void> {
     );
 }
 
+async function testLoadDropsOnlyMalformedLegacyNodeEntries(): Promise<void> {
+    const uri = 'file:///legacy-mixed.sv';
+    const moduleKey = 'module:legacy-mixed:0';
+    const state = createMemoryMemento();
+    const store = new SchematicLayoutStore(state);
+    const storageKey = [
+        'veriflow.schematicLayout',
+        encodeURIComponent(uri),
+        encodeURIComponent(moduleKey),
+    ].join(':');
+    state.set(storageKey, {
+        schemaVersion: 1,
+        layout: {
+            nodes: {
+                valid: { x: 40, y: 80, fixed: true },
+                malformed: { x: 'not-a-coordinate', y: 10, fixed: false },
+            },
+            viewport: { x: 5, y: 6, zoom: 1.25 },
+            minimap: false,
+            selectedObjectId: 'valid',
+        },
+    });
+
+    assert.deepStrictEqual(store.load(uri, moduleKey), {
+        nodes: { valid: { x: 40, y: 80, fixed: true } },
+        viewport: { x: 5, y: 6, zoom: 1.25 },
+        minimap: false,
+        selectedObjectId: 'valid',
+    });
+}
+
 async function testNormalizationAndNoEdgePersistence(): Promise<void> {
     const state = createMemoryMemento();
     const store = new SchematicLayoutStore(state);
@@ -884,6 +915,7 @@ async function testDeterministicFeedbackRoutes(): Promise<void> {
 async function main(): Promise<void> {
     await testRoundTripAndRematch();
     await testVersionValidationAndKeyIsolation();
+    await testLoadDropsOnlyMalformedLegacyNodeEntries();
     await testNormalizationAndNoEdgePersistence();
     await testProtocolSpecialNodeRoundTrip();
     await testStaleObjectCleanupAndClearFixed();
