@@ -95,22 +95,22 @@ type DirectPathPlan = PlannedPathBase & Readonly<{
 type AdjacentPathPlan = PlannedPathBase & Readonly<{
     kind: 'adjacent';
     channel: number;
-    track: number;
+    track: ChannelLegHandle;
 }>;
 
 type CorridorPathPlan = PlannedPathBase & Readonly<{
     kind: 'corridor';
     sourceChannel: number;
-    sourceTrack: number;
+    sourceTrack: ChannelLegHandle;
     targetChannel: number;
-    targetTrack: number;
+    targetTrack: ChannelLegHandle;
     corridor: CorridorTrackHandle;
 }>;
 
 type EndpointEscapePlan = Readonly<{
     kind: 'channel';
     channel: number;
-    track: number;
+    track: ChannelLegHandle;
 }> | Readonly<{
     kind: 'exterior-left' | 'exterior-right';
     track: number;
@@ -134,7 +134,7 @@ type NodeLocation = Readonly<{
 }>;
 
 type NetworkTrackReuse = {
-    channels: Map<number, number>;
+    channels: Map<number, ChannelLegHandle>;
     corridors: Map<string, CorridorTrackHandle>;
     terminalEscapes: Map<string, EndpointEscapePlan>;
 };
@@ -148,6 +148,8 @@ type PreferredEndpointEscapes = Readonly<{
     escapes: ReadonlyMap<string, EndpointEscapePlan>;
     exteriorTracks: ExteriorTrackState;
 }>;
+
+type PreferredChannelLegs = ReadonlyMap<string, ChannelLegHandle>;
 
 type OrderedNetworkContext = Readonly<{
     network: RoutingNetworkRequest;
@@ -166,26 +168,33 @@ type PendingTreeTerminal = {
 type AdjacentDescriptor = Readonly<{
     key: string;
     networkId: string;
-    channel: number;
     leftRow: number;
     rightRow: number;
-    leftY: number;
-    rightY: number;
-    leftTerminal: RoutingTerminalRequest;
-    rightTerminal: RoutingTerminalRequest;
 }>;
 
-type ForcedCorridorTracks = Readonly<{
-    sourceTrack: number;
-    targetTrack: number;
-}>;
+type ChannelLegRole = 'source' | 'target' | 'shared'
+    | 'feedback-source' | 'feedback-target';
 
-type OrdinaryChannelDemand = {
+type ChannelLegIntent = Readonly<{
     key: string;
     networkId: string;
     channel: number;
-    terminals: RoutingTerminalRequest[];
-};
+    attachmentSide: 0 | 1;
+    escapeDirection: -1 | 1;
+    anchorX: number;
+    anchorY: number;
+    row: number;
+    role: ChannelLegRole;
+    terminalIdentity: string;
+    peerIdentity: string;
+}>;
+
+type ChannelLegHandle = Readonly<{
+    kind: 'channel-leg';
+    key: string;
+    channel: number;
+    reuseKey?: string;
+}>;
 
 type OrdinaryCorridorDemand = Readonly<{
     networkId: string;
@@ -197,6 +206,7 @@ type ChannelAllocationAction = Readonly<{
     kind: 'channel';
     channel: number;
     track: number;
+    leg: ChannelLegIntent;
 }>;
 
 type CorridorAllocationAction = Readonly<{
@@ -243,27 +253,34 @@ type CandidatePreflightBase = Readonly<{
     routedNetworks: readonly RoutedNetwork[];
     validation: RouteValidationState;
     wireLength: number;
+    allocationSignature: string;
 }>;
 
 type RoutingDiagnostics = Readonly<{
     realizedDemandSignatures: number;
     committedRouteMaterializations: number;
     incrementalCandidateMaterializations: number;
+    committedChannelLegIntents: number;
 }>;
 
 type RoutingDiagnosticsCounter = {
     realizedDemandSignatures: number;
     committedRouteMaterializations: number;
     incrementalCandidateMaterializations: number;
+    committedChannelLegIntents: number;
 };
 
 const ROUTING_DIAGNOSTICS = Symbol.for(
     '@veriflow/schematic-core/routing-diagnostics'
 );
+const ROUTING_TRANSACTION_PROBE = Symbol.for(
+    '@veriflow/schematic-core/routing-transaction-probe'
+);
 let latestRoutingDiagnostics: RoutingDiagnostics = Object.freeze({
     realizedDemandSignatures: 0,
     committedRouteMaterializations: 0,
     incrementalCandidateMaterializations: 0,
+    committedChannelLegIntents: 0,
 });
 
 function snapshotArray(value: unknown, label: string): unknown[] {
@@ -394,17 +411,45 @@ function snapshotRoutingOptions(
     });
 }
 
+function channelLegRoleRank(role: ChannelLegRole): number {
+    switch (role) {
+        case 'source': return 0;
+        case 'shared': return 1;
+        case 'target': return 2;
+        case 'feedback-source': return 3;
+        case 'feedback-target': return 4;
+    }
+}
+
+function compareChannelLegIntents(
+    left: ChannelLegIntent,
+    right: ChannelLegIntent
+): number {
+    return left.attachmentSide - right.attachmentSide
+        || right.escapeDirection - left.escapeDirection
+        || left.anchorY - right.anchorY
+        || left.anchorX - right.anchorX
+        || left.row - right.row
+        || channelLegRoleRank(left.role) - channelLegRoleRank(right.role)
+        || left.terminalIdentity.localeCompare(right.terminalIdentity)
+        || left.peerIdentity.localeCompare(right.peerIdentity)
+        || left.networkId.localeCompare(right.networkId);
+}
+
 class RoutingAllocationJournal {
     private writableGrid?: ReturnType<typeof createRoutingGrid>;
     private readonly actions: AllocationAction[];
+    private readonly channelLegs: Map<string, ChannelLegIntent>;
 
     constructor(
         private readonly nodes: readonly RoutingGridNodeInput[],
         private readonly options: RoutingGridCreateOptions,
         actions: readonly AllocationAction[] = [],
-        private sharedGrid?: ReturnType<typeof createRoutingGrid>
+        private sharedGrid?: ReturnType<typeof createRoutingGrid>,
+        channelLegs: ReadonlyMap<string, ChannelLegIntent> = new Map()
     ) {
         this.actions = [...actions];
+        this.channelLegs = new Map(channelLegs);
         if (!sharedGrid) this.writableGrid = createRoutingGrid(nodes, options);
     }
 
@@ -412,18 +457,97 @@ class RoutingAllocationJournal {
         return this.writableGrid ?? this.sharedGrid!;
     }
 
-    channel(channel: number, track?: number): number {
+    channelLeg(intent: ChannelLegIntent): ChannelLegHandle {
+        const existing = this.channelLegs.get(intent.key);
+        if (existing) {
+            if (existing.channel !== intent.channel) {
+                throw new Error(`channel leg ${intent.key} changed channel`);
+            }
+            return Object.freeze({
+                kind: 'channel-leg',
+                key: existing.key,
+                channel: existing.channel,
+            });
+        }
         const handle = allocateChannelTrack(
             this.ensureWritableGrid(),
-            channel,
-            track
+            intent.channel
         );
         this.actions.push(Object.freeze({
             kind: 'channel',
             channel: handle.channel,
             track: handle.track,
+            leg: intent,
         }));
-        return handle.track;
+        this.channelLegs.set(intent.key, intent);
+        return Object.freeze({
+            kind: 'channel-leg',
+            key: intent.key,
+            channel: intent.channel,
+        });
+    }
+
+    resolveChannelTrack(handle: ChannelLegHandle): number {
+        if (handle.reuseKey) {
+            return this.resolveChannelTrack(Object.freeze({
+                kind: 'channel-leg',
+                key: handle.reuseKey,
+                channel: handle.channel,
+            }));
+        }
+        const intent = this.channelLegs.get(handle.key);
+        if (!intent || intent.channel !== handle.channel) {
+            throw new Error(`unknown channel leg ${handle.key}`);
+        }
+        const ordered = [...this.channelLegs.values()]
+            .filter(candidate => candidate.channel === handle.channel)
+            .sort(compareChannelLegIntents);
+        const index = ordered.findIndex(candidate => candidate.key === handle.key);
+        if (index < 0) throw new Error(`unknown channel leg ${handle.key}`);
+        return index;
+    }
+
+    channelAssignmentSignature(): string {
+        const ordered = [...this.channelLegs.values()].sort((left, right) =>
+            left.channel - right.channel || compareChannelLegIntents(left, right)
+        );
+        return ordered.map(intent => `${intent.channel}:${intent.key}`).join('|');
+    }
+
+    actionCount(): number {
+        return this.actions.length;
+    }
+
+    compactChannelLegs(
+        usedPhysicalKeys: ReadonlySet<string>
+    ): RoutingAllocationJournal {
+        const missing = new Set(usedPhysicalKeys);
+        const nextTrackByChannel = new Map<number, number>();
+        const actions: AllocationAction[] = [];
+        const channelLegs = new Map<string, ChannelLegIntent>();
+        for (const action of this.actions) {
+            if (action.kind !== 'channel') {
+                actions.push(action);
+                continue;
+            }
+            if (!usedPhysicalKeys.has(action.leg.key)) continue;
+            missing.delete(action.leg.key);
+            const track = nextTrackByChannel.get(action.channel) ?? 0;
+            nextTrackByChannel.set(action.channel, track + 1);
+            const compacted = Object.freeze({ ...action, track });
+            actions.push(compacted);
+            channelLegs.set(compacted.leg.key, compacted.leg);
+        }
+        if (missing.size > 0) {
+            throw new Error('planned route refers to an unknown channel leg');
+        }
+        return new RoutingAllocationJournal(
+            this.nodes,
+            this.options,
+            actions,
+            undefined,
+            channelLegs
+        );
     }
 
     corridor(
@@ -475,7 +599,8 @@ class RoutingAllocationJournal {
             this.nodes,
             this.options,
             this.actions,
-            this.grid
+            this.grid,
+            this.channelLegs
         );
         return Object.freeze({
             allocator,
@@ -493,9 +618,21 @@ class RoutingAllocationJournal {
     }
 
     commit(actions: readonly AllocationAction[]): void {
+        for (const action of actions) {
+            if (action.kind !== 'channel') continue;
+            const existing = this.channelLegs.get(action.leg.key);
+            if (existing && existing.channel !== action.leg.channel) {
+                throw new Error(`channel leg ${action.leg.key} changed channel`);
+            }
+        }
         this.preview(actions);
         this.replay(this.ensureWritableGrid(), actions);
         this.actions.push(...actions);
+        for (const action of actions) {
+            if (action.kind === 'channel') {
+                this.channelLegs.set(action.leg.key, action.leg);
+            }
+        }
     }
 
     private corridorAction(handle: CorridorTrackHandle): AllocationAction {
@@ -700,7 +837,7 @@ function resetPendingTreeTerminals(
     }
 }
 
-function routingDemandSignature(
+function routingGeometryDemandSignature(
     grid: ReturnType<typeof createRoutingGrid>
 ): string {
     return [
@@ -711,6 +848,12 @@ function routingDemandSignature(
         grid.outer.top.trackCount,
         grid.outer.bottom.trackCount,
     ].join(',');
+}
+
+function routingDemandSignature(allocator: RoutingAllocationJournal): string {
+    return `${routingGeometryDemandSignature(allocator.grid)}\0${
+        allocator.channelAssignmentSignature()
+    }`;
 }
 
 function orderedNetworkContexts(
@@ -761,14 +904,13 @@ function connectionKey(
     return `${networkId}\0${from.nodeId}\0${from.pinId}\0${to.nodeId}\0${to.pinId}`;
 }
 
-function forcedAdjacentCorridorTracks(
-    allocator: RoutingAllocationJournal,
+function forcedAdjacentConnections(
     contexts: readonly OrderedNetworkContext[],
     nodes: ReadonlyMap<string, RoutingGridNodeInput>,
     locations: ReadonlyMap<string, NodeLocation>,
+    grid: ReturnType<typeof createRoutingGrid>,
     baseGeometry: RealizedRoutingGrid
-): ReadonlyMap<string, ForcedCorridorTracks> {
-    const { grid } = allocator;
+): ReadonlySet<string> {
     const byChannel = new Map<number, AdjacentDescriptor[]>();
     for (const context of contexts) {
         if (context.feedback || !context.root
@@ -787,22 +929,15 @@ function forcedAdjacentCorridorTracks(
                     === realizedPinPoint(baseGeometry, to).y;
             if (aligned) continue;
             const fromIsLeft = fromNode.column < toNode.column;
-            const leftTerminal = fromIsLeft ? context.root : to;
-            const rightTerminal = fromIsLeft ? to : context.root;
             const descriptor: AdjacentDescriptor = Object.freeze({
                 key: connectionKey(context.network.id, context.root, to),
                 networkId: context.network.id,
-                channel: sourceChannel,
                 leftRow: fromIsLeft
                     ? fromLocation.row
                     : toLocation.row,
                 rightRow: fromIsLeft
                     ? toLocation.row
                     : fromLocation.row,
-                leftY: realizedPinPoint(baseGeometry, leftTerminal).y,
-                rightY: realizedPinPoint(baseGeometry, rightTerminal).y,
-                leftTerminal,
-                rightTerminal,
             });
             const descriptors = byChannel.get(sourceChannel) ?? [];
             descriptors.push(descriptor);
@@ -810,8 +945,8 @@ function forcedAdjacentCorridorTracks(
         }
     }
 
-    const result = new Map<string, ForcedCorridorTracks>();
-    for (const [channel, descriptors] of byChannel) {
+    const result = new Set<string>();
+    for (const descriptors of byChannel.values()) {
         if (new Set(descriptors.map(descriptor => descriptor.networkId)).size < 2) {
             continue;
         }
@@ -825,34 +960,7 @@ function forcedAdjacentCorridorTracks(
                 || descriptor.rightRow <= descriptors[index - 1].rightRow)
         );
         if (!hasConflict) continue;
-        const count = descriptors.length;
-        descriptors.sort((left, right) =>
-            left.leftY - right.leftY
-            || left.rightY - right.rightY
-            || left.leftRow - right.leftRow
-            || left.rightRow - right.rightRow
-            || compareTerminals(
-                locations,
-                left.leftTerminal,
-                right.leftTerminal
-            )
-            || compareTerminals(
-                locations,
-                left.rightTerminal,
-                right.rightTerminal
-            )
-            || left.networkId.localeCompare(right.networkId)
-        );
-        descriptors.forEach((descriptor, index) => {
-            const sourceTrack = index;
-            const targetTrack = count + index;
-            allocator.channel(channel, sourceTrack);
-            allocator.channel(channel, targetTrack);
-            result.set(descriptor.key, Object.freeze({
-                sourceTrack,
-                targetTrack,
-            }));
-        });
+        for (const descriptor of descriptors) result.add(descriptor.key);
     }
     return result;
 }
@@ -873,99 +981,6 @@ function realizedNodePinPoint(
         .find(pin => pin.id === terminal.pinId)!.point;
 }
 
-function ordinaryChannelKey(networkId: string, channel: number): string {
-    return `${networkId}\0${channel}`;
-}
-
-function preferredOrdinaryChannelTracks(
-    allocator: RoutingAllocationJournal,
-    contexts: readonly OrderedNetworkContext[],
-    nodes: ReadonlyMap<string, RoutingGridNodeInput>,
-    locations: ReadonlyMap<string, NodeLocation>,
-    baseGeometry: RealizedRoutingGrid,
-    forcedTracks: ReadonlyMap<string, ForcedCorridorTracks>
-): ReadonlyMap<string, number> {
-    const { grid } = allocator;
-    const byKey = new Map<string, OrdinaryChannelDemand>();
-    const add = (
-        networkId: string,
-        channel: number,
-        terminal: RoutingTerminalRequest
-    ): void => {
-        const key = ordinaryChannelKey(networkId, channel);
-        const demand = byKey.get(key) ?? {
-            key,
-            networkId,
-            channel,
-            terminals: [],
-        };
-        demand.terminals.push(terminal);
-        byKey.set(key, demand);
-    };
-
-    for (const context of contexts) {
-        if (context.feedback || !context.root
-            || needsOuterEscape(grid, nodes, context.terminals)) continue;
-        const from = context.root;
-        const fromNode = nodes.get(from.nodeId)!;
-        for (const to of context.remaining) {
-            const toNode = nodes.get(to.nodeId)!;
-            const sourceChannel = sideChannel(fromNode, from.pinId);
-            const targetChannel = sideChannel(toNode, to.pinId);
-            if (Math.abs(fromNode.column - toNode.column) === 1
-                && sourceChannel === targetChannel) {
-                const aligned = locations.get(from.nodeId)!.row
-                        === locations.get(to.nodeId)!.row
-                    && realizedPinPoint(baseGeometry, from).y
-                        === realizedPinPoint(baseGeometry, to).y;
-                if (aligned || forcedTracks.has(
-                    connectionKey(context.network.id, from, to)
-                )) continue;
-            }
-            add(context.network.id, sourceChannel, from);
-            add(context.network.id, targetChannel, to);
-        }
-    }
-
-    const byChannel = new Map<number, OrdinaryChannelDemand[]>();
-    for (const demand of byKey.values()) {
-        const demands = byChannel.get(demand.channel) ?? [];
-        demands.push(demand);
-        byChannel.set(demand.channel, demands);
-    }
-    const result = new Map<string, number>();
-    for (const [channel, demands] of byChannel) {
-        const terminalOrder = (demand: OrdinaryChannelDemand): string =>
-            [...demand.terminals]
-                .sort((left, right) => compareTerminals(locations, left, right))
-                .map(terminal => `${terminal.nodeId}\0${terminal.pinId}`)
-                .join('\0');
-        const sideRank = (demand: OrdinaryChannelDemand): number => {
-            let minimum = 2;
-            let maximum = 0;
-            for (const terminal of demand.terminals) {
-                const node = nodes.get(terminal.nodeId)!;
-                const rank = node.column === channel ? 0 : 2;
-                minimum = Math.min(minimum, rank);
-                maximum = Math.max(maximum, rank);
-            }
-            return minimum === maximum ? minimum : 1;
-        };
-        demands.sort((left, right) =>
-            sideRank(left) - sideRank(right)
-            || terminalOrder(left).localeCompare(terminalOrder(right))
-            || left.networkId.localeCompare(right.networkId)
-        );
-        const firstTrack = grid.channels[channel].tracks.trackCount;
-        demands.forEach((demand, index) => {
-            const track = firstTrack + index;
-            allocator.channel(channel, track);
-            result.set(demand.key, track);
-        });
-    }
-    return result;
-}
-
 function preferredCorridorKey(
     networkId: string,
     candidate: CorridorCandidate
@@ -980,7 +995,7 @@ function preferredOrdinaryCorridorTracks(
     locations: ReadonlyMap<string, NodeLocation>,
     rowCount: number,
     baseGeometry: RealizedRoutingGrid,
-    forcedTracks: ReadonlyMap<string, ForcedCorridorTracks>
+    forcedConnections: ReadonlySet<string>
 ): ReadonlyMap<string, CorridorTrackHandle> {
     const { grid } = allocator;
     const byPool = new Map<string, OrdinaryCorridorDemand[]>();
@@ -1000,7 +1015,7 @@ function preferredOrdinaryCorridorTracks(
                     === locations.get(to.nodeId)!.row
                 && realizedPinPoint(baseGeometry, from).y
                     === realizedPinPoint(baseGeometry, to).y;
-            if (aligned || !forcedTracks.has(
+            if (aligned || !forcedConnections.has(
                 connectionKey(context.network.id, from, to)
             )) continue;
         }
@@ -1055,17 +1070,228 @@ function endpointEscapeKey(
     return `${networkId}\0${terminal.nodeId}\0${terminal.pinId}`;
 }
 
-function preferredOuterEndpointEscapes(
+function terminalIdentity(terminal: RoutingTerminalRequest): string {
+    return `${terminal.nodeId}\0${terminal.pinId}`;
+}
+
+function channelLegIntent(
+    key: string,
+    networkId: string,
+    channel: number,
+    terminal: RoutingTerminalRequest,
+    peer: RoutingTerminalRequest,
+    role: ChannelLegRole,
+    nodes: ReadonlyMap<string, RoutingGridNodeInput>,
+    locations: ReadonlyMap<string, NodeLocation>,
+    geometry: RealizedRoutingGrid
+): ChannelLegIntent {
+    const node = nodes.get(terminal.nodeId)!;
+    const pin = node.pinAnchors!.find(candidate => candidate.id === terminal.pinId)!;
+    const anchor = realizedPinPoint(geometry, terminal);
+    return Object.freeze({
+        key,
+        networkId,
+        channel,
+        attachmentSide: node.column === channel ? 0 : 1,
+        escapeDirection: pin.x === 0 ? -1 : 1,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
+        row: locations.get(terminal.nodeId)!.row,
+        role,
+        terminalIdentity: terminalIdentity(terminal),
+        peerIdentity: terminalIdentity(peer),
+    });
+}
+
+function ordinaryChannelLegKey(
+    networkId: string,
+    from: RoutingTerminalRequest,
+    to: RoutingTerminalRequest,
+    role: 'source' | 'target' | 'shared',
+    variant: string
+): string {
+    return `${connectionKey(networkId, from, to)}\0${role}\0${variant}`;
+}
+
+function preferredChannelLegKey(
+    networkId: string,
+    terminal: RoutingTerminalRequest,
+    role: ChannelLegRole,
+    channel: number,
+    peer?: RoutingTerminalRequest
+): string {
+    return [
+        networkId,
+        terminalIdentity(terminal),
+        role,
+        channel,
+        peer ? terminalIdentity(peer) : '',
+    ].join('\0');
+}
+
+function aliasChannelLeg(
+    intent: ChannelLegIntent,
+    physical: ChannelLegHandle
+): ChannelLegHandle {
+    if (intent.channel !== physical.channel) {
+        throw new Error('preferred channel leg changed channel');
+    }
+    return Object.freeze({
+        kind: 'channel-leg',
+        key: intent.key,
+        channel: intent.channel,
+        reuseKey: physical.reuseKey ?? physical.key,
+    });
+}
+
+function plannedChannelLeg(
     allocator: RoutingAllocationJournal,
+    intent: ChannelLegIntent,
+    preferred?: ChannelLegHandle
+): ChannelLegHandle {
+    return preferred
+        ? aliasChannelLeg(intent, preferred)
+        : allocator.channelLeg(intent);
+}
+
+function preallocatePreferredChannelLegs(
+    allocator: RoutingAllocationJournal,
+    contexts: readonly OrderedNetworkContext[],
+    nodes: ReadonlyMap<string, RoutingGridNodeInput>,
+    locations: ReadonlyMap<string, NodeLocation>,
+    geometry: RealizedRoutingGrid,
+    forcedConnections: ReadonlySet<string>
+): PreferredChannelLegs {
+    const preferred = new Map<string, ChannelLegHandle>();
+    const allocate = (
+        networkId: string,
+        terminal: RoutingTerminalRequest,
+        peer: RoutingTerminalRequest,
+        role: ChannelLegRole,
+        channel: number,
+        reuse?: ChannelLegHandle
+    ): ChannelLegHandle => {
+        const preference = preferredChannelLegKey(
+            networkId,
+            terminal,
+            role,
+            channel,
+            role === 'shared' ? peer : undefined
+        );
+        const existing = preferred.get(preference);
+        if (existing) return existing;
+        const intent = channelLegIntent(
+            `preferred\0${preference}`,
+            networkId,
+            channel,
+            terminal,
+            peer,
+            role,
+            nodes,
+            locations,
+            geometry
+        );
+        const handle = reuse ?? allocator.channelLeg(intent);
+        preferred.set(preference, handle);
+        return handle;
+    };
+
+    for (const context of contexts) {
+        if (!context.root || context.remaining.length === 0) continue;
+        if (context.feedback
+            || needsOuterEscape(allocator.grid, nodes, context.terminals)) {
+            const root = context.root;
+            for (const terminal of context.terminals) {
+                const channel = sideChannel(
+                    nodes.get(terminal.nodeId)!,
+                    terminal.pinId
+                );
+                if (channel < 0 || channel >= allocator.grid.channels.length) {
+                    continue;
+                }
+                const isSource = terminal === root;
+                const peer = isSource ? context.remaining[0] : root;
+                allocate(
+                    context.network.id,
+                    terminal,
+                    peer,
+                    isSource ? 'feedback-source' : 'feedback-target',
+                    channel
+                );
+            }
+            continue;
+        }
+
+        const reuse = new Map<number, ChannelLegHandle>();
+        const from = context.root;
+        const fromNode = nodes.get(from.nodeId)!;
+        for (const to of context.remaining) {
+            const toNode = nodes.get(to.nodeId)!;
+            const sourceChannel = sideChannel(fromNode, from.pinId);
+            const targetChannel = sideChannel(toNode, to.pinId);
+            const adjacentSharedChannel = Math.abs(
+                fromNode.column - toNode.column
+            ) === 1 && sourceChannel === targetChannel;
+            const forced = adjacentSharedChannel && forcedConnections.has(
+                connectionKey(context.network.id, from, to)
+            );
+            const aligned = adjacentSharedChannel
+                && locations.get(from.nodeId)!.row
+                    === locations.get(to.nodeId)!.row
+                && realizedPinPoint(geometry, from).y
+                    === realizedPinPoint(geometry, to).y;
+            if (aligned && !forced) continue;
+            if (adjacentSharedChannel && !forced) {
+                const handle = allocate(
+                    context.network.id,
+                    from,
+                    to,
+                    'shared',
+                    sourceChannel,
+                    reuse.get(sourceChannel)
+                );
+                reuse.set(sourceChannel, handle);
+                continue;
+            }
+            const source = allocate(
+                context.network.id,
+                from,
+                to,
+                'source',
+                sourceChannel,
+                reuse.get(sourceChannel)
+            );
+            reuse.set(sourceChannel, source);
+            if (targetChannel === sourceChannel) {
+                allocate(
+                    context.network.id,
+                    to,
+                    from,
+                    'target',
+                    targetChannel
+                );
+            } else {
+                const target = allocate(
+                    context.network.id,
+                    to,
+                    from,
+                    'target',
+                    targetChannel,
+                    reuse.get(targetChannel)
+                );
+                reuse.set(targetChannel, target);
+            }
+        }
+    }
+    return preferred;
+}
+
+function preferredOuterEndpointEscapes(
+    grid: ReturnType<typeof createRoutingGrid>,
     contexts: readonly OrderedNetworkContext[],
     nodes: ReadonlyMap<string, RoutingGridNodeInput>,
     locations: ReadonlyMap<string, NodeLocation>
 ): PreferredEndpointEscapes {
-    const { grid } = allocator;
-    const byChannel = new Map<number, Array<Readonly<{
-        networkId: string;
-        terminal: RoutingTerminalRequest;
-    }>>>();
     const exterior = {
         left: [] as Array<Readonly<{
             networkId: string;
@@ -1087,9 +1313,7 @@ function preferredOuterEndpointEscapes(
                 terminal,
             });
             if (channel >= 0 && channel < grid.channels.length) {
-                const descriptors = byChannel.get(channel) ?? [];
-                descriptors.push(descriptor);
-                byChannel.set(channel, descriptors);
+                continue;
             } else {
                 const pin = node.pinAnchors!.find(
                     candidate => candidate.id === terminal.pinId
@@ -1100,30 +1324,6 @@ function preferredOuterEndpointEscapes(
     }
 
     const escapes = new Map<string, EndpointEscapePlan>();
-    for (const [channel, descriptors] of byChannel) {
-        descriptors.sort((left, right) => {
-            const leftNode = nodes.get(left.terminal.nodeId)!;
-            const rightNode = nodes.get(right.terminal.nodeId)!;
-            const leftSide = leftNode.column === channel ? 0 : 1;
-            const rightSide = rightNode.column === channel ? 0 : 1;
-            return leftSide - rightSide
-                || compareTerminals(
-                    locations,
-                    left.terminal,
-                    right.terminal
-                )
-                || left.networkId.localeCompare(right.networkId);
-        });
-        const firstTrack = grid.channels[channel].tracks.trackCount;
-        descriptors.forEach((descriptor, index) => {
-            const track = firstTrack + index;
-            allocator.channel(channel, track);
-            escapes.set(
-                endpointEscapeKey(descriptor.networkId, descriptor.terminal),
-                Object.freeze({ kind: 'channel', channel, track })
-            );
-        });
-    }
     for (const side of ['left', 'right'] as const) {
         exterior[side].sort((left, right) =>
             compareTerminals(locations, left.terminal, right.terminal)
@@ -1151,20 +1351,21 @@ function preferredOuterEndpointEscapes(
 function channelTrack(
     allocator: RoutingAllocationJournal,
     reuse: NetworkTrackReuse,
-    networkId: string,
     channel: number,
-    preferredTracks: ReadonlyMap<string, number>
-): number {
+    intent: ChannelLegIntent,
+    preferred?: ChannelLegHandle
+): ChannelLegHandle {
     const existing = reuse.channels.get(channel);
-    if (existing !== undefined) return existing;
-    const preferred = preferredTracks.get(ordinaryChannelKey(networkId, channel));
-    if (preferred !== undefined) {
-        reuse.channels.set(channel, preferred);
-        return preferred;
+    if (preferred) {
+        if (existing === undefined) reuse.channels.set(channel, preferred);
+        return aliasChannelLeg(intent, preferred);
     }
-    const track = allocator.channel(channel);
-    reuse.channels.set(channel, track);
-    return track;
+    if (existing !== undefined) {
+        return aliasChannelLeg(intent, existing);
+    }
+    const physical = allocator.channelLeg(intent);
+    reuse.channels.set(channel, physical);
+    return physical;
 }
 
 function cloneNetworkTrackReuse(reuse: NetworkTrackReuse): NetworkTrackReuse {
@@ -1182,7 +1383,9 @@ function endpointEscape(
     preferredEscapes: ReadonlyMap<string, EndpointEscapePlan>,
     networkId: string,
     node: RoutingGridNodeInput,
-    terminal: RoutingTerminalRequest
+    terminal: RoutingTerminalRequest,
+    channelIntent: ChannelLegIntent,
+    preferredChannelLeg?: ChannelLegHandle
 ): EndpointEscapePlan {
     const { grid } = allocator;
     const key = `${terminal.nodeId}\0${terminal.pinId}`;
@@ -1199,7 +1402,11 @@ function endpointEscape(
         escape = Object.freeze({
             kind: 'channel',
             channel,
-            track: allocator.channel(channel),
+            track: plannedChannelLeg(
+                allocator,
+                channelIntent,
+                preferredChannelLeg
+            ),
         });
     } else {
         const pin = node.pinAnchors!.find(
@@ -1283,10 +1490,13 @@ function planFeedbackConnection(
     reuse: NetworkTrackReuse,
     exteriorTracks: ExteriorTrackState,
     preferredEscapes: ReadonlyMap<string, EndpointEscapePlan>,
+    preferredChannelLegs: PreferredChannelLegs,
     networkId: string,
     from: RoutingTerminalRequest,
     to: RoutingTerminalRequest,
     nodes: ReadonlyMap<string, RoutingGridNodeInput>,
+    locations: ReadonlyMap<string, NodeLocation>,
+    geometry: RealizedRoutingGrid,
     span: readonly [number, number],
     kind: 'outer-top' | 'outer-bottom'
 ): FeedbackPathPlan {
@@ -1302,6 +1512,9 @@ function planFeedbackConnection(
             span,
         });
     reuse.corridors.set(key, corridor);
+    const connection = connectionKey(networkId, from, to);
+    const sourceChannel = sideChannel(nodes.get(from.nodeId)!, from.pinId);
+    const targetChannel = sideChannel(nodes.get(to.nodeId)!, to.pinId);
     return Object.freeze({
         kind: 'feedback',
         networkId,
@@ -1314,7 +1527,24 @@ function planFeedbackConnection(
             preferredEscapes,
             networkId,
             nodes.get(from.nodeId)!,
-            from
+            from,
+            channelLegIntent(
+                `${connection}\0feedback-source`,
+                networkId,
+                sourceChannel,
+                from,
+                to,
+                'feedback-source',
+                nodes,
+                locations,
+                geometry
+            ),
+            preferredChannelLegs.get(preferredChannelLegKey(
+                networkId,
+                from,
+                'feedback-source',
+                sourceChannel
+            ))
         ),
         targetEscape: endpointEscape(
             allocator,
@@ -1323,7 +1553,24 @@ function planFeedbackConnection(
             preferredEscapes,
             networkId,
             nodes.get(to.nodeId)!,
-            to
+            to,
+            channelLegIntent(
+                `${connection}\0feedback-target`,
+                networkId,
+                targetChannel,
+                to,
+                from,
+                'feedback-target',
+                nodes,
+                locations,
+                geometry
+            ),
+            preferredChannelLegs.get(preferredChannelLegKey(
+                networkId,
+                to,
+                'feedback-target',
+                targetChannel
+            ))
         ),
         corridor,
     });
@@ -1438,7 +1685,7 @@ function ordinaryVariantUsesFreshTracks(
     nodes: ReadonlyMap<string, RoutingGridNodeInput>,
     locations: ReadonlyMap<string, NodeLocation>,
     geometry: RealizedRoutingGrid,
-    forcedTracks: ReadonlyMap<string, ForcedCorridorTracks>,
+    forcedConnections: ReadonlySet<string>,
     variantIndex: number
 ): boolean {
     const fromNode = nodes.get(from.nodeId)!;
@@ -1452,7 +1699,7 @@ function ordinaryVariantUsesFreshTracks(
         || (sourceChannel === targetChannel
             && reuse.channels.has(sourceChannel));
     const forced = adjacentSharedChannel
-        && forcedTracks.has(connectionKey(networkId, from, to));
+        && forcedConnections.has(connectionKey(networkId, from, to));
     if (forced) return false;
     const aligned = adjacentSharedChannel
         && locations.get(from.nodeId)!.row === locations.get(to.nodeId)!.row
@@ -1475,8 +1722,8 @@ function planOrdinaryConnection(
     locations: ReadonlyMap<string, NodeLocation>,
     rowCount: number,
     geometry: RealizedRoutingGrid,
-    forcedTracks: ReadonlyMap<string, ForcedCorridorTracks>,
-    preferredChannelTracks: ReadonlyMap<string, number>,
+    forcedConnections: ReadonlySet<string>,
+    preferredChannelLegs: PreferredChannelLegs,
     preferredCorridorTracks: ReadonlyMap<string, CorridorTrackHandle>,
     variantIndex: number
 ): PlannedPath | undefined {
@@ -1495,8 +1742,38 @@ function planOrdinaryConnection(
         && locations.get(from.nodeId)!.row === locations.get(to.nodeId)!.row
         && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
     const forced = adjacentSharedChannel
-        ? forcedTracks.get(connectionKey(networkId, from, to))
-        : undefined;
+        && forcedConnections.has(connectionKey(networkId, from, to));
+    const intent = (
+        terminal: RoutingTerminalRequest,
+        peer: RoutingTerminalRequest,
+        role: 'source' | 'target' | 'shared',
+        channel: number,
+        variant: string
+    ): ChannelLegIntent => channelLegIntent(
+        ordinaryChannelLegKey(networkId, from, to, role, variant),
+        networkId,
+        channel,
+        terminal,
+        peer,
+        role,
+        nodes,
+        locations,
+        geometry
+    );
+    const preferred = (
+        terminal: RoutingTerminalRequest,
+        peer: RoutingTerminalRequest,
+        role: 'source' | 'target' | 'shared',
+        channel: number
+    ): ChannelLegHandle | undefined => preferredChannelLegs.get(
+        preferredChannelLegKey(
+            networkId,
+            terminal,
+            role,
+            channel,
+            role === 'shared' ? peer : undefined
+        )
+    );
 
     if (sharedChannel && aligned && variantIndex === 0 && !forced) {
         return Object.freeze({ kind: 'direct', networkId, from, to });
@@ -1506,11 +1783,18 @@ function planOrdinaryConnection(
             ? channelTrack(
                 allocator,
                 reuse,
-                networkId,
                 sourceChannel,
-                preferredChannelTracks
+                intent(from, to, 'shared', sourceChannel, 'primary'),
+                preferred(from, to, 'shared', sourceChannel)
+                    ?? preferred(to, from, 'target', sourceChannel)
             )
-            : allocator.channel(sourceChannel);
+            : allocator.channelLeg(intent(
+                from,
+                to,
+                'shared',
+                sourceChannel,
+                `fresh:${variantIndex}`
+            ));
         reuse.channels.set(sourceChannel, track);
         return Object.freeze({
             kind: 'adjacent',
@@ -1540,35 +1824,51 @@ function planOrdinaryConnection(
         reuse
     )[corridorIndex];
     if (!candidate) return undefined;
-    const allocateFreshTrack = (channel: number): number => {
-        const track = allocator.channel(channel);
+    const trackVariant = freshTracks
+        ? `fresh:${corridorIndex}`
+        : forced ? 'forced' : 'primary';
+    const allocateFreshTrack = (
+        channel: number,
+        terminal: RoutingTerminalRequest,
+        peer: RoutingTerminalRequest,
+        role: 'source' | 'target'
+    ): ChannelLegHandle => {
+        const track = allocator.channelLeg(intent(
+            terminal,
+            peer,
+            role,
+            channel,
+            trackVariant
+        ));
         reuse.channels.set(channel, track);
         return track;
     };
-    const sourceTrack = forced?.sourceTrack ?? (
-        freshTracks
-            ? allocateFreshTrack(sourceChannel)
+    const sourceTrack = freshTracks
+        ? allocateFreshTrack(sourceChannel, from, to, 'source')
+        : channelTrack(
+            allocator,
+            reuse,
+            sourceChannel,
+            intent(from, to, 'source', sourceChannel, trackVariant),
+            preferred(from, to, 'source', sourceChannel)
+        );
+    const targetTrack = targetChannel === sourceChannel
+        ? plannedChannelLeg(
+            allocator,
+            intent(to, from, 'target', targetChannel, trackVariant),
+            freshTracks
+                ? undefined
+                : preferred(to, from, 'target', targetChannel)
+        )
+        : freshTracks
+            ? allocateFreshTrack(targetChannel, to, from, 'target')
             : channelTrack(
                 allocator,
                 reuse,
-                networkId,
-                sourceChannel,
-                preferredChannelTracks
-            )
-    );
-    const targetTrack = forced?.targetTrack ?? (
-        targetChannel === sourceChannel
-            ? allocator.channel(targetChannel)
-            : freshTracks
-                ? allocateFreshTrack(targetChannel)
-                : channelTrack(
-                    allocator,
-                    reuse,
-                    networkId,
-                    targetChannel,
-                    preferredChannelTracks
-                )
-    );
+                targetChannel,
+                intent(to, from, 'target', targetChannel, trackVariant),
+                preferred(to, from, 'target', targetChannel)
+            );
     return Object.freeze({
         kind: 'corridor',
         networkId,
@@ -1651,10 +1951,13 @@ function safeMultiply(left: number, right: number, label: string): number {
 
 function escapeX(
     escape: EndpointEscapePlan,
-    grid: RealizedRoutingGrid
+    grid: RealizedRoutingGrid,
+    resolveChannelTrack: (handle: ChannelLegHandle) => number
 ): number {
     if (escape.kind === 'channel') {
-        return grid.channels[escape.channel].trackX[escape.track];
+        return grid.channels[escape.channel].trackX[
+            resolveChannelTrack(escape.track)
+        ];
     }
     const offset = safeAdd(
         grid.metrics.pinEscape,
@@ -1678,15 +1981,16 @@ function sideChannel(
 function materializePath(
     plan: PlannedPath,
     grid: RealizedRoutingGrid,
-    nodeById: ReadonlyMap<string, RealizedRoutingNode>
+    nodeById: ReadonlyMap<string, RealizedRoutingNode>,
+    resolveChannelTrack: (handle: ChannelLegHandle) => number
 ): MaterializedTerminalPath {
     const sourceNode = nodeById.get(plan.from.nodeId)!;
     const targetNode = nodeById.get(plan.to.nodeId)!;
     const source = sourceNode.pinAnchors.find(pin => pin.id === plan.from.pinId)!.point;
     const target = targetNode.pinAnchors.find(pin => pin.id === plan.to.pinId)!.point;
     if (plan.kind === 'feedback') {
-        const sourceX = escapeX(plan.sourceEscape, grid);
-        const targetX = escapeX(plan.targetEscape, grid);
+        const sourceX = escapeX(plan.sourceEscape, grid, resolveChannelTrack);
+        const targetX = escapeX(plan.targetEscape, grid, resolveChannelTrack);
         const outer = plan.corridor.kind === 'outer-top'
             ? grid.outer.top
             : grid.outer.bottom;
@@ -1713,7 +2017,9 @@ function materializePath(
         });
     }
     if (plan.kind === 'adjacent') {
-        const channelX = grid.channels[plan.channel].trackX[plan.track];
+        const channelX = grid.channels[plan.channel].trackX[
+            resolveChannelTrack(plan.track)
+        ];
         const segments = collapsePathSegments([
             horizontal(plan.networkId, source.x, channelX, source.y),
             vertical(plan.networkId, channelX, source.y, target.y),
@@ -1725,8 +2031,12 @@ function materializePath(
             segments: freezeSegments(segments),
         });
     }
-    const sourceX = grid.channels[plan.sourceChannel].trackX[plan.sourceTrack];
-    const targetX = grid.channels[plan.targetChannel].trackX[plan.targetTrack];
+    const sourceX = grid.channels[plan.sourceChannel].trackX[
+        resolveChannelTrack(plan.sourceTrack)
+    ];
+    const targetX = grid.channels[plan.targetChannel].trackX[
+        resolveChannelTrack(plan.targetTrack)
+    ];
     const corridorY = plan.corridor.kind === 'internal'
         ? grid.rowGaps[plan.corridor.rowGap].trackY[plan.corridor.track]
         : grid.outer[plan.corridor.kind === 'outer-top' ? 'top' : 'bottom']
@@ -2160,7 +2470,8 @@ function materializeRoutedNetworks(
     networks: readonly RoutingNetworkRequest[],
     plans: readonly PlannedPath[],
     feedbackNetworkIds: ReadonlySet<string>,
-    realized: RealizedRoutingGrid
+    realized: RealizedRoutingGrid,
+    resolveChannelTrack: (handle: ChannelLegHandle) => number
 ): readonly RoutedNetwork[] {
     const realizedNodesById = new Map(
         realized.nodes.map(node => [node.id, node])
@@ -2174,7 +2485,12 @@ function materializeRoutedNetworks(
     const networksById = new Map<string, RoutedNetwork>();
     for (const network of networks) {
         const terminalPaths = (plansByNetworkId.get(network.id) ?? [])
-            .map(plan => materializePath(plan, realized, realizedNodesById));
+            .map(plan => materializePath(
+                plan,
+                realized,
+                realizedNodesById,
+                resolveChannelTrack
+            ));
         const paths = incrementalizePaths(terminalPaths, realizedNodesById);
         networksById.set(network.id, Object.freeze({
             id: network.id,
@@ -2186,6 +2502,44 @@ function materializeRoutedNetworks(
         }));
     }
     return Object.freeze(networks.map(network => networksById.get(network.id)!));
+}
+
+function plannedChannelLegCount(plans: readonly PlannedPath[]): number {
+    return plans.reduce((count, plan) => {
+        if (plan.kind === 'adjacent') return count + 1;
+        if (plan.kind === 'corridor') return count + 2;
+        if (plan.kind === 'feedback') {
+            return count
+                + Number(plan.sourceEscape.kind === 'channel')
+                + Number(plan.targetEscape.kind === 'channel');
+        }
+        return count;
+    }, 0);
+}
+
+function usedPhysicalChannelLegKeys(
+    plans: readonly PlannedPath[]
+): ReadonlySet<string> {
+    const result = new Set<string>();
+    const add = (handle: ChannelLegHandle): void => {
+        result.add(handle.reuseKey ?? handle.key);
+    };
+    for (const plan of plans) {
+        if (plan.kind === 'adjacent') {
+            add(plan.track);
+        } else if (plan.kind === 'corridor') {
+            add(plan.sourceTrack);
+            add(plan.targetTrack);
+        } else if (plan.kind === 'feedback') {
+            if (plan.sourceEscape.kind === 'channel') {
+                add(plan.sourceEscape.track);
+            }
+            if (plan.targetEscape.kind === 'channel') {
+                add(plan.targetEscape.track);
+            }
+        }
+    }
+    return result;
 }
 
 function routedPathLength(path: RoutedNetworkPath): number {
@@ -2230,19 +2584,21 @@ function preflightCandidateBranch(
     geometryAddedLength: number;
     base: CandidatePreflightBase;
 }> {
-    const demand = routingDemandSignature(branch.allocator.grid);
+    const geometryDemand = routingGeometryDemandSignature(branch.allocator.grid);
+    const allocationSignature = branch.allocator.channelAssignmentSignature();
+    const demand = `${geometryDemand}\0${allocationSignature}`;
     let base = basesByDemand.get(demand);
     if (!base) {
-        let realized = realizedByDemand.get(demand);
+        let realized = realizedByDemand.get(geometryDemand);
         if (!realized) {
             realized = branch.allocator.realizeBranch();
-            realizedByDemand.set(demand, realized);
+            realizedByDemand.set(geometryDemand, realized);
             diagnostics.realizedDemandSignatures += 1;
         }
         if (geometryPreservesCommittedRoutes(
             committedBase.realized,
             realized
-        )) {
+        ) && allocationSignature === committedBase.allocationSignature) {
             base = Object.freeze({
                 realized,
                 routedNetworks: committedBase.routedNetworks,
@@ -2251,13 +2607,15 @@ function preflightCandidateBranch(
                     committedBase.validation
                 ),
                 wireLength: committedBase.wireLength,
+                allocationSignature,
             });
         } else {
             const routedNetworks = materializeRoutedNetworks(
                 networks,
                 plans,
                 feedbackNetworkIds,
-                realized
+                realized,
+                handle => branch.allocator.resolveChannelTrack(handle)
             );
             diagnostics.committedRouteMaterializations += 1;
             base = Object.freeze({
@@ -2265,6 +2623,7 @@ function preflightCandidateBranch(
                 routedNetworks,
                 validation: validationStateForRoutes(realized, routedNetworks),
                 wireLength: routedNetworksWireLength(routedNetworks),
+                allocationSignature,
             });
         }
         basesByDemand.set(demand, base);
@@ -2276,7 +2635,8 @@ function preflightCandidateBranch(
     const fullPath = materializePath(
         candidate,
         base.realized,
-        realizedNodesById
+        realizedNodesById,
+        handle => branch.allocator.resolveChannelTrack(handle)
     );
     const existingNetwork = base.routedNetworks.find(
         network => network.id === candidate.networkId
@@ -2400,6 +2760,7 @@ export function routeNetworks(
         realizedDemandSignatures: 0,
         committedRouteMaterializations: 0,
         incrementalCandidateMaterializations: 0,
+        committedChannelLegIntents: 0,
     };
     const nodeSnapshots = snapshotRoutingNodes(nodes);
     const networkSnapshots = snapshotRoutingNetworks(networks);
@@ -2412,20 +2773,20 @@ export function routeNetworks(
     const rowCount = routingRowCount(locations);
     const contexts = orderedNetworkContexts(networkSnapshots, locations);
     const baseGeometry = allocator.preview();
-    const forcedCorridorTracks = forcedAdjacentCorridorTracks(
-        allocator,
+    const forcedAdjacent = forcedAdjacentConnections(
         contexts,
         nodeById,
         locations,
+        grid,
         baseGeometry
     );
-    const preferredChannelTracks = preferredOrdinaryChannelTracks(
+    const preferredChannelLegs = preallocatePreferredChannelLegs(
         allocator,
         contexts,
         nodeById,
         locations,
         baseGeometry,
-        forcedCorridorTracks
+        forcedAdjacent
     );
     const preferredCorridorTracks = preferredOrdinaryCorridorTracks(
         allocator,
@@ -2434,10 +2795,10 @@ export function routeNetworks(
         locations,
         rowCount,
         baseGeometry,
-        forcedCorridorTracks
+        forcedAdjacent
     );
     const preferredEndpointEscapes = preferredOuterEndpointEscapes(
-        allocator,
+        grid,
         contexts,
         nodeById,
         locations
@@ -2453,11 +2814,12 @@ export function routeNetworks(
         networkSnapshots,
         plans,
         feedbackNetworkIds,
-        initialRealized
+        initialRealized,
+        handle => allocator.resolveChannelTrack(handle)
     );
     diagnostics.committedRouteMaterializations += 1;
     const realizedByDemand = new Map<string, RealizedRoutingGrid>([[
-        routingDemandSignature(allocator.grid),
+        routingGeometryDemandSignature(allocator.grid),
         initialRealized,
     ]]);
     let committedBase: CandidatePreflightBase = Object.freeze({
@@ -2468,6 +2830,7 @@ export function routeNetworks(
             initialRoutedNetworks
         ),
         wireLength: routedNetworksWireLength(initialRoutedNetworks),
+        allocationSignature: allocator.channelAssignmentSignature(),
     });
     let preferTopOnTie = true;
     for (const context of contexts) {
@@ -2518,7 +2881,7 @@ export function routeNetworks(
             let selected: EvaluatedRouteCandidate | undefined;
             let candidateFailure: RangeError | undefined;
             const basesByDemand = new Map<string, CandidatePreflightBase>([[
-                routingDemandSignature(allocator.grid),
+                routingDemandSignature(allocator),
                 committedBase,
             ]]);
             const hadFeedbackCorridor = reuse.corridors.has('outer-top')
@@ -2611,10 +2974,13 @@ export function routeNetworks(
                                 candidateReuse,
                                 candidateExteriorTracks,
                                 preferredEndpointEscapes.escapes,
+                                preferredChannelLegs,
                                 network.id,
                                 from,
                                 to,
                                 nodeById,
+                                locations,
+                                contextGeometry,
                                 feedbackSpan!,
                                 kinds[variantIndex]
                             );
@@ -2649,7 +3015,7 @@ export function routeNetworks(
                         nodeById,
                         locations,
                         contextGeometry,
-                        forcedCorridorTracks,
+                        forcedAdjacent,
                         variantIndex
                     );
                     if (freshTracks && skipFreshVariant) {
@@ -2672,8 +3038,8 @@ export function routeNetworks(
                             locations,
                             rowCount,
                             contextGeometry,
-                            forcedCorridorTracks,
-                            preferredChannelTracks,
+                            forcedAdjacent,
+                            preferredChannelLegs,
                             preferredCorridorTracks,
                             variantIndex
                         );
@@ -2722,6 +3088,7 @@ export function routeNetworks(
                     routedPathLength(selected.path),
                     'committed route wire length'
                 ),
+                allocationSignature: selected.preflightBase.allocationSignature,
             });
             reuse = selected.reuse;
             exteriorTracks.left = selected.exteriorTracks.left;
@@ -2759,14 +3126,19 @@ export function routeNetworks(
         }
     }
 
-    const realized = allocator.realizeFinal();
+    const finalAllocator = allocator.compactChannelLegs(
+        usedPhysicalChannelLegKeys(plans)
+    );
+    const realized = finalAllocator.realizeFinal();
     const routedNetworks = materializeRoutedNetworks(
         networkSnapshots,
         plans,
         feedbackNetworkIds,
-        realized
+        realized,
+        handle => finalAllocator.resolveChannelTrack(handle)
     );
     validateAndReserveRoutes(realized, routedNetworks);
+    diagnostics.committedChannelLegIntents = plannedChannelLegCount(plans);
     latestRoutingDiagnostics = Object.freeze({ ...diagnostics });
     return Object.freeze({
         grid: realized,
@@ -2774,8 +3146,119 @@ export function routeNetworks(
     });
 }
 
+type RoutingTransactionProbeSnapshot = Readonly<{
+    actionCount: number;
+    channelTrackCounts: readonly number[];
+    demand: string;
+}>;
+
+type RoutingTransactionProbeResult = Readonly<{
+    rejected: boolean;
+    before: RoutingTransactionProbeSnapshot;
+    afterRejected: RoutingTransactionProbeSnapshot;
+    afterCommitted: RoutingTransactionProbeSnapshot;
+}>;
+
+function probeRoutingAllocationTransaction(
+    nodes: readonly RoutingGridNodeInput[],
+    terminal: RoutingTerminalRequest,
+    options: RoutingGridCreateOptions = {}
+): RoutingTransactionProbeResult {
+    const nodeSnapshots = snapshotRoutingNodes(nodes);
+    const optionSnapshot = snapshotRoutingOptions(options);
+    const nodeById = new Map(nodeSnapshots.map(node => [node.id, node]));
+    const node = nodeById.get(terminal.nodeId);
+    if (!node?.pinAnchors?.some(pin => pin.id === terminal.pinId)) {
+        throw new RangeError('transaction probe terminal is not routable');
+    }
+    const channel = sideChannel(node, terminal.pinId);
+    const allocator = new RoutingAllocationJournal(nodeSnapshots, optionSnapshot);
+    if (channel < 0 || channel >= allocator.grid.channels.length) {
+        throw new RangeError('transaction probe terminal needs an internal channel');
+    }
+    const locations = nodeLocations(nodeSnapshots);
+    const geometry = allocator.preview();
+    const intent = (
+        key: string,
+        networkId: string,
+        role: ChannelLegRole
+    ): ChannelLegIntent => channelLegIntent(
+        key,
+        networkId,
+        channel,
+        terminal,
+        terminal,
+        role,
+        nodeById,
+        locations,
+        geometry
+    );
+    allocator.channelLeg(intent('probe:committed', 'probe:committed', 'source'));
+    const snapshot = (): RoutingTransactionProbeSnapshot => Object.freeze({
+        actionCount: allocator.actionCount(),
+        channelTrackCounts: Object.freeze(allocator.grid.channels.map(
+            candidate => candidate.tracks.trackCount
+        )),
+        demand: routingGeometryDemandSignature(allocator.grid),
+    });
+    const before = snapshot();
+    const occupied = horizontal('probe:committed', 0, 20, -100);
+
+    const rejectedBranch = allocator.fork();
+    rejectedBranch.allocator.channelLeg(intent(
+        'probe:rejected',
+        'probe:rejected',
+        'target'
+    ));
+    const rejectedGrid = rejectedBranch.allocator.realizeBranch();
+    const rejectedState = createRouteValidationState(rejectedGrid);
+    validateRouteSegments(rejectedState, 'probe:committed', [occupied]);
+    reserveRouteSegments(rejectedState, 'probe:committed', [occupied]);
+    let rejected = false;
+    try {
+        validateRouteSegments(rejectedState, 'probe:rejected', [
+            horizontal('probe:rejected', 0, 20, -100),
+        ]);
+    } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        rejected = true;
+    }
+    const afterRejected = snapshot();
+
+    const committedBranch = allocator.fork();
+    committedBranch.allocator.channelLeg(intent(
+        'probe:accepted',
+        'probe:accepted',
+        'target'
+    ));
+    const committedGrid = committedBranch.allocator.realizeBranch();
+    const committedState = createRouteValidationState(committedGrid);
+    validateRouteSegments(committedState, 'probe:committed', [occupied]);
+    reserveRouteSegments(committedState, 'probe:committed', [occupied]);
+    validateRouteSegments(committedState, 'probe:accepted', [
+        horizontal('probe:accepted', 30, 50, -100),
+    ]);
+    allocator.commit(committedBranch.allocator.actionsSince(
+        committedBranch.baseActionCount
+    ));
+
+    return Object.freeze({
+        rejected,
+        before,
+        afterRejected,
+        afterCommitted: snapshot(),
+    });
+}
+
 Object.defineProperty(routeNetworks, ROUTING_DIAGNOSTICS, {
     configurable: false,
     enumerable: false,
     get: () => latestRoutingDiagnostics,
+});
+
+Object.defineProperty(routeNetworks, ROUTING_TRANSACTION_PROBE, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: probeRoutingAllocationTransaction,
 });

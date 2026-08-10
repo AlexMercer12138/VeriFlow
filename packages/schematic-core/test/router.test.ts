@@ -15,6 +15,113 @@ import {
     threeColumnFixture,
 } from './fixtures';
 
+function segmentContainsTestPoint(
+    segment: RoutedSchematic['networks'][number]['segments'][number],
+    point: Readonly<{ x: number; y: number }>
+): boolean {
+    return segment.orientation === 'horizontal'
+        ? segment.y === point.y && point.x >= segment.x1 && point.x <= segment.x2
+        : segment.x === point.x && point.y >= segment.y1 && point.y <= segment.y2;
+}
+
+function terminalPoint(
+    route: RoutedSchematic,
+    terminal: RoutingNetworkRequest['terminals'][number]
+): Readonly<{ x: number; y: number }> {
+    return route.grid.nodes.find(node => node.id === terminal.nodeId)!
+        .pinAnchors.find(pin => pin.id === terminal.pinId)!.point;
+}
+
+function terminalLegX(
+    route: RoutedSchematic,
+    networkId: string,
+    terminal: RoutingNetworkRequest['terminals'][number]
+): number {
+    const point = terminalPoint(route, terminal);
+    const network = route.networks.find(item => item.id === networkId)!;
+    const path = network.paths.find(candidate =>
+        candidate.to.nodeId === terminal.nodeId
+            && candidate.to.pinId === terminal.pinId
+    ) ?? network.paths.find(candidate => candidate.from.kind === 'terminal'
+        && candidate.from.nodeId === terminal.nodeId
+        && candidate.from.pinId === terminal.pinId);
+    assert.ok(path);
+    const segment = path.segments.find(candidate =>
+        candidate.orientation === 'horizontal'
+            && candidate.y === point.y
+            && (candidate.x1 === point.x || candidate.x2 === point.x));
+    assert.ok(segment && segment.orientation === 'horizontal');
+    return segment.x1 === point.x ? segment.x2 : segment.x1;
+}
+
+function assertEveryTerminalAnchorConnected(
+    route: RoutedSchematic,
+    networks: readonly RoutingNetworkRequest[]
+): void {
+    for (const request of networks) {
+        const network = route.networks.find(item => item.id === request.id)!;
+        for (const terminal of request.terminals) {
+            const point = terminalPoint(route, terminal);
+            assert.equal(
+                network.segments.some(segment =>
+                    segmentContainsTestPoint(segment, point)
+                ),
+                true,
+                `${request.id}:${terminal.nodeId}:${terminal.pinId} is disconnected`
+            );
+        }
+    }
+}
+
+function assertNoDifferentNetworkCollinearOverlap(route: RoutedSchematic): void {
+    const segments = route.networks.flatMap(network => network.segments);
+    for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1;
+            rightIndex < segments.length;
+            rightIndex += 1) {
+            const left = segments[leftIndex];
+            const right = segments[rightIndex];
+            if (left.networkId === right.networkId
+                || left.orientation !== right.orientation) continue;
+            const overlap = left.orientation === 'horizontal'
+                && right.orientation === 'horizontal'
+                ? left.y === right.y
+                    && Math.max(left.x1, right.x1) < Math.min(left.x2, right.x2)
+                : left.orientation === 'vertical'
+                    && right.orientation === 'vertical'
+                    && left.x === right.x
+                    && Math.max(left.y1, right.y1) < Math.min(left.y2, right.y2);
+            assert.equal(
+                overlap,
+                false,
+                `${left.networkId} overlaps ${right.networkId}`
+            );
+        }
+    }
+}
+
+function assertEveryAllocatedTrackReferenced(route: RoutedSchematic): void {
+    const segments = route.networks.flatMap(network => network.segments);
+    const referencesX = (track: number): boolean => segments.some(segment =>
+        segment.orientation === 'vertical'
+            ? segment.x === track
+            : segment.x1 === track || segment.x2 === track
+    );
+    const referencesY = (track: number): boolean => segments.some(segment =>
+        segment.orientation === 'horizontal'
+            ? segment.y === track
+            : segment.y1 === track || segment.y2 === track
+    );
+    for (const channel of route.grid.channels) {
+        assert.equal(channel.trackX.every(referencesX), true);
+    }
+    for (const gap of route.grid.rowGaps) {
+        assert.equal(gap.trackY.every(referencesY), true);
+    }
+    assert.equal(route.grid.outer.top.trackY.every(referencesY), true);
+    assert.equal(route.grid.outer.bottom.trackY.every(referencesY), true);
+}
+
 if (false) {
     const routed = null as unknown as RoutedSchematic;
     // @ts-expect-error routed arrays are readonly
@@ -740,23 +847,26 @@ test('returns a deeply frozen route snapshot', () => {
 
 test('keeps large fan-out tree output and abstract demand linear', () => {
     const sinkCount = 1_024;
-    const nodes = [
+    const routeFanout = (count: number): RoutedSchematic => routeNetworks([
         routingNode('source', 0, 0),
-        ...Array.from({ length: sinkCount }, (_, index) =>
+        ...Array.from({ length: count }, (_, index) =>
             routingNode(`sink:${index}`, index + 1, 0)
         ),
-    ];
-    const route = routeNetworks(nodes, [{
+    ], [{
         id: 'network:large-fanout',
         terminals: [
             { nodeId: 'source', pinId: 'right', role: 'driver' },
-            ...Array.from({ length: sinkCount }, (_, index) => ({
+            ...Array.from({ length: count }, (_, index) => ({
                 nodeId: `sink:${index}`,
                 pinId: 'left',
                 role: 'load' as const,
             })),
         ],
     }]);
+    for (const count of [64, 256]) {
+        assertEveryAllocatedTrackReferenced(routeFanout(count));
+    }
+    const route = routeFanout(sinkCount);
 
     assert.equal(route.networks[0].paths.length, sinkCount);
     assert.equal(route.networks[0].paths[0].from.kind, 'terminal');
@@ -771,7 +881,8 @@ test('keeps large fan-out tree output and abstract demand linear', () => {
     assert.ok(route.grid.channels.reduce(
         (sum, channel) => sum + channel.trackX.length,
         0
-    ) <= sinkCount + 1);
+    ) <= sinkCount);
+    assertEveryAllocatedTrackReferenced(route);
     const diagnostics = (
         routeNetworks as unknown as Record<symbol, Readonly<{
             realizedDemandSignatures: number;
@@ -1018,6 +1129,175 @@ test('routes outer escapes independently of network ID order', () => {
 
     assert.doesNotThrow(() => routeWithIds('a', 'b'));
     assert.doesNotThrow(() => routeWithIds('z', 'a'));
+});
+
+test('orders ordinary source and target legs before a feedback endpoint', () => {
+    const nodes = [
+        routingNode('left-top', 0, 0),
+        routingNode('left-bottom', 0, 1),
+        routingNode('right-top', 1, 0),
+        routingNode('right-bottom', 1, 1),
+    ];
+    const routeWithIds = (feedbackId: string, ordinaryId: string) => {
+        const networks: RoutingNetworkRequest[] = [
+            {
+                id: feedbackId,
+                terminals: [
+                    {
+                        nodeId: 'right-bottom',
+                        pinId: 'left',
+                        role: 'driver',
+                    },
+                    { nodeId: 'left-top', pinId: 'left', role: 'load' },
+                ],
+            },
+            {
+                id: ordinaryId,
+                terminals: [
+                    {
+                        nodeId: 'left-top',
+                        pinId: 'right',
+                        role: 'bidirectional',
+                    },
+                    {
+                        nodeId: 'left-bottom',
+                        pinId: 'right',
+                        role: 'bidirectional',
+                    },
+                ],
+            },
+        ];
+        const route = routeNetworks(nodes, networks);
+        const tracks = route.grid.channels[0].trackX;
+        assert.equal(tracks.length, 3);
+        assert.equal(
+            terminalLegX(route, ordinaryId, networks[1].terminals[0]),
+            tracks[0]
+        );
+        assert.equal(
+            terminalLegX(route, ordinaryId, networks[1].terminals[1]),
+            tracks[1]
+        );
+        assert.equal(
+            terminalLegX(route, feedbackId, networks[0].terminals[0]),
+            tracks[2]
+        );
+        assertNoDifferentNetworkCollinearOverlap(route);
+        assertEveryTerminalAnchorConnected(route, networks);
+        return route;
+    };
+
+    assert.doesNotThrow(() => routeWithIds('a', 'b'));
+    assert.doesNotThrow(() => routeWithIds('z', 'a'));
+});
+
+test('keeps same-network source and target legs distinct in one channel', () => {
+    const networks: RoutingNetworkRequest[] = [{
+        id: 'ordinary',
+        terminals: [
+            {
+                nodeId: 'left-top',
+                pinId: 'right',
+                role: 'bidirectional',
+            },
+            {
+                nodeId: 'left-bottom',
+                pinId: 'right',
+                role: 'bidirectional',
+            },
+        ],
+    }];
+    const route = routeNetworks([
+        routingNode('left-top', 0, 0),
+        routingNode('left-bottom', 0, 1),
+        routingNode('right-top', 1, 0),
+    ], networks);
+    const tracks = route.grid.channels[0].trackX;
+
+    assert.equal(tracks.length, 2);
+    assert.equal(terminalLegX(route, 'ordinary', networks[0].terminals[0]), tracks[0]);
+    assert.equal(terminalLegX(route, 'ordinary', networks[0].terminals[1]), tracks[1]);
+    assertEveryTerminalAnchorConnected(route, networks);
+});
+
+test('globally orders mixed ordinary and feedback channel legs', () => {
+    const nodes = [
+        routingNode('left-top', 0, 0),
+        routingNode('left-middle', 0, 1),
+        routingNode('left-bottom', 0, 2),
+        routingNode('right-top', 1, 0),
+        routingNode('right-middle', 1, 1),
+        routingNode('right-bottom', 1, 2),
+    ];
+    const networks: RoutingNetworkRequest[] = [
+        {
+            id: 'left-ordinary',
+            terminals: [
+                { nodeId: 'left-top', pinId: 'right', role: 'bidirectional' },
+                { nodeId: 'left-bottom', pinId: 'right', role: 'bidirectional' },
+            ],
+        },
+        {
+            id: 'right-ordinary',
+            terminals: [
+                { nodeId: 'right-top', pinId: 'left', role: 'bidirectional' },
+                {
+                    nodeId: 'right-middle',
+                    pinId: 'left',
+                    role: 'bidirectional',
+                },
+            ],
+        },
+        {
+            id: 'feedback',
+            terminals: [
+                { nodeId: 'right-bottom', pinId: 'left', role: 'driver' },
+                { nodeId: 'left-middle', pinId: 'left', role: 'load' },
+            ],
+        },
+    ];
+    const route = routeNetworks(nodes, networks);
+    const tracks = route.grid.channels[0].trackX;
+
+    assert.equal(tracks.length, 5);
+    assert.deepEqual([
+        terminalLegX(route, 'left-ordinary', networks[0].terminals[0]),
+        terminalLegX(route, 'left-ordinary', networks[0].terminals[1]),
+        terminalLegX(route, 'right-ordinary', networks[1].terminals[0]),
+        terminalLegX(route, 'right-ordinary', networks[1].terminals[1]),
+        terminalLegX(route, 'feedback', networks[2].terminals[0]),
+    ], tracks);
+    assertNoDifferentNetworkCollinearOverlap(route);
+    assertEveryTerminalAnchorConnected(route, networks);
+});
+
+test('preserves channel-leg multiplicity across one network tree', () => {
+    const networks: RoutingNetworkRequest[] = [{
+        id: 'tree',
+        terminals: [
+            { nodeId: 'left-top', pinId: 'right', role: 'bidirectional' },
+            { nodeId: 'left-middle', pinId: 'right', role: 'bidirectional' },
+            { nodeId: 'left-bottom', pinId: 'right', role: 'bidirectional' },
+        ],
+    }];
+    const route = routeNetworks([
+        routingNode('left-top', 0, 0),
+        routingNode('left-middle', 0, 1),
+        routingNode('left-bottom', 0, 2),
+        routingNode('right-top', 1, 0),
+    ], networks);
+
+    assert.equal(route.grid.channels[0].trackX.length, 3);
+    assert.equal(new Set(networks[0].terminals.map(terminal =>
+        terminalLegX(route, 'tree', terminal)
+    )).size, 3);
+    const diagnostics = (
+        routeNetworks as unknown as Record<symbol, Readonly<{
+            committedChannelLegIntents: number;
+        }>>
+    )[Symbol.for('@veriflow/schematic-core/routing-diagnostics')];
+    assert.equal(diagnostics.committedChannelLegIntents, 3);
+    assertEveryTerminalAnchorConnected(route, networks);
 });
 
 test('chooses feedback lane using realized added wire length', () => {
@@ -1347,7 +1627,7 @@ test('keeps an unselected feedback preview out of final track demand', () => {
     assert.equal(route.grid.outer.bottom.trackY.length, 0);
 });
 
-test('commits only the valid fallback for a conflicting adjacent route', () => {
+test('orders global legs and isolates a rejected fallback branch', () => {
     const nodes: RoutingGridNodeInput[] = [];
     for (let column = 0; column < 4; column += 1) {
         for (let row = 0; row < 3; row += 1) {
@@ -1371,7 +1651,8 @@ test('commits only the valid fallback for a conflicting adjacent route', () => {
         },
     ]);
 
-    assert.equal(route.grid.channels[1].trackX.length, 4);
+    // The globally ordered primary is valid, so no fourth fallback track remains.
+    assert.equal(route.grid.channels[1].trackX.length, 3);
     assert.equal(route.grid.rowGaps.reduce(
         (sum, gap) => sum + gap.trackY.length,
         0
@@ -1384,4 +1665,43 @@ test('commits only the valid fallback for a conflicting adjacent route', () => {
     assert.equal(route.networks.some(network =>
         network.paths[0].segments.length === 5
     ), true);
+
+    // A true preflight failure must leave the committed journal unchanged.
+    type Snapshot = Readonly<{
+        actionCount: number;
+        channelTrackCounts: readonly number[];
+        demand: string;
+    }>;
+    type Probe = (
+        nodes: readonly RoutingGridNodeInput[],
+        terminal: RoutingNetworkRequest['terminals'][number]
+    ) => Readonly<{
+        rejected: boolean;
+        before: Snapshot;
+        afterRejected: Snapshot;
+        afterCommitted: Snapshot;
+    }>;
+    const probe = (
+        routeNetworks as unknown as Record<symbol, Probe>
+    )[Symbol.for('@veriflow/schematic-core/routing-transaction-probe')];
+    const result = probe([
+        routingNode('left', 0, 0),
+        routingNode('right', 1, 0),
+    ], {
+        nodeId: 'left',
+        pinId: 'right',
+        role: 'bidirectional',
+    });
+
+    assert.equal(result.rejected, true);
+    assert.deepEqual(result.afterRejected, result.before);
+    assert.equal(
+        result.afterCommitted.actionCount,
+        result.before.actionCount + 1
+    );
+    assert.equal(
+        result.afterCommitted.channelTrackCounts[0],
+        result.before.channelTrackCounts[0] + 1
+    );
+    assert.notEqual(result.afterCommitted.demand, result.before.demand);
 });
