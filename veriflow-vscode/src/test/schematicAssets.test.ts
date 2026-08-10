@@ -81,6 +81,160 @@ function typeScriptFiles(root: string): string[] {
     });
 }
 
+function sourceSection(
+    source: string,
+    startMarker: string,
+    endMarker: string,
+    description: string
+): string {
+    const start = source.indexOf(startMarker);
+    assert.notStrictEqual(start, -1, `${description} is missing ${startMarker}`);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    assert.notStrictEqual(end, -1, `${description} is missing ${endMarker}`);
+    return source.slice(start, end);
+}
+
+function assertCanonicalSegmentRendering(source: string): void {
+    assert.strictEqual(
+        source.match(/\bgraph\.addEdge\(/g)?.length ?? 0,
+        1,
+        'the renderer must have exactly one graph.addEdge call'
+    );
+    const renderer = sourceSection(
+        source,
+        'function renderNetworks(',
+        '\nconst selection =',
+        'network renderer'
+    );
+    const segmentLoop = sourceSection(
+        renderer,
+        'networkRoute.segments.forEach((segment, index) => {',
+        '\n    renderModel.junctions.forEach',
+        'canonical segment loop'
+    );
+    assert.strictEqual(
+        segmentLoop.match(/\bgraph\.addEdge\(/g)?.length ?? 0,
+        1,
+        'each canonical segment loop must contain exactly one graph.addEdge call'
+    );
+    assert.match(
+        segmentLoop,
+        /const \[source, target] = segmentEndpoints\(segment\);[^]*graph\.addEdge\(\{[^]*\n\s+source,\n\s+target,/,
+        'canonical segments must render with point source and target endpoints'
+    );
+    assert.doesNotMatch(segmentLoop, /\bvertices:\s*|\brouter:\s*/);
+}
+
+function assertRendererCellContracts(source: string): void {
+    const nodeRenderer = sourceSection(
+        source,
+        'function createRenderedNode(',
+        '\nfunction segmentEndpoints(',
+        'node renderer'
+    );
+    assert.match(nodeRenderer, /objectId: model\.id,[^]*objectType: 'node',[^]*node: model,/);
+    assert.match(nodeRenderer, /zIndex: 2,/);
+
+    const networkRenderer = sourceSection(
+        source,
+        'function renderNetworks(',
+        '\nconst selection =',
+        'network renderer'
+    );
+    const segmentLoop = sourceSection(
+        networkRenderer,
+        'networkRoute.segments.forEach((segment, index) => {',
+        '\n    renderModel.junctions.forEach',
+        'canonical segment loop'
+    );
+    assert.match(
+        segmentLoop,
+        /data: \{\s*objectId: network\.id,\s*objectType: 'network',\s*network,\s*networkRoute,\s*} satisfies CellData/
+    );
+    assert.match(segmentLoop, /zIndex: 0,/);
+
+    const junctionLoop = networkRenderer.slice(networkRenderer.indexOf(
+        'renderModel.junctions.forEach'
+    ));
+    assert.match(
+        junctionLoop,
+        /data: \{\s*objectId: network\.id,\s*objectType: 'network',\s*network,\s*networkRoute,\s*junction: true,\s*} satisfies CellData/
+    );
+    assert.match(junctionLoop, /interacting: false,\s*zIndex: 1,/);
+    assert.ok(
+        (junctionLoop.match(/pointerEvents: 'none'/g)?.length ?? 0) >= 2,
+        'junction root and body must both ignore pointer events'
+    );
+    const selectionOptions = sourceSection(
+        source,
+        'const selection = new Selection({',
+        '\n});\n\nconst graph =',
+        'selection options'
+    );
+    assert.match(selectionOptions, /filter: cell => cellData\(cell\)\?\.junction !== true,/);
+}
+
+function assertNetworkSelectionContracts(source: string): void {
+    const expansion = sourceSection(
+        source,
+        'function expandNetworkSelection(',
+        '\nfunction sameCellSelection(',
+        'network selection expansion'
+    );
+    assert.match(expansion, /const networkIds = selectedNetworkIds\(cells\);/);
+    assert.match(
+        expansion,
+        /data\?\.objectType === 'network' && !data\.junction\s*&& networkIds\.has\(data\.objectId\)/
+    );
+    assert.match(expansion, /expanded\.set\(cell\.id, cell\);/);
+
+    const styling = sourceSection(
+        source,
+        'function refreshNetworkSelectionStyles(',
+        '\nfunction descriptionFor(',
+        'network selection styling'
+    );
+    assert.match(styling, /const selectedIds = selectedNetworkIds\(cells\);/);
+    assert.match(styling, /if \(data\.junction\) \{[^]*body\/fill[^]*body\/stroke/);
+
+    const status = sourceSection(
+        source,
+        'function updateSelectionStatus(',
+        '\nfunction navigationTargetForCell(',
+        'selection status update'
+    );
+    assert.match(status, /const itemsByObjectId = new Map<string,/);
+    assert.match(status, /!itemsByObjectId\.has\(data\.objectId\)/);
+    assert.match(status, /itemsByObjectId\.set\(data\.objectId,/);
+    assert.match(status, /summarizeSchematicSelection\(\[\.\.\.itemsByObjectId\.values\(\)]\)/);
+}
+
+function assertAdapterSearchContract(source: string): void {
+    assert.match(source, /network\?: SchematicNetwork;/, 'CellData must retain the raw network');
+    const search = sourceSection(
+        source,
+        'function searchText(',
+        '\nfunction collectSearchMatches(',
+        'network search text'
+    );
+    assert.match(search, /data\.networkRoute\?\.displayName \?\? data\.network\?\.name/);
+    assert.match(search, /data\.network\?\.adapterLabel \?\? ''/);
+}
+
+function assertNetworkNavigationContract(source: string): void {
+    const target = sourceSection(
+        source,
+        'function navigationTargetForCell(',
+        '\nfunction updateViewportFromGraph(',
+        'cell navigation target'
+    );
+    assert.match(target, /return data\?\.node \?\? data\?\.network \?\? \{};/);
+    assert.match(
+        source,
+        /graph\.on\('cell:dblclick', \(\{ cell }\) => \{\s*const command = navigationCommandForCell\(navigationTargetForCell\(cell\), false\);/
+    );
+}
+
 async function testLicenseFailure(support: BuildSupport): Promise<void> {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-license-'));
     try {
@@ -239,6 +393,11 @@ async function testSchematicAssets(): Promise<void> {
         path.join(schematicSourceRoot, 'index.ts'),
         'utf8'
     );
+    assertCanonicalSegmentRendering(webviewSource);
+    assertRendererCellContracts(webviewSource);
+    assertNetworkSelectionContracts(webviewSource);
+    assertAdapterSearchContract(webviewSource);
+    assertNetworkNavigationContract(webviewSource);
     const temporaryImportOwners = typeScriptFiles(
         path.join(repositoryRoot, 'packages')
     ).filter(filePath => fs.readFileSync(filePath, 'utf8').includes(
