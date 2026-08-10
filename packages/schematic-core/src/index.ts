@@ -1,8 +1,26 @@
 export * from './columns';
+export * from './layout';
 export * from './model';
 export * from './nodeGeometry';
 export * from './pins';
 export * from './placement';
+export {
+    SCHEMATIC_NETWORK_LABEL_LAYOUT,
+    SCHEMATIC_NETWORK_LABEL_STYLE,
+    serializeSchematicRenderModel,
+} from './renderModel';
+export type {
+    LayoutColumn,
+    NetworkRoute,
+    NetworkRouteLabel,
+    NetworkTerminalGeometry,
+    RenderedJunction,
+    RenderedNodeGeometry,
+    RenderedPinGeometry,
+    RenderedTextLabel,
+    SchematicRenderModel,
+    SerializedSchematicRenderModel,
+} from './renderModel';
 export {
     horizontal,
     segmentIntersectsRectangleInterior,
