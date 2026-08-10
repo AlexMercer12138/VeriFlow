@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as schematicCore from '../src';
 import {
     routeNetworks,
     segmentIntersectsRectangleInterior,
@@ -14,6 +15,12 @@ import {
     routingNode,
     threeColumnFixture,
 } from './fixtures';
+import {
+    orderedPathSegments,
+    probeChannelConstraintAssignmentForTesting,
+    probeRoutingAllocationTransactionForTesting,
+    routeNetworksForTesting,
+} from '../src/routing/router';
 
 function segmentContainsTestPoint(
     segment: RoutedSchematic['networks'][number]['segments'][number],
@@ -122,6 +129,37 @@ function assertEveryAllocatedTrackReferenced(route: RoutedSchematic): void {
     assert.equal(route.grid.outer.bottom.trackY.every(referencesY), true);
 }
 
+function assertOrderedPathTraversal(
+    points: readonly Readonly<{ x: number; y: number }>[],
+    segments: readonly RoutedSchematic['networks'][number]['segments'][number][]
+): void {
+    let current = points[0];
+    for (const segment of segments) {
+        if (segment.orientation === 'horizontal') {
+            assert.equal(current.y, segment.y);
+            assert.ok(current.x === segment.x1 || current.x === segment.x2);
+            current = {
+                x: current.x === segment.x1 ? segment.x2 : segment.x1,
+                y: segment.y,
+            };
+        } else {
+            assert.equal(current.x, segment.x);
+            assert.ok(current.y === segment.y1 || current.y === segment.y2);
+            current = {
+                x: segment.x,
+                y: current.y === segment.y1 ? segment.y2 : segment.y1,
+            };
+        }
+    }
+    assert.deepEqual(current, points[points.length - 1]);
+    for (let index = 1; index < segments.length; index += 1) {
+        assert.notEqual(
+            segments[index - 1].orientation,
+            segments[index].orientation
+        );
+    }
+}
+
 if (false) {
     const routed = null as unknown as RoutedSchematic;
     // @ts-expect-error routed arrays are readonly
@@ -139,6 +177,60 @@ test('routes a non-adjacent connection as H-V-H-V-H', () => {
         route.networks[0].paths[0].segments.map(segment => segment.orientation),
         ['horizontal', 'vertical', 'horizontal', 'vertical', 'horizontal']
     );
+});
+
+test('collapses a forward collinear point sequence in traversal order', () => {
+    const points = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }];
+    const segments = orderedPathSegments('network:points', points);
+
+    assert.deepEqual(segments, [{
+        orientation: 'horizontal',
+        networkId: 'network:points',
+        y: 0,
+        x1: 0,
+        x2: 20,
+    }]);
+    assertOrderedPathTraversal(points, segments);
+});
+
+test('collapses a collinear overshoot without retaining the far interval', () => {
+    const points = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 0 }];
+    const segments = orderedPathSegments('network:points', points);
+
+    assert.deepEqual(segments, [{
+        orientation: 'horizontal',
+        networkId: 'network:points',
+        y: 0,
+        x1: 0,
+        x2: 10,
+    }]);
+    assertOrderedPathTraversal(points, segments);
+});
+
+test('removes a collinear round trip that ends at its start', () => {
+    const points = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 0, y: 0 }];
+    const segments = orderedPathSegments('network:points', points);
+
+    assert.deepEqual(segments, []);
+    assertOrderedPathTraversal(points, segments);
+});
+
+test('removes duplicate points and redundant bends before materialization', () => {
+    const points = [
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+        { x: 10, y: 20 },
+    ];
+    const segments = orderedPathSegments('network:points', points);
+
+    assert.deepEqual(segments.map(segment => segment.orientation), [
+        'horizontal',
+        'vertical',
+    ]);
+    assertOrderedPathTraversal(points, segments);
 });
 
 test('keeps every routed segment out of every module interior', () => {
@@ -222,6 +314,43 @@ test('routes fan-out as one tree and reuses the same-network trunk', () => {
     assert.equal(route.grid.rowGaps[0].trackY.length, 1);
     assert.ok(route.networks[0].segments.length
         < route.networks[0].paths.flatMap(path => path.segments).length);
+});
+
+test('routes equal-height fan-out without losing path traversal order', () => {
+    const node = (
+        id: string,
+        column: number,
+        order: number,
+        pinId: 'left' | 'right'
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order,
+        yOffset: 0,
+        size: { width: 160, height: 120 },
+        pinAnchors: [{
+            id: pinId,
+            x: pinId === 'left' ? 0 : 160,
+            y: 50,
+        }],
+    });
+    const networks: RoutingNetworkRequest[] = [{
+        id: 'network:equal-height-fanout',
+        terminals: [
+            { nodeId: 'source', pinId: 'right', role: 'driver' },
+            { nodeId: 'load-a', pinId: 'left', role: 'load' },
+            { nodeId: 'load-b', pinId: 'left', role: 'load' },
+        ],
+    }];
+    const route = routeNetworks([
+        node('source', 0, 0, 'right'),
+        node('load-a', 2, 0, 'left'),
+        node('load-b', 2, 1, 'left'),
+    ], networks);
+
+    assert.equal(route.networks[0].paths.length, 2);
+    assertEveryTerminalAnchorConnected(route, networks);
+    assertEveryAllocatedTrackReferenced(route);
 });
 
 test('reuses one adjacent channel trunk for same-network fan-out', () => {
@@ -686,6 +815,37 @@ test('rejects malformed network terminals before allocating tracks', () => {
     });
 });
 
+test('treats NUL-containing node and pin identities as distinct terminals', () => {
+    const networks: RoutingNetworkRequest[] = [{
+        id: 'network:nul-identities',
+        terminals: [
+            { nodeId: 'a', pinId: 'b\0c', role: 'driver' },
+            { nodeId: 'a\0b', pinId: 'c', role: 'load' },
+        ],
+    }];
+    const route = routeNetworks([
+        {
+            id: 'a',
+            column: 0,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [{ id: 'b\0c', x: 100, y: 20 }],
+        },
+        {
+            id: 'a\0b',
+            column: 1,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [{ id: 'c', x: 0, y: 20 }],
+        },
+    ], networks);
+
+    assert.equal(route.networks[0].paths.length, 1);
+    assertEveryTerminalAnchorConnected(route, networks);
+});
+
 test('snapshots external getters once and detaches routed terminal output', () => {
     const reads: Record<string, number> = {};
     const once = <T>(key: string, value: T): (() => T) => () => {
@@ -846,28 +1006,51 @@ test('returns a deeply frozen route snapshot', () => {
     }
 });
 
+test('does not attach testing state or probes to routeNetworks', () => {
+    assert.deepEqual(Object.getOwnPropertySymbols(routeNetworks), []);
+    for (const name of [
+        'orderedPathSegments',
+        'probeChannelConstraintAssignmentForTesting',
+        'probeRoutingAllocationTransactionForTesting',
+        'routeNetworksForTesting',
+    ]) {
+        assert.equal(name in schematicCore, false);
+    }
+});
+
 test('keeps large fan-out tree output and abstract demand linear', () => {
     const sinkCount = 1_024;
-    const routeFanout = (count: number): RoutedSchematic => routeNetworks([
-        routingNode('source', 0, 0),
-        ...Array.from({ length: count }, (_, index) =>
-            routingNode(`sink:${index}`, index + 1, 0)
-        ),
-    ], [{
-        id: 'network:large-fanout',
-        terminals: [
-            { nodeId: 'source', pinId: 'right', role: 'driver' },
-            ...Array.from({ length: count }, (_, index) => ({
-                nodeId: `sink:${index}`,
-                pinId: 'left',
-                role: 'load' as const,
-            })),
-        ],
-    }]);
+    type Diagnostics = Readonly<{
+        realizedDemandSignatures: number;
+        committedRouteMaterializations: number;
+        incrementalCandidateMaterializations: number;
+    }>;
+    const routeFanout = (
+        count: number,
+        observer?: (diagnostics: Diagnostics) => void
+    ): RoutedSchematic => routeNetworksForTesting([
+            routingNode('source', 0, 0),
+            ...Array.from({ length: count }, (_, index) =>
+                routingNode(`sink:${index}`, index + 1, 0)
+            ),
+        ], [{
+            id: 'network:large-fanout',
+            terminals: [
+                { nodeId: 'source', pinId: 'right', role: 'driver' },
+                ...Array.from({ length: count }, (_, index) => ({
+                    nodeId: `sink:${index}`,
+                    pinId: 'left',
+                    role: 'load' as const,
+                })),
+            ],
+        }], {}, observer);
     for (const count of [64, 256]) {
         assertEveryAllocatedTrackReferenced(routeFanout(count));
     }
-    const route = routeFanout(sinkCount);
+    let diagnostics: Diagnostics | undefined;
+    const route = routeFanout(sinkCount, value => {
+        diagnostics = value;
+    });
 
     assert.equal(route.networks[0].paths.length, sinkCount);
     assert.equal(route.networks[0].paths[0].from.kind, 'terminal');
@@ -884,13 +1067,7 @@ test('keeps large fan-out tree output and abstract demand linear', () => {
         0
     ) <= sinkCount);
     assertEveryAllocatedTrackReferenced(route);
-    const diagnostics = (
-        routeNetworks as unknown as Record<symbol, Readonly<{
-            realizedDemandSignatures: number;
-            committedRouteMaterializations: number;
-            incrementalCandidateMaterializations: number;
-        }>>
-    )[Symbol.for('@veriflow/schematic-core/routing-diagnostics')];
+    assert.ok(diagnostics);
     assert.ok(diagnostics.realizedDemandSignatures <= 8);
     assert.ok(diagnostics.committedRouteMaterializations <= 8);
     assert.ok(
@@ -1330,23 +1507,21 @@ test('preserves channel-leg multiplicity across one network tree', () => {
             { nodeId: 'left-bottom', pinId: 'right', role: 'bidirectional' },
         ],
     }];
-    const route = routeNetworks([
+    let committedChannelLegIntents: number | undefined;
+    const route = routeNetworksForTesting([
         routingNode('left-top', 0, 0),
         routingNode('left-middle', 0, 1),
         routingNode('left-bottom', 0, 2),
         routingNode('right-top', 1, 0),
-    ], networks);
+    ], networks, {}, diagnostics => {
+        committedChannelLegIntents = diagnostics.committedChannelLegIntents;
+    });
 
     assert.equal(route.grid.channels[0].trackX.length, 3);
     assert.equal(new Set(networks[0].terminals.map(terminal =>
         terminalLegX(route, 'tree', terminal)
     )).size, 3);
-    const diagnostics = (
-        routeNetworks as unknown as Record<symbol, Readonly<{
-            committedChannelLegIntents: number;
-        }>>
-    )[Symbol.for('@veriflow/schematic-core/routing-diagnostics')];
-    assert.equal(diagnostics.committedChannelLegIntents, 3);
+    assert.equal(committedChannelLegIntents, 3);
     assertEveryTerminalAnchorConnected(route, networks);
 });
 
@@ -1717,24 +1892,7 @@ test('orders global legs and isolates a rejected fallback branch', () => {
     ), true);
 
     // A true preflight failure must leave the committed journal unchanged.
-    type Snapshot = Readonly<{
-        actionCount: number;
-        channelTrackCounts: readonly number[];
-        demand: string;
-    }>;
-    type Probe = (
-        nodes: readonly RoutingGridNodeInput[],
-        terminal: RoutingNetworkRequest['terminals'][number]
-    ) => Readonly<{
-        rejected: boolean;
-        before: Snapshot;
-        afterRejected: Snapshot;
-        afterCommitted: Snapshot;
-    }>;
-    const probe = (
-        routeNetworks as unknown as Record<symbol, Probe>
-    )[Symbol.for('@veriflow/schematic-core/routing-transaction-probe')];
-    const result = probe([
+    const result = probeRoutingAllocationTransactionForTesting([
         routingNode('left', 0, 0),
         routingNode('right', 1, 0),
     ], {
@@ -1757,23 +1915,7 @@ test('orders global legs and isolates a rejected fallback branch', () => {
 });
 
 test('topologically orders channel legs and rejects a cycle transactionally', () => {
-    type Snapshot = Readonly<{
-        actionCount: number;
-        trackCount: number;
-    }>;
-    type Probe = () => Readonly<{
-        chainTracks: readonly number[];
-        cycleRejected: boolean;
-        before: Snapshot;
-        afterRejected: Snapshot;
-        afterCommitted: Snapshot;
-    }>;
-    const probe = (
-        routeNetworks as unknown as Record<symbol, Probe>
-    )[Symbol.for(
-        '@veriflow/schematic-core/routing-channel-constraint-probe'
-    )];
-    const result = probe();
+    const result = probeChannelConstraintAssignmentForTesting();
 
     assert.deepEqual(result.chainTracks, [0, 1, 2]);
     assert.equal(result.cycleRejected, true);

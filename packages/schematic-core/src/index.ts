@@ -16,7 +16,17 @@ export type {
     VerticalSegment,
 } from './routing/geometry';
 export * from './routing/junctions';
-export * from './routing/router';
+export { routeNetworks } from './routing/router';
+export type {
+    RouteAttachment,
+    RoutedNetwork,
+    RoutedNetworkPath,
+    RoutedRouteSegment,
+    RoutedSchematic,
+    RoutingNetworkRequest,
+    RoutingTerminalRequest,
+    RoutingTerminalRole,
+} from './routing/router';
 export {
     HorizontalReservationIndex,
     VerticalReservationIndex,

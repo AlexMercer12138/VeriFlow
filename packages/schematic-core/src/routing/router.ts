@@ -13,6 +13,7 @@ import {
     type RoutingGridNodeInput,
 } from './grid';
 import {
+    assertGridCoordinate,
     horizontal,
     segmentIntersectsRectangleInterior,
     simplifySegments,
@@ -288,21 +289,14 @@ type RoutingDiagnosticsCounter = {
     committedChannelLegIntents: number;
 };
 
-const ROUTING_DIAGNOSTICS = Symbol.for(
-    '@veriflow/schematic-core/routing-diagnostics'
-);
-const ROUTING_TRANSACTION_PROBE = Symbol.for(
-    '@veriflow/schematic-core/routing-transaction-probe'
-);
-const ROUTING_CHANNEL_CONSTRAINT_PROBE = Symbol.for(
-    '@veriflow/schematic-core/routing-channel-constraint-probe'
-);
-let latestRoutingDiagnostics: RoutingDiagnostics = Object.freeze({
-    realizedDemandSignatures: 0,
-    committedRouteMaterializations: 0,
-    incrementalCandidateMaterializations: 0,
-    committedChannelLegIntents: 0,
-});
+type RoutingDiagnosticsObserver = (value: RoutingDiagnostics) => void;
+
+function incrementRoutingDiagnostic(
+    diagnostics: RoutingDiagnosticsCounter | undefined,
+    key: keyof RoutingDiagnosticsCounter
+): void {
+    if (diagnostics) diagnostics[key] += 1;
+}
 
 function snapshotArray(value: unknown, label: string): unknown[] {
     if (!Array.isArray(value)) {
@@ -473,8 +467,12 @@ function compareActiveChannelLegs(
         || left.key.localeCompare(right.key);
 }
 
+function structuredKey(parts: readonly unknown[]): string {
+    return JSON.stringify(parts);
+}
+
 function channelLegAttachmentKey(attachment: ChannelLegAttachment): string {
-    return [
+    return structuredKey([
         attachment.attachmentSide,
         attachment.escapeDirection,
         attachment.anchorX,
@@ -483,7 +481,7 @@ function channelLegAttachmentKey(attachment: ChannelLegAttachment): string {
         attachment.role,
         attachment.terminalIdentity,
         attachment.peerIdentity,
-    ].join('\0');
+    ]);
 }
 
 function physicalChannelLegKey(handle: ChannelLegHandle): string {
@@ -859,7 +857,7 @@ function validateNetworkTerminals(
     networks: readonly RoutingNetworkRequest[]
 ): void {
     for (const network of networks) {
-        const seenTerminals = new Set<string>();
+        const seenTerminals = new Map<string, Set<string>>();
         for (const terminal of network.terminals) {
             const node = nodes.get(terminal.nodeId);
             if (!node) {
@@ -880,11 +878,13 @@ function validateNetworkTerminals(
                     `routing terminal ${terminal.nodeId}:${terminal.pinId} must be a side pin`
                 );
             }
-            const key = `${terminal.nodeId}\0${terminal.pinId}`;
-            if (seenTerminals.has(key)) {
+            const nodePins = seenTerminals.get(terminal.nodeId)
+                ?? new Set<string>();
+            if (nodePins.has(terminal.pinId)) {
                 throw new RangeError(`duplicate terminal in routing network ${network.id}`);
             }
-            seenTerminals.add(key);
+            nodePins.add(terminal.pinId);
+            seenTerminals.set(terminal.nodeId, nodePins);
         }
     }
 }
@@ -1024,9 +1024,10 @@ function routingDemandSignature(
     allocator: RoutingAllocationJournal,
     allocationSignature: string
 ): string {
-    return `${routingGeometryDemandSignature(allocator.grid)}\0${
-        allocationSignature
-    }`;
+    return structuredKey([
+        routingGeometryDemandSignature(allocator.grid),
+        allocationSignature,
+    ]);
 }
 
 function orderedNetworkContexts(
@@ -1074,7 +1075,13 @@ function connectionKey(
     from: RoutingTerminalRequest,
     to: RoutingTerminalRequest
 ): string {
-    return `${networkId}\0${from.nodeId}\0${from.pinId}\0${to.nodeId}\0${to.pinId}`;
+    return structuredKey([
+        networkId,
+        from.nodeId,
+        from.pinId,
+        to.nodeId,
+        to.pinId,
+    ]);
 }
 
 function forcedAdjacentConnections(
@@ -1158,7 +1165,7 @@ function preferredCorridorKey(
     networkId: string,
     candidate: CorridorCandidate
 ): string {
-    return `${networkId}\0${corridorKey(candidate)}`;
+    return structuredKey([networkId, corridorKey(candidate)]);
 }
 
 function preferredOrdinaryCorridorTracks(
@@ -1240,11 +1247,11 @@ function endpointEscapeKey(
     networkId: string,
     terminal: RoutingTerminalRequest
 ): string {
-    return `${networkId}\0${terminal.nodeId}\0${terminal.pinId}`;
+    return structuredKey([networkId, terminal.nodeId, terminal.pinId]);
 }
 
 function terminalIdentity(terminal: RoutingTerminalRequest): string {
-    return `${terminal.nodeId}\0${terminal.pinId}`;
+    return structuredKey([terminal.nodeId, terminal.pinId]);
 }
 
 function channelLegIntent(
@@ -1302,7 +1309,11 @@ function ordinaryChannelLegKey(
     role: 'source' | 'target' | 'shared',
     variant: string
 ): string {
-    return `${connectionKey(networkId, from, to)}\0${role}\0${variant}`;
+    return structuredKey([
+        connectionKey(networkId, from, to),
+        role,
+        variant,
+    ]);
 }
 
 function preferredChannelLegKey(
@@ -1312,13 +1323,13 @@ function preferredChannelLegKey(
     channel: number,
     peer?: RoutingTerminalRequest
 ): string {
-    return [
+    return structuredKey([
         networkId,
         terminalIdentity(terminal),
         role,
         channel,
         peer ? terminalIdentity(peer) : '',
-    ].join('\0');
+    ]);
 }
 
 function aliasChannelLeg(
@@ -1374,7 +1385,7 @@ function preallocatePreferredChannelLegs(
         const existing = preferred.get(preference);
         if (existing) return existing;
         const intent = channelLegIntent(
-            `preferred\0${preference}`,
+            structuredKey(['preferred', preference]),
             networkId,
             channel,
             terminal,
@@ -1581,7 +1592,7 @@ function endpointEscape(
     preferredChannelLeg?: ChannelLegHandle
 ): EndpointEscapePlan {
     const { grid } = allocator;
-    const key = `${terminal.nodeId}\0${terminal.pinId}`;
+    const key = terminalIdentity(terminal);
     const existing = reuse.terminalEscapes.get(key);
     if (existing) return existing;
     const channel = sideChannel(node, terminal.pinId);
@@ -1722,7 +1733,7 @@ function planFeedbackConnection(
             nodes.get(from.nodeId)!,
             from,
             channelLegIntent(
-                `${connection}\0feedback-source`,
+                structuredKey([connection, 'feedback-source']),
                 networkId,
                 sourceChannel,
                 from,
@@ -1748,7 +1759,7 @@ function planFeedbackConnection(
             nodes.get(to.nodeId)!,
             to,
             channelLegIntent(
-                `${connection}\0feedback-target`,
+                structuredKey([connection, 'feedback-target']),
                 networkId,
                 targetChannel,
                 to,
@@ -2081,49 +2092,69 @@ function planOrdinaryConnection(
     });
 }
 
-function collapsePathSegments(segments: readonly RouteSegment[]): RouteSegment[] {
-    const result: RouteSegment[] = [];
-    for (const segment of segments) {
-        const zeroLength = segment.orientation === 'horizontal'
-            ? segment.x1 === segment.x2
-            : segment.y1 === segment.y2;
-        if (zeroLength) continue;
-        const previous = result[result.length - 1];
-        if (previous?.orientation === 'horizontal'
-            && segment.orientation === 'horizontal'
-            && previous.networkId === segment.networkId
-            && previous.y === segment.y
-            && Math.max(previous.x1, segment.x1)
-                <= Math.min(previous.x2, segment.x2)) {
-            result[result.length - 1] = horizontal(
-                segment.networkId,
-                Math.min(previous.x1, segment.x1),
-                Math.max(previous.x2, segment.x2),
-                segment.y
-            );
-        } else if (previous?.orientation === 'vertical'
-            && segment.orientation === 'vertical'
-            && previous.networkId === segment.networkId
-            && previous.x === segment.x
-            && Math.max(previous.y1, segment.y1)
-                <= Math.min(previous.y2, segment.y2)) {
-            result[result.length - 1] = vertical(
-                segment.networkId,
-                segment.x,
-                Math.min(previous.y1, segment.y1),
-                Math.max(previous.y2, segment.y2)
-            );
-        } else {
-            result.push(segment);
-        }
-    }
-    return result;
-}
-
 function freezeSegments(
     segments: readonly RouteSegment[]
 ): readonly RoutedRouteSegment[] {
     return Object.freeze(segments.map(segment => Object.freeze({ ...segment })));
+}
+
+function samePoint(left: Readonly<Point>, right: Readonly<Point>): boolean {
+    return left.x === right.x && left.y === right.y;
+}
+
+function collinearPoints(
+    first: Readonly<Point>,
+    second: Readonly<Point>,
+    third: Readonly<Point>
+): boolean {
+    return first.x === second.x && second.x === third.x
+        || first.y === second.y && second.y === third.y;
+}
+
+/** @internal */
+export function orderedPathSegments(
+    networkId: string,
+    input: readonly Readonly<Point>[]
+): readonly RoutedRouteSegment[] {
+    const points: Point[] = [];
+    for (const value of input) {
+        const point = { x: value.x, y: value.y };
+        assertGridCoordinate(point.x, 'path point x');
+        assertGridCoordinate(point.y, 'path point y');
+        if (points.length > 0 && samePoint(points[points.length - 1], point)) {
+            continue;
+        }
+        points.push(point);
+        while (points.length >= 3) {
+            const last = points.length - 1;
+            if (!collinearPoints(
+                points[last - 2],
+                points[last - 1],
+                points[last]
+            )) break;
+            points.splice(last - 1, 1);
+            if (points.length >= 2 && samePoint(
+                points[points.length - 2],
+                points[points.length - 1]
+            )) {
+                points.pop();
+            }
+        }
+    }
+
+    const segments: RouteSegment[] = [];
+    for (let index = 1; index < points.length; index += 1) {
+        const start = points[index - 1];
+        const end = points[index];
+        if (start.y === end.y) {
+            segments.push(horizontal(networkId, start.x, end.x, start.y));
+        } else if (start.x === end.x) {
+            segments.push(vertical(networkId, start.x, start.y, end.y));
+        } else {
+            throw new RangeError('routed path points must be orthogonal');
+        }
+    }
+    return freezeSegments(segments);
 }
 
 function safeAdd(left: number, right: number, label: string): number {
@@ -2191,37 +2222,37 @@ function materializePath(
         return Object.freeze({
             from: plan.from,
             to: plan.to,
-            segments: freezeSegments(collapsePathSegments([
-                horizontal(plan.networkId, source.x, sourceX, source.y),
-                vertical(plan.networkId, sourceX, source.y, corridorY),
-                horizontal(plan.networkId, sourceX, targetX, corridorY),
-                vertical(plan.networkId, targetX, corridorY, target.y),
-                horizontal(plan.networkId, targetX, target.x, target.y),
-            ])),
+            segments: orderedPathSegments(plan.networkId, [
+                source,
+                { x: sourceX, y: source.y },
+                { x: sourceX, y: corridorY },
+                { x: targetX, y: corridorY },
+                { x: targetX, y: target.y },
+                target,
+            ]),
         });
     }
     if (plan.kind === 'direct') {
         return Object.freeze({
             from: plan.from,
             to: plan.to,
-            segments: freezeSegments([
-                horizontal(plan.networkId, source.x, target.x, source.y),
-            ]),
+            segments: orderedPathSegments(plan.networkId, [source, target]),
         });
     }
     if (plan.kind === 'adjacent') {
         const channelX = grid.channels[plan.channel].trackX[
             resolveChannelTrack(plan.track)
         ];
-        const segments = collapsePathSegments([
-            horizontal(plan.networkId, source.x, channelX, source.y),
-            vertical(plan.networkId, channelX, source.y, target.y),
-            horizontal(plan.networkId, channelX, target.x, target.y),
+        const segments = orderedPathSegments(plan.networkId, [
+            source,
+            { x: channelX, y: source.y },
+            { x: channelX, y: target.y },
+            target,
         ]);
         return Object.freeze({
             from: plan.from,
             to: plan.to,
-            segments: freezeSegments(segments),
+            segments,
         });
     }
     const sourceX = grid.channels[plan.sourceChannel].trackX[
@@ -2234,17 +2265,18 @@ function materializePath(
         ? grid.rowGaps[plan.corridor.rowGap].trackY[plan.corridor.track]
         : grid.outer[plan.corridor.kind === 'outer-top' ? 'top' : 'bottom']
             .trackY[plan.corridor.lane];
-    const segments = collapsePathSegments([
-        horizontal(plan.networkId, source.x, sourceX, source.y),
-        vertical(plan.networkId, sourceX, source.y, corridorY),
-        horizontal(plan.networkId, sourceX, targetX, corridorY),
-        vertical(plan.networkId, targetX, corridorY, target.y),
-        horizontal(plan.networkId, targetX, target.x, target.y),
+    const segments = orderedPathSegments(plan.networkId, [
+        source,
+        { x: sourceX, y: source.y },
+        { x: sourceX, y: corridorY },
+        { x: targetX, y: corridorY },
+        { x: targetX, y: target.y },
+        target,
     ]);
     return Object.freeze({
         from: plan.from,
         to: plan.to,
-        segments: freezeSegments(segments),
+        segments,
     });
 }
 
@@ -2270,7 +2302,7 @@ function traversalEnd(
     start: Readonly<Point>
 ): Readonly<Point> {
     if (!segmentContainsPoint(segment, start)) {
-        throw new Error('routed path segments are not connected');
+        throw new RangeError('routed path segments are not connected');
     }
     if (segment.orientation === 'horizontal') {
         if (start.x === segment.x1) {
@@ -2287,7 +2319,21 @@ function traversalEnd(
             return Object.freeze({ x: segment.x, y: segment.y1 });
         }
     }
-    throw new Error('routed path enters a segment through its interior');
+    throw new RangeError('routed path enters a segment through its interior');
+}
+
+function validateSegmentsTraversal(
+    segments: readonly RoutedRouteSegment[],
+    source: Readonly<Point>,
+    target: Readonly<Point>
+): void {
+    let current = source;
+    for (const segment of segments) {
+        current = traversalEnd(segment, current);
+    }
+    if (!samePoint(current, target)) {
+        throw new RangeError('routed path does not end at its terminal anchor');
+    }
 }
 
 function farthestSegmentIntersection(
@@ -2368,10 +2414,12 @@ function trimPathToTree(
         current = end;
     }
     if (!bestPoint || bestDistance < 0) {
-        throw new Error('incremental route does not touch the existing tree');
+        throw new RangeError(
+            'incremental route does not touch the existing tree'
+        );
     }
 
-    const suffix: RouteSegment[] = [];
+    const suffixPoints: Point[] = [{ ...bestPoint }];
     current = source;
     let skipped = 0;
     for (const segment of path.segments) {
@@ -2382,19 +2430,16 @@ function trimPathToTree(
             current = end;
             continue;
         }
-        if (skipped < bestDistance) {
-            suffix.push(segment.orientation === 'horizontal'
-                ? horizontal(segment.networkId, bestPoint.x, end.x, segment.y)
-                : vertical(segment.networkId, segment.x, bestPoint.y, end.y));
-        } else {
-            suffix.push(segment);
-        }
+        suffixPoints.push({ ...end });
         skipped += length;
         current = end;
     }
     return Object.freeze({
         point: Object.freeze({ ...bestPoint }),
-        segments: freezeSegments(collapsePathSegments(suffix)),
+        segments: orderedPathSegments(
+            path.segments[0].networkId,
+            suffixPoints
+        ),
     });
 }
 
@@ -2764,11 +2809,11 @@ function committedChannelMappingSignature(
     for (const handle of handles) {
         physical.set(physicalChannelLegKey(handle), handle);
     }
-    return [...physical.values()].map(handle => [
+    return structuredKey([...physical.values()].map(handle => [
         handle.channel,
         physicalChannelLegKey(handle),
         assignment.resolve(handle),
-    ].join(':')).join('|');
+    ]));
 }
 
 function routedPathLength(path: RoutedNetworkPath): number {
@@ -2803,7 +2848,7 @@ function preflightCandidateBranch(
     basesByDemand: Map<string, CandidatePreflightBase>,
     realizedByDemand: Map<string, RealizedRoutingGrid>,
     committedBase: CandidatePreflightBase,
-    diagnostics: RoutingDiagnosticsCounter
+    diagnostics: RoutingDiagnosticsCounter | undefined
 ): Readonly<{
     actions: readonly AllocationAction[];
     path: RoutedNetworkPath;
@@ -2819,7 +2864,7 @@ function preflightCandidateBranch(
     if (!realized) {
         realized = branch.allocator.realizeBranch();
         realizedByDemand.set(geometryDemand, realized);
-        diagnostics.realizedDemandSignatures += 1;
+        incrementRoutingDiagnostic(diagnostics, 'realizedDemandSignatures');
     }
     const committedHandles = plannedChannelLegHandles(plans);
     const activeHandles = Object.freeze([
@@ -2838,7 +2883,7 @@ function preflightCandidateBranch(
         activeHandles,
         assignment
     );
-    const demand = `${geometryDemand}\0${allocationSignature}`;
+    const demand = structuredKey([geometryDemand, allocationSignature]);
     let base = basesByDemand.get(demand);
     if (!base) {
         if (geometryPreservesCommittedRoutes(
@@ -2863,7 +2908,10 @@ function preflightCandidateBranch(
                 realized,
                 assignment.resolve
             );
-            diagnostics.committedRouteMaterializations += 1;
+            incrementRoutingDiagnostic(
+                diagnostics,
+                'committedRouteMaterializations'
+            );
             base = Object.freeze({
                 realized,
                 routedNetworks,
@@ -2874,7 +2922,10 @@ function preflightCandidateBranch(
         }
         basesByDemand.set(demand, base);
     }
-    diagnostics.incrementalCandidateMaterializations += 1;
+    incrementRoutingDiagnostic(
+        diagnostics,
+        'incrementalCandidateMaterializations'
+    );
     const realizedNodesById = new Map(
         base.realized.nodes.map(node => [node.id, node])
     );
@@ -2888,6 +2939,8 @@ function preflightCandidateBranch(
         network => network.id === candidate.networkId
     )!;
     const source = realizedNodePinPoint(realizedNodesById, candidate.from);
+    const target = realizedNodePinPoint(realizedNodesById, candidate.to);
+    validateSegmentsTraversal(fullPath.segments, source, target);
     let from: RouteAttachment;
     let segments: readonly RoutedRouteSegment[];
     if (existingNetwork.paths.length === 0) {
@@ -2914,6 +2967,7 @@ function preflightCandidateBranch(
         to: candidate.to,
         segments,
     });
+    validateSegmentsTraversal(path.segments, path.from.point, target);
     validateRouteSegments(base.validation, candidate.networkId, segments);
     const updatedNetwork: RoutedNetwork = Object.freeze({
         id: existingNetwork.id,
@@ -2998,17 +3052,20 @@ function compareEvaluatedCandidates(
         || compareTerminals(locations, left.plan.from, right.plan.from);
 }
 
-export function routeNetworks(
+function routeNetworksInternal(
     nodes: readonly RoutingGridNodeInput[],
     networks: readonly RoutingNetworkRequest[],
-    options: RoutingGridCreateOptions = {}
+    options: RoutingGridCreateOptions,
+    observer?: RoutingDiagnosticsObserver
 ): RoutedSchematic {
-    const diagnostics: RoutingDiagnosticsCounter = {
-        realizedDemandSignatures: 0,
-        committedRouteMaterializations: 0,
-        incrementalCandidateMaterializations: 0,
-        committedChannelLegIntents: 0,
-    };
+    const diagnostics: RoutingDiagnosticsCounter | undefined = observer
+        ? {
+            realizedDemandSignatures: 0,
+            committedRouteMaterializations: 0,
+            incrementalCandidateMaterializations: 0,
+            committedChannelLegIntents: 0,
+        }
+        : undefined;
     const nodeSnapshots = snapshotRoutingNodes(nodes);
     const networkSnapshots = snapshotRoutingNetworks(networks);
     const optionSnapshot = snapshotRoutingOptions(options);
@@ -3056,7 +3113,7 @@ export function routeNetworks(
         ...preferredEndpointEscapes.exteriorTracks,
     };
     const initialRealized = allocator.preview();
-    diagnostics.realizedDemandSignatures += 1;
+    incrementRoutingDiagnostic(diagnostics, 'realizedDemandSignatures');
     const initialAssignment = allocator.channelAssignment([], initialRealized);
     const initialRoutedNetworks = materializeRoutedNetworks(
         networkSnapshots,
@@ -3065,7 +3122,7 @@ export function routeNetworks(
         initialRealized,
         initialAssignment.resolve
     );
-    diagnostics.committedRouteMaterializations += 1;
+    incrementRoutingDiagnostic(diagnostics, 'committedRouteMaterializations');
     const realizedByDemand = new Map<string, RealizedRoutingGrid>([[
         routingGeometryDemandSignature(allocator.grid),
         initialRealized,
@@ -3397,12 +3454,32 @@ export function routeNetworks(
         finalAssignment.resolve
     );
     validateAndReserveRoutes(realized, routedNetworks);
-    diagnostics.committedChannelLegIntents = plannedChannelLegCount(plans);
-    latestRoutingDiagnostics = Object.freeze({ ...diagnostics });
+    if (diagnostics) {
+        diagnostics.committedChannelLegIntents = plannedChannelLegCount(plans);
+        observer!(Object.freeze({ ...diagnostics }));
+    }
     return Object.freeze({
         grid: realized,
         networks: routedNetworks,
     });
+}
+
+export function routeNetworks(
+    nodes: readonly RoutingGridNodeInput[],
+    networks: readonly RoutingNetworkRequest[],
+    options: RoutingGridCreateOptions = {}
+): RoutedSchematic {
+    return routeNetworksInternal(nodes, networks, options);
+}
+
+/** @internal */
+export function routeNetworksForTesting(
+    nodes: readonly RoutingGridNodeInput[],
+    networks: readonly RoutingNetworkRequest[],
+    options: RoutingGridCreateOptions,
+    observer?: RoutingDiagnosticsObserver
+): RoutedSchematic {
+    return routeNetworksInternal(nodes, networks, options, observer);
 }
 
 type RoutingTransactionProbeSnapshot = Readonly<{
@@ -3418,7 +3495,8 @@ type RoutingTransactionProbeResult = Readonly<{
     afterCommitted: RoutingTransactionProbeSnapshot;
 }>;
 
-function probeRoutingAllocationTransaction(
+/** @internal */
+export function probeRoutingAllocationTransactionForTesting(
     nodes: readonly RoutingGridNodeInput[],
     terminal: RoutingTerminalRequest,
     options: RoutingGridCreateOptions = {}
@@ -3522,7 +3600,9 @@ type ChannelConstraintProbeResult = Readonly<{
     afterCommitted: ChannelConstraintProbeSnapshot;
 }>;
 
-function probeChannelConstraintAssignment(): ChannelConstraintProbeResult {
+/** @internal */
+export function probeChannelConstraintAssignmentForTesting(
+): ChannelConstraintProbeResult {
     const nodes = snapshotRoutingNodes([
         {
             id: 'left',
@@ -3645,23 +3725,3 @@ function probeChannelConstraintAssignment(): ChannelConstraintProbeResult {
         afterCommitted: snapshot(),
     });
 }
-
-Object.defineProperty(routeNetworks, ROUTING_DIAGNOSTICS, {
-    configurable: false,
-    enumerable: false,
-    get: () => latestRoutingDiagnostics,
-});
-
-Object.defineProperty(routeNetworks, ROUTING_TRANSACTION_PROBE, {
-    configurable: false,
-    enumerable: false,
-    writable: false,
-    value: probeRoutingAllocationTransaction,
-});
-
-Object.defineProperty(routeNetworks, ROUTING_CHANNEL_CONSTRAINT_PROBE, {
-    configurable: false,
-    enumerable: false,
-    writable: false,
-    value: probeChannelConstraintAssignment,
-});
