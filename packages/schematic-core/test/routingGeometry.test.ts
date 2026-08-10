@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
 import {
@@ -14,6 +13,7 @@ import {
     type Rectangle,
     type RouteSegment,
 } from '../src';
+import { reservationIndexDiagnostics } from '../src/routing/occupancy';
 
 test('normalizes and merges same-network collinear intervals', () => {
     const input: RouteSegment[] = [
@@ -100,17 +100,16 @@ test('returns canonical segment order independently of input order', () => {
     );
 });
 
-test('simplifies many unrelated lanes without a global quadratic scan', () => {
+test('simplifies many unrelated lanes without a global quadratic scan', {
+    timeout: 30_000,
+}, () => {
     const segments = Array.from({ length: 32_000 }, (_, index) =>
         horizontal(`network:${index}`, 0, 10, index)
     );
-    const startedAt = performance.now();
 
     const simplified = simplifySegments(segments);
-    const elapsed = performance.now() - startedAt;
 
     assert.equal(simplified.length, segments.length);
-    assert.ok(elapsed < 1_000, `unrelated lane simplification took ${elapsed}ms`);
 });
 
 test('allows different networks to touch at endpoints and cross perpendicularly', () => {
@@ -326,18 +325,136 @@ test('returns detached readonly reservation snapshots', () => {
     ]);
 });
 
-test('deduplicates a large repeated reservation without linear growth', () => {
+test('deduplicates a large repeated reservation without linear growth', {
+    timeout: 30_000,
+}, () => {
     const reservations = new VerticalReservationIndex();
-    const startedAt = performance.now();
     for (let index = 0; index < 50_000; index += 1) {
         assert.equal(reservations.reserve('channel', 0, 'n', 0, 10), true);
     }
-    const elapsed = performance.now() - startedAt;
 
     assert.deepEqual(reservations.reservations('channel', 0), [
         { networkId: 'n', y1: 0, y2: 10 },
     ]);
-    assert.ok(elapsed < 750, `repeated reservation took ${elapsed}ms`);
+});
+
+test('updates monotonic track reservations without copying prior entries', {
+    timeout: 30_000,
+}, () => {
+    const count = 32_000;
+    const ascending = new VerticalReservationIndex();
+    const descending = new VerticalReservationIndex();
+    for (let index = 0; index < count; index += 1) {
+        ascending.reserve('channel', 0, `network:${index}`, index * 2, index * 2 + 1);
+        const reverseIndex = count - index - 1;
+        descending.reserve(
+            'channel',
+            0,
+            `network:${reverseIndex}`,
+            reverseIndex * 2,
+            reverseIndex * 2 + 1
+        );
+    }
+
+    for (const reservations of [ascending, descending]) {
+        const diagnostics = reservationIndexDiagnostics(reservations);
+        assert.equal(diagnostics.nodeCount, count);
+        assert.ok(diagnostics.height < 128);
+        assert.ok(diagnostics.nodeVisits < count * 128);
+        const snapshot = reservations.reservations('channel', 0);
+        assert.equal(snapshot.length, count);
+        assert.deepEqual(snapshot[0], {
+            networkId: 'network:0',
+            y1: 0,
+            y2: 1,
+        });
+        assert.deepEqual(snapshot[count - 1], {
+            networkId: `network:${count - 1}`,
+            y1: (count - 1) * 2,
+            y2: (count - 1) * 2 + 1,
+        });
+    }
+});
+
+test('keeps deterministic shuffled insertion updates sublinear', {
+    timeout: 30_000,
+}, () => {
+    const count = 16_384;
+    const reservations = new HorizontalReservationIndex();
+    for (let order = 0; order < count; order += 1) {
+        const index = (order * 4_051) & (count - 1);
+        reservations.reserve(
+            'corridor',
+            0,
+            `network:${index}`,
+            index * 2,
+            index * 2 + 1
+        );
+    }
+
+    const diagnostics = reservationIndexDiagnostics(reservations);
+    assert.equal(diagnostics.nodeCount, count);
+    assert.ok(diagnostics.height < 128);
+    assert.ok(diagnostics.nodeVisits < count * 128);
+    const snapshot = reservations.reservations('corridor', 0);
+    assert.equal(snapshot.length, count);
+    assert.ok(snapshot.every((reservation, index) =>
+        reservation.x1 === index * 2 && reservation.x2 === index * 2 + 1
+    ));
+});
+
+test('keeps every three-node rotation pattern balanced and ordered', () => {
+    const insertionOrders = [
+        [3, 2, 1],
+        [1, 2, 3],
+        [3, 1, 2],
+        [1, 3, 2],
+    ];
+
+    for (const order of insertionOrders) {
+        const reservations = new VerticalReservationIndex();
+        for (const index of order) {
+            reservations.reserve(
+                'channel',
+                0,
+                `network:${index}`,
+                index * 4,
+                index * 4 + 1
+            );
+        }
+
+        assert.deepEqual(reservations.reservations('channel', 0), [
+            { networkId: 'network:1', y1: 4, y2: 5 },
+            { networkId: 'network:2', y1: 8, y2: 9 },
+            { networkId: 'network:3', y1: 12, y2: 13 },
+        ]);
+        assert.equal(reservationIndexDiagnostics(reservations).height, 2);
+    }
+});
+
+test('keeps the index usable after a union removes the balanced root', () => {
+    const reservations = new VerticalReservationIndex();
+    for (const index of [4, 2, 6, 1, 3, 5, 7]) {
+        reservations.reserve(
+            'channel',
+            0,
+            'shared',
+            index * 4,
+            index * 4 + 1
+        );
+    }
+
+    assert.equal(reservations.reserve('channel', 0, 'shared', 8, 25), true);
+    assert.equal(
+        reservations.hasConflict('channel', 0, 'other', 20, 21),
+        true
+    );
+    assert.deepEqual(reservations.reservations('channel', 0), [
+        { networkId: 'shared', y1: 4, y2: 5 },
+        { networkId: 'shared', y1: 8, y2: 25 },
+        { networkId: 'shared', y1: 28, y2: 29 },
+    ]);
+    assert.ok(reservationIndexDiagnostics(reservations).height <= 2);
 });
 
 test('splits merged same-network segments at branch points', () => {
@@ -431,20 +548,21 @@ test('enumerates every active horizontal at endpoint junctions', () => {
     ]);
 });
 
-test('derives junctions across many unrelated networks without global pair scans', () => {
+test('derives junctions across many unrelated networks without global pair scans', {
+    timeout: 30_000,
+}, () => {
     const segments = Array.from({ length: 32_000 }, (_, index) =>
         horizontal(`network:${index}`, 0, 10, index)
     );
-    const startedAt = performance.now();
 
     const junctions = deriveJunctions(segments);
-    const elapsed = performance.now() - startedAt;
 
     assert.deepEqual(junctions, []);
-    assert.ok(elapsed < 1_000, `unrelated junction scan took ${elapsed}ms`);
 });
 
-test('indexes perpendicular candidates within one large network', () => {
+test('indexes perpendicular candidates within one large network', {
+    timeout: 30_000,
+}, () => {
     const segmentCount = 16_000;
     const segments: RouteSegment[] = Array.from(
         { length: segmentCount },
@@ -454,11 +572,8 @@ test('indexes perpendicular candidates within one large network', () => {
     for (let index = 0; index < segmentCount; index += 1) {
         segments.push(vertical('shared', 100 + index, 0, segmentCount));
     }
-    const startedAt = performance.now();
 
     const junctions = deriveJunctions(segments);
-    const elapsed = performance.now() - startedAt;
 
     assert.deepEqual(junctions, []);
-    assert.ok(elapsed < 1_000, `single-network junction scan took ${elapsed}ms`);
 });

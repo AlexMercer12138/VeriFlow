@@ -1,9 +1,22 @@
 import { assertGridCoordinate } from './geometry';
 
-type IntervalReservation = {
+type IntervalReservation = Readonly<{
     networkId: string;
     start: number;
     end: number;
+}>;
+
+type AvlNode = Readonly<{
+    reservation: IntervalReservation;
+    left?: AvlNode;
+    right?: AvlNode;
+    height: number;
+    size: number;
+    maxEnd: number;
+}>;
+
+type VisitCounter = {
+    nodeVisits: number;
 };
 
 export type VerticalReservation = Readonly<{
@@ -18,6 +31,237 @@ export type HorizontalReservation = Readonly<{
     x2: number;
 }>;
 
+export type ReservationIndexDiagnostics = Readonly<{
+    nodeCount: number;
+    height: number;
+    nodeVisits: number;
+}>;
+
+function nodeHeight(node: AvlNode | undefined): number {
+    return node?.height ?? 0;
+}
+
+function nodeSize(node: AvlNode | undefined): number {
+    return node?.size ?? 0;
+}
+
+function makeNode(
+    reservation: IntervalReservation,
+    left?: AvlNode,
+    right?: AvlNode
+): AvlNode {
+    return {
+        reservation,
+        left,
+        right,
+        height: Math.max(nodeHeight(left), nodeHeight(right)) + 1,
+        size: nodeSize(left) + nodeSize(right) + 1,
+        maxEnd: Math.max(
+            reservation.end,
+            left?.maxEnd ?? Number.NEGATIVE_INFINITY,
+            right?.maxEnd ?? Number.NEGATIVE_INFINITY
+        ),
+    };
+}
+
+function compareReservations(
+    first: IntervalReservation,
+    second: IntervalReservation
+): number {
+    if (first.start !== second.start) return first.start - second.start;
+    if (first.end !== second.end) return first.end - second.end;
+    if (first.networkId < second.networkId) return -1;
+    if (first.networkId > second.networkId) return 1;
+    return 0;
+}
+
+function rotateLeft(node: AvlNode): AvlNode {
+    const pivot = node.right;
+    if (!pivot) return node;
+    return makeNode(
+        pivot.reservation,
+        makeNode(node.reservation, node.left, pivot.left),
+        pivot.right
+    );
+}
+
+function rotateRight(node: AvlNode): AvlNode {
+    const pivot = node.left;
+    if (!pivot) return node;
+    return makeNode(
+        pivot.reservation,
+        pivot.left,
+        makeNode(node.reservation, pivot.right, node.right)
+    );
+}
+
+function rebalance(node: AvlNode): AvlNode {
+    const balance = nodeHeight(node.left) - nodeHeight(node.right);
+    if (balance > 1) {
+        const left = node.left;
+        if (!left) return node;
+        if (nodeHeight(left.left) < nodeHeight(left.right)) {
+            return rotateRight(makeNode(
+                node.reservation,
+                rotateLeft(left),
+                node.right
+            ));
+        }
+        return rotateRight(node);
+    }
+    if (balance < -1) {
+        const right = node.right;
+        if (!right) return node;
+        if (nodeHeight(right.right) < nodeHeight(right.left)) {
+            return rotateLeft(makeNode(
+                node.reservation,
+                node.left,
+                rotateRight(right)
+            ));
+        }
+        return rotateLeft(node);
+    }
+    return node;
+}
+
+function insert(
+    node: AvlNode | undefined,
+    reservation: IntervalReservation,
+    counter: VisitCounter
+): AvlNode {
+    if (!node) return makeNode(reservation);
+    counter.nodeVisits += 1;
+    const order = compareReservations(reservation, node.reservation);
+    if (order === 0) return node;
+    if (order < 0) {
+        return rebalance(makeNode(
+            node.reservation,
+            insert(node.left, reservation, counter),
+            node.right
+        ));
+    }
+    return rebalance(makeNode(
+        node.reservation,
+        node.left,
+        insert(node.right, reservation, counter)
+    ));
+}
+
+function joinWithPivot(
+    left: AvlNode | undefined,
+    reservation: IntervalReservation,
+    right: AvlNode | undefined,
+    counter: VisitCounter
+): AvlNode {
+    if (left && nodeHeight(left) > nodeHeight(right) + 1) {
+        counter.nodeVisits += 1;
+        return rebalance(makeNode(
+            left.reservation,
+            left.left,
+            joinWithPivot(left.right, reservation, right, counter)
+        ));
+    }
+    if (right && nodeHeight(right) > nodeHeight(left) + 1) {
+        counter.nodeVisits += 1;
+        return rebalance(makeNode(
+            right.reservation,
+            joinWithPivot(left, reservation, right.left, counter),
+            right.right
+        ));
+    }
+    return makeNode(reservation, left, right);
+}
+
+function removeMinimum(
+    node: AvlNode,
+    counter: VisitCounter
+): readonly [IntervalReservation, AvlNode | undefined] {
+    counter.nodeVisits += 1;
+    if (!node.left) return [node.reservation, node.right];
+    const [minimum, nextLeft] = removeMinimum(node.left, counter);
+    return [
+        minimum,
+        joinWithPivot(nextLeft, node.reservation, node.right, counter),
+    ];
+}
+
+function join(
+    left: AvlNode | undefined,
+    right: AvlNode | undefined,
+    counter: VisitCounter
+): AvlNode | undefined {
+    if (!left) return right;
+    if (!right) return left;
+    const [pivot, nextRight] = removeMinimum(right, counter);
+    return joinWithPivot(left, pivot, nextRight, counter);
+}
+
+function removeStartRange(
+    node: AvlNode | undefined,
+    minimumStart: number,
+    maximumStart: number,
+    counter: VisitCounter
+): AvlNode | undefined {
+    if (!node) return undefined;
+    counter.nodeVisits += 1;
+    if (node.reservation.start < minimumStart) {
+        return joinWithPivot(
+            node.left,
+            node.reservation,
+            removeStartRange(
+                node.right,
+                minimumStart,
+                maximumStart,
+                counter
+            ),
+            counter
+        );
+    }
+    if (node.reservation.start > maximumStart) {
+        return joinWithPivot(
+            removeStartRange(
+                node.left,
+                minimumStart,
+                maximumStart,
+                counter
+            ),
+            node.reservation,
+            node.right,
+            counter
+        );
+    }
+    return join(
+        removeStartRange(node.left, minimumStart, maximumStart, counter),
+        removeStartRange(node.right, minimumStart, maximumStart, counter),
+        counter
+    );
+}
+
+function collectTouching(
+    node: AvlNode | undefined,
+    start: number,
+    end: number,
+    result: IntervalReservation[],
+    counter: VisitCounter
+): void {
+    if (!node || node.maxEnd < start) return;
+    counter.nodeVisits += 1;
+    collectTouching(node.left, start, end, result, counter);
+    if (node.reservation.start > end) return;
+    if (node.reservation.end >= start) result.push(node.reservation);
+    collectTouching(node.right, start, end, result, counter);
+}
+
+function collectReservations(
+    node: AvlNode | undefined,
+    result: IntervalReservation[]
+): void {
+    if (!node) return;
+    collectReservations(node.left, result);
+    result.push({ ...node.reservation });
+    collectReservations(node.right, result);
+}
+
 function openIntervalsOverlap(
     firstStart: number,
     firstEnd: number,
@@ -27,28 +271,9 @@ function openIntervalsOverlap(
     return Math.max(firstStart, secondStart) < Math.min(firstEnd, secondEnd);
 }
 
-function firstEndingAtOrAfter(
-    reservations: readonly IntervalReservation[],
-    coordinate: number
-): number {
-    let low = 0;
-    let high = reservations.length;
-    while (low < high) {
-        const middle = low + Math.floor((high - low) / 2);
-        if (reservations[middle].end < coordinate) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    return low;
-}
-
 class IntervalReservationIndex {
-    private readonly byLane = new Map<
-        string,
-        Map<number, IntervalReservation[]>
-    >();
+    private readonly byLane = new Map<string, Map<number, AvlNode>>();
+    private readonly counter: VisitCounter = { nodeVisits: 0 };
 
     hasConflict(
         laneId: string,
@@ -63,22 +288,23 @@ class IntervalReservationIndex {
         const start = Math.min(first, second);
         const end = Math.max(first, second);
         if (start === end) return false;
-        const reservations = this.get(laneId, track);
-        for (let index = firstEndingAtOrAfter(reservations, start);
-            index < reservations.length && reservations[index].start < end;
-            index += 1) {
-            const reservation = reservations[index];
-            if (reservation.networkId !== networkId
-                && openIntervalsOverlap(
-                    start,
-                    end,
-                    reservation.start,
-                    reservation.end
-                )) {
-                return true;
-            }
-        }
-        return false;
+        const touching: IntervalReservation[] = [];
+        collectTouching(
+            this.getRoot(laneId, track),
+            start,
+            end,
+            touching,
+            this.counter
+        );
+        return touching.some(reservation =>
+            reservation.networkId !== networkId
+            && openIntervalsOverlap(
+                start,
+                end,
+                reservation.start,
+                reservation.end
+            )
+        );
     }
 
     reserve(
@@ -95,12 +321,11 @@ class IntervalReservationIndex {
         let end = Math.max(first, second);
         if (start === end) return true;
 
-        const reservations = this.get(laneId, track);
-        const mergedIndexes: number[] = [];
-        for (let index = firstEndingAtOrAfter(reservations, start);
-            index < reservations.length && reservations[index].start <= end;
-            index += 1) {
-            const reservation = reservations[index];
+        const root = this.getRoot(laneId, track);
+        const touching: IntervalReservation[] = [];
+        collectTouching(root, start, end, touching, this.counter);
+        const merged: IntervalReservation[] = [];
+        for (const reservation of touching) {
             if (reservation.networkId !== networkId) {
                 if (openIntervalsOverlap(
                     start,
@@ -112,36 +337,34 @@ class IntervalReservationIndex {
                 }
                 continue;
             }
-            if (reservation.end < start || reservation.start > end) continue;
-            mergedIndexes.push(index);
+            merged.push(reservation);
             start = Math.min(start, reservation.start);
             end = Math.max(end, reservation.end);
         }
 
-        if (mergedIndexes.length === 1) {
-            const existing = reservations[mergedIndexes[0]];
-            if (existing.start === start && existing.end === end) return true;
+        if (merged.length === 1
+            && merged[0].start === start
+            && merged[0].end === end) {
+            return true;
         }
 
-        const mergedIndexSet = new Set(mergedIndexes);
-        const merged: IntervalReservation = { networkId, start, end };
-        const next: IntervalReservation[] = [];
-        let inserted = false;
-        for (let index = 0; index < reservations.length; index += 1) {
-            if (mergedIndexSet.has(index)) continue;
-            const reservation = reservations[index];
-            if (!inserted && (start < reservation.start
-                || (start === reservation.start
-                    && (end < reservation.end
-                        || (end === reservation.end
-                            && networkId < reservation.networkId))))) {
-                next.push(merged);
-                inserted = true;
-            }
-            next.push(reservation);
+        let nextRoot = root;
+        if (merged.length > 0) {
+            // A successful candidate cannot overlap another network between
+            // the first and last same-network reservations being replaced.
+            nextRoot = removeStartRange(
+                nextRoot,
+                merged[0].start,
+                merged[merged.length - 1].start,
+                this.counter
+            );
         }
-        if (!inserted) next.push(merged);
-        this.set(laneId, track, next);
+        nextRoot = insert(
+            nextRoot,
+            { networkId, start, end },
+            this.counter
+        );
+        this.setRoot(laneId, track, nextRoot);
         return true;
     }
 
@@ -150,27 +373,38 @@ class IntervalReservationIndex {
         track: number
     ): readonly Readonly<IntervalReservation>[] {
         this.validateTrack(track);
-        return this.get(laneId, track).map(reservation => ({ ...reservation }));
+        const result: IntervalReservation[] = [];
+        collectReservations(this.getRoot(laneId, track), result);
+        return result;
     }
 
-    private get(
-        laneId: string,
-        track: number
-    ): readonly IntervalReservation[] {
-        return this.byLane.get(laneId)?.get(track) ?? [];
+    diagnostics(): ReservationIndexDiagnostics {
+        let nodeCount = 0;
+        let height = 0;
+        for (const byTrack of this.byLane.values()) {
+            for (const root of byTrack.values()) {
+                nodeCount += root.size;
+                height = Math.max(height, root.height);
+            }
+        }
+        return {
+            nodeCount,
+            height,
+            nodeVisits: this.counter.nodeVisits,
+        };
     }
 
-    private set(
-        laneId: string,
-        track: number,
-        reservations: IntervalReservation[]
-    ): void {
+    private getRoot(laneId: string, track: number): AvlNode | undefined {
+        return this.byLane.get(laneId)?.get(track);
+    }
+
+    private setRoot(laneId: string, track: number, root: AvlNode): void {
         let byTrack = this.byLane.get(laneId);
         if (!byTrack) {
             byTrack = new Map();
             this.byLane.set(laneId, byTrack);
         }
-        byTrack.set(track, reservations);
+        byTrack.set(track, root);
     }
 
     private validateTrack(track: number): void {
@@ -181,8 +415,14 @@ class IntervalReservationIndex {
     }
 }
 
+const indexes = new WeakMap<object, IntervalReservationIndex>();
+
 export class VerticalReservationIndex {
     private readonly index = new IntervalReservationIndex();
+
+    constructor() {
+        indexes.set(this, this.index);
+    }
 
     hasConflict(
         channelId: string,
@@ -219,6 +459,10 @@ export class VerticalReservationIndex {
 export class HorizontalReservationIndex {
     private readonly index = new IntervalReservationIndex();
 
+    constructor() {
+        indexes.set(this, this.index);
+    }
+
     hasConflict(
         corridorId: string,
         track: number,
@@ -249,4 +493,14 @@ export class HorizontalReservationIndex {
             x2: reservation.end,
         }));
     }
+}
+
+export function reservationIndexDiagnostics(
+    index: VerticalReservationIndex | HorizontalReservationIndex
+): ReservationIndexDiagnostics {
+    const internal = indexes.get(index);
+    if (!internal) {
+        return { nodeCount: 0, height: 0, nodeVisits: 0 };
+    }
+    return internal.diagnostics();
 }
