@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
     createPlacement,
+    MAX_SCHEMATIC_PLACEMENT_OFFSET,
     mergePlacement,
     migrateLegacyPlacement,
     moveNodeToColumn,
@@ -468,6 +469,31 @@ test('uses drop y for stable insertion order and semantic offset', () => {
         snapped.nodes[special.id].yOffset,
         firstCenter - originalSpecialCenter
     );
+});
+
+test('bounds extreme snapped offsets so the result remains layoutable', () => {
+    const model = graph([first]);
+    const columns = assignment([[first.id]]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const column = rendered.columns[0];
+
+    for (const y of [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]) {
+        const snapped = snapNodeToPlacement(
+            model,
+            placement,
+            rendered,
+            first.id,
+            { x: column.x + column.width / 2, y },
+            measure
+        );
+
+        assert.ok(
+            Math.abs(snapped.nodes[first.id].yOffset)
+                <= MAX_SCHEMATIC_PLACEMENT_OFFSET
+        );
+        assert.doesNotThrow(() => layoutSchematic(model, snapped, measure));
+    }
 });
 
 test('keeps input output and inout boundary nodes in their assigned columns', () => {

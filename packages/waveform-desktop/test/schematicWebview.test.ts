@@ -98,10 +98,18 @@ test('schematic runtime renders every visible pin label in a local clip viewport
             window.dispatchEvent(new MessageEvent('message', {
                 data: {
                     type: 'graph',
+                    revision: 'fixture:pin-labels',
                     graph,
                     layout: {
-                        nodes: {
-                            [selectedNodeId]: { x: 320, y: 180, fixed: false },
+                        placement: {
+                            nodes: {
+                                [selectedNodeId]: {
+                                    column: 0,
+                                    order: 0,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                            },
                         },
                         viewport: { x: 0, y: 0, zoom: 1 },
                         minimap: false,
@@ -146,7 +154,7 @@ test('schematic runtime renders every visible pin label in a local clip viewport
     }
 });
 
-test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds', {
+test('schematic runtime separates wide adjacent-column nodes and clips labels', {
     timeout: 20_000,
 }, async () => {
     const fixtureRoot = createElectronFixture();
@@ -163,9 +171,7 @@ test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds
         const firstId = 'instance:wide-source';
         const secondId = 'instance:wide-sink';
         const wideTitle = 'W'.repeat(25);
-        const hostNodeWidth = wideTitle.length * 7 + 24;
-        const rankSeparation = 48;
-        await page.evaluate(({ firstNodeId, secondNodeId, title, width, separation }) => {
+        await page.evaluate(({ firstNodeId, secondNodeId, title }) => {
             const graph = {
                 fileUri: 'file:///wide-runtime.sv',
                 moduleKey: 'module:wide-runtime:0',
@@ -209,8 +215,6 @@ test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds
                 }],
                 diagnostics: [],
             };
-            const firstCenter = width / 2;
-            const secondCenter = width + separation + width / 2;
             window.dispatchEvent(new MessageEvent('message', {
                 data: {
                     type: 'initialize',
@@ -221,11 +225,24 @@ test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds
             window.dispatchEvent(new MessageEvent('message', {
                 data: {
                     type: 'graph',
+                    revision: 'fixture:wide-nodes',
                     graph,
                     layout: {
-                        nodes: {
-                            [firstNodeId]: { x: firstCenter, y: 180, fixed: false },
-                            [secondNodeId]: { x: secondCenter, y: 180, fixed: false },
+                        placement: {
+                            nodes: {
+                                [firstNodeId]: {
+                                    column: 0,
+                                    order: 0,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                                [secondNodeId]: {
+                                    column: 1,
+                                    order: 0,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                            },
                         },
                         viewport: { x: 0, y: 0, zoom: 1 },
                         minimap: false,
@@ -236,8 +253,6 @@ test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds
             firstNodeId: firstId,
             secondNodeId: secondId,
             title: wideTitle,
-            width: hostNodeWidth,
-            separation: rankSeparation,
         });
 
         const firstBody = page.locator(
@@ -252,11 +267,14 @@ test('schematic runtime keeps wide adjacent-rank nodes inside host layout bounds
         const secondBounds = await secondBody.boundingBox();
         assert.ok(firstBounds && secondBounds);
         const horizontalGap = secondBounds.x - (firstBounds.x + firstBounds.width);
-        assert.ok(horizontalGap >= 0, `wide rank nodes overlap by ${-horizontalGap}px`);
+        assert.ok(
+            horizontalGap >= 0,
+            `wide adjacent-column nodes overlap by ${-horizontalGap}px`
+        );
         const firstWidth = Number(await firstBody.getAttribute('width'));
         const secondWidth = Number(await secondBody.getAttribute('width'));
-        assert.ok(firstWidth <= hostNodeWidth);
-        assert.ok(secondWidth <= hostNodeWidth);
+        assert.ok(firstWidth > 0);
+        assert.equal(firstWidth, secondWidth);
         const fittedTitle = await page.locator(
             `.x6-node[data-cell-id="${firstId}"] .veriflow-title-clip`
         ).evaluate(clip => {
@@ -343,11 +361,24 @@ test('schematic minimap keeps clipping local to each graph view', {
             window.dispatchEvent(new MessageEvent('message', {
                 data: {
                     type: 'graph',
+                    revision: 'fixture:minimap',
                     graph,
                     layout: {
-                        nodes: {
-                            [firstNodeId]: { x: 100, y: 180, fixed: false },
-                            [secondNodeId]: { x: 1_700, y: 180, fixed: false },
+                        placement: {
+                            nodes: {
+                                [firstNodeId]: {
+                                    column: 0,
+                                    order: 0,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                                [secondNodeId]: {
+                                    column: 1,
+                                    order: 0,
+                                    yOffset: 1_000,
+                                    fixed: true,
+                                },
+                            },
                         },
                         viewport: { x: 0, y: 0, zoom: 1 },
                         minimap: true,
@@ -405,6 +436,215 @@ test('schematic minimap keeps clipping local to each graph view', {
                 wrapper.tagName === 'svg' && wrapper.overflow === 'hidden'
             ));
         }
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('schematic drag preserves active search selection and viewport', {
+    timeout: 20_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(5_000);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+
+        const firstId = 'instance:match-first';
+        const secondId = 'instance:match-second';
+        await page.evaluate(({ firstNodeId, secondNodeId }) => {
+            const graph = {
+                fileUri: 'file:///search-drag-runtime.sv',
+                moduleKey: 'module:search-drag-runtime:0',
+                moduleName: 'search_drag_runtime',
+                nodes: [
+                    {
+                        id: firstNodeId,
+                        kind: 'instance',
+                        label: 'match_first',
+                        pins: [],
+                        readOnly: false,
+                    },
+                    {
+                        id: secondNodeId,
+                        kind: 'instance',
+                        label: 'match_second',
+                        pins: [],
+                        readOnly: false,
+                    },
+                ],
+                networks: [],
+                diagnostics: [],
+            };
+            window.dispatchEvent(new MessageEvent('message', {
+                data: {
+                    type: 'initialize',
+                    modules: [{ key: graph.moduleKey, name: graph.moduleName }],
+                    selectedModuleKey: graph.moduleKey,
+                },
+            }));
+            window.dispatchEvent(new MessageEvent('message', {
+                data: {
+                    type: 'graph',
+                    revision: 'fixture:search-drag',
+                    graph,
+                    layout: {
+                        placement: {
+                            nodes: {
+                                [firstNodeId]: {
+                                    column: 0,
+                                    order: 0,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                                [secondNodeId]: {
+                                    column: 0,
+                                    order: 1,
+                                    yOffset: 0,
+                                    fixed: false,
+                                },
+                            },
+                        },
+                        viewport: { x: 0, y: 0, zoom: 1 },
+                        minimap: false,
+                    },
+                },
+            }));
+        }, { firstNodeId: firstId, secondNodeId: secondId });
+
+        const secondBody = page.locator(
+            `.x6-node[data-cell-id="${secondId}"] rect`
+        ).first();
+        await secondBody.waitFor();
+        await page.locator('#search-button').click();
+        await page.locator('#search-input').fill('match');
+        await page.locator('#search-next-button').click();
+        await page.locator('#selection-status').getByText(
+            'instance: match_second (2/2)',
+            { exact: true }
+        ).waitFor();
+        await page.waitForFunction(selectedObjectId => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                layout?: { selectedObjectId?: string };
+            }> };
+            const saves = state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            );
+            return saves[saves.length - 1]?.layout?.selectedObjectId
+                === selectedObjectId;
+        }, secondId);
+
+        const before = await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                layout?: {
+                    viewport?: { x: number; y: number; zoom: number };
+                    selectedObjectId?: string;
+                };
+            }> };
+            const saves = state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            );
+            const layout = saves[saves.length - 1]?.layout;
+            return {
+                saveCount: saves.length,
+                viewport: layout?.viewport,
+                selectedObjectId: layout?.selectedObjectId,
+            };
+        });
+        assert.equal(before.selectedObjectId, secondId);
+        assert.ok(before.viewport);
+
+        const bounds = await secondBody.boundingBox();
+        assert.ok(bounds);
+        const centerX = bounds.x + bounds.width / 2;
+        const centerY = bounds.y + bounds.height / 2;
+        await secondBody.dispatchEvent('mousedown', {
+            button: 0,
+            buttons: 1,
+            clientX: centerX,
+            clientY: centerY,
+        });
+        await page.evaluate(({ x, y }) => {
+            const dispatchMouse = (
+                type: 'mousemove' | 'mouseup',
+                clientY: number,
+                buttons: number
+            ): void => {
+                const target = document.elementFromPoint(x, clientY) ?? document.body;
+                target.dispatchEvent(new MouseEvent(type, {
+                    bubbles: true,
+                    button: 0,
+                    buttons,
+                    clientX: x,
+                    clientY,
+                    view: window,
+                }));
+            };
+            for (let step = 1; step <= 8; step += 1) {
+                dispatchMouse('mousemove', y + step * 12, 1);
+            }
+            dispatchMouse('mouseup', y + 96, 0);
+        }, { x: centerX, y: centerY });
+        await page.waitForFunction(previousSaveCount => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+            }> };
+            return state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            ).length > previousSaveCount;
+        }, before.saveCount);
+        await page.waitForTimeout(400);
+
+        const after = await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                layout?: {
+                    placement?: { nodes?: Record<string, {
+                        fixed?: boolean;
+                        yOffset?: number;
+                    }> };
+                    viewport?: { x: number; y: number; zoom: number };
+                    selectedObjectId?: string;
+                };
+            }> };
+            const saves = state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            );
+            return {
+                saveCount: saves.length,
+                layout: saves[saves.length - 1]?.layout,
+            };
+        });
+
+        assert.equal(await page.locator('#search-input').inputValue(), 'match');
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: match_second (2/2)'
+        );
+        assert.equal(after.saveCount, before.saveCount + 1);
+        assert.equal(after.layout?.selectedObjectId, secondId);
+        assert.deepEqual(after.layout?.viewport, before.viewport);
+        assert.equal(after.layout?.placement?.nodes?.[secondId]?.fixed, true);
+        assert.notEqual(after.layout?.placement?.nodes?.[secondId]?.yOffset, 0);
+        assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();
         rmSync(fixtureRoot, { recursive: true, force: true });

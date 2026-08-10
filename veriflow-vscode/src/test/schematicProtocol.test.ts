@@ -1,8 +1,9 @@
 import * as assert from 'assert';
 
+import { MAX_SCHEMATIC_PLACEMENT_OFFSET } from '@veriflow/schematic-core';
+
 import {
     MAX_SCHEMATIC_LAYOUT_COLUMN,
-    MAX_SCHEMATIC_LAYOUT_COORDINATE,
     MAX_SCHEMATIC_LAYOUT_NODES,
 } from '../schematic/layoutStore';
 import { parseWebviewCommand } from '../schematic/protocol';
@@ -113,6 +114,14 @@ function testSemanticPlacementPayload(): void {
 
 function testPlacementBounds(): void {
     const validNode = { column: 0, order: 0, yOffset: 0, fixed: true };
+    for (const yOffset of [
+        -MAX_SCHEMATIC_PLACEMENT_OFFSET,
+        MAX_SCHEMATIC_PLACEMENT_OFFSET,
+    ]) {
+        assert.strictEqual(parseWebviewCommand(saveCommand(semanticLayout({
+            valid: { ...validNode, yOffset },
+        })))?.type, 'saveLayout');
+    }
     const invalidNodes = [
         { ...validNode, column: -1 },
         { ...validNode, column: 0.5 },
@@ -121,7 +130,8 @@ function testPlacementBounds(): void {
         { ...validNode, order: MAX_SCHEMATIC_LAYOUT_NODES },
         { ...validNode, yOffset: Number.NaN },
         { ...validNode, yOffset: Number.POSITIVE_INFINITY },
-        { ...validNode, yOffset: MAX_SCHEMATIC_LAYOUT_COORDINATE + 1 },
+        { ...validNode, yOffset: MAX_SCHEMATIC_PLACEMENT_OFFSET + 1 },
+        { ...validNode, yOffset: -MAX_SCHEMATIC_PLACEMENT_OFFSET - 1 },
         { ...validNode, fixed: 'true' },
     ];
     for (const invalid of invalidNodes) {

@@ -1,6 +1,7 @@
 import {
     assignColumns,
     createPlacement,
+    MAX_SCHEMATIC_PLACEMENT_OFFSET,
     mergePlacement,
     migrateLegacyPlacement,
     type LegacyNodePlacement,
@@ -29,7 +30,6 @@ const SCHEMA_VERSION = 2;
 const STORAGE_PREFIX = 'veriflow.schematicLayout:';
 export const MAX_SCHEMATIC_LAYOUT_NODES = 50_000;
 export const MAX_SCHEMATIC_LAYOUT_COLUMN = 100_000;
-export const MAX_SCHEMATIC_LAYOUT_COORDINATE = 1_000_000_000;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 
@@ -46,7 +46,7 @@ function ownValue(value: Record<string, unknown>, key: string): unknown {
 function boundedCoordinate(value: unknown): value is number {
     return typeof value === 'number'
         && Number.isFinite(value)
-        && Math.abs(value) <= MAX_SCHEMATIC_LAYOUT_COORDINATE;
+        && Math.abs(value) <= MAX_SCHEMATIC_PLACEMENT_OFFSET;
 }
 
 function boundedInteger(value: unknown, maximum: number): value is number {

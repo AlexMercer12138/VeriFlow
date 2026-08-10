@@ -1,6 +1,9 @@
 import * as assert from 'assert';
 
-import { assignColumns } from '@veriflow/schematic-core';
+import {
+    assignColumns,
+    MAX_SCHEMATIC_PLACEMENT_OFFSET,
+} from '@veriflow/schematic-core';
 
 import type {
     GraphNode,
@@ -11,7 +14,6 @@ import type {
 import {
     autoLayout,
     MAX_SCHEMATIC_LAYOUT_COLUMN,
-    MAX_SCHEMATIC_LAYOUT_COORDINATE,
     mergeLayout,
     normalizeSchematicLayout,
     relayoutAll,
@@ -349,11 +351,11 @@ function testValidationBoundsAndPrototypeSafety(): void {
         { ...valid, placement: { nodes: { x: {
             column: 0,
             order: 0,
-            yOffset: MAX_SCHEMATIC_LAYOUT_COORDINATE + 1,
+            yOffset: MAX_SCHEMATIC_PLACEMENT_OFFSET + 1,
             fixed: true,
         } } } },
         { ...valid, viewport: {
-            x: MAX_SCHEMATIC_LAYOUT_COORDINATE + 1,
+            x: MAX_SCHEMATIC_PLACEMENT_OFFSET + 1,
             y: 0,
             zoom: 1,
         } },

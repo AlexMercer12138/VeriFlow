@@ -881,6 +881,7 @@ function restoreSelection(layout: SchematicLayout): void {
 }
 
 function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
+    const searchQuery = dom.searchInput.value;
     applyingLayout = true;
     currentGraph = model;
     currentLayout = cloneSchematicLayout(layout);
@@ -898,6 +899,7 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     });
     applyViewport(layout);
     restoreSelection(layout);
+    refreshSearchMatches(searchQuery, true);
     applyingLayout = false;
 
     setGraphControls(model.nodes.length > 0);
@@ -906,7 +908,6 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     const graphWarnings = model.diagnostics.filter(item => item.severity === 'warning').length;
     updateDiagnostics(graphErrors, graphWarnings, model.diagnostics);
     updateMinimapAvailability();
-    runSearch(dom.searchInput.value, false);
 }
 
 function resetSearchStyles(): void {
@@ -959,11 +960,51 @@ function collectSearchMatches(query: string): SearchMatch[] {
     });
 }
 
+function updateSearchButtons(): void {
+    const canNavigate = searchMatches.length >= 2;
+    dom.searchPreviousButton.disabled = !canNavigate;
+    dom.searchNextButton.disabled = !canNavigate;
+}
+
+function updateActiveSearchStatus(): void {
+    const match = searchMatches[searchIndex];
+    if (!match || currentLayout?.selectedObjectId !== match.objectId) return;
+    dom.selectionStatus.textContent = `${match.description} (${searchIndex + 1}/${
+        searchMatches.length
+    })`;
+}
+
+function refreshSearchMatches(query: string, preserveActiveMatch: boolean): void {
+    const previousIndex = searchIndex;
+    const previousObjectId = searchMatches[previousIndex]?.objectId;
+    resetSearchStyles();
+    searchMatches = collectSearchMatches(query);
+    if (searchMatches.length === 0) {
+        searchIndex = -1;
+    } else if (preserveActiveMatch) {
+        const retainedIndex = previousObjectId === undefined
+            ? -1
+            : searchMatches.findIndex(match => match.objectId === previousObjectId);
+        searchIndex = retainedIndex >= 0
+            ? retainedIndex
+            : Math.min(Math.max(previousIndex, 0), searchMatches.length - 1);
+    } else {
+        searchIndex = -1;
+    }
+    for (const match of searchMatches) {
+        if (cellData(match.cell)?.objectType === 'network') continue;
+        match.cell.attr('body/stroke', 'var(--vscode-editor-findMatchBorder, #f0a000)');
+        match.cell.attr('body/strokeWidth', 2);
+    }
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    updateSearchButtons();
+    if (preserveActiveMatch) updateActiveSearchStatus();
+}
+
 function showSearchMatch(index: number): void {
     if (searchMatches.length === 0) {
         searchIndex = -1;
-        dom.searchPreviousButton.disabled = true;
-        dom.searchNextButton.disabled = true;
+        updateSearchButtons();
         return;
     }
     searchIndex = (index + searchMatches.length) % searchMatches.length;
@@ -971,19 +1012,11 @@ function showSearchMatch(index: number): void {
     graph.centerCell(match.cell);
     selection.reset(match.cell);
     dom.selectionStatus.textContent = `${match.description} (${searchIndex + 1}/${searchMatches.length})`;
-    dom.searchPreviousButton.disabled = searchMatches.length < 2;
-    dom.searchNextButton.disabled = searchMatches.length < 2;
+    updateSearchButtons();
 }
 
 function runSearch(query: string, notifyHost: boolean): void {
-    resetSearchStyles();
-    searchMatches = collectSearchMatches(query);
-    for (const match of searchMatches) {
-        if (cellData(match.cell)?.objectType === 'network') continue;
-        match.cell.attr('body/stroke', 'var(--vscode-editor-findMatchBorder, #f0a000)');
-        match.cell.attr('body/strokeWidth', 2);
-    }
-    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    refreshSearchMatches(query, false);
     if (notifyHost) post({ type: 'search', query });
     showSearchMatch(0);
 }

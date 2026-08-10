@@ -26,6 +26,8 @@ export type LegacyNodePlacement = {
     fixed: boolean;
 };
 
+export const MAX_SCHEMATIC_PLACEMENT_OFFSET = 1_000_000_000;
+
 function setOwn<T>(target: Record<string, T>, id: string, value: T): void {
     Object.defineProperty(target, id, {
         value,
@@ -40,7 +42,11 @@ function safeInteger(value: number, fallback: number): number {
 }
 
 function safeOffset(value: number): number {
-    return Number.isFinite(value) ? value : 0;
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(
+        -MAX_SCHEMATIC_PLACEMENT_OFFSET,
+        Math.min(MAX_SCHEMATIC_PLACEMENT_OFFSET, value)
+    );
 }
 
 function automaticColumn(

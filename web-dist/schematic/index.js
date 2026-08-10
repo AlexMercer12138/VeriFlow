@@ -1033,11 +1033,13 @@
     "packages/schematic-core/dist/placement.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.MAX_SCHEMATIC_PLACEMENT_OFFSET = void 0;
       exports2.createPlacement = createPlacement;
       exports2.mergePlacement = mergePlacement;
       exports2.moveNodeToColumn = moveNodeToColumn;
       exports2.moveNodesToColumns = moveNodesToColumns;
       exports2.migrateLegacyPlacement = migrateLegacyPlacement;
+      exports2.MAX_SCHEMATIC_PLACEMENT_OFFSET = 1e9;
       function setOwn(target, id, value) {
         Object.defineProperty(target, id, {
           value,
@@ -1050,7 +1052,9 @@
         return Number.isFinite(value) ? Math.trunc(value) : fallback;
       }
       function safeOffset(value) {
-        return Number.isFinite(value) ? value : 0;
+        if (!Number.isFinite(value))
+          return 0;
+        return Math.max(-exports2.MAX_SCHEMATIC_PLACEMENT_OFFSET, Math.min(exports2.MAX_SCHEMATIC_PLACEMENT_OFFSET, value));
       }
       function automaticColumn(assignment, nodeId) {
         const assigned = assignment.nodeColumn.get(nodeId);
@@ -45753,6 +45757,7 @@
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
   function renderSchematic(model, layout) {
+    const searchQuery = dom.searchInput.value;
     applyingLayout = true;
     currentGraph = model;
     currentLayout = cloneSchematicLayout(layout);
@@ -45770,6 +45775,7 @@
     });
     applyViewport(layout);
     restoreSelection(layout);
+    refreshSearchMatches(searchQuery, true);
     applyingLayout = false;
     setGraphControls(model.nodes.length > 0);
     setCanvasState(model.nodes.length === 0 ? "No schematic objects" : void 0);
@@ -45777,7 +45783,6 @@
     const graphWarnings = model.diagnostics.filter((item) => item.severity === "warning").length;
     updateDiagnostics(graphErrors, graphWarnings, model.diagnostics);
     updateMinimapAvailability();
-    runSearch(dom.searchInput.value, false);
   }
   function resetSearchStyles() {
     for (const cell of graph.getCells()) {
@@ -45823,11 +45828,42 @@
       return [{ cell, objectId: data2.objectId, description: descriptionFor(data2) }];
     });
   }
+  function updateSearchButtons() {
+    const canNavigate = searchMatches.length >= 2;
+    dom.searchPreviousButton.disabled = !canNavigate;
+    dom.searchNextButton.disabled = !canNavigate;
+  }
+  function updateActiveSearchStatus() {
+    const match = searchMatches[searchIndex];
+    if (!match || currentLayout?.selectedObjectId !== match.objectId) return;
+    dom.selectionStatus.textContent = `${match.description} (${searchIndex + 1}/${searchMatches.length})`;
+  }
+  function refreshSearchMatches(query, preserveActiveMatch) {
+    const previousIndex = searchIndex;
+    const previousObjectId = searchMatches[previousIndex]?.objectId;
+    resetSearchStyles();
+    searchMatches = collectSearchMatches(query);
+    if (searchMatches.length === 0) {
+      searchIndex = -1;
+    } else if (preserveActiveMatch) {
+      const retainedIndex = previousObjectId === void 0 ? -1 : searchMatches.findIndex((match) => match.objectId === previousObjectId);
+      searchIndex = retainedIndex >= 0 ? retainedIndex : Math.min(Math.max(previousIndex, 0), searchMatches.length - 1);
+    } else {
+      searchIndex = -1;
+    }
+    for (const match of searchMatches) {
+      if (cellData(match.cell)?.objectType === "network") continue;
+      match.cell.attr("body/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
+      match.cell.attr("body/strokeWidth", 2);
+    }
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    updateSearchButtons();
+    if (preserveActiveMatch) updateActiveSearchStatus();
+  }
   function showSearchMatch(index2) {
     if (searchMatches.length === 0) {
       searchIndex = -1;
-      dom.searchPreviousButton.disabled = true;
-      dom.searchNextButton.disabled = true;
+      updateSearchButtons();
       return;
     }
     searchIndex = (index2 + searchMatches.length) % searchMatches.length;
@@ -45835,18 +45871,10 @@
     graph.centerCell(match.cell);
     selection.reset(match.cell);
     dom.selectionStatus.textContent = `${match.description} (${searchIndex + 1}/${searchMatches.length})`;
-    dom.searchPreviousButton.disabled = searchMatches.length < 2;
-    dom.searchNextButton.disabled = searchMatches.length < 2;
+    updateSearchButtons();
   }
   function runSearch(query, notifyHost) {
-    resetSearchStyles();
-    searchMatches = collectSearchMatches(query);
-    for (const match of searchMatches) {
-      if (cellData(match.cell)?.objectType === "network") continue;
-      match.cell.attr("body/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
-      match.cell.attr("body/strokeWidth", 2);
-    }
-    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    refreshSearchMatches(query, false);
     if (notifyHost) post({ type: "search", query });
     showSearchMatch(0);
   }
