@@ -5,7 +5,11 @@ import type {
     SchematicGraph,
 } from './model';
 
-export type PinKey = `${string}\0${string}`;
+declare const pinKeyBrand: unique symbol;
+
+export type PinKey = string & {
+    readonly [pinKeyBrand]: 'PinKey';
+};
 
 type OrderedEndpoint = NetworkEndpoint & {
     key: PinKey;
@@ -15,7 +19,7 @@ type OrderedEndpoint = NetworkEndpoint & {
 };
 
 export function pinKey(nodeId: string, pinId: string): PinKey {
-    return `${nodeId}\0${pinId}`;
+    return `${nodeId.length}:${nodeId}${pinId}` as PinKey;
 }
 
 function boundaryPinSide(node: GraphNode): PinSide | undefined {

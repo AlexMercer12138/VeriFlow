@@ -1,3 +1,5 @@
+import { pinKey } from '@veriflow/schematic-core';
+
 import type {
     ExpressionModel,
     HdlDocument,
@@ -620,12 +622,12 @@ export function buildSchematicGraph(
     const nodes = [...inputNodes, ...inoutNodes, ...structuralNodes, ...outputNodes];
     const nodeOrder = new Map(nodes.map((node, index) => [node.id, index]));
     const pinOrder = new Map(nodes.flatMap(node =>
-        node.pins.map((pin, index) => [`${node.id}\0${pin.id}`, index] as const)
+        node.pins.map((pin, index) => [pinKey(node.id, pin.id), index] as const)
     ));
     const compareEndpoints = (left: NetworkEndpoint, right: NetworkEndpoint): number =>
         (nodeOrder.get(left.nodeId) ?? 0) - (nodeOrder.get(right.nodeId) ?? 0)
-        || (pinOrder.get(`${left.nodeId}\0${left.pinId}`) ?? 0)
-            - (pinOrder.get(`${right.nodeId}\0${right.pinId}`) ?? 0)
+        || (pinOrder.get(pinKey(left.nodeId, left.pinId)) ?? 0)
+            - (pinOrder.get(pinKey(right.nodeId, right.pinId)) ?? 0)
         || left.pinId.localeCompare(right.pinId);
     for (const network of networks.values()) {
         network.endpoints.sort(compareEndpoints);

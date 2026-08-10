@@ -3,6 +3,7 @@ import type {
     NetworkEndpoint,
     SchematicGraph,
 } from './model';
+import { pinKey, type PinKey } from './pins';
 
 export type ColumnAssignment = {
     columns: readonly (readonly string[])[];
@@ -62,13 +63,13 @@ function compareEndpoints(left: OrderedEndpoint, right: OrderedEndpoint): number
 function orderedEndpoints(
     endpoints: readonly NetworkEndpoint[],
     nodeIndexes: ReadonlyMap<string, number>,
-    pinIndexes: ReadonlyMap<string, number>
+    pinIndexes: ReadonlyMap<PinKey, number>
 ): OrderedEndpoint[] {
     const seen = new Set<string>();
     const ordered: OrderedEndpoint[] = [];
     endpoints.forEach((endpoint, endpointIndex) => {
         const nodeIndex = nodeIndexes.get(endpoint.nodeId);
-        const pinIndex = pinIndexes.get(`${endpoint.nodeId}\0${endpoint.pinId}`);
+        const pinIndex = pinIndexes.get(pinKey(endpoint.nodeId, endpoint.pinId));
         if (nodeIndex === undefined || pinIndex === undefined) return;
         const key = `${nodeIndex}\0${endpoint.pinId}\0${endpoint.role}`;
         if (seen.has(key)) return;
@@ -85,7 +86,7 @@ function buildDependencyEdges(graph: SchematicGraph): {
 } {
     const nodeIndexes = new Map(graph.nodes.map((node, index) => [node.id, index]));
     const pinIndexes = new Map(graph.nodes.flatMap(node =>
-        node.pins.map((pin, index) => [`${node.id}\0${pin.id}`, index] as const)
+        node.pins.map((pin, index) => [pinKey(node.id, pin.id), index] as const)
     ));
     const placementEdgesByPair = new Map<string, DependencyEdge>();
     const semanticEdgesByPair = new Map<string, DependencyEdge>();

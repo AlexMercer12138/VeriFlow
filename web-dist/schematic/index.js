@@ -489,12 +489,120 @@
     }
   });
 
+  // packages/schematic-core/dist/pins.js
+  var require_pins = __commonJS({
+    "packages/schematic-core/dist/pins.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.pinKey = pinKey2;
+      exports2.resolvePinSides = resolvePinSides3;
+      function pinKey2(nodeId, pinId) {
+        return `${nodeId.length}:${nodeId}${pinId}`;
+      }
+      function boundaryPinSide(node) {
+        if (node.kind !== "port")
+          return void 0;
+        return node.pins[0]?.direction === "driver" ? "right" : "left";
+      }
+      function compareEndpoints(left4, right4) {
+        return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
+      }
+      function resolvePinSides3(graph2) {
+        const orderedPins = [];
+        const networksByPin = /* @__PURE__ */ new Map();
+        const nodeIndexes = /* @__PURE__ */ new Map();
+        const pinIndexes = /* @__PURE__ */ new Map();
+        const nodesById = /* @__PURE__ */ new Map();
+        graph2.nodes.forEach((node, nodeIndex) => {
+          nodeIndexes.set(node.id, nodeIndex);
+          nodesById.set(node.id, node);
+          node.pins.forEach((pin2, pinIndex) => {
+            const key = pinKey2(node.id, pin2.id);
+            orderedPins.push({ key, node, direction: pin2.direction });
+            pinIndexes.set(key, pinIndex);
+          });
+        });
+        const orderedNetworks = graph2.networks.map((network) => network.endpoints.flatMap((endpoint) => {
+          const node = nodesById.get(endpoint.nodeId);
+          const key = pinKey2(endpoint.nodeId, endpoint.pinId);
+          const nodeIndex = nodeIndexes.get(endpoint.nodeId);
+          const pinIndex = pinIndexes.get(key);
+          if (!node || nodeIndex === void 0 || pinIndex === void 0)
+            return [];
+          const ordered = {
+            ...endpoint,
+            key,
+            node,
+            nodeIndex,
+            pinIndex
+          };
+          return [ordered];
+        }).sort(compareEndpoints));
+        for (const endpoints of orderedNetworks) {
+          for (const endpoint of endpoints) {
+            const networks = networksByPin.get(endpoint.key) ?? [];
+            networks.push(endpoints);
+            networksByPin.set(endpoint.key, networks);
+          }
+        }
+        const resolved = /* @__PURE__ */ new Map();
+        for (const candidate of orderedPins) {
+          const boundary2 = boundaryPinSide(candidate.node);
+          if (boundary2) {
+            resolved.set(candidate.key, boundary2);
+          } else if (candidate.direction === "driver") {
+            resolved.set(candidate.key, "right");
+          } else if (candidate.direction === "load") {
+            resolved.set(candidate.key, "left");
+          }
+        }
+        for (const candidate of orderedPins) {
+          if (resolved.has(candidate.key))
+            continue;
+          let hasDriverPeer = false;
+          let hasLoadPeer = false;
+          for (const endpoints of networksByPin.get(candidate.key) ?? []) {
+            for (const peer of endpoints) {
+              if (peer.key === candidate.key)
+                continue;
+              hasDriverPeer || (hasDriverPeer = peer.role === "driver");
+              hasLoadPeer || (hasLoadPeer = peer.role === "load");
+            }
+          }
+          if (hasDriverPeer) {
+            resolved.set(candidate.key, "left");
+          } else if (hasLoadPeer) {
+            resolved.set(candidate.key, "right");
+          }
+        }
+        for (const endpoints of orderedNetworks) {
+          const ambiguous = endpoints.filter((endpoint) => !resolved.has(endpoint.key));
+          if (ambiguous.length === 0)
+            continue;
+          const source = ambiguous.find((endpoint) => endpoint.node.kind !== "port") ?? ambiguous[0];
+          for (const endpoint of ambiguous) {
+            resolved.set(endpoint.key, endpoint.key === source.key ? "right" : "left");
+          }
+        }
+        for (const candidate of orderedPins) {
+          if (!resolved.has(candidate.key))
+            resolved.set(candidate.key, "left");
+        }
+        return new Map(orderedPins.map((candidate) => [
+          candidate.key,
+          resolved.get(candidate.key)
+        ]));
+      }
+    }
+  });
+
   // packages/schematic-core/dist/columns.js
   var require_columns = __commonJS({
     "packages/schematic-core/dist/columns.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.assignColumns = assignColumns2;
+      var pins_1 = require_pins();
       function addDependencyEdge(edgesByPair, source, target, networkId) {
         const key = `${source.nodeIndex}\0${target.nodeIndex}`;
         let edge = edgesByPair.get(key);
@@ -522,7 +630,7 @@
         const ordered = [];
         endpoints.forEach((endpoint, endpointIndex) => {
           const nodeIndex = nodeIndexes.get(endpoint.nodeId);
-          const pinIndex = pinIndexes.get(`${endpoint.nodeId}\0${endpoint.pinId}`);
+          const pinIndex = pinIndexes.get((0, pins_1.pinKey)(endpoint.nodeId, endpoint.pinId));
           if (nodeIndex === void 0 || pinIndex === void 0)
             return;
           const key = `${nodeIndex}\0${endpoint.pinId}\0${endpoint.role}`;
@@ -535,7 +643,7 @@
       }
       function buildDependencyEdges(graph2) {
         const nodeIndexes = new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
-        const pinIndexes = new Map(graph2.nodes.flatMap((node) => node.pins.map((pin2, index2) => [`${node.id}\0${pin2.id}`, index2])));
+        const pinIndexes = new Map(graph2.nodes.flatMap((node) => node.pins.map((pin2, index2) => [(0, pins_1.pinKey)(node.id, pin2.id), index2])));
         const placementEdgesByPair = /* @__PURE__ */ new Map();
         const semanticEdgesByPair = /* @__PURE__ */ new Map();
         const semanticSelfCycleNetworkIds = /* @__PURE__ */ new Set();
@@ -754,121 +862,6 @@
         }
         const feedbackNetworkIds = new Set(graph2.networks.map((network) => network.id).filter((networkId) => feedbackCandidates.has(networkId)));
         return { columns, nodeColumn, feedbackNetworkIds };
-      }
-    }
-  });
-
-  // packages/schematic-core/dist/model.js
-  var require_model = __commonJS({
-    "packages/schematic-core/dist/model.js"(exports2) {
-      "use strict";
-      Object.defineProperty(exports2, "__esModule", { value: true });
-    }
-  });
-
-  // packages/schematic-core/dist/pins.js
-  var require_pins = __commonJS({
-    "packages/schematic-core/dist/pins.js"(exports2) {
-      "use strict";
-      Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.pinKey = pinKey2;
-      exports2.resolvePinSides = resolvePinSides3;
-      function pinKey2(nodeId, pinId) {
-        return `${nodeId}\0${pinId}`;
-      }
-      function boundaryPinSide(node) {
-        if (node.kind !== "port")
-          return void 0;
-        return node.pins[0]?.direction === "driver" ? "right" : "left";
-      }
-      function compareEndpoints(left4, right4) {
-        return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
-      }
-      function resolvePinSides3(graph2) {
-        const orderedPins = [];
-        const networksByPin = /* @__PURE__ */ new Map();
-        const nodeIndexes = /* @__PURE__ */ new Map();
-        const pinIndexes = /* @__PURE__ */ new Map();
-        const nodesById = /* @__PURE__ */ new Map();
-        graph2.nodes.forEach((node, nodeIndex) => {
-          nodeIndexes.set(node.id, nodeIndex);
-          nodesById.set(node.id, node);
-          node.pins.forEach((pin2, pinIndex) => {
-            const key = pinKey2(node.id, pin2.id);
-            orderedPins.push({ key, node, direction: pin2.direction });
-            pinIndexes.set(key, pinIndex);
-          });
-        });
-        const orderedNetworks = graph2.networks.map((network) => network.endpoints.flatMap((endpoint) => {
-          const node = nodesById.get(endpoint.nodeId);
-          const key = pinKey2(endpoint.nodeId, endpoint.pinId);
-          const nodeIndex = nodeIndexes.get(endpoint.nodeId);
-          const pinIndex = pinIndexes.get(key);
-          if (!node || nodeIndex === void 0 || pinIndex === void 0)
-            return [];
-          const ordered = {
-            ...endpoint,
-            key,
-            node,
-            nodeIndex,
-            pinIndex
-          };
-          return [ordered];
-        }).sort(compareEndpoints));
-        for (const endpoints of orderedNetworks) {
-          for (const endpoint of endpoints) {
-            const networks = networksByPin.get(endpoint.key) ?? [];
-            networks.push(endpoints);
-            networksByPin.set(endpoint.key, networks);
-          }
-        }
-        const resolved = /* @__PURE__ */ new Map();
-        for (const candidate of orderedPins) {
-          const boundary2 = boundaryPinSide(candidate.node);
-          if (boundary2) {
-            resolved.set(candidate.key, boundary2);
-          } else if (candidate.direction === "driver") {
-            resolved.set(candidate.key, "right");
-          } else if (candidate.direction === "load") {
-            resolved.set(candidate.key, "left");
-          }
-        }
-        for (const candidate of orderedPins) {
-          if (resolved.has(candidate.key))
-            continue;
-          let hasDriverPeer = false;
-          let hasLoadPeer = false;
-          for (const endpoints of networksByPin.get(candidate.key) ?? []) {
-            for (const peer of endpoints) {
-              if (peer.key === candidate.key)
-                continue;
-              hasDriverPeer || (hasDriverPeer = peer.role === "driver");
-              hasLoadPeer || (hasLoadPeer = peer.role === "load");
-            }
-          }
-          if (hasDriverPeer) {
-            resolved.set(candidate.key, "left");
-          } else if (hasLoadPeer) {
-            resolved.set(candidate.key, "right");
-          }
-        }
-        for (const endpoints of orderedNetworks) {
-          const ambiguous = endpoints.filter((endpoint) => !resolved.has(endpoint.key));
-          if (ambiguous.length === 0)
-            continue;
-          const source = ambiguous.find((endpoint) => endpoint.node.kind !== "port") ?? ambiguous[0];
-          for (const endpoint of ambiguous) {
-            resolved.set(endpoint.key, endpoint.key === source.key ? "right" : "left");
-          }
-        }
-        for (const candidate of orderedPins) {
-          if (!resolved.has(candidate.key))
-            resolved.set(candidate.key, "left");
-        }
-        return new Map(orderedPins.map((candidate) => [
-          candidate.key,
-          resolved.get(candidate.key)
-        ]));
       }
     }
   });
@@ -1230,6 +1223,4053 @@
     }
   });
 
+  // packages/schematic-core/dist/renderModel.js
+  var require_renderModel = __commonJS({
+    "packages/schematic-core/dist/renderModel.js"(exports2) {
+      "use strict";
+      var __classPrivateFieldSet = exports2 && exports2.__classPrivateFieldSet || function(receiver, state, value, kind, f) {
+        if (kind === "m") throw new TypeError("Private method is not writable");
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+        return kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value), value;
+      };
+      var __classPrivateFieldGet = exports2 && exports2.__classPrivateFieldGet || function(receiver, state, kind, f) {
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+      };
+      var _ReadonlyMapView_values;
+      var _ReadonlySetView_values;
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.SCHEMATIC_NETWORK_LABEL_LAYOUT = exports2.SCHEMATIC_NETWORK_LABEL_STYLE = void 0;
+      exports2.readonlyMap = readonlyMap;
+      exports2.readonlySet = readonlySet;
+      exports2.serializeSchematicRenderModel = serializeSchematicRenderModel;
+      exports2.SCHEMATIC_NETWORK_LABEL_STYLE = Object.freeze({
+        fontSize: 10,
+        fontWeight: 400
+      });
+      exports2.SCHEMATIC_NETWORK_LABEL_LAYOUT = Object.freeze({
+        height: 14,
+        endpointPadding: 4,
+        wireGap: 3,
+        junctionRadius: 3
+      });
+      var ReadonlyMapView = class {
+        constructor(entries) {
+          _ReadonlyMapView_values.set(this, void 0);
+          __classPrivateFieldSet(this, _ReadonlyMapView_values, new Map(entries), "f");
+          Object.freeze(this);
+        }
+        get size() {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").size;
+        }
+        entries() {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").entries();
+        }
+        forEach(callbackfn, thisArg) {
+          for (const [key, value] of __classPrivateFieldGet(this, _ReadonlyMapView_values, "f")) {
+            callbackfn.call(thisArg, value, key, this);
+          }
+        }
+        get(key) {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").get(key);
+        }
+        has(key) {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").has(key);
+        }
+        keys() {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").keys();
+        }
+        values() {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f").values();
+        }
+        [(_ReadonlyMapView_values = /* @__PURE__ */ new WeakMap(), Symbol.iterator)]() {
+          return __classPrivateFieldGet(this, _ReadonlyMapView_values, "f")[Symbol.iterator]();
+        }
+        get [Symbol.toStringTag]() {
+          return "ReadonlyMap";
+        }
+      };
+      var ReadonlySetView = class {
+        constructor(values) {
+          _ReadonlySetView_values.set(this, void 0);
+          __classPrivateFieldSet(this, _ReadonlySetView_values, new Set(values), "f");
+          Object.freeze(this);
+        }
+        get size() {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f").size;
+        }
+        entries() {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f").entries();
+        }
+        forEach(callbackfn, thisArg) {
+          for (const value of __classPrivateFieldGet(this, _ReadonlySetView_values, "f")) {
+            callbackfn.call(thisArg, value, value, this);
+          }
+        }
+        has(value) {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f").has(value);
+        }
+        keys() {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f").keys();
+        }
+        values() {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f").values();
+        }
+        [(_ReadonlySetView_values = /* @__PURE__ */ new WeakMap(), Symbol.iterator)]() {
+          return __classPrivateFieldGet(this, _ReadonlySetView_values, "f")[Symbol.iterator]();
+        }
+        get [Symbol.toStringTag]() {
+          return "ReadonlySet";
+        }
+      };
+      function readonlyMap(entries) {
+        return new ReadonlyMapView(entries);
+      }
+      function readonlySet(values) {
+        return new ReadonlySetView(values);
+      }
+      function serializeSchematicRenderModel(model) {
+        return Object.freeze({
+          columns: Object.freeze([...model.columns]),
+          nodes: Object.freeze([...model.nodes.values()]),
+          networks: Object.freeze([...model.networks]),
+          junctions: Object.freeze(model.junctions.map((junction) => Object.freeze({
+            networkId: junction.networkId,
+            point: junction.point,
+            directions: Object.freeze([...junction.directions])
+          }))),
+          bounds: model.bounds
+        });
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/geometry.js
+  var require_geometry = __commonJS({
+    "packages/schematic-core/dist/routing/geometry.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.assertGridCoordinate = assertGridCoordinate;
+      exports2.horizontal = horizontal;
+      exports2.vertical = vertical;
+      exports2.segmentIntersectsRectangleInterior = segmentIntersectsRectangleInterior;
+      exports2.simplifySegments = simplifySegments;
+      function assertGridCoordinate(value, name) {
+        if (!Number.isSafeInteger(value)) {
+          throw new RangeError(`${name} must be a finite integer grid coordinate`);
+        }
+      }
+      function horizontal(networkId, x1, x2, y) {
+        assertGridCoordinate(x1, "x1");
+        assertGridCoordinate(x2, "x2");
+        assertGridCoordinate(y, "y");
+        return {
+          orientation: "horizontal",
+          networkId,
+          y,
+          x1: Math.min(x1, x2),
+          x2: Math.max(x1, x2)
+        };
+      }
+      function vertical(networkId, x2, y1, y2) {
+        assertGridCoordinate(x2, "x");
+        assertGridCoordinate(y1, "y1");
+        assertGridCoordinate(y2, "y2");
+        return {
+          orientation: "vertical",
+          networkId,
+          x: x2,
+          y1: Math.min(y1, y2),
+          y2: Math.max(y1, y2)
+        };
+      }
+      function compareSegments(left4, right4) {
+        const networkOrder = left4.networkId < right4.networkId ? -1 : left4.networkId > right4.networkId ? 1 : 0;
+        if (networkOrder !== 0)
+          return networkOrder;
+        if (left4.orientation !== right4.orientation) {
+          return left4.orientation === "horizontal" ? -1 : 1;
+        }
+        if (left4.orientation === "horizontal" && right4.orientation === "horizontal") {
+          return left4.y - right4.y || left4.x1 - right4.x1 || left4.x2 - right4.x2;
+        }
+        if (left4.orientation === "vertical" && right4.orientation === "vertical") {
+          return left4.x - right4.x || left4.y1 - right4.y1 || left4.y2 - right4.y2;
+        }
+        return 0;
+      }
+      function haveOpenIntervalOverlap(firstStart, firstEnd, secondStart, secondEnd) {
+        return Math.max(firstStart, secondStart) < Math.min(firstEnd, secondEnd);
+      }
+      function compareLaneIntervals(left4, right4) {
+        return left4.start - right4.start || left4.end - right4.end || (left4.networkId < right4.networkId ? -1 : left4.networkId > right4.networkId ? 1 : 0);
+      }
+      function simplifyLane(intervals) {
+        const byNetwork = /* @__PURE__ */ new Map();
+        for (const interval of intervals) {
+          const networkIntervals = byNetwork.get(interval.networkId) ?? [];
+          networkIntervals.push(interval);
+          byNetwork.set(interval.networkId, networkIntervals);
+        }
+        const merged = [];
+        for (const networkIntervals of byNetwork.values()) {
+          networkIntervals.sort(compareLaneIntervals);
+          for (const interval of networkIntervals) {
+            const previous = merged[merged.length - 1];
+            if (previous?.networkId === interval.networkId && interval.start <= previous.end) {
+              previous.end = Math.max(previous.end, interval.end);
+            } else {
+              merged.push({ ...interval });
+            }
+          }
+        }
+        const byStart = merged.slice().sort(compareLaneIntervals);
+        for (let index2 = 1; index2 < byStart.length; index2 += 1) {
+          if (byStart[index2].start < byStart[index2 - 1].end) {
+            throw new RangeError("different networks cannot share a collinear open interval");
+          }
+        }
+        return merged;
+      }
+      function segmentIntersectsRectangleInterior(segment, rectangle) {
+        assertGridCoordinate(rectangle.x, "rectangle.x");
+        assertGridCoordinate(rectangle.y, "rectangle.y");
+        assertGridCoordinate(rectangle.width, "rectangle.width");
+        assertGridCoordinate(rectangle.height, "rectangle.height");
+        if (rectangle.width < 0 || rectangle.height < 0) {
+          throw new RangeError("rectangle dimensions must be non-negative");
+        }
+        const right4 = rectangle.x + rectangle.width;
+        const bottom4 = rectangle.y + rectangle.height;
+        assertGridCoordinate(right4, "rectangle right edge");
+        assertGridCoordinate(bottom4, "rectangle bottom edge");
+        if (segment.orientation === "horizontal") {
+          const normalized2 = horizontal(segment.networkId, segment.x1, segment.x2, segment.y);
+          return normalized2.x1 !== normalized2.x2 && normalized2.y > rectangle.y && normalized2.y < bottom4 && haveOpenIntervalOverlap(normalized2.x1, normalized2.x2, rectangle.x, right4);
+        }
+        const normalized = vertical(segment.networkId, segment.x, segment.y1, segment.y2);
+        return normalized.y1 !== normalized.y2 && normalized.x > rectangle.x && normalized.x < right4 && haveOpenIntervalOverlap(normalized.y1, normalized.y2, rectangle.y, bottom4);
+      }
+      function simplifySegments(segments) {
+        const horizontalLanes = /* @__PURE__ */ new Map();
+        const verticalLanes = /* @__PURE__ */ new Map();
+        for (const segment of segments) {
+          if (segment.orientation === "horizontal") {
+            const normalized = horizontal(segment.networkId, segment.x1, segment.x2, segment.y);
+            if (normalized.x1 === normalized.x2)
+              continue;
+            const lane = horizontalLanes.get(normalized.y) ?? [];
+            lane.push({
+              networkId: normalized.networkId,
+              start: normalized.x1,
+              end: normalized.x2
+            });
+            horizontalLanes.set(normalized.y, lane);
+          } else {
+            const normalized = vertical(segment.networkId, segment.x, segment.y1, segment.y2);
+            if (normalized.y1 === normalized.y2)
+              continue;
+            const lane = verticalLanes.get(normalized.x) ?? [];
+            lane.push({
+              networkId: normalized.networkId,
+              start: normalized.y1,
+              end: normalized.y2
+            });
+            verticalLanes.set(normalized.x, lane);
+          }
+        }
+        const result = [];
+        for (const [y, lane] of horizontalLanes) {
+          for (const interval of simplifyLane(lane)) {
+            result.push(horizontal(interval.networkId, interval.start, interval.end, y));
+          }
+        }
+        for (const [x2, lane] of verticalLanes) {
+          for (const interval of simplifyLane(lane)) {
+            result.push(vertical(interval.networkId, x2, interval.start, interval.end));
+          }
+        }
+        result.sort(compareSegments);
+        return result;
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/junctions.js
+  var require_junctions = __commonJS({
+    "packages/schematic-core/dist/routing/junctions.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.splitSegmentsAtBranchPoints = splitSegmentsAtBranchPoints;
+      exports2.deriveJunctions = deriveJunctions;
+      var geometry_1 = require_geometry();
+      var DIRECTION_ORDER = [
+        "north",
+        "east",
+        "south",
+        "west"
+      ];
+      var ActiveCoordinateIndex = class {
+        constructor(size) {
+          this.tree = new Int32Array(size + 1);
+          this.segmentByCoordinate = new Array(size).fill(-1);
+        }
+        activate(coordinateIndex, segmentIndex) {
+          this.segmentByCoordinate[coordinateIndex] = segmentIndex;
+          this.update(coordinateIndex, 1);
+        }
+        deactivate(coordinateIndex) {
+          this.segmentByCoordinate[coordinateIndex] = -1;
+          this.update(coordinateIndex, -1);
+        }
+        forEachActive(startIndex, endIndex, visit) {
+          let order = this.prefixSum(startIndex) + 1;
+          const finalOrder = this.prefixSum(endIndex);
+          while (order <= finalOrder) {
+            const coordinateIndex = this.findByOrder(order);
+            visit(this.segmentByCoordinate[coordinateIndex]);
+            order += 1;
+          }
+        }
+        update(coordinateIndex, delta) {
+          for (let index2 = coordinateIndex + 1; index2 < this.tree.length; index2 += index2 & -index2) {
+            this.tree[index2] += delta;
+          }
+        }
+        prefixSum(endIndex) {
+          let sum = 0;
+          for (let index2 = endIndex; index2 > 0; index2 -= index2 & -index2) {
+            sum += this.tree[index2];
+          }
+          return sum;
+        }
+        findByOrder(order) {
+          let index2 = 0;
+          let step = 1;
+          while (step * 2 < this.tree.length)
+            step *= 2;
+          for (; step > 0; step = Math.floor(step / 2)) {
+            const next = index2 + step;
+            if (next < this.tree.length && this.tree[next] < order) {
+              index2 = next;
+              order -= this.tree[next];
+            }
+          }
+          return index2;
+        }
+      };
+      function lowerBound(values, target) {
+        let low = 0;
+        let high = values.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (values[middle] < target)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        return low;
+      }
+      function upperBound(values, target) {
+        let low = 0;
+        let high = values.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (values[middle] <= target)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        return low;
+      }
+      function splitAtOrthogonalIntersections(network, segments, splitCoordinates) {
+        if (network.horizontals.length === 0 || network.verticals.length === 0) {
+          return;
+        }
+        const horizontalYs = network.horizontals.map(({ segment }) => segment.y);
+        horizontalYs.sort((left4, right4) => left4 - right4);
+        const uniqueYs = [];
+        for (const y of horizontalYs) {
+          if (uniqueYs[uniqueYs.length - 1] !== y)
+            uniqueYs.push(y);
+        }
+        const yIndex = /* @__PURE__ */ new Map();
+        uniqueYs.forEach((y, index2) => yIndex.set(y, index2));
+        const events = [];
+        for (const horizontalSegment of network.horizontals) {
+          events.push({
+            x: horizontalSegment.segment.x1,
+            kind: 0,
+            segmentIndex: horizontalSegment.index
+          });
+          events.push({
+            x: horizontalSegment.segment.x2,
+            kind: 2,
+            segmentIndex: horizontalSegment.index
+          });
+        }
+        for (const verticalSegment of network.verticals) {
+          events.push({
+            x: verticalSegment.segment.x,
+            kind: 1,
+            segmentIndex: verticalSegment.index
+          });
+        }
+        events.sort((left4, right4) => left4.x - right4.x || left4.kind - right4.kind || left4.segmentIndex - right4.segmentIndex);
+        const active = new ActiveCoordinateIndex(uniqueYs.length);
+        for (const event of events) {
+          const segment = segments[event.segmentIndex];
+          if (segment.orientation === "horizontal") {
+            const coordinateIndex = yIndex.get(segment.y);
+            if (event.kind === 0) {
+              active.activate(coordinateIndex, event.segmentIndex);
+            } else {
+              active.deactivate(coordinateIndex);
+            }
+            continue;
+          }
+          const firstY = lowerBound(uniqueYs, segment.y1);
+          const afterLastY = upperBound(uniqueYs, segment.y2);
+          active.forEachActive(firstY, afterLastY, (horizontalIndex) => {
+            const horizontalSegment = segments[horizontalIndex];
+            if (horizontalSegment.orientation !== "horizontal")
+              return;
+            splitCoordinates[horizontalIndex].add(segment.x);
+            splitCoordinates[event.segmentIndex].add(horizontalSegment.y);
+          });
+        }
+      }
+      function splitSegmentsAtBranchPoints(segments) {
+        const simplified = (0, geometry_1.simplifySegments)(segments);
+        const splitCoordinates = simplified.map((segment) => segment.orientation === "horizontal" ? /* @__PURE__ */ new Set([segment.x1, segment.x2]) : /* @__PURE__ */ new Set([segment.y1, segment.y2]));
+        const byNetwork = /* @__PURE__ */ new Map();
+        simplified.forEach((segment, index2) => {
+          let network = byNetwork.get(segment.networkId);
+          if (!network) {
+            network = { horizontals: [], verticals: [] };
+            byNetwork.set(segment.networkId, network);
+          }
+          if (segment.orientation === "horizontal") {
+            network.horizontals.push({ index: index2, segment });
+          } else {
+            network.verticals.push({ index: index2, segment });
+          }
+        });
+        for (const network of byNetwork.values()) {
+          splitAtOrthogonalIntersections(network, simplified, splitCoordinates);
+        }
+        return simplified.flatMap((segment, index2) => {
+          const coordinates = [...splitCoordinates[index2]].sort((left4, right4) => left4 - right4);
+          const result = [];
+          for (let coordinateIndex = 1; coordinateIndex < coordinates.length; coordinateIndex += 1) {
+            const start = coordinates[coordinateIndex - 1];
+            const end = coordinates[coordinateIndex];
+            result.push(segment.orientation === "horizontal" ? (0, geometry_1.horizontal)(segment.networkId, start, end, segment.y) : (0, geometry_1.vertical)(segment.networkId, segment.x, start, end));
+          }
+          return result;
+        });
+      }
+      function deriveJunctions(segments) {
+        const directionsByNetwork = /* @__PURE__ */ new Map();
+        const addDirection = (networkId, point, direction) => {
+          let byX = directionsByNetwork.get(networkId);
+          if (!byX) {
+            byX = /* @__PURE__ */ new Map();
+            directionsByNetwork.set(networkId, byX);
+          }
+          let byY = byX.get(point.x);
+          if (!byY) {
+            byY = /* @__PURE__ */ new Map();
+            byX.set(point.x, byY);
+          }
+          let directions = byY.get(point.y);
+          if (!directions) {
+            directions = /* @__PURE__ */ new Set();
+            byY.set(point.y, directions);
+          }
+          directions.add(direction);
+        };
+        for (const segment of splitSegmentsAtBranchPoints(segments)) {
+          if (segment.orientation === "horizontal") {
+            addDirection(segment.networkId, { x: segment.x1, y: segment.y }, "east");
+            addDirection(segment.networkId, { x: segment.x2, y: segment.y }, "west");
+          } else {
+            addDirection(segment.networkId, { x: segment.x, y: segment.y1 }, "south");
+            addDirection(segment.networkId, { x: segment.x, y: segment.y2 }, "north");
+          }
+        }
+        const junctions = [];
+        for (const [networkId, byX] of directionsByNetwork) {
+          for (const [x2, byY] of byX) {
+            for (const [y, directions] of byY) {
+              if (directions.size < 3)
+                continue;
+              junctions.push({
+                networkId,
+                point: { x: x2, y },
+                directions: new Set(DIRECTION_ORDER.filter((direction) => directions.has(direction)))
+              });
+            }
+          }
+        }
+        junctions.sort((left4, right4) => (left4.networkId < right4.networkId ? -1 : left4.networkId > right4.networkId ? 1 : 0) || left4.point.x - right4.point.x || left4.point.y - right4.point.y);
+        return junctions;
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/tracks.js
+  var require_tracks = __commonJS({
+    "packages/schematic-core/dist/routing/tracks.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.MAX_ROUTING_TRACKS = void 0;
+      exports2.createRoutingTrackPool = createRoutingTrackPool;
+      exports2.MAX_ROUTING_TRACKS = 1e5;
+      function assertTrackIndex(track) {
+        if (!Number.isSafeInteger(track) || track < 0 || track >= exports2.MAX_ROUTING_TRACKS) {
+          throw new RangeError(`routing track must be a non-negative safe integer below ${exports2.MAX_ROUTING_TRACKS}`);
+        }
+      }
+      function createRoutingTrackPool(id, orientation) {
+        let trackCount = 0;
+        let sealed = false;
+        const pool = Object.freeze({
+          id,
+          orientation,
+          get trackCount() {
+            return trackCount;
+          }
+        });
+        return Object.freeze({
+          pool,
+          request(track) {
+            if (sealed) {
+              throw new Error(`routing track pool ${id} is already realized`);
+            }
+            const selected = track ?? trackCount;
+            assertTrackIndex(selected);
+            trackCount = Math.max(trackCount, selected + 1);
+            return selected;
+          },
+          seal() {
+            sealed = true;
+          }
+        });
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/grid.js
+  var require_grid = __commonJS({
+    "packages/schematic-core/dist/routing/grid.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.MAX_ROUTING_COLUMNS = exports2.ROUTING_GRID_DEFAULTS = void 0;
+      exports2.createRoutingGrid = createRoutingGrid;
+      exports2.planCorridors = planCorridors;
+      exports2.allocateChannelTrack = allocateChannelTrack;
+      exports2.allocateCorridorTrack = allocateCorridorTrack;
+      exports2.realizeRoutingGrid = realizeRoutingGrid;
+      var tracks_1 = require_tracks();
+      exports2.ROUTING_GRID_DEFAULTS = Object.freeze({
+        gridStep: 2,
+        pinEscape: 12,
+        safetyMargin: 4,
+        trackPitch: 12,
+        minimumChannelWidth: 32,
+        minimumRowGap: 32,
+        minimumOuterMargin: 16
+      });
+      exports2.MAX_ROUTING_COLUMNS = 1e5;
+      var gridStates = /* @__PURE__ */ new WeakMap();
+      function safeAdd(left4, right4, label) {
+        const result = left4 + right4;
+        if (!Number.isSafeInteger(result)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return result;
+      }
+      function safeMultiply(left4, right4, label) {
+        const result = left4 * right4;
+        if (!Number.isSafeInteger(result)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return result;
+      }
+      function assertSafeNonNegativeInteger(value, label) {
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new RangeError(`${label} must be a non-negative safe integer`);
+        }
+      }
+      function assertGridMetric(value, gridStep, label) {
+        if (!Number.isSafeInteger(value) || value < 0 || value % gridStep !== 0) {
+          throw new RangeError(`${label} must be a non-negative grid-aligned integer`);
+        }
+      }
+      function alignUp(value, step, label) {
+        if (!Number.isFinite(value) || value <= 0 || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+          throw new RangeError(`${label} must be a positive finite safe value`);
+        }
+        const aligned = Math.ceil(value / step) * step;
+        if (!Number.isSafeInteger(aligned)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return aligned;
+      }
+      function alignNearest(value, step, label) {
+        if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+          throw new RangeError(`${label} must be a finite safe value`);
+        }
+        const aligned = Math.round(value / step) * step;
+        if (!Number.isSafeInteger(aligned)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return Object.is(aligned, -0) ? 0 : aligned;
+      }
+      function resolvedMetrics(options) {
+        const metrics = Object.freeze({
+          gridStep: options.gridStep ?? exports2.ROUTING_GRID_DEFAULTS.gridStep,
+          pinEscape: options.pinEscape ?? exports2.ROUTING_GRID_DEFAULTS.pinEscape,
+          safetyMargin: options.safetyMargin ?? exports2.ROUTING_GRID_DEFAULTS.safetyMargin,
+          trackPitch: options.trackPitch ?? exports2.ROUTING_GRID_DEFAULTS.trackPitch,
+          minimumChannelWidth: options.minimumChannelWidth ?? exports2.ROUTING_GRID_DEFAULTS.minimumChannelWidth,
+          minimumRowGap: options.minimumRowGap ?? exports2.ROUTING_GRID_DEFAULTS.minimumRowGap,
+          minimumOuterMargin: options.minimumOuterMargin ?? exports2.ROUTING_GRID_DEFAULTS.minimumOuterMargin
+        });
+        if (!Number.isSafeInteger(metrics.gridStep) || metrics.gridStep <= 0) {
+          throw new RangeError("gridStep must be a positive safe integer");
+        }
+        for (const [label, value] of Object.entries(metrics)) {
+          if (label === "gridStep")
+            continue;
+          assertGridMetric(value, metrics.gridStep, label);
+        }
+        if (metrics.trackPitch <= 0) {
+          throw new RangeError("trackPitch must be positive");
+        }
+        if (metrics.trackPitch / 2 % metrics.gridStep !== 0) {
+          throw new RangeError("half the trackPitch must remain grid aligned");
+        }
+        const inflation = safeAdd(metrics.pinEscape, metrics.safetyMargin, "module inflation");
+        const doubleInflation = safeMultiply(inflation, 2, "module inflation");
+        if (metrics.minimumChannelWidth < doubleInflation || metrics.minimumRowGap < doubleInflation || metrics.minimumOuterMargin < inflation) {
+          throw new RangeError("routing minimum gaps must contain pin escape and safety margins");
+        }
+        return metrics;
+      }
+      function snapshotOptions(options) {
+        if (typeof options !== "object" || options === null || Array.isArray(options)) {
+          throw new RangeError("routing grid options must be an object");
+        }
+        const record = options;
+        return Object.freeze({
+          columnCount: record.columnCount,
+          gridStep: record.gridStep,
+          pinEscape: record.pinEscape,
+          safetyMargin: record.safetyMargin,
+          trackPitch: record.trackPitch,
+          minimumChannelWidth: record.minimumChannelWidth,
+          minimumRowGap: record.minimumRowGap,
+          minimumOuterMargin: record.minimumOuterMargin
+        });
+      }
+      function snapshotArray(value, label) {
+        if (!Array.isArray(value)) {
+          throw new RangeError(`${label} must be an array`);
+        }
+        const length2 = value.length;
+        const snapshot = new Array(length2);
+        for (let index2 = 0; index2 < length2; index2 += 1) {
+          snapshot[index2] = value[index2];
+        }
+        return snapshot;
+      }
+      function snapshotPin(value, nodeIndex, pinIndex) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`routing node ${nodeIndex} pin ${pinIndex} must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const x2 = record.x;
+        const y = record.y;
+        return Object.freeze({
+          id,
+          x: x2,
+          y
+        });
+      }
+      function snapshotNode(value, nodeIndex) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`routing node ${nodeIndex} must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const column = record.column;
+        const order = record.order;
+        const yOffset = record.yOffset;
+        const sizeValue = record.size;
+        const pinAnchorsValue = record.pinAnchors;
+        if (typeof sizeValue !== "object" || sizeValue === null || Array.isArray(sizeValue)) {
+          throw new RangeError(`routing node ${nodeIndex} size must be an object`);
+        }
+        const sizeRecord = sizeValue;
+        const width2 = sizeRecord.width;
+        const height2 = sizeRecord.height;
+        const pins = pinAnchorsValue === void 0 ? [] : snapshotArray(pinAnchorsValue, `routing node ${nodeIndex} pinAnchors`);
+        const pinAnchors = pins.map((pin2, pinIndex) => snapshotPin(pin2, nodeIndex, pinIndex));
+        return Object.freeze({
+          id,
+          column,
+          order,
+          yOffset,
+          size: Object.freeze({
+            width: width2,
+            height: height2
+          }),
+          pinAnchors: Object.freeze(pinAnchors)
+        });
+      }
+      function snapshotNodes(inputNodes) {
+        return snapshotArray(inputNodes, "routing nodes").map(snapshotNode);
+      }
+      function upperBound(values, target) {
+        let low = 0;
+        let high = values.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (values[middle] <= target)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        return low;
+      }
+      function lowerBound(values, target) {
+        let low = 0;
+        let high = values.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (values[middle] < target)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        return low;
+      }
+      function normalizedColumnCount(options, requiredCount) {
+        const count = options.columnCount ?? requiredCount;
+        assertSafeNonNegativeInteger(count, "columnCount");
+        if (count > exports2.MAX_ROUTING_COLUMNS) {
+          throw new RangeError(`columnCount must not exceed ${exports2.MAX_ROUTING_COLUMNS}`);
+        }
+        if (count < requiredCount) {
+          throw new RangeError("columnCount does not contain every routing node");
+        }
+        return count;
+      }
+      function normalizeNode(input, inputIndex, metrics, seenNodeIds) {
+        if (typeof input.id !== "string" || seenNodeIds.has(input.id)) {
+          throw new RangeError("routing node IDs must be unique strings");
+        }
+        seenNodeIds.add(input.id);
+        assertSafeNonNegativeInteger(input.column, `node ${input.id} column`);
+        if (input.column >= exports2.MAX_ROUTING_COLUMNS) {
+          throw new RangeError(`node ${input.id} column exceeds the routing grid`);
+        }
+        assertSafeNonNegativeInteger(input.order, `node ${input.id} order`);
+        const width2 = alignUp(input.size.width, metrics.gridStep, `node ${input.id} width`);
+        const height2 = alignUp(input.size.height, metrics.gridStep, `node ${input.id} height`);
+        const yOffset = alignNearest(input.yOffset, metrics.gridStep, `node ${input.id} yOffset`);
+        const seenPinIds = /* @__PURE__ */ new Set();
+        const pinAnchors = (input.pinAnchors ?? []).map((pin2) => {
+          if (typeof pin2.id !== "string" || seenPinIds.has(pin2.id)) {
+            throw new RangeError(`node ${input.id} pin IDs must be unique strings`);
+          }
+          seenPinIds.add(pin2.id);
+          if (!Number.isFinite(pin2.x) || Math.abs(pin2.x) > Number.MAX_SAFE_INTEGER || !Number.isFinite(pin2.y) || Math.abs(pin2.y) > Number.MAX_SAFE_INTEGER || pin2.x < 0 || pin2.x > input.size.width || pin2.y < 0 || pin2.y > input.size.height) {
+            throw new RangeError(`node ${input.id} pin anchor lies outside its bounds`);
+          }
+          return Object.freeze({
+            id: pin2.id,
+            x: pin2.x === input.size.width ? width2 : alignNearest(pin2.x, metrics.gridStep, `pin ${pin2.id} x`),
+            y: pin2.y === input.size.height ? height2 : alignNearest(pin2.y, metrics.gridStep, `pin ${pin2.id} y`)
+          });
+        });
+        return {
+          id: input.id,
+          inputIndex,
+          column: input.column,
+          order: input.order,
+          yOffset,
+          width: width2,
+          height: height2,
+          pinAnchors: Object.freeze(pinAnchors)
+        };
+      }
+      function rowTops(rowHeights, gapHeights) {
+        const tops = [];
+        let cursor = 0;
+        rowHeights.forEach((height2, row) => {
+          tops.push(cursor);
+          cursor = safeAdd(cursor, height2, "routing row position");
+          if (row < gapHeights.length) {
+            cursor = safeAdd(cursor, gapHeights[row], "routing row position");
+          }
+        });
+        return tops;
+      }
+      function relativeNodeTops(nodes, tops, gridStep) {
+        const byColumn = /* @__PURE__ */ new Map();
+        for (const node of nodes) {
+          const entries = byColumn.get(node.column) ?? [];
+          entries.push(node);
+          byColumn.set(node.column, entries);
+        }
+        const result = /* @__PURE__ */ new Map();
+        for (const entries of byColumn.values()) {
+          entries.sort((left4, right4) => left4.row - right4.row);
+          let previousBottom = 0;
+          entries.forEach((node, index2) => {
+            const desired = safeAdd(tops[node.row], node.yOffset, `node ${node.id} vertical position`);
+            const minimum = index2 === 0 ? 0 : safeAdd(previousBottom, gridStep, "node separation");
+            const top4 = Math.max(0, desired, minimum);
+            result.set(node.id, top4);
+            previousBottom = safeAdd(top4, node.height, `node ${node.id} bounds`);
+          });
+        }
+        return result;
+      }
+      function corridorBlockers(nodes, nodeTops, boundaries, columnCount, inflation) {
+        const blocked = Array.from({ length: boundaries.length }, () => /* @__PURE__ */ new Set());
+        for (const node of nodes) {
+          const top4 = nodeTops.get(node.id);
+          const inflatedTop = top4 - inflation;
+          const inflatedBottom = safeAdd(safeAdd(top4, node.height, `node ${node.id} bounds`), inflation, `node ${node.id} inflated bounds`);
+          const firstGapAboveNode = upperBound(boundaries, inflatedTop);
+          const afterLastGapAboveNode = Math.min(node.row, boundaries.length);
+          for (let gap = firstGapAboveNode; gap < afterLastGapAboveNode; gap += 1) {
+            blocked[gap].add(node.column);
+          }
+          const firstGapBelowNode = Math.min(node.row, boundaries.length);
+          const afterLastGapBelowNode = lowerBound(boundaries, inflatedBottom);
+          for (let gap = firstGapBelowNode; gap < afterLastGapBelowNode; gap += 1) {
+            blocked[gap].add(node.column);
+          }
+        }
+        return blocked.map((columns) => [...columns].filter((column) => column < columnCount).sort((left4, right4) => left4 - right4));
+      }
+      function stateFor(grid2) {
+        const state = gridStates.get(grid2);
+        if (!state)
+          throw new TypeError("unknown routing grid");
+        return state;
+      }
+      function immutableSpan(startColumn, endColumn) {
+        return Object.freeze([startColumn, endColumn]);
+      }
+      function createRoutingGrid(inputNodes, options = {}) {
+        const optionSnapshot = snapshotOptions(options);
+        const nodeSnapshots = snapshotNodes(inputNodes);
+        const metrics = resolvedMetrics(optionSnapshot);
+        const seenNodeIds = /* @__PURE__ */ new Set();
+        const provisional = nodeSnapshots.map((node, index2) => normalizeNode(node, index2, metrics, seenNodeIds));
+        const requiredColumnCount = provisional.reduce((maximum, node) => Math.max(maximum, node.column + 1), 0);
+        const columnCount = normalizedColumnCount(optionSnapshot, requiredColumnCount);
+        const nodesByColumn = Array.from({ length: columnCount }, () => []);
+        for (const node of provisional)
+          nodesByColumn[node.column].push(node);
+        const nodes = [];
+        const columns = [];
+        nodesByColumn.forEach((columnNodes, column) => {
+          columnNodes.sort((left4, right4) => left4.order - right4.order || left4.inputIndex - right4.inputIndex || left4.id.localeCompare(right4.id));
+          const normalized = columnNodes.map((node, row) => Object.freeze({ ...node, row }));
+          nodes.push(...normalized);
+          columns.push(Object.freeze({
+            index: column,
+            width: normalized.reduce((maximum, node) => Math.max(maximum, node.width), 0),
+            nodeIds: Object.freeze(normalized.map((node) => node.id))
+          }));
+        });
+        nodes.sort((left4, right4) => left4.inputIndex - right4.inputIndex);
+        const rowCount = nodes.reduce((maximum, node) => Math.max(maximum, node.row + 1), 0);
+        const rowHeights = new Array(rowCount).fill(0);
+        for (const node of nodes) {
+          rowHeights[node.row] = Math.max(rowHeights[node.row], node.height);
+        }
+        const baseGapHeights = Array.from({ length: Math.max(0, rowCount - 1) }, () => metrics.minimumRowGap);
+        const baseRowTops = rowTops(rowHeights, baseGapHeights);
+        const inflation = safeAdd(metrics.pinEscape, metrics.safetyMargin, "module inflation");
+        const boundaries = baseGapHeights.map((_, rowGap) => safeAdd(safeAdd(baseRowTops[rowGap], rowHeights[rowGap], "row gap boundary"), inflation, "row gap boundary"));
+        const baseNodeTops = relativeNodeTops(nodes, baseRowTops, metrics.gridStep);
+        const blockedColumnsByRowGap = corridorBlockers(nodes, baseNodeTops, boundaries, columnCount, inflation);
+        const channelPools = Array.from({ length: Math.max(0, columnCount - 1) }, (_, channel) => (0, tracks_1.createRoutingTrackPool)(`channel:${channel}`, "vertical"));
+        const rowGapPools = baseGapHeights.map((_, rowGap) => (0, tracks_1.createRoutingTrackPool)(`row-gap:${rowGap}`, "horizontal"));
+        const topPool = (0, tracks_1.createRoutingTrackPool)("outer-top", "horizontal");
+        const bottomPool = (0, tracks_1.createRoutingTrackPool)("outer-bottom", "horizontal");
+        const channels = channelPools.map((controller, index2) => Object.freeze({
+          index: index2,
+          columns: Object.freeze([index2, index2 + 1]),
+          tracks: controller.pool
+        }));
+        const rowGaps = rowGapPools.map((controller, index2) => Object.freeze({
+          index: index2,
+          tracks: controller.pool
+        }));
+        const grid2 = Object.freeze({
+          metrics,
+          columns: Object.freeze(columns),
+          channels: Object.freeze(channels),
+          rowGaps: Object.freeze(rowGaps),
+          outer: Object.freeze({
+            top: topPool.pool,
+            bottom: bottomPool.pool
+          })
+        });
+        gridStates.set(grid2, {
+          metrics,
+          nodes,
+          rowHeights,
+          blockedColumnsByRowGap,
+          channelPools,
+          rowGapPools,
+          topPool,
+          bottomPool
+        });
+        return grid2;
+      }
+      function validateSpan(grid2, startColumn, endColumn) {
+        assertSafeNonNegativeInteger(startColumn, "corridor start column");
+        assertSafeNonNegativeInteger(endColumn, "corridor end column");
+        if (startColumn > endColumn || endColumn >= grid2.columns.length) {
+          throw new RangeError("corridor span must be an ordered range of grid columns");
+        }
+      }
+      function gapIsClear(blockedColumns, startColumn, endColumn) {
+        const candidate = lowerBound(blockedColumns, startColumn);
+        return candidate >= blockedColumns.length || blockedColumns[candidate] > endColumn;
+      }
+      function planCorridors(grid2, startColumn, endColumn, preferredRowGap) {
+        const state = stateFor(grid2);
+        validateSpan(grid2, startColumn, endColumn);
+        const rowGapCount = grid2.rowGaps.length;
+        const preferred = preferredRowGap ?? Math.max(0, Math.floor((rowGapCount - 1) / 2));
+        if (preferredRowGap !== void 0) {
+          assertSafeNonNegativeInteger(preferredRowGap, "preferred row gap");
+          if (rowGapCount === 0 || preferredRowGap >= rowGapCount) {
+            throw new RangeError("preferred row gap is outside the routing grid");
+          }
+        }
+        const span = immutableSpan(startColumn, endColumn);
+        const result = state.blockedColumnsByRowGap.map((blockedColumns, rowGap) => ({ blockedColumns, rowGap })).filter(({ blockedColumns }) => gapIsClear(blockedColumns, startColumn, endColumn)).sort((left4, right4) => Math.abs(left4.rowGap - preferred) - Math.abs(right4.rowGap - preferred) || left4.rowGap - right4.rowGap).map(({ rowGap }) => Object.freeze({
+          kind: "internal",
+          rowGap,
+          span
+        }));
+        const outerCandidates = [
+          Object.freeze({
+            kind: "outer-top",
+            lane: state.topPool.pool.trackCount,
+            span
+          }),
+          Object.freeze({
+            kind: "outer-bottom",
+            lane: state.bottomPool.pool.trackCount,
+            span
+          })
+        ];
+        if (rowGapCount > 0) {
+          const topDistance = preferred + 1;
+          const bottomDistance = rowGapCount - preferred;
+          if (bottomDistance < topDistance)
+            outerCandidates.reverse();
+        }
+        result.push(...outerCandidates);
+        return result;
+      }
+      function allocateChannelTrack(grid2, channel, track) {
+        const state = stateFor(grid2);
+        assertSafeNonNegativeInteger(channel, "routing channel");
+        if (channel >= state.channelPools.length) {
+          throw new RangeError("routing channel is outside the grid");
+        }
+        return Object.freeze({
+          kind: "channel",
+          channel,
+          track: requestTrack(state.channelPools[channel], track, state.metrics.minimumChannelWidth, state.metrics, "routing channel width")
+        });
+      }
+      function requestTrack(controller, track, minimumSize, metrics, label) {
+        const selected = track ?? controller.pool.trackCount;
+        assertSafeNonNegativeInteger(selected, "routing track");
+        if (selected >= tracks_1.MAX_ROUTING_TRACKS) {
+          throw new RangeError(`routing track must be below ${tracks_1.MAX_ROUTING_TRACKS}`);
+        }
+        const nextCount = Math.max(controller.pool.trackCount, selected + 1);
+        demandedSize(minimumSize, nextCount, metrics.trackPitch, label);
+        return controller.request(selected);
+      }
+      function invalidCandidate(message) {
+        throw new RangeError(`invalid corridor candidate: ${message}`);
+      }
+      function snapshotCandidateSpan(value) {
+        if (!Array.isArray(value)) {
+          invalidCandidate("span must be a two-column tuple");
+        }
+        const length2 = value.length;
+        if (length2 !== 2) {
+          invalidCandidate("span must be a two-column tuple");
+        }
+        const startColumn = value[0];
+        const endColumn = value[1];
+        if (typeof startColumn !== "number" || typeof endColumn !== "number") {
+          invalidCandidate("span must be a two-column tuple");
+        }
+        return immutableSpan(startColumn, endColumn);
+      }
+      function normalizeCandidate(grid2, state, candidate) {
+        if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+          invalidCandidate("expected an object");
+        }
+        const record = candidate;
+        const kind = record.kind;
+        const spanValue = record.span;
+        const span = snapshotCandidateSpan(spanValue);
+        validateSpan(grid2, span[0], span[1]);
+        switch (kind) {
+          case "internal": {
+            const rowGap = record.rowGap;
+            if (typeof rowGap !== "number") {
+              invalidCandidate("internal row gap must be a number");
+            }
+            assertSafeNonNegativeInteger(rowGap, "corridor row gap");
+            if (rowGap >= grid2.rowGaps.length) {
+              throw new RangeError("corridor row gap is outside the grid");
+            }
+            if (!gapIsClear(state.blockedColumnsByRowGap[rowGap], span[0], span[1])) {
+              throw new RangeError("blocked internal corridor does not clear the complete column span");
+            }
+            return Object.freeze({ kind, rowGap, span });
+          }
+          case "outer-top":
+          case "outer-bottom": {
+            const lane = record.lane;
+            if (typeof lane !== "number") {
+              invalidCandidate("outer lane must be a number");
+            }
+            assertSafeNonNegativeInteger(lane, "outer corridor lane");
+            return Object.freeze({ kind, lane, span });
+          }
+          default:
+            invalidCandidate("unknown kind");
+        }
+      }
+      function allocateCorridorTrack(grid2, candidate, track) {
+        const state = stateFor(grid2);
+        const normalized = normalizeCandidate(grid2, state, candidate);
+        if (normalized.kind === "internal") {
+          return Object.freeze({
+            kind: normalized.kind,
+            rowGap: normalized.rowGap,
+            track: requestTrack(state.rowGapPools[normalized.rowGap], track, state.metrics.minimumRowGap, state.metrics, "routing row gap height"),
+            span: normalized.span
+          });
+        }
+        if (track !== void 0) {
+          throw new RangeError("outer corridor does not accept an explicit track");
+        }
+        const controller = normalized.kind === "outer-top" ? state.topPool : state.bottomPool;
+        const lane = requestTrack(controller, normalized.lane, state.metrics.minimumOuterMargin, state.metrics, "outer routing margin");
+        return Object.freeze({
+          kind: normalized.kind,
+          lane,
+          span: normalized.span
+        });
+      }
+      function demandedSize(minimum, trackCount, pitch, label) {
+        return safeAdd(minimum, safeMultiply(trackCount, pitch, label), label);
+      }
+      function trackCoordinates(start, trackCount, metrics) {
+        const inflation = safeAdd(metrics.pinEscape, metrics.safetyMargin, "track inset");
+        const halfPitch = metrics.trackPitch / 2;
+        return Array.from({ length: trackCount }, (_, track) => safeAdd(safeAdd(start, inflation, "track coordinate"), safeAdd(halfPitch, safeMultiply(track, metrics.trackPitch, "track coordinate"), "track coordinate"), "track coordinate"));
+      }
+      function freezeRectangle(rectangle) {
+        return Object.freeze(rectangle);
+      }
+      function realizeRoutingGrid(grid2) {
+        const state = stateFor(grid2);
+        if (state.realized)
+          return state.realized;
+        const { metrics } = state;
+        const channelWidths = state.channelPools.map((controller) => demandedSize(metrics.minimumChannelWidth, controller.pool.trackCount, metrics.trackPitch, "routing channel width"));
+        const columns = [];
+        const channels = [];
+        let xCursor = 0;
+        grid2.columns.forEach((column, index2) => {
+          columns.push(Object.freeze({ index: index2, x: xCursor, width: column.width }));
+          xCursor = safeAdd(xCursor, column.width, "routing grid width");
+          if (index2 >= channelWidths.length)
+            return;
+          const width2 = channelWidths[index2];
+          channels.push(Object.freeze({
+            index: index2,
+            x: xCursor,
+            width: width2,
+            trackX: Object.freeze(trackCoordinates(xCursor, state.channelPools[index2].pool.trackCount, metrics))
+          }));
+          xCursor = safeAdd(xCursor, width2, "routing grid width");
+        });
+        const gapHeights = state.rowGapPools.map((controller) => demandedSize(metrics.minimumRowGap, controller.pool.trackCount, metrics.trackPitch, "routing row gap height"));
+        const tops = rowTops(state.rowHeights, gapHeights);
+        const relativeTops = relativeNodeTops(state.nodes, tops, metrics.gridStep);
+        const topHeight = demandedSize(metrics.minimumOuterMargin, state.topPool.pool.trackCount, metrics.trackPitch, "top routing margin");
+        const bottomHeight = demandedSize(metrics.minimumOuterMargin, state.bottomPool.pool.trackCount, metrics.trackPitch, "bottom routing margin");
+        let contentHeight = state.rowHeights.length === 0 ? 0 : safeAdd(tops[tops.length - 1], state.rowHeights[state.rowHeights.length - 1], "routing content height");
+        for (const node of state.nodes) {
+          contentHeight = Math.max(contentHeight, safeAdd(relativeTops.get(node.id), node.height, "routing content height"));
+        }
+        const rowGaps = state.rowGapPools.map((controller, rowGap) => {
+          const y = safeAdd(safeAdd(topHeight, tops[rowGap], "routing row gap position"), state.rowHeights[rowGap], "routing row gap position");
+          return Object.freeze({
+            index: rowGap,
+            y,
+            height: gapHeights[rowGap],
+            trackY: Object.freeze(trackCoordinates(y, controller.pool.trackCount, metrics))
+          });
+        });
+        const nodes = state.nodes.map((node) => {
+          const column = columns[node.column];
+          const centeredOffset = Math.floor((column.width - node.width) / (2 * metrics.gridStep)) * metrics.gridStep;
+          const x2 = safeAdd(column.x, centeredOffset, `node ${node.id} horizontal position`);
+          const y = safeAdd(topHeight, relativeTops.get(node.id), `node ${node.id} vertical position`);
+          const bounds = freezeRectangle({
+            x: x2,
+            y,
+            width: node.width,
+            height: node.height
+          });
+          const pinAnchors = node.pinAnchors.map((pin2) => Object.freeze({
+            id: pin2.id,
+            point: Object.freeze({
+              x: safeAdd(x2, pin2.x, `pin ${pin2.id} x`),
+              y: safeAdd(y, pin2.y, `pin ${pin2.id} y`)
+            })
+          }));
+          return Object.freeze({
+            id: node.id,
+            column: node.column,
+            row: node.row,
+            bounds,
+            pinAnchors: Object.freeze(pinAnchors)
+          });
+        });
+        const bottomY = safeAdd(topHeight, contentHeight, "bottom routing margin");
+        const halfPitch = metrics.trackPitch / 2;
+        const inflation = safeAdd(metrics.pinEscape, metrics.safetyMargin, "outer track inset");
+        const topTrackY = Array.from({ length: state.topPool.pool.trackCount }, (_, track) => topHeight - inflation - halfPitch - track * metrics.trackPitch);
+        const bottomTrackY = trackCoordinates(bottomY, state.bottomPool.pool.trackCount, metrics);
+        const height2 = safeAdd(bottomY, bottomHeight, "routing grid height");
+        const realized = Object.freeze({
+          metrics,
+          width: xCursor,
+          height: height2,
+          columns: Object.freeze(columns),
+          channels: Object.freeze(channels),
+          rowGaps: Object.freeze(rowGaps),
+          outer: Object.freeze({
+            top: Object.freeze({
+              y: 0,
+              height: topHeight,
+              trackY: Object.freeze(topTrackY)
+            }),
+            bottom: Object.freeze({
+              y: bottomY,
+              height: bottomHeight,
+              trackY: Object.freeze(bottomTrackY)
+            })
+          }),
+          nodes: Object.freeze(nodes)
+        });
+        state.channelPools.forEach((pool) => pool.seal());
+        state.rowGapPools.forEach((pool) => pool.seal());
+        state.topPool.seal();
+        state.bottomPool.seal();
+        state.realized = realized;
+        return realized;
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/occupancy.js
+  var require_occupancy = __commonJS({
+    "packages/schematic-core/dist/routing/occupancy.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.HorizontalReservationIndex = exports2.VerticalReservationIndex = void 0;
+      exports2.reservationIndexDiagnostics = reservationIndexDiagnostics;
+      var geometry_1 = require_geometry();
+      function nodeHeight(node) {
+        return node?.height ?? 0;
+      }
+      function nodeSize(node) {
+        return node?.size ?? 0;
+      }
+      function makeNode(reservation, left4, right4) {
+        return {
+          reservation,
+          left: left4,
+          right: right4,
+          height: Math.max(nodeHeight(left4), nodeHeight(right4)) + 1,
+          size: nodeSize(left4) + nodeSize(right4) + 1,
+          maxEnd: Math.max(reservation.end, left4?.maxEnd ?? Number.NEGATIVE_INFINITY, right4?.maxEnd ?? Number.NEGATIVE_INFINITY)
+        };
+      }
+      function compareReservations(first, second) {
+        if (first.start !== second.start)
+          return first.start - second.start;
+        if (first.end !== second.end)
+          return first.end - second.end;
+        if (first.networkId < second.networkId)
+          return -1;
+        if (first.networkId > second.networkId)
+          return 1;
+        return 0;
+      }
+      function rotateLeft(node) {
+        const pivot = node.right;
+        if (!pivot)
+          return node;
+        return makeNode(pivot.reservation, makeNode(node.reservation, node.left, pivot.left), pivot.right);
+      }
+      function rotateRight(node) {
+        const pivot = node.left;
+        if (!pivot)
+          return node;
+        return makeNode(pivot.reservation, pivot.left, makeNode(node.reservation, pivot.right, node.right));
+      }
+      function rebalance(node) {
+        const balance = nodeHeight(node.left) - nodeHeight(node.right);
+        if (balance > 1) {
+          const left4 = node.left;
+          if (!left4)
+            return node;
+          if (nodeHeight(left4.left) < nodeHeight(left4.right)) {
+            return rotateRight(makeNode(node.reservation, rotateLeft(left4), node.right));
+          }
+          return rotateRight(node);
+        }
+        if (balance < -1) {
+          const right4 = node.right;
+          if (!right4)
+            return node;
+          if (nodeHeight(right4.right) < nodeHeight(right4.left)) {
+            return rotateLeft(makeNode(node.reservation, node.left, rotateRight(right4)));
+          }
+          return rotateLeft(node);
+        }
+        return node;
+      }
+      function insert(node, reservation, counter4) {
+        if (!node)
+          return makeNode(reservation);
+        counter4.nodeVisits += 1;
+        const order = compareReservations(reservation, node.reservation);
+        if (order === 0)
+          return node;
+        if (order < 0) {
+          return rebalance(makeNode(node.reservation, insert(node.left, reservation, counter4), node.right));
+        }
+        return rebalance(makeNode(node.reservation, node.left, insert(node.right, reservation, counter4)));
+      }
+      function joinWithPivot(left4, reservation, right4, counter4) {
+        if (left4 && nodeHeight(left4) > nodeHeight(right4) + 1) {
+          counter4.nodeVisits += 1;
+          return rebalance(makeNode(left4.reservation, left4.left, joinWithPivot(left4.right, reservation, right4, counter4)));
+        }
+        if (right4 && nodeHeight(right4) > nodeHeight(left4) + 1) {
+          counter4.nodeVisits += 1;
+          return rebalance(makeNode(right4.reservation, joinWithPivot(left4, reservation, right4.left, counter4), right4.right));
+        }
+        return makeNode(reservation, left4, right4);
+      }
+      function removeMinimum(node, counter4) {
+        counter4.nodeVisits += 1;
+        if (!node.left)
+          return [node.reservation, node.right];
+        const [minimum, nextLeft] = removeMinimum(node.left, counter4);
+        return [
+          minimum,
+          joinWithPivot(nextLeft, node.reservation, node.right, counter4)
+        ];
+      }
+      function join(left4, right4, counter4) {
+        if (!left4)
+          return right4;
+        if (!right4)
+          return left4;
+        const [pivot, nextRight] = removeMinimum(right4, counter4);
+        return joinWithPivot(left4, pivot, nextRight, counter4);
+      }
+      function removeStartRange(node, minimumStart, maximumStart, counter4) {
+        if (!node)
+          return void 0;
+        counter4.nodeVisits += 1;
+        if (node.reservation.start < minimumStart) {
+          return joinWithPivot(node.left, node.reservation, removeStartRange(node.right, minimumStart, maximumStart, counter4), counter4);
+        }
+        if (node.reservation.start > maximumStart) {
+          return joinWithPivot(removeStartRange(node.left, minimumStart, maximumStart, counter4), node.reservation, node.right, counter4);
+        }
+        return join(removeStartRange(node.left, minimumStart, maximumStart, counter4), removeStartRange(node.right, minimumStart, maximumStart, counter4), counter4);
+      }
+      function collectTouching(node, start, end, result, counter4) {
+        if (!node || node.maxEnd < start)
+          return;
+        counter4.nodeVisits += 1;
+        collectTouching(node.left, start, end, result, counter4);
+        if (node.reservation.start > end)
+          return;
+        if (node.reservation.end >= start)
+          result.push(node.reservation);
+        collectTouching(node.right, start, end, result, counter4);
+      }
+      function collectReservations(node, result) {
+        if (!node)
+          return;
+        collectReservations(node.left, result);
+        result.push({ ...node.reservation });
+        collectReservations(node.right, result);
+      }
+      function openIntervalsOverlap(firstStart, firstEnd, secondStart, secondEnd) {
+        return Math.max(firstStart, secondStart) < Math.min(firstEnd, secondEnd);
+      }
+      var IntervalReservationIndex = class {
+        constructor() {
+          this.byLane = /* @__PURE__ */ new Map();
+          this.counter = { nodeVisits: 0 };
+        }
+        hasConflict(laneId, track, networkId, first, second) {
+          this.validateTrack(track);
+          (0, geometry_1.assertGridCoordinate)(first, "reservation interval start");
+          (0, geometry_1.assertGridCoordinate)(second, "reservation interval end");
+          const start = Math.min(first, second);
+          const end = Math.max(first, second);
+          if (start === end)
+            return false;
+          const touching = [];
+          collectTouching(this.getRoot(laneId, track), start, end, touching, this.counter);
+          return touching.some((reservation) => reservation.networkId !== networkId && openIntervalsOverlap(start, end, reservation.start, reservation.end));
+        }
+        reserve(laneId, track, networkId, first, second) {
+          this.validateTrack(track);
+          (0, geometry_1.assertGridCoordinate)(first, "reservation interval start");
+          (0, geometry_1.assertGridCoordinate)(second, "reservation interval end");
+          let start = Math.min(first, second);
+          let end = Math.max(first, second);
+          if (start === end)
+            return true;
+          const root2 = this.getRoot(laneId, track);
+          const touching = [];
+          collectTouching(root2, start, end, touching, this.counter);
+          const merged = [];
+          for (const reservation of touching) {
+            if (reservation.networkId !== networkId) {
+              if (openIntervalsOverlap(start, end, reservation.start, reservation.end)) {
+                return false;
+              }
+              continue;
+            }
+            merged.push(reservation);
+            start = Math.min(start, reservation.start);
+            end = Math.max(end, reservation.end);
+          }
+          if (merged.length === 1 && merged[0].start === start && merged[0].end === end) {
+            return true;
+          }
+          let nextRoot = root2;
+          if (merged.length > 0) {
+            nextRoot = removeStartRange(nextRoot, merged[0].start, merged[merged.length - 1].start, this.counter);
+          }
+          nextRoot = insert(nextRoot, { networkId, start, end }, this.counter);
+          this.setRoot(laneId, track, nextRoot);
+          return true;
+        }
+        reservations(laneId, track) {
+          this.validateTrack(track);
+          const result = [];
+          collectReservations(this.getRoot(laneId, track), result);
+          return result;
+        }
+        diagnostics() {
+          let nodeCount = 0;
+          let height2 = 0;
+          for (const byTrack of this.byLane.values()) {
+            for (const root2 of byTrack.values()) {
+              nodeCount += root2.size;
+              height2 = Math.max(height2, root2.height);
+            }
+          }
+          return {
+            nodeCount,
+            height: height2,
+            nodeVisits: this.counter.nodeVisits
+          };
+        }
+        getRoot(laneId, track) {
+          return this.byLane.get(laneId)?.get(track);
+        }
+        setRoot(laneId, track, root2) {
+          let byTrack = this.byLane.get(laneId);
+          if (!byTrack) {
+            byTrack = /* @__PURE__ */ new Map();
+            this.byLane.set(laneId, byTrack);
+          }
+          byTrack.set(track, root2);
+        }
+        validateTrack(track) {
+          (0, geometry_1.assertGridCoordinate)(track, "reservation track");
+          if (track < 0) {
+            throw new RangeError("reservation track must be non-negative");
+          }
+        }
+      };
+      var indexes = /* @__PURE__ */ new WeakMap();
+      var VerticalReservationIndex = class {
+        constructor() {
+          this.index = new IntervalReservationIndex();
+          indexes.set(this, this.index);
+        }
+        hasConflict(channelId, track, networkId, y1, y2) {
+          return this.index.hasConflict(channelId, track, networkId, y1, y2);
+        }
+        reserve(channelId, track, networkId, y1, y2) {
+          return this.index.reserve(channelId, track, networkId, y1, y2);
+        }
+        reservations(channelId, track) {
+          return this.index.reservations(channelId, track).map((reservation) => ({
+            networkId: reservation.networkId,
+            y1: reservation.start,
+            y2: reservation.end
+          }));
+        }
+      };
+      exports2.VerticalReservationIndex = VerticalReservationIndex;
+      var HorizontalReservationIndex = class {
+        constructor() {
+          this.index = new IntervalReservationIndex();
+          indexes.set(this, this.index);
+        }
+        hasConflict(corridorId, track, networkId, x1, x2) {
+          return this.index.hasConflict(corridorId, track, networkId, x1, x2);
+        }
+        reserve(corridorId, track, networkId, x1, x2) {
+          return this.index.reserve(corridorId, track, networkId, x1, x2);
+        }
+        reservations(corridorId, track) {
+          return this.index.reservations(corridorId, track).map((reservation) => ({
+            networkId: reservation.networkId,
+            x1: reservation.start,
+            x2: reservation.end
+          }));
+        }
+      };
+      exports2.HorizontalReservationIndex = HorizontalReservationIndex;
+      function reservationIndexDiagnostics(index2) {
+        const internal = indexes.get(index2);
+        if (!internal) {
+          return { nodeCount: 0, height: 0, nodeVisits: 0 };
+        }
+        return internal.diagnostics();
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/routing/router.js
+  var require_router = __commonJS({
+    "packages/schematic-core/dist/routing/router.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.orderedPathSegments = orderedPathSegments;
+      exports2.routeNetworks = routeNetworks;
+      exports2.routeNetworksForTesting = routeNetworksForTesting;
+      exports2.probeRoutingAllocationTransactionForTesting = probeRoutingAllocationTransactionForTesting;
+      exports2.probeChannelConstraintAssignmentForTesting = probeChannelConstraintAssignmentForTesting;
+      var grid_1 = require_grid();
+      var geometry_1 = require_geometry();
+      var occupancy_1 = require_occupancy();
+      var tracks_1 = require_tracks();
+      function incrementRoutingDiagnostic(diagnostics, key) {
+        if (diagnostics)
+          diagnostics[key] += 1;
+      }
+      function snapshotArray(value, label) {
+        if (!Array.isArray(value)) {
+          throw new RangeError(`${label} must be an array`);
+        }
+        const length2 = value.length;
+        return Array.from({ length: length2 }, (_, index2) => value[index2]);
+      }
+      function snapshotRoutingNodes(input) {
+        return Object.freeze(snapshotArray(input, "routing nodes").map((value, nodeIndex) => {
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new RangeError(`routing node ${nodeIndex} must be an object`);
+          }
+          const record = value;
+          const id = record.id;
+          const column = record.column;
+          const order = record.order;
+          const yOffset = record.yOffset;
+          const sizeValue = record.size;
+          const pinsValue = record.pinAnchors;
+          if (typeof sizeValue !== "object" || sizeValue === null || Array.isArray(sizeValue)) {
+            throw new RangeError(`routing node ${nodeIndex} size must be an object`);
+          }
+          const size = sizeValue;
+          const width2 = size.width;
+          const height2 = size.height;
+          const pins = pinsValue === void 0 ? [] : snapshotArray(pinsValue, `routing node ${nodeIndex} pinAnchors`);
+          const pinAnchors = pins.map((pinValue, pinIndex) => {
+            if (typeof pinValue !== "object" || pinValue === null || Array.isArray(pinValue)) {
+              throw new RangeError(`routing node ${nodeIndex} pin ${pinIndex} must be an object`);
+            }
+            const pin2 = pinValue;
+            const pinId = pin2.id;
+            const x2 = pin2.x;
+            const y = pin2.y;
+            return Object.freeze({
+              id: pinId,
+              x: x2,
+              y
+            });
+          });
+          return Object.freeze({
+            id,
+            column,
+            order,
+            yOffset,
+            size: Object.freeze({
+              width: width2,
+              height: height2
+            }),
+            pinAnchors: Object.freeze(pinAnchors)
+          });
+        }));
+      }
+      function snapshotRoutingNetworks(input) {
+        const seenIds = /* @__PURE__ */ new Set();
+        const result = snapshotArray(input, "routing networks").map((value, networkIndex) => {
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new RangeError(`routing network ${networkIndex} must be an object`);
+          }
+          const record = value;
+          const id = record.id;
+          const terminalsValue = record.terminals;
+          if (typeof id !== "string" || seenIds.has(id)) {
+            throw new RangeError("routing network IDs must be unique strings");
+          }
+          seenIds.add(id);
+          const terminals = snapshotArray(terminalsValue, `routing network ${id} terminals`).map((terminalValue, terminalIndex) => {
+            if (typeof terminalValue !== "object" || terminalValue === null || Array.isArray(terminalValue)) {
+              throw new RangeError(`routing network ${id} terminal ${terminalIndex} must be an object`);
+            }
+            const terminal = terminalValue;
+            const nodeId = terminal.nodeId;
+            const pinId = terminal.pinId;
+            const role = terminal.role;
+            if (typeof nodeId !== "string" || typeof pinId !== "string" || role !== "driver" && role !== "load" && role !== "bidirectional") {
+              throw new RangeError(`invalid terminal in routing network ${id}`);
+            }
+            return Object.freeze({ nodeId, pinId, role });
+          });
+          return Object.freeze({ id, terminals: Object.freeze(terminals) });
+        });
+        result.sort((left4, right4) => left4.id < right4.id ? -1 : left4.id > right4.id ? 1 : 0);
+        return Object.freeze(result);
+      }
+      function snapshotRoutingOptions(value) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError("routing grid options must be an object");
+        }
+        const record = value;
+        return Object.freeze({
+          gridStep: record.gridStep,
+          pinEscape: record.pinEscape,
+          safetyMargin: record.safetyMargin,
+          trackPitch: record.trackPitch,
+          minimumChannelWidth: record.minimumChannelWidth,
+          minimumRowGap: record.minimumRowGap,
+          minimumOuterMargin: record.minimumOuterMargin,
+          columnCount: record.columnCount
+        });
+      }
+      function channelLegRoleRank(role) {
+        switch (role) {
+          case "source":
+            return 0;
+          case "shared":
+            return 1;
+          case "target":
+            return 2;
+          case "feedback-source":
+            return 3;
+          case "feedback-target":
+            return 4;
+        }
+      }
+      function compareChannelLegAttachments(left4, right4) {
+        return left4.attachmentSide - right4.attachmentSide || right4.escapeDirection - left4.escapeDirection || left4.anchorY - right4.anchorY || left4.anchorX - right4.anchorX || left4.row - right4.row || channelLegRoleRank(left4.role) - channelLegRoleRank(right4.role) || left4.terminalIdentity.localeCompare(right4.terminalIdentity) || left4.peerIdentity.localeCompare(right4.peerIdentity);
+      }
+      function compareActiveChannelLegs(left4, right4) {
+        const count = Math.min(left4.attachments.length, right4.attachments.length);
+        for (let index2 = 0; index2 < count; index2 += 1) {
+          const order = compareChannelLegAttachments(left4.attachments[index2], right4.attachments[index2]);
+          if (order !== 0)
+            return order;
+        }
+        return left4.attachments.length - right4.attachments.length || left4.networkId.localeCompare(right4.networkId) || left4.key.localeCompare(right4.key);
+      }
+      function structuredKey(parts) {
+        return JSON.stringify(parts);
+      }
+      function channelLegAttachmentKey(attachment) {
+        return structuredKey([
+          attachment.attachmentSide,
+          attachment.escapeDirection,
+          attachment.anchorX,
+          attachment.anchorY,
+          attachment.row,
+          attachment.role,
+          attachment.terminalIdentity,
+          attachment.peerIdentity
+        ]);
+      }
+      function physicalChannelLegKey(handle) {
+        return handle.reuseKey ?? handle.key;
+      }
+      var RoutingAllocationJournal = class _RoutingAllocationJournal {
+        constructor(nodes, options, actions = [], sharedGrid, channelLegs = /* @__PURE__ */ new Map()) {
+          this.nodes = nodes;
+          this.options = options;
+          this.sharedGrid = sharedGrid;
+          this.actions = [...actions];
+          this.channelLegs = new Map(channelLegs);
+          if (!sharedGrid)
+            this.writableGrid = (0, grid_1.createRoutingGrid)(nodes, options);
+        }
+        get grid() {
+          return this.writableGrid ?? this.sharedGrid;
+        }
+        channelLeg(intent) {
+          const existing = this.channelLegs.get(intent.key);
+          if (existing) {
+            if (existing.channel !== intent.channel) {
+              throw new Error(`channel leg ${intent.key} changed channel`);
+            }
+            return Object.freeze({
+              kind: "channel-leg",
+              key: existing.key,
+              channel: existing.channel,
+              intent
+            });
+          }
+          const handle = (0, grid_1.allocateChannelTrack)(this.ensureWritableGrid(), intent.channel);
+          this.actions.push(Object.freeze({
+            kind: "channel",
+            channel: handle.channel,
+            track: handle.track,
+            leg: intent
+          }));
+          this.channelLegs.set(intent.key, intent);
+          return Object.freeze({
+            kind: "channel-leg",
+            key: intent.key,
+            channel: intent.channel,
+            intent
+          });
+        }
+        channelAssignment(handles, geometry) {
+          const geometryNodes = new Map(geometry.nodes.map((node) => [node.id, node]));
+          const mutable = /* @__PURE__ */ new Map();
+          for (const handle of handles) {
+            const key = physicalChannelLegKey(handle);
+            const allocated = this.channelLegs.get(key);
+            if (!allocated || allocated.channel !== handle.channel) {
+              throw new Error(`unknown channel leg ${key}`);
+            }
+            const existing = mutable.get(key);
+            if (existing && existing.networkId !== handle.intent.networkId) {
+              throw new RangeError(`channel leg ${key} cannot be shared by different networks`);
+            }
+            const active = existing ?? {
+              key,
+              networkId: handle.intent.networkId,
+              channel: handle.channel,
+              attachments: /* @__PURE__ */ new Map()
+            };
+            for (const attachment of handle.intent.attachments) {
+              const node = geometryNodes.get(attachment.nodeId);
+              const anchor2 = node.pinAnchors.find((candidate) => candidate.id === attachment.pinId).point;
+              const realized = Object.freeze({
+                ...attachment,
+                anchorX: anchor2.x,
+                anchorY: anchor2.y
+              });
+              active.attachments.set(channelLegAttachmentKey(realized), realized);
+            }
+            mutable.set(key, active);
+          }
+          const byChannel = /* @__PURE__ */ new Map();
+          for (const active of mutable.values()) {
+            const leg = Object.freeze({
+              key: active.key,
+              networkId: active.networkId,
+              channel: active.channel,
+              attachments: Object.freeze([...active.attachments.values()].sort(compareChannelLegAttachments))
+            });
+            const channel = byChannel.get(leg.channel) ?? [];
+            channel.push(leg);
+            byChannel.set(leg.channel, channel);
+          }
+          const tracks = /* @__PURE__ */ new Map();
+          for (const [channelIndex, legs] of byChannel) {
+            if (legs.length === 1) {
+              tracks.set(legs[0].key, 0);
+              continue;
+            }
+            const byKey = new Map(legs.map((leg) => [leg.key, leg]));
+            const outgoing = new Map(legs.map((leg) => [leg.key, /* @__PURE__ */ new Set()]));
+            const indegree = new Map(legs.map((leg) => [leg.key, 0]));
+            const attachmentsByY = /* @__PURE__ */ new Map();
+            for (const leg of legs) {
+              for (const attachment of leg.attachments) {
+                const entries = attachmentsByY.get(attachment.anchorY) ?? {
+                  left: /* @__PURE__ */ new Set(),
+                  right: /* @__PURE__ */ new Set()
+                };
+                entries[attachment.escapeDirection > 0 ? "left" : "right"].add(leg.key);
+                attachmentsByY.set(attachment.anchorY, entries);
+              }
+            }
+            for (const entries of attachmentsByY.values()) {
+              for (const leftKey of entries.left) {
+                for (const rightKey of entries.right) {
+                  if (leftKey === rightKey)
+                    continue;
+                  const left4 = byKey.get(leftKey);
+                  const right4 = byKey.get(rightKey);
+                  if (left4.networkId === right4.networkId)
+                    continue;
+                  const edges = outgoing.get(leftKey);
+                  if (edges.has(rightKey))
+                    continue;
+                  edges.add(rightKey);
+                  indegree.set(rightKey, indegree.get(rightKey) + 1);
+                }
+              }
+            }
+            const ready = legs.filter((leg) => indegree.get(leg.key) === 0).sort(compareActiveChannelLegs);
+            const ordered = [];
+            while (ready.length > 0) {
+              const leg = ready.shift();
+              ordered.push(leg);
+              for (const nextKey of outgoing.get(leg.key)) {
+                const nextIndegree = indegree.get(nextKey) - 1;
+                indegree.set(nextKey, nextIndegree);
+                if (nextIndegree === 0) {
+                  ready.push(byKey.get(nextKey));
+                  ready.sort(compareActiveChannelLegs);
+                }
+              }
+            }
+            if (ordered.length !== legs.length) {
+              throw new RangeError(`infeasible shared channel topology in channel ${channelIndex}`);
+            }
+            ordered.forEach((leg, track) => {
+              tracks.set(leg.key, track);
+            });
+          }
+          return Object.freeze({
+            resolve: (handle) => {
+              const key = physicalChannelLegKey(handle);
+              const track = tracks.get(key);
+              if (track === void 0) {
+                throw new Error(`inactive channel leg ${key}`);
+              }
+              return track;
+            }
+          });
+        }
+        actionCount() {
+          return this.actions.length;
+        }
+        compactChannelLegs(usedPhysicalKeys) {
+          const missing = new Set(usedPhysicalKeys);
+          const nextTrackByChannel = /* @__PURE__ */ new Map();
+          const actions = [];
+          const channelLegs = /* @__PURE__ */ new Map();
+          for (const action of this.actions) {
+            if (action.kind !== "channel") {
+              actions.push(action);
+              continue;
+            }
+            if (!usedPhysicalKeys.has(action.leg.key))
+              continue;
+            missing.delete(action.leg.key);
+            const track = nextTrackByChannel.get(action.channel) ?? 0;
+            nextTrackByChannel.set(action.channel, track + 1);
+            const compacted = Object.freeze({ ...action, track });
+            actions.push(compacted);
+            channelLegs.set(compacted.leg.key, compacted.leg);
+          }
+          if (missing.size > 0) {
+            throw new Error("planned route refers to an unknown channel leg");
+          }
+          return new _RoutingAllocationJournal(this.nodes, this.options, actions, void 0, channelLegs);
+        }
+        corridor(candidate, track) {
+          const grid2 = this.ensureWritableGrid();
+          const handle = candidate.kind === "internal" ? (0, grid_1.allocateCorridorTrack)(grid2, candidate, track) : (0, grid_1.allocateCorridorTrack)(grid2, candidate);
+          this.actions.push(this.corridorAction(handle));
+          return handle;
+        }
+        preview(additional = []) {
+          const scratch = (0, grid_1.createRoutingGrid)(this.nodes, this.options);
+          this.replay(scratch, [...this.actions, ...additional]);
+          return (0, grid_1.realizeRoutingGrid)(scratch);
+        }
+        realizeFinal() {
+          const finalGrid = (0, grid_1.createRoutingGrid)(this.nodes, this.options);
+          this.replay(finalGrid, this.actions);
+          return (0, grid_1.realizeRoutingGrid)(finalGrid);
+        }
+        realizeBranch() {
+          return this.writableGrid ? (0, grid_1.realizeRoutingGrid)(this.writableGrid) : this.preview();
+        }
+        fork() {
+          const allocator = new _RoutingAllocationJournal(this.nodes, this.options, this.actions, this.grid, this.channelLegs);
+          return Object.freeze({
+            allocator,
+            baseActionCount: this.actions.length
+          });
+        }
+        actionsSince(baseActionCount) {
+          if (!Number.isSafeInteger(baseActionCount) || baseActionCount < 0 || baseActionCount > this.actions.length) {
+            throw new RangeError("invalid routing allocation branch");
+          }
+          return Object.freeze(this.actions.slice(baseActionCount));
+        }
+        commit(actions) {
+          for (const action of actions) {
+            if (action.kind !== "channel")
+              continue;
+            const existing = this.channelLegs.get(action.leg.key);
+            if (existing && existing.channel !== action.leg.channel) {
+              throw new Error(`channel leg ${action.leg.key} changed channel`);
+            }
+          }
+          this.preview(actions);
+          this.replay(this.ensureWritableGrid(), actions);
+          this.actions.push(...actions);
+          for (const action of actions) {
+            if (action.kind === "channel") {
+              this.channelLegs.set(action.leg.key, action.leg);
+            }
+          }
+        }
+        corridorAction(handle) {
+          if (handle.kind === "internal") {
+            return Object.freeze({
+              kind: handle.kind,
+              rowGap: handle.rowGap,
+              track: handle.track,
+              span: handle.span
+            });
+          }
+          return Object.freeze({
+            kind: handle.kind,
+            lane: handle.lane,
+            span: handle.span
+          });
+        }
+        ensureWritableGrid() {
+          if (this.writableGrid)
+            return this.writableGrid;
+          const grid2 = (0, grid_1.createRoutingGrid)(this.nodes, this.options);
+          this.replay(grid2, this.actions);
+          this.writableGrid = grid2;
+          this.sharedGrid = void 0;
+          return grid2;
+        }
+        replay(grid2, actions) {
+          for (const action of actions) {
+            if (action.kind === "channel") {
+              (0, grid_1.allocateChannelTrack)(grid2, action.channel, action.track);
+            } else if (action.kind === "internal") {
+              (0, grid_1.allocateCorridorTrack)(grid2, {
+                kind: action.kind,
+                rowGap: action.rowGap,
+                span: action.span
+              }, action.track);
+            } else {
+              (0, grid_1.allocateCorridorTrack)(grid2, {
+                kind: action.kind,
+                lane: action.lane,
+                span: action.span
+              });
+            }
+          }
+        }
+      };
+      function validateNetworkTerminals(nodes, networks) {
+        for (const network of networks) {
+          const seenTerminals = /* @__PURE__ */ new Map();
+          for (const terminal of network.terminals) {
+            const node = nodes.get(terminal.nodeId);
+            if (!node) {
+              throw new RangeError(`unknown routing node ${terminal.nodeId} in network ${network.id}`);
+            }
+            const pin2 = node.pinAnchors?.find((candidate) => candidate.id === terminal.pinId);
+            if (!pin2) {
+              throw new RangeError(`unknown routing pin ${terminal.nodeId}:${terminal.pinId}`);
+            }
+            if (pin2.x !== 0 && pin2.x !== node.size.width) {
+              throw new RangeError(`routing terminal ${terminal.nodeId}:${terminal.pinId} must be a side pin`);
+            }
+            const nodePins = seenTerminals.get(terminal.nodeId) ?? /* @__PURE__ */ new Set();
+            if (nodePins.has(terminal.pinId)) {
+              throw new RangeError(`duplicate terminal in routing network ${network.id}`);
+            }
+            nodePins.add(terminal.pinId);
+            seenTerminals.set(terminal.nodeId, nodePins);
+          }
+        }
+      }
+      function nodeLocations(nodes) {
+        const byColumn = /* @__PURE__ */ new Map();
+        nodes.forEach((node, inputIndex) => {
+          const entries = byColumn.get(node.column) ?? [];
+          entries.push({ node, inputIndex });
+          byColumn.set(node.column, entries);
+        });
+        const locations = /* @__PURE__ */ new Map();
+        for (const entries of byColumn.values()) {
+          entries.sort((left4, right4) => left4.node.order - right4.node.order || left4.inputIndex - right4.inputIndex || left4.node.id.localeCompare(right4.node.id));
+          entries.forEach(({ node }, row) => locations.set(node.id, { node, row }));
+        }
+        return locations;
+      }
+      function compareTerminals(locations, left4, right4) {
+        const leftLocation = locations.get(left4.nodeId);
+        const rightLocation = locations.get(right4.nodeId);
+        return leftLocation.node.column - rightLocation.node.column || leftLocation.row - rightLocation.row || left4.nodeId.localeCompare(right4.nodeId) || left4.pinId.localeCompare(right4.pinId);
+      }
+      function terminalDistance(locations, root2, terminal) {
+        const rootLocation = locations.get(root2.nodeId);
+        const terminalLocation = locations.get(terminal.nodeId);
+        return Math.abs(rootLocation.node.column - terminalLocation.node.column) + Math.abs(rootLocation.row - terminalLocation.row);
+      }
+      function pointDistance(left4, right4) {
+        return Math.abs(left4.x - right4.x) + Math.abs(left4.y - right4.y);
+      }
+      function pointToSegmentDistance(point, segment) {
+        if (segment.orientation === "horizontal") {
+          const x2 = Math.max(segment.x1, Math.min(point.x, segment.x2));
+          return Math.abs(point.x - x2) + Math.abs(point.y - segment.y);
+        }
+        const y = Math.max(segment.y1, Math.min(point.y, segment.y2));
+        return Math.abs(point.x - segment.x) + Math.abs(point.y - y);
+      }
+      function improvePendingTreeTerminals(locations, pending, added, addedSegments, nodes) {
+        for (const candidate of pending) {
+          const point = realizedNodePinPoint(nodes, candidate.to);
+          const cost = addedSegments.reduce((minimum, segment) => Math.min(minimum, pointToSegmentDistance(point, segment)), Number.POSITIVE_INFINITY);
+          if (cost < candidate.cost || cost === candidate.cost && compareTerminals(locations, added, candidate.from) < 0) {
+            candidate.from = added;
+            candidate.cost = cost;
+          }
+        }
+      }
+      function resetPendingTreeTerminals(locations, pending, root2, paths, nodes) {
+        const rootPoint = realizedNodePinPoint(nodes, root2);
+        for (const candidate of pending) {
+          candidate.from = root2;
+          candidate.cost = pointDistance(rootPoint, realizedNodePinPoint(nodes, candidate.to));
+        }
+        for (const path2 of paths) {
+          improvePendingTreeTerminals(locations, pending, path2.to, path2.segments, nodes);
+        }
+      }
+      function routingGeometryDemandSignature(grid2) {
+        return [
+          ...grid2.channels.map((channel) => channel.tracks.trackCount),
+          -1,
+          ...grid2.rowGaps.map((gap) => gap.tracks.trackCount),
+          -1,
+          grid2.outer.top.trackCount,
+          grid2.outer.bottom.trackCount
+        ].join(",");
+      }
+      function routingDemandSignature(allocator, allocationSignature) {
+        return structuredKey([
+          routingGeometryDemandSignature(allocator.grid),
+          allocationSignature
+        ]);
+      }
+      function orderedNetworkContexts(networks, locations) {
+        const contexts = networks.map((network) => {
+          const terminals = [...network.terminals].sort((left4, right4) => compareTerminals(locations, left4, right4));
+          const root2 = terminals[0];
+          const remaining = root2 === void 0 ? [] : terminals.slice(1).sort((left4, right4) => terminalDistance(locations, root2, left4) - terminalDistance(locations, root2, right4) || compareTerminals(locations, left4, right4));
+          return Object.freeze({
+            network,
+            terminals: Object.freeze(terminals),
+            root: root2,
+            remaining: Object.freeze(remaining),
+            feedback: isFeedbackNetwork(locations, terminals)
+          });
+        });
+        contexts.sort((left4, right4) => {
+          const count = Math.min(left4.terminals.length, right4.terminals.length);
+          for (let index2 = 0; index2 < count; index2 += 1) {
+            const order = compareTerminals(locations, left4.terminals[index2], right4.terminals[index2]);
+            if (order !== 0)
+              return order;
+          }
+          return left4.terminals.length - right4.terminals.length || left4.network.id.localeCompare(right4.network.id);
+        });
+        return contexts;
+      }
+      function connectionKey(networkId, from, to) {
+        return structuredKey([
+          networkId,
+          from.nodeId,
+          from.pinId,
+          to.nodeId,
+          to.pinId
+        ]);
+      }
+      function forcedAdjacentConnections(contexts, nodes, locations, grid2, baseGeometry) {
+        const byChannel = /* @__PURE__ */ new Map();
+        for (const context of contexts) {
+          if (context.feedback || !context.root || needsOuterEscape(grid2, nodes, context.terminals))
+            continue;
+          for (const to of context.remaining) {
+            const fromNode = nodes.get(context.root.nodeId);
+            const toNode = nodes.get(to.nodeId);
+            if (Math.abs(fromNode.column - toNode.column) !== 1)
+              continue;
+            const sourceChannel = sideChannel(fromNode, context.root.pinId);
+            const targetChannel = sideChannel(toNode, to.pinId);
+            if (sourceChannel !== targetChannel)
+              continue;
+            const fromLocation = locations.get(context.root.nodeId);
+            const toLocation = locations.get(to.nodeId);
+            const aligned = fromLocation.row === toLocation.row && realizedPinPoint(baseGeometry, context.root).y === realizedPinPoint(baseGeometry, to).y;
+            if (aligned)
+              continue;
+            const fromIsLeft = fromNode.column < toNode.column;
+            const descriptor = Object.freeze({
+              key: connectionKey(context.network.id, context.root, to),
+              networkId: context.network.id,
+              leftRow: fromIsLeft ? fromLocation.row : toLocation.row,
+              rightRow: fromIsLeft ? toLocation.row : fromLocation.row
+            });
+            const descriptors = byChannel.get(sourceChannel) ?? [];
+            descriptors.push(descriptor);
+            byChannel.set(sourceChannel, descriptors);
+          }
+        }
+        const result = /* @__PURE__ */ new Set();
+        for (const descriptors of byChannel.values()) {
+          if (new Set(descriptors.map((descriptor) => descriptor.networkId)).size < 2) {
+            continue;
+          }
+          descriptors.sort((left4, right4) => left4.leftRow - right4.leftRow || left4.rightRow - right4.rightRow || (left4.key < right4.key ? -1 : left4.key > right4.key ? 1 : 0));
+          const hasConflict = descriptors.some((descriptor, index2) => index2 > 0 && (descriptor.leftRow <= descriptors[index2 - 1].leftRow || descriptor.rightRow <= descriptors[index2 - 1].rightRow));
+          if (!hasConflict)
+            continue;
+          for (const descriptor of descriptors)
+            result.add(descriptor.key);
+        }
+        return result;
+      }
+      function realizedPinPoint(grid2, terminal) {
+        return grid2.nodes.find((node) => node.id === terminal.nodeId).pinAnchors.find((pin2) => pin2.id === terminal.pinId).point;
+      }
+      function realizedNodePinPoint(nodes, terminal) {
+        return nodes.get(terminal.nodeId).pinAnchors.find((pin2) => pin2.id === terminal.pinId).point;
+      }
+      function preferredCorridorKey(networkId, candidate) {
+        return structuredKey([networkId, corridorKey(candidate)]);
+      }
+      function preferredOrdinaryCorridorTracks(allocator, contexts, nodes, locations, rowCount, baseGeometry, forcedConnections) {
+        const { grid: grid2 } = allocator;
+        const byPool = /* @__PURE__ */ new Map();
+        for (const context of contexts) {
+          if (context.feedback || !context.root || context.terminals.length !== 2 || needsOuterEscape(grid2, nodes, context.terminals))
+            continue;
+          const from = context.root;
+          const to = context.remaining[0];
+          const fromNode = nodes.get(from.nodeId);
+          const toNode = nodes.get(to.nodeId);
+          const sourceChannel = sideChannel(fromNode, from.pinId);
+          const targetChannel = sideChannel(toNode, to.pinId);
+          if (Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel) {
+            const aligned = locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(baseGeometry, from).y === realizedPinPoint(baseGeometry, to).y;
+            if (aligned || !forcedConnections.has(connectionKey(context.network.id, from, to)))
+              continue;
+          }
+          const candidate = selectCorridorCandidate(grid2, locations, from, to, rowCount);
+          const pool = corridorKey(candidate);
+          const demands = byPool.get(pool) ?? [];
+          demands.push(Object.freeze({
+            networkId: context.network.id,
+            candidate,
+            terminals: Object.freeze([from, to])
+          }));
+          byPool.set(pool, demands);
+        }
+        const result = /* @__PURE__ */ new Map();
+        for (const demands of byPool.values()) {
+          demands.sort((left4, right4) => left4.candidate.span[0] - right4.candidate.span[0] || left4.candidate.span[1] - right4.candidate.span[1] || compareTerminals(locations, left4.terminals[0], right4.terminals[0]) || compareTerminals(locations, left4.terminals[1], right4.terminals[1]) || left4.networkId.localeCompare(right4.networkId));
+          const first = demands[0].candidate;
+          const firstTrack = first.kind === "internal" ? grid2.rowGaps[first.rowGap].tracks.trackCount : grid2.outer[first.kind === "outer-top" ? "top" : "bottom"].trackCount;
+          demands.forEach((demand, index2) => {
+            const track = firstTrack + index2;
+            const handle = demand.candidate.kind === "internal" ? allocator.corridor(demand.candidate, track) : allocator.corridor({ ...demand.candidate, lane: track });
+            result.set(preferredCorridorKey(demand.networkId, demand.candidate), handle);
+          });
+        }
+        return result;
+      }
+      function endpointEscapeKey(networkId, terminal) {
+        return structuredKey([networkId, terminal.nodeId, terminal.pinId]);
+      }
+      function terminalIdentity(terminal) {
+        return structuredKey([terminal.nodeId, terminal.pinId]);
+      }
+      function channelLegIntent(key, networkId, channel, terminal, peer, role, nodes, locations, geometry) {
+        const attachment = (current, other, attachmentRole) => {
+          const node = nodes.get(current.nodeId);
+          const pin2 = node.pinAnchors.find((candidate) => candidate.id === current.pinId);
+          const anchor2 = realizedPinPoint(geometry, current);
+          return Object.freeze({
+            attachmentSide: node.column === channel ? 0 : 1,
+            escapeDirection: pin2.x === 0 ? -1 : 1,
+            anchorX: anchor2.x,
+            anchorY: anchor2.y,
+            row: locations.get(current.nodeId).row,
+            role: attachmentRole,
+            nodeId: current.nodeId,
+            pinId: current.pinId,
+            terminalIdentity: terminalIdentity(current),
+            peerIdentity: terminalIdentity(other)
+          });
+        };
+        const attachments = role === "shared" ? [
+          attachment(terminal, peer, "source"),
+          attachment(peer, terminal, "target")
+        ] : [attachment(terminal, peer, role)];
+        return Object.freeze({
+          key,
+          networkId,
+          channel,
+          attachments: Object.freeze(attachments)
+        });
+      }
+      function ordinaryChannelLegKey(networkId, from, to, role, variant) {
+        return structuredKey([
+          connectionKey(networkId, from, to),
+          role,
+          variant
+        ]);
+      }
+      function preferredChannelLegKey(networkId, terminal, role, channel, peer) {
+        return structuredKey([
+          networkId,
+          terminalIdentity(terminal),
+          role,
+          channel,
+          peer ? terminalIdentity(peer) : ""
+        ]);
+      }
+      function aliasChannelLeg(intent, physical) {
+        if (intent.channel !== physical.channel) {
+          throw new Error("preferred channel leg changed channel");
+        }
+        return Object.freeze({
+          kind: "channel-leg",
+          key: intent.key,
+          channel: intent.channel,
+          reuseKey: physical.reuseKey ?? physical.key,
+          intent
+        });
+      }
+      function plannedChannelLeg(allocator, intent, preferred) {
+        return preferred ? aliasChannelLeg(intent, preferred) : allocator.channelLeg(intent);
+      }
+      function preallocatePreferredChannelLegs(allocator, contexts, nodes, locations, geometry, forcedConnections) {
+        const preferred = /* @__PURE__ */ new Map();
+        const allocate = (networkId, terminal, peer, role, channel, reuse) => {
+          const preference = preferredChannelLegKey(networkId, terminal, role, channel, role === "shared" ? peer : void 0);
+          const existing = preferred.get(preference);
+          if (existing)
+            return existing;
+          const intent = channelLegIntent(structuredKey(["preferred", preference]), networkId, channel, terminal, peer, role, nodes, locations, geometry);
+          const handle = reuse ?? allocator.channelLeg(intent);
+          preferred.set(preference, handle);
+          return handle;
+        };
+        for (const context of contexts) {
+          if (!context.root || context.remaining.length === 0)
+            continue;
+          if (context.feedback || needsOuterEscape(allocator.grid, nodes, context.terminals)) {
+            const root2 = context.root;
+            for (const terminal of context.terminals) {
+              const channel = sideChannel(nodes.get(terminal.nodeId), terminal.pinId);
+              if (channel < 0 || channel >= allocator.grid.channels.length) {
+                continue;
+              }
+              const isSource = terminal === root2;
+              const peer = isSource ? context.remaining[0] : root2;
+              allocate(context.network.id, terminal, peer, isSource ? "feedback-source" : "feedback-target", channel);
+            }
+            continue;
+          }
+          const reuse = /* @__PURE__ */ new Map();
+          const from = context.root;
+          const fromNode = nodes.get(from.nodeId);
+          for (const to of context.remaining) {
+            const toNode = nodes.get(to.nodeId);
+            const sourceChannel = sideChannel(fromNode, from.pinId);
+            const targetChannel = sideChannel(toNode, to.pinId);
+            const adjacentSharedChannel = Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel;
+            const forced = adjacentSharedChannel && forcedConnections.has(connectionKey(context.network.id, from, to));
+            const aligned = adjacentSharedChannel && locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+            if (aligned && !forced)
+              continue;
+            if (adjacentSharedChannel && !forced) {
+              const handle = allocate(context.network.id, from, to, "shared", sourceChannel, reuse.get(sourceChannel));
+              reuse.set(sourceChannel, handle);
+              continue;
+            }
+            const source = allocate(context.network.id, from, to, "source", sourceChannel, reuse.get(sourceChannel));
+            reuse.set(sourceChannel, source);
+            if (targetChannel === sourceChannel) {
+              allocate(context.network.id, to, from, "target", targetChannel);
+            } else {
+              const target = allocate(context.network.id, to, from, "target", targetChannel, reuse.get(targetChannel));
+              reuse.set(targetChannel, target);
+            }
+          }
+        }
+        return preferred;
+      }
+      function preferredOuterEndpointEscapes(grid2, contexts, nodes, locations) {
+        const exterior = {
+          left: [],
+          right: []
+        };
+        for (const context of contexts) {
+          if (!context.feedback && !needsOuterEscape(grid2, nodes, context.terminals))
+            continue;
+          for (const terminal of context.terminals) {
+            const node = nodes.get(terminal.nodeId);
+            const channel = sideChannel(node, terminal.pinId);
+            const descriptor = Object.freeze({
+              networkId: context.network.id,
+              terminal
+            });
+            if (channel >= 0 && channel < grid2.channels.length) {
+              continue;
+            } else {
+              const pin2 = node.pinAnchors.find((candidate) => candidate.id === terminal.pinId);
+              exterior[pin2.x === 0 ? "left" : "right"].push(descriptor);
+            }
+          }
+        }
+        const escapes = /* @__PURE__ */ new Map();
+        for (const side of ["left", "right"]) {
+          exterior[side].sort((left4, right4) => compareTerminals(locations, left4.terminal, right4.terminal) || left4.networkId.localeCompare(right4.networkId));
+          exterior[side].forEach((descriptor, track) => {
+            escapes.set(endpointEscapeKey(descriptor.networkId, descriptor.terminal), Object.freeze({
+              kind: side === "left" ? "exterior-left" : "exterior-right",
+              track
+            }));
+          });
+        }
+        return Object.freeze({
+          escapes,
+          exteriorTracks: {
+            left: exterior.left.length,
+            right: exterior.right.length
+          }
+        });
+      }
+      function channelTrack(allocator, reuse, channel, intent, preferred) {
+        const existing = reuse.channels.get(channel);
+        if (preferred) {
+          if (existing === void 0)
+            reuse.channels.set(channel, preferred);
+          return aliasChannelLeg(intent, preferred);
+        }
+        if (existing !== void 0) {
+          return aliasChannelLeg(intent, existing);
+        }
+        const physical = allocator.channelLeg(intent);
+        reuse.channels.set(channel, physical);
+        return physical;
+      }
+      function cloneNetworkTrackReuse(reuse) {
+        return {
+          channels: new Map(reuse.channels),
+          corridors: new Map(reuse.corridors),
+          terminalEscapes: new Map(reuse.terminalEscapes)
+        };
+      }
+      function endpointEscape(allocator, reuse, exteriorTracks, preferredEscapes, networkId, node, terminal, channelIntent, preferredChannelLeg) {
+        const { grid: grid2 } = allocator;
+        const key = terminalIdentity(terminal);
+        const existing = reuse.terminalEscapes.get(key);
+        if (existing)
+          return existing;
+        const channel = sideChannel(node, terminal.pinId);
+        let escape;
+        const preferred = preferredEscapes.get(endpointEscapeKey(networkId, terminal));
+        if (preferred) {
+          escape = preferred;
+        } else if (channel >= 0 && channel < grid2.channels.length) {
+          escape = Object.freeze({
+            kind: "channel",
+            channel,
+            track: plannedChannelLeg(allocator, channelIntent, preferredChannelLeg)
+          });
+        } else {
+          const pin2 = node.pinAnchors.find((candidate) => candidate.id === terminal.pinId);
+          const side = pin2.x === 0 ? "left" : "right";
+          const track = exteriorTracks[side];
+          if (track >= tracks_1.MAX_ROUTING_TRACKS) {
+            throw new RangeError(`exterior routing track must be below ${tracks_1.MAX_ROUTING_TRACKS}`);
+          }
+          exteriorTracks[side] = track + 1;
+          escape = Object.freeze({
+            kind: side === "left" ? "exterior-left" : "exterior-right",
+            track
+          });
+        }
+        reuse.terminalEscapes.set(key, escape);
+        return escape;
+      }
+      function isFeedbackNetwork(locations, terminals) {
+        let maximumDriverColumn = Number.NEGATIVE_INFINITY;
+        let minimumLoadColumn = Number.POSITIVE_INFINITY;
+        for (const terminal of terminals) {
+          const column = locations.get(terminal.nodeId).node.column;
+          if (terminal.role === "driver") {
+            maximumDriverColumn = Math.max(maximumDriverColumn, column);
+          } else if (terminal.role === "load") {
+            minimumLoadColumn = Math.min(minimumLoadColumn, column);
+          }
+        }
+        return minimumLoadColumn <= maximumDriverColumn;
+      }
+      function needsOuterEscape(grid2, nodes, terminals) {
+        return terminals.some((terminal) => {
+          const node = nodes.get(terminal.nodeId);
+          const channel = sideChannel(node, terminal.pinId);
+          return channel < 0 || channel >= grid2.channels.length;
+        });
+      }
+      function feedbackCorridorSpan(locations, terminals) {
+        let startColumn = Number.MAX_SAFE_INTEGER;
+        let endColumn = 0;
+        for (const terminal of terminals) {
+          const column = locations.get(terminal.nodeId).node.column;
+          startColumn = Math.min(startColumn, column);
+          endColumn = Math.max(endColumn, column);
+        }
+        return Object.freeze([startColumn, endColumn]);
+      }
+      function rankedFeedbackCorridorKinds(grid2, preferTopOnTie) {
+        const topCount = grid2.outer.top.trackCount;
+        const bottomCount = grid2.outer.bottom.trackCount;
+        const topFirst = topCount < bottomCount || topCount === bottomCount && preferTopOnTie;
+        return topFirst ? Object.freeze(["outer-top", "outer-bottom"]) : Object.freeze(["outer-bottom", "outer-top"]);
+      }
+      function planFeedbackConnection(allocator, reuse, exteriorTracks, preferredEscapes, preferredChannelLegs, networkId, from, to, nodes, locations, geometry, span, kind) {
+        const key = corridorKey({ kind, lane: 0, span });
+        const existing = reuse.corridors.get(key);
+        const corridor = existing?.kind === kind ? existing : allocator.corridor({
+          kind,
+          lane: kind === "outer-top" ? allocator.grid.outer.top.trackCount : allocator.grid.outer.bottom.trackCount,
+          span
+        });
+        reuse.corridors.set(key, corridor);
+        const connection2 = connectionKey(networkId, from, to);
+        const sourceChannel = sideChannel(nodes.get(from.nodeId), from.pinId);
+        const targetChannel = sideChannel(nodes.get(to.nodeId), to.pinId);
+        return Object.freeze({
+          kind: "feedback",
+          networkId,
+          from,
+          to,
+          sourceEscape: endpointEscape(allocator, reuse, exteriorTracks, preferredEscapes, networkId, nodes.get(from.nodeId), from, channelLegIntent(structuredKey([connection2, "feedback-source"]), networkId, sourceChannel, from, to, "feedback-source", nodes, locations, geometry), preferredChannelLegs.get(preferredChannelLegKey(networkId, from, "feedback-source", sourceChannel))),
+          targetEscape: endpointEscape(allocator, reuse, exteriorTracks, preferredEscapes, networkId, nodes.get(to.nodeId), to, channelLegIntent(structuredKey([connection2, "feedback-target"]), networkId, targetChannel, to, from, "feedback-target", nodes, locations, geometry), preferredChannelLegs.get(preferredChannelLegKey(networkId, to, "feedback-target", targetChannel))),
+          corridor
+        });
+      }
+      function corridorKey(candidate) {
+        return candidate.kind === "internal" ? `internal:${candidate.rowGap}` : candidate.kind;
+      }
+      function corridorTrack(allocator, reuse, networkId, candidate, preferredTracks) {
+        const key = corridorKey(candidate);
+        const existing = reuse.corridors.get(key);
+        if (existing)
+          return existing;
+        let handle;
+        const preferred = preferredTracks.get(preferredCorridorKey(networkId, candidate));
+        if (preferred) {
+          handle = preferred;
+        } else if (candidate.kind === "internal") {
+          handle = allocator.corridor(candidate);
+        } else {
+          handle = allocator.corridor(candidate);
+        }
+        reuse.corridors.set(key, handle);
+        return handle;
+      }
+      function rankedCorridorCandidates(grid2, locations, from, to, rowCount, reuse) {
+        const fromLocation = locations.get(from.nodeId);
+        const toLocation = locations.get(to.nodeId);
+        const startColumn = Math.min(fromLocation.node.column, toLocation.node.column);
+        const endColumn = Math.max(fromLocation.node.column, toLocation.node.column);
+        const candidates = (0, grid_1.planCorridors)(grid2, startColumn, endColumn);
+        const internals = candidates.filter((candidate) => candidate.kind === "internal").sort((left4, right4) => {
+          const leftY = left4.rowGap * 2 + 1;
+          const rightY = right4.rowGap * 2 + 1;
+          const fromY = fromLocation.row * 2;
+          const toY = toLocation.row * 2;
+          const leftCost = Math.abs(fromY - leftY) + Math.abs(toY - leftY);
+          const rightCost = Math.abs(fromY - rightY) + Math.abs(toY - rightY);
+          const leftReuses = reuse?.corridors.has(corridorKey(left4)) ?? false;
+          const rightReuses = reuse?.corridors.has(corridorKey(right4)) ?? false;
+          return leftCost - rightCost || Number(rightReuses) - Number(leftReuses) || left4.rowGap - right4.rowGap;
+        });
+        const outerCost = (candidate) => candidate.kind === "outer-top" ? fromLocation.row + toLocation.row + 2 : rowCount - fromLocation.row + (rowCount - toLocation.row);
+        const outers = candidates.filter((candidate) => candidate.kind !== "internal").sort((left4, right4) => outerCost(left4) - outerCost(right4) || Number(reuse?.corridors.has(corridorKey(right4)) ?? false) - Number(reuse?.corridors.has(corridorKey(left4)) ?? false) || (left4.kind === "outer-top" ? -1 : 1));
+        return Object.freeze([...internals, ...outers]);
+      }
+      function selectCorridorCandidate(grid2, locations, from, to, rowCount, reuse) {
+        return rankedCorridorCandidates(grid2, locations, from, to, rowCount, reuse)[0];
+      }
+      function ordinaryVariantUsesFreshTracks(reuse, networkId, from, to, nodes, locations, geometry, forcedConnections, variantIndex) {
+        const fromNode = nodes.get(from.nodeId);
+        const toNode = nodes.get(to.nodeId);
+        const sourceChannel = sideChannel(fromNode, from.pinId);
+        const targetChannel = sideChannel(toNode, to.pinId);
+        const adjacentSharedChannel = Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel;
+        const sharedChannel = adjacentSharedChannel || sourceChannel === targetChannel && reuse.channels.has(sourceChannel);
+        const forced = adjacentSharedChannel && forcedConnections.has(connectionKey(networkId, from, to));
+        if (forced)
+          return false;
+        const aligned = adjacentSharedChannel && locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+        if (!sharedChannel)
+          return variantIndex % 2 === 1;
+        if (aligned) {
+          return variantIndex > 0 && (variantIndex - 1) % 2 === 1;
+        }
+        return variantIndex % 2 === 1;
+      }
+      function planOrdinaryConnection(allocator, reuse, networkId, from, to, nodes, locations, rowCount, geometry, forcedConnections, preferredChannelLegs, preferredCorridorTracks, variantIndex) {
+        const { grid: grid2 } = allocator;
+        const fromNode = nodes.get(from.nodeId);
+        const toNode = nodes.get(to.nodeId);
+        const sourceChannel = sideChannel(fromNode, from.pinId);
+        const targetChannel = sideChannel(toNode, to.pinId);
+        const adjacentSharedChannel = Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel;
+        const reusableSharedChannel = sourceChannel === targetChannel && reuse.channels.has(sourceChannel);
+        const sharedChannel = adjacentSharedChannel || reusableSharedChannel;
+        const aligned = adjacentSharedChannel && locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+        const forced = adjacentSharedChannel && forcedConnections.has(connectionKey(networkId, from, to));
+        const intent = (terminal, peer, role, channel, variant) => channelLegIntent(ordinaryChannelLegKey(networkId, from, to, role, variant), networkId, channel, terminal, peer, role, nodes, locations, geometry);
+        const preferred = (terminal, peer, role, channel) => preferredChannelLegs.get(preferredChannelLegKey(networkId, terminal, role, channel, role === "shared" ? peer : void 0));
+        if (sharedChannel && aligned && variantIndex === 0 && !forced) {
+          return Object.freeze({ kind: "direct", networkId, from, to });
+        }
+        if (sharedChannel && !aligned && variantIndex < 2 && !forced) {
+          const track = variantIndex === 0 ? channelTrack(allocator, reuse, sourceChannel, intent(from, to, "shared", sourceChannel, "primary"), preferred(from, to, "shared", sourceChannel) ?? preferred(to, from, "target", sourceChannel)) : allocator.channelLeg(intent(from, to, "shared", sourceChannel, `fresh:${variantIndex}`));
+          reuse.channels.set(sourceChannel, track);
+          return Object.freeze({
+            kind: "adjacent",
+            networkId,
+            from,
+            to,
+            channel: sourceChannel,
+            track
+          });
+        }
+        const topologyOffset = sharedChannel && !forced ? aligned ? 1 : 2 : 0;
+        const corridorVariant = variantIndex - topologyOffset;
+        if (corridorVariant < 0)
+          return void 0;
+        const freshTracks = !forced && corridorVariant % 2 === 1;
+        const corridorIndex = forced ? corridorVariant : Math.floor(corridorVariant / 2);
+        const candidate = rankedCorridorCandidates(grid2, locations, from, to, rowCount, reuse)[corridorIndex];
+        if (!candidate)
+          return void 0;
+        const trackVariant = freshTracks ? `fresh:${corridorIndex}` : forced ? "forced" : "primary";
+        const allocateFreshTrack = (channel, terminal, peer, role) => {
+          const track = allocator.channelLeg(intent(terminal, peer, role, channel, trackVariant));
+          reuse.channels.set(channel, track);
+          return track;
+        };
+        const sourceTrack = freshTracks ? allocateFreshTrack(sourceChannel, from, to, "source") : channelTrack(allocator, reuse, sourceChannel, intent(from, to, "source", sourceChannel, trackVariant), preferred(from, to, "source", sourceChannel));
+        const targetTrack = targetChannel === sourceChannel ? plannedChannelLeg(allocator, intent(to, from, "target", targetChannel, trackVariant), freshTracks ? void 0 : preferred(to, from, "target", targetChannel)) : freshTracks ? allocateFreshTrack(targetChannel, to, from, "target") : channelTrack(allocator, reuse, targetChannel, intent(to, from, "target", targetChannel, trackVariant), preferred(to, from, "target", targetChannel));
+        return Object.freeze({
+          kind: "corridor",
+          networkId,
+          from,
+          to,
+          sourceChannel,
+          sourceTrack,
+          targetChannel,
+          targetTrack,
+          corridor: corridorTrack(allocator, reuse, networkId, candidate, preferredCorridorTracks)
+        });
+      }
+      function freezeSegments(segments) {
+        return Object.freeze(segments.map((segment) => Object.freeze({ ...segment })));
+      }
+      function samePoint(left4, right4) {
+        return left4.x === right4.x && left4.y === right4.y;
+      }
+      function collinearPoints(first, second, third) {
+        return first.x === second.x && second.x === third.x || first.y === second.y && second.y === third.y;
+      }
+      function orderedPathSegments(networkId, input) {
+        const points = [];
+        for (const value of input) {
+          const point = { x: value.x, y: value.y };
+          (0, geometry_1.assertGridCoordinate)(point.x, "path point x");
+          (0, geometry_1.assertGridCoordinate)(point.y, "path point y");
+          if (points.length > 0 && samePoint(points[points.length - 1], point)) {
+            continue;
+          }
+          points.push(point);
+          while (points.length >= 3) {
+            const last = points.length - 1;
+            if (!collinearPoints(points[last - 2], points[last - 1], points[last]))
+              break;
+            points.splice(last - 1, 1);
+            if (points.length >= 2 && samePoint(points[points.length - 2], points[points.length - 1])) {
+              points.pop();
+            }
+          }
+        }
+        const segments = [];
+        for (let index2 = 1; index2 < points.length; index2 += 1) {
+          const start = points[index2 - 1];
+          const end = points[index2];
+          if (start.y === end.y) {
+            segments.push((0, geometry_1.horizontal)(networkId, start.x, end.x, start.y));
+          } else if (start.x === end.x) {
+            segments.push((0, geometry_1.vertical)(networkId, start.x, start.y, end.y));
+          } else {
+            throw new RangeError("routed path points must be orthogonal");
+          }
+        }
+        return freezeSegments(segments);
+      }
+      function safeAdd(left4, right4, label) {
+        const result = left4 + right4;
+        if (!Number.isSafeInteger(result)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return result;
+      }
+      function safeMultiply(left4, right4, label) {
+        const result = left4 * right4;
+        if (!Number.isSafeInteger(result)) {
+          throw new RangeError(`${label} exceeds the finite integer routing grid`);
+        }
+        return result;
+      }
+      function escapeX(escape, grid2, resolveChannelTrack) {
+        if (escape.kind === "channel") {
+          return grid2.channels[escape.channel].trackX[resolveChannelTrack(escape.track)];
+        }
+        const offset4 = safeAdd(grid2.metrics.pinEscape, safeMultiply(escape.track, grid2.metrics.trackPitch, "feedback escape"), "feedback escape");
+        return escape.kind === "exterior-left" ? -offset4 : safeAdd(grid2.width, offset4, "feedback escape");
+      }
+      function sideChannel(node, pinId) {
+        const pin2 = node.pinAnchors?.find((candidate) => candidate.id === pinId);
+        if (!pin2)
+          throw new RangeError(`unknown routing pin ${node.id}:${pinId}`);
+        return pin2.x === 0 ? node.column - 1 : node.column;
+      }
+      function materializePath(plan, grid2, nodeById, resolveChannelTrack) {
+        const sourceNode = nodeById.get(plan.from.nodeId);
+        const targetNode = nodeById.get(plan.to.nodeId);
+        const source = sourceNode.pinAnchors.find((pin2) => pin2.id === plan.from.pinId).point;
+        const target = targetNode.pinAnchors.find((pin2) => pin2.id === plan.to.pinId).point;
+        if (plan.kind === "feedback") {
+          const sourceX2 = escapeX(plan.sourceEscape, grid2, resolveChannelTrack);
+          const targetX2 = escapeX(plan.targetEscape, grid2, resolveChannelTrack);
+          const outer = plan.corridor.kind === "outer-top" ? grid2.outer.top : grid2.outer.bottom;
+          const corridorY2 = outer.trackY[plan.corridor.lane];
+          return Object.freeze({
+            from: plan.from,
+            to: plan.to,
+            segments: orderedPathSegments(plan.networkId, [
+              source,
+              { x: sourceX2, y: source.y },
+              { x: sourceX2, y: corridorY2 },
+              { x: targetX2, y: corridorY2 },
+              { x: targetX2, y: target.y },
+              target
+            ])
+          });
+        }
+        if (plan.kind === "direct") {
+          return Object.freeze({
+            from: plan.from,
+            to: plan.to,
+            segments: orderedPathSegments(plan.networkId, [source, target])
+          });
+        }
+        if (plan.kind === "adjacent") {
+          const channelX = grid2.channels[plan.channel].trackX[resolveChannelTrack(plan.track)];
+          const segments2 = orderedPathSegments(plan.networkId, [
+            source,
+            { x: channelX, y: source.y },
+            { x: channelX, y: target.y },
+            target
+          ]);
+          return Object.freeze({
+            from: plan.from,
+            to: plan.to,
+            segments: segments2
+          });
+        }
+        const sourceX = grid2.channels[plan.sourceChannel].trackX[resolveChannelTrack(plan.sourceTrack)];
+        const targetX = grid2.channels[plan.targetChannel].trackX[resolveChannelTrack(plan.targetTrack)];
+        const corridorY = plan.corridor.kind === "internal" ? grid2.rowGaps[plan.corridor.rowGap].trackY[plan.corridor.track] : grid2.outer[plan.corridor.kind === "outer-top" ? "top" : "bottom"].trackY[plan.corridor.lane];
+        const segments = orderedPathSegments(plan.networkId, [
+          source,
+          { x: sourceX, y: source.y },
+          { x: sourceX, y: corridorY },
+          { x: targetX, y: corridorY },
+          { x: targetX, y: target.y },
+          target
+        ]);
+        return Object.freeze({
+          from: plan.from,
+          to: plan.to,
+          segments
+        });
+      }
+      function segmentContainsPoint(segment, point) {
+        return segment.orientation === "horizontal" ? point.y === segment.y && point.x >= segment.x1 && point.x <= segment.x2 : point.x === segment.x && point.y >= segment.y1 && point.y <= segment.y2;
+      }
+      function segmentLength(segment) {
+        return segment.orientation === "horizontal" ? segment.x2 - segment.x1 : segment.y2 - segment.y1;
+      }
+      function traversalEnd(segment, start) {
+        if (!segmentContainsPoint(segment, start)) {
+          throw new RangeError("routed path segments are not connected");
+        }
+        if (segment.orientation === "horizontal") {
+          if (start.x === segment.x1) {
+            return Object.freeze({ x: segment.x2, y: segment.y });
+          }
+          if (start.x === segment.x2) {
+            return Object.freeze({ x: segment.x1, y: segment.y });
+          }
+        } else {
+          if (start.y === segment.y1) {
+            return Object.freeze({ x: segment.x, y: segment.y2 });
+          }
+          if (start.y === segment.y2) {
+            return Object.freeze({ x: segment.x, y: segment.y1 });
+          }
+        }
+        throw new RangeError("routed path enters a segment through its interior");
+      }
+      function validateSegmentsTraversal(segments, source, target) {
+        let current = source;
+        for (const segment of segments) {
+          current = traversalEnd(segment, current);
+        }
+        if (!samePoint(current, target)) {
+          throw new RangeError("routed path does not end at its terminal anchor");
+        }
+      }
+      function farthestSegmentIntersection(pathSegment, start, end, treeSegment) {
+        if (pathSegment.orientation === "horizontal" && treeSegment.orientation === "horizontal") {
+          if (pathSegment.y !== treeSegment.y)
+            return void 0;
+          const first = Math.max(pathSegment.x1, treeSegment.x1);
+          const last = Math.min(pathSegment.x2, treeSegment.x2);
+          if (first > last)
+            return void 0;
+          return Object.freeze({
+            x: end.x >= start.x ? last : first,
+            y: pathSegment.y
+          });
+        }
+        if (pathSegment.orientation === "vertical" && treeSegment.orientation === "vertical") {
+          if (pathSegment.x !== treeSegment.x)
+            return void 0;
+          const first = Math.max(pathSegment.y1, treeSegment.y1);
+          const last = Math.min(pathSegment.y2, treeSegment.y2);
+          if (first > last)
+            return void 0;
+          return Object.freeze({
+            x: pathSegment.x,
+            y: end.y >= start.y ? last : first
+          });
+        }
+        const horizontalSegment = pathSegment.orientation === "horizontal" ? pathSegment : treeSegment;
+        const verticalSegment = pathSegment.orientation === "vertical" ? pathSegment : treeSegment;
+        const point = Object.freeze({
+          x: verticalSegment.x,
+          y: horizontalSegment.y
+        });
+        return segmentContainsPoint(pathSegment, point) && segmentContainsPoint(treeSegment, point) ? point : void 0;
+      }
+      function trimPathToTree(path2, source, tree) {
+        let current = source;
+        let traversed = 0;
+        let bestDistance = -1;
+        let bestPoint;
+        for (const segment of path2.segments) {
+          const end = traversalEnd(segment, current);
+          for (const treeSegment of tree) {
+            const point = farthestSegmentIntersection(segment, current, end, treeSegment);
+            if (!point)
+              continue;
+            const distance = traversed + Math.abs(point.x - current.x) + Math.abs(point.y - current.y);
+            if (distance > bestDistance) {
+              bestDistance = distance;
+              bestPoint = point;
+            }
+          }
+          traversed += segmentLength(segment);
+          current = end;
+        }
+        if (!bestPoint || bestDistance < 0) {
+          throw new RangeError("incremental route does not touch the existing tree");
+        }
+        const suffixPoints = [{ ...bestPoint }];
+        current = source;
+        let skipped = 0;
+        for (const segment of path2.segments) {
+          const end = traversalEnd(segment, current);
+          const length2 = segmentLength(segment);
+          if (skipped + length2 <= bestDistance) {
+            skipped += length2;
+            current = end;
+            continue;
+          }
+          suffixPoints.push({ ...end });
+          skipped += length2;
+          current = end;
+        }
+        return Object.freeze({
+          point: Object.freeze({ ...bestPoint }),
+          segments: orderedPathSegments(path2.segments[0].networkId, suffixPoints)
+        });
+      }
+      function incrementalizePaths(paths, nodes) {
+        let tree = [];
+        return Object.freeze(paths.map((path2, index2) => {
+          const source = nodes.get(path2.from.nodeId).pinAnchors.find((pin2) => pin2.id === path2.from.pinId).point;
+          let from;
+          let segments;
+          if (index2 === 0) {
+            from = Object.freeze({
+              kind: "terminal",
+              point: Object.freeze({ ...source }),
+              terminal: path2.from,
+              nodeId: path2.from.nodeId,
+              pinId: path2.from.pinId,
+              role: path2.from.role
+            });
+            segments = path2.segments;
+          } else {
+            const trimmed = trimPathToTree(path2, source, tree);
+            from = Object.freeze({
+              kind: "tree",
+              point: trimmed.point
+            });
+            segments = trimmed.segments;
+          }
+          tree = freezeSegments((0, geometry_1.simplifySegments)([...tree, ...segments]));
+          return Object.freeze({
+            from,
+            to: path2.to,
+            segments
+          });
+        }));
+      }
+      function routingRowCount(locations) {
+        let rowCount = 1;
+        for (const location of locations.values()) {
+          rowCount = Math.max(rowCount, location.row + 1);
+        }
+        return rowCount;
+      }
+      function obstacleForSegment(grid2, nodesByColumn, horizontalTrackYs, verticalTrackXs, segment) {
+        if (segment.orientation === "vertical") {
+          if (verticalTrackXs.has(segment.x) || segment.x <= 0 || segment.x >= grid2.width) {
+            return void 0;
+          }
+          const column = grid2.columns.find((candidate) => segment.x > candidate.x && segment.x < candidate.x + candidate.width);
+          return column === void 0 ? void 0 : nodesByColumn.get(column.index)?.find((node) => (0, geometry_1.segmentIntersectsRectangleInterior)(segment, node.bounds));
+        }
+        if (horizontalTrackYs.has(segment.y))
+          return void 0;
+        let low = 0;
+        let high = grid2.columns.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          const column = grid2.columns[middle];
+          if (column.x + column.width <= segment.x1)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        for (let index2 = low; index2 < grid2.columns.length; index2 += 1) {
+          const column = grid2.columns[index2];
+          if (column.x >= segment.x2)
+            break;
+          const obstacle = nodesByColumn.get(column.index)?.find((node) => (0, geometry_1.segmentIntersectsRectangleInterior)(segment, node.bounds));
+          if (obstacle)
+            return obstacle;
+        }
+        return void 0;
+      }
+      function createRouteValidationState(grid2) {
+        const nodesByColumn = /* @__PURE__ */ new Map();
+        for (const node of grid2.nodes) {
+          const nodes = nodesByColumn.get(node.column) ?? [];
+          nodes.push(node);
+          nodesByColumn.set(node.column, nodes);
+        }
+        const horizontalTrackYs = /* @__PURE__ */ new Set([
+          ...grid2.rowGaps.flatMap((gap) => gap.trackY),
+          ...grid2.outer.top.trackY,
+          ...grid2.outer.bottom.trackY
+        ]);
+        const verticalTrackXs = new Set(grid2.channels.flatMap((channel) => channel.trackX));
+        return {
+          grid: grid2,
+          nodesByColumn,
+          horizontalTrackYs,
+          verticalTrackXs,
+          horizontalReservations: new occupancy_1.HorizontalReservationIndex(),
+          verticalReservations: new occupancy_1.VerticalReservationIndex()
+        };
+      }
+      function geometryPreservesCommittedRoutes(previous, next) {
+        if (previous.width !== next.width || previous.nodes.length !== next.nodes.length || previous.channels.length !== next.channels.length || previous.rowGaps.length !== next.rowGaps.length)
+          return false;
+        const samePrefix = (left4, right4) => left4.length <= right4.length && left4.every((coordinate, index2) => coordinate === right4[index2]);
+        for (let index2 = 0; index2 < previous.nodes.length; index2 += 1) {
+          const left4 = previous.nodes[index2];
+          const right4 = next.nodes[index2];
+          if (left4.id !== right4.id || left4.bounds.x !== right4.bounds.x || left4.bounds.y !== right4.bounds.y || left4.bounds.width !== right4.bounds.width || left4.bounds.height !== right4.bounds.height || left4.pinAnchors.length !== right4.pinAnchors.length)
+            return false;
+          for (let pin2 = 0; pin2 < left4.pinAnchors.length; pin2 += 1) {
+            if (left4.pinAnchors[pin2].id !== right4.pinAnchors[pin2].id || left4.pinAnchors[pin2].point.x !== right4.pinAnchors[pin2].point.x || left4.pinAnchors[pin2].point.y !== right4.pinAnchors[pin2].point.y)
+              return false;
+          }
+        }
+        for (let index2 = 0; index2 < previous.channels.length; index2 += 1) {
+          if (!samePrefix(previous.channels[index2].trackX, next.channels[index2].trackX))
+            return false;
+        }
+        for (let index2 = 0; index2 < previous.rowGaps.length; index2 += 1) {
+          if (!samePrefix(previous.rowGaps[index2].trackY, next.rowGaps[index2].trackY))
+            return false;
+        }
+        return samePrefix(previous.outer.top.trackY, next.outer.top.trackY) && samePrefix(previous.outer.bottom.trackY, next.outer.bottom.trackY);
+      }
+      function validationStateForPreservedRoutes(grid2, previous) {
+        const geometry = createRouteValidationState(grid2);
+        return {
+          ...geometry,
+          horizontalReservations: previous.horizontalReservations,
+          verticalReservations: previous.verticalReservations
+        };
+      }
+      function validateRouteSegments(state, networkId, segments) {
+        for (const segment of segments) {
+          const obstacle = obstacleForSegment(state.grid, state.nodesByColumn, state.horizontalTrackYs, state.verticalTrackXs, segment);
+          if (obstacle) {
+            throw new RangeError(`route for ${networkId} intersects module ${obstacle.id}`);
+          }
+          const conflict = segment.orientation === "horizontal" ? state.horizontalReservations.hasConflict(`y:${segment.y}`, 0, networkId, segment.x1, segment.x2) : state.verticalReservations.hasConflict(`x:${segment.x}`, 0, networkId, segment.y1, segment.y2);
+          if (conflict) {
+            throw new RangeError(`routing reservation conflict for network ${networkId}`);
+          }
+        }
+      }
+      function reserveRouteSegments(state, networkId, segments) {
+        for (const segment of segments) {
+          const reserved = segment.orientation === "horizontal" ? state.horizontalReservations.reserve(`y:${segment.y}`, 0, networkId, segment.x1, segment.x2) : state.verticalReservations.reserve(`x:${segment.x}`, 0, networkId, segment.y1, segment.y2);
+          if (!reserved) {
+            throw new Error("routing reservation changed after preflight");
+          }
+        }
+      }
+      function validationStateForRoutes(grid2, networks) {
+        const state = createRouteValidationState(grid2);
+        for (const network of networks) {
+          validateRouteSegments(state, network.id, network.segments);
+          reserveRouteSegments(state, network.id, network.segments);
+        }
+        return state;
+      }
+      function validateAndReserveRoutes(grid2, networks) {
+        validationStateForRoutes(grid2, networks);
+      }
+      function materializeRoutedNetworks(networks, plans, feedbackNetworkIds, realized, resolveChannelTrack) {
+        const realizedNodesById = new Map(realized.nodes.map((node) => [node.id, node]));
+        const plansByNetworkId = /* @__PURE__ */ new Map();
+        for (const plan of plans) {
+          const networkPlans = plansByNetworkId.get(plan.networkId) ?? [];
+          networkPlans.push(plan);
+          plansByNetworkId.set(plan.networkId, networkPlans);
+        }
+        const networksById = /* @__PURE__ */ new Map();
+        for (const network of networks) {
+          const terminalPaths = (plansByNetworkId.get(network.id) ?? []).map((plan) => materializePath(plan, realized, realizedNodesById, resolveChannelTrack));
+          const paths = incrementalizePaths(terminalPaths, realizedNodesById);
+          networksById.set(network.id, Object.freeze({
+            id: network.id,
+            feedback: feedbackNetworkIds.has(network.id),
+            paths,
+            segments: freezeSegments((0, geometry_1.simplifySegments)(paths.flatMap((path2) => path2.segments)))
+          }));
+        }
+        return Object.freeze(networks.map((network) => networksById.get(network.id)));
+      }
+      function plannedChannelLegCount(plans) {
+        return plans.reduce((count, plan) => {
+          if (plan.kind === "adjacent")
+            return count + 1;
+          if (plan.kind === "corridor")
+            return count + 2;
+          if (plan.kind === "feedback") {
+            return count + Number(plan.sourceEscape.kind === "channel") + Number(plan.targetEscape.kind === "channel");
+          }
+          return count;
+        }, 0);
+      }
+      function usedPhysicalChannelLegKeys(plans) {
+        const result = /* @__PURE__ */ new Set();
+        const add = (handle) => {
+          result.add(handle.reuseKey ?? handle.key);
+        };
+        for (const plan of plans) {
+          if (plan.kind === "adjacent") {
+            add(plan.track);
+          } else if (plan.kind === "corridor") {
+            add(plan.sourceTrack);
+            add(plan.targetTrack);
+          } else if (plan.kind === "feedback") {
+            if (plan.sourceEscape.kind === "channel") {
+              add(plan.sourceEscape.track);
+            }
+            if (plan.targetEscape.kind === "channel") {
+              add(plan.targetEscape.track);
+            }
+          }
+        }
+        return result;
+      }
+      function plannedChannelLegHandles(plans) {
+        const result = [];
+        for (const plan of plans) {
+          if (plan.kind === "adjacent") {
+            result.push(plan.track);
+          } else if (plan.kind === "corridor") {
+            result.push(plan.sourceTrack, plan.targetTrack);
+          } else if (plan.kind === "feedback") {
+            if (plan.sourceEscape.kind === "channel") {
+              result.push(plan.sourceEscape.track);
+            }
+            if (plan.targetEscape.kind === "channel") {
+              result.push(plan.targetEscape.track);
+            }
+          }
+        }
+        return Object.freeze(result);
+      }
+      function committedChannelMappingSignature(handles, assignment) {
+        const physical = /* @__PURE__ */ new Map();
+        for (const handle of handles) {
+          physical.set(physicalChannelLegKey(handle), handle);
+        }
+        return structuredKey([...physical.values()].map((handle) => [
+          handle.channel,
+          physicalChannelLegKey(handle),
+          assignment.resolve(handle)
+        ]));
+      }
+      function routedPathLength(path2) {
+        return path2.segments.reduce((sum, segment) => safeAdd(sum, segment.orientation === "horizontal" ? segment.x2 - segment.x1 : segment.y2 - segment.y1, "incremental route length"), 0);
+      }
+      function routedNetworksWireLength(networks) {
+        return networks.reduce((total, network) => network.segments.reduce((sum, segment) => safeAdd(sum, segmentLength(segment), "routed network wire length"), total), 0);
+      }
+      function preflightCandidateBranch(branch, networks, plans, feedbackNetworkIds, candidate, basesByDemand, realizedByDemand, committedBase, diagnostics) {
+        const geometryDemand = routingGeometryDemandSignature(branch.allocator.grid);
+        let realized = realizedByDemand.get(geometryDemand);
+        if (!realized) {
+          realized = branch.allocator.realizeBranch();
+          realizedByDemand.set(geometryDemand, realized);
+          incrementRoutingDiagnostic(diagnostics, "realizedDemandSignatures");
+        }
+        const committedHandles = plannedChannelLegHandles(plans);
+        const activeHandles = Object.freeze([
+          ...committedHandles,
+          ...plannedChannelLegHandles([candidate])
+        ]);
+        const assignment = branch.allocator.channelAssignment(activeHandles, realized);
+        const allocationSignature = committedChannelMappingSignature(committedHandles, assignment);
+        const committedAllocationSignature = committedChannelMappingSignature(activeHandles, assignment);
+        const demand = structuredKey([geometryDemand, allocationSignature]);
+        let base = basesByDemand.get(demand);
+        if (!base) {
+          if (geometryPreservesCommittedRoutes(committedBase.realized, realized) && allocationSignature === committedBase.allocationSignature) {
+            base = Object.freeze({
+              realized,
+              routedNetworks: committedBase.routedNetworks,
+              validation: validationStateForPreservedRoutes(realized, committedBase.validation),
+              wireLength: committedBase.wireLength,
+              allocationSignature
+            });
+          } else {
+            const routedNetworks2 = materializeRoutedNetworks(networks, plans, feedbackNetworkIds, realized, assignment.resolve);
+            incrementRoutingDiagnostic(diagnostics, "committedRouteMaterializations");
+            base = Object.freeze({
+              realized,
+              routedNetworks: routedNetworks2,
+              validation: validationStateForRoutes(realized, routedNetworks2),
+              wireLength: routedNetworksWireLength(routedNetworks2),
+              allocationSignature
+            });
+          }
+          basesByDemand.set(demand, base);
+        }
+        incrementRoutingDiagnostic(diagnostics, "incrementalCandidateMaterializations");
+        const realizedNodesById = new Map(base.realized.nodes.map((node) => [node.id, node]));
+        const fullPath = materializePath(candidate, base.realized, realizedNodesById, assignment.resolve);
+        const existingNetwork = base.routedNetworks.find((network) => network.id === candidate.networkId);
+        const source = realizedNodePinPoint(realizedNodesById, candidate.from);
+        const target = realizedNodePinPoint(realizedNodesById, candidate.to);
+        validateSegmentsTraversal(fullPath.segments, source, target);
+        let from;
+        let segments;
+        if (existingNetwork.paths.length === 0) {
+          from = Object.freeze({
+            kind: "terminal",
+            point: Object.freeze({ ...source }),
+            terminal: candidate.from,
+            nodeId: candidate.from.nodeId,
+            pinId: candidate.from.pinId,
+            role: candidate.from.role
+          });
+          segments = fullPath.segments;
+        } else {
+          const trimmed = trimPathToTree(fullPath, source, existingNetwork.segments);
+          from = Object.freeze({ kind: "tree", point: trimmed.point });
+          segments = trimmed.segments;
+        }
+        const path2 = Object.freeze({
+          from,
+          to: candidate.to,
+          segments
+        });
+        validateSegmentsTraversal(path2.segments, path2.from.point, target);
+        validateRouteSegments(base.validation, candidate.networkId, segments);
+        const updatedNetwork = Object.freeze({
+          id: existingNetwork.id,
+          feedback: existingNetwork.feedback,
+          paths: Object.freeze([...existingNetwork.paths, path2]),
+          segments: freezeSegments((0, geometry_1.simplifySegments)([
+            ...existingNetwork.segments,
+            ...segments
+          ]))
+        });
+        const routedNetworks = Object.freeze(base.routedNetworks.map((network) => network.id === candidate.networkId ? updatedNetwork : network));
+        return Object.freeze({
+          actions: branch.allocator.actionsSince(branch.baseActionCount),
+          path: path2,
+          realized: base.realized,
+          routedNetworks,
+          fullPathLength: fullPath.segments.reduce((sum, segment) => safeAdd(sum, segmentLength(segment), "candidate route length"), 0),
+          geometryAddedLength: base.wireLength - committedBase.wireLength,
+          base,
+          committedAllocationSignature
+        });
+      }
+      function compareCandidateSegments(left4, right4) {
+        const count = Math.min(left4.length, right4.length);
+        for (let index2 = 0; index2 < count; index2 += 1) {
+          const leftSegment = left4[index2];
+          const rightSegment = right4[index2];
+          const orientation = leftSegment.orientation.localeCompare(rightSegment.orientation);
+          if (orientation !== 0)
+            return orientation;
+          const leftCoordinates = leftSegment.orientation === "horizontal" ? [leftSegment.x1, leftSegment.x2, leftSegment.y] : [leftSegment.x, leftSegment.y1, leftSegment.y2];
+          const rightCoordinates = rightSegment.orientation === "horizontal" ? [rightSegment.x1, rightSegment.x2, rightSegment.y] : [rightSegment.x, rightSegment.y1, rightSegment.y2];
+          for (let coordinate = 0; coordinate < 3; coordinate += 1) {
+            const order = leftCoordinates[coordinate] - rightCoordinates[coordinate];
+            if (order !== 0)
+              return order;
+          }
+        }
+        return left4.length - right4.length;
+      }
+      function compareEvaluatedCandidates(locations, left4, right4) {
+        const sameConnection = left4.plan.from.nodeId === right4.plan.from.nodeId && left4.plan.from.pinId === right4.plan.from.pinId && left4.plan.to.nodeId === right4.plan.to.nodeId && left4.plan.to.pinId === right4.plan.to.pinId;
+        const geometryOrder = compareCandidateSegments(left4.path.segments, right4.path.segments);
+        return left4.addedCost - right4.addedCost || left4.actions.length - right4.actions.length || right4.trunkReuse - left4.trunkReuse || (sameConnection ? left4.variantIndex - right4.variantIndex : 0) || left4.path.from.point.x - right4.path.from.point.x || left4.path.from.point.y - right4.path.from.point.y || geometryOrder || left4.variantIndex - right4.variantIndex || compareTerminals(locations, left4.plan.to, right4.plan.to) || compareTerminals(locations, left4.plan.from, right4.plan.from);
+      }
+      function routeNetworksInternal(nodes, networks, options, observer) {
+        const diagnostics = observer ? {
+          realizedDemandSignatures: 0,
+          committedRouteMaterializations: 0,
+          incrementalCandidateMaterializations: 0,
+          committedChannelLegIntents: 0
+        } : void 0;
+        const nodeSnapshots = snapshotRoutingNodes(nodes);
+        const networkSnapshots = snapshotRoutingNetworks(networks);
+        const optionSnapshot = snapshotRoutingOptions(options);
+        const allocator = new RoutingAllocationJournal(nodeSnapshots, optionSnapshot);
+        const { grid: grid2 } = allocator;
+        const nodeById = new Map(nodeSnapshots.map((node) => [node.id, node]));
+        validateNetworkTerminals(nodeById, networkSnapshots);
+        const locations = nodeLocations(nodeSnapshots);
+        const rowCount = routingRowCount(locations);
+        const contexts = orderedNetworkContexts(networkSnapshots, locations);
+        const baseGeometry = allocator.preview();
+        const forcedAdjacent = forcedAdjacentConnections(contexts, nodeById, locations, grid2, baseGeometry);
+        const preferredChannelLegs = preallocatePreferredChannelLegs(allocator, contexts, nodeById, locations, baseGeometry, forcedAdjacent);
+        const preferredCorridorTracks = preferredOrdinaryCorridorTracks(allocator, contexts, nodeById, locations, rowCount, baseGeometry, forcedAdjacent);
+        const preferredEndpointEscapes = preferredOuterEndpointEscapes(grid2, contexts, nodeById, locations);
+        const plans = [];
+        const feedbackNetworkIds = /* @__PURE__ */ new Set();
+        const exteriorTracks = {
+          ...preferredEndpointEscapes.exteriorTracks
+        };
+        const initialRealized = allocator.preview();
+        incrementRoutingDiagnostic(diagnostics, "realizedDemandSignatures");
+        const initialAssignment = allocator.channelAssignment([], initialRealized);
+        const initialRoutedNetworks = materializeRoutedNetworks(networkSnapshots, plans, feedbackNetworkIds, initialRealized, initialAssignment.resolve);
+        incrementRoutingDiagnostic(diagnostics, "committedRouteMaterializations");
+        const realizedByDemand = /* @__PURE__ */ new Map([[
+          routingGeometryDemandSignature(allocator.grid),
+          initialRealized
+        ]]);
+        let committedBase = Object.freeze({
+          realized: initialRealized,
+          routedNetworks: initialRoutedNetworks,
+          validation: validationStateForRoutes(initialRealized, initialRoutedNetworks),
+          wireLength: routedNetworksWireLength(initialRoutedNetworks),
+          allocationSignature: ""
+        });
+        let preferTopOnTie = true;
+        for (const context of contexts) {
+          const { network, terminals, root: root2, feedback } = context;
+          if (!root2 || context.remaining.length === 0)
+            continue;
+          let contextGeometry = committedBase.realized;
+          let contextNodes = new Map(contextGeometry.nodes.map((node) => [node.id, node]));
+          const rootPoint = realizedNodePinPoint(contextNodes, root2);
+          const pending = context.remaining.map((to) => ({
+            to,
+            from: root2,
+            cost: pointDistance(rootPoint, realizedNodePinPoint(contextNodes, to))
+          }));
+          let reuse = {
+            channels: /* @__PURE__ */ new Map(),
+            corridors: /* @__PURE__ */ new Map(),
+            terminalEscapes: /* @__PURE__ */ new Map()
+          };
+          const outerOnly = needsOuterEscape(grid2, nodeById, terminals);
+          const useFeedbackRouting = feedback || outerOnly;
+          if (feedback)
+            feedbackNetworkIds.add(network.id);
+          const feedbackSpan = useFeedbackRouting ? feedbackCorridorSpan(locations, terminals) : void 0;
+          while (pending.length > 0) {
+            const orderedPending = pending.map((candidate, index2) => ({
+              candidate,
+              index: index2
+            })).sort((left4, right4) => left4.candidate.cost - right4.candidate.cost || compareTerminals(locations, left4.candidate.to, right4.candidate.to) || compareTerminals(locations, left4.candidate.from, right4.candidate.from));
+            let selected;
+            let candidateFailure;
+            const basesByDemand = /* @__PURE__ */ new Map([[
+              routingDemandSignature(allocator, committedBase.allocationSignature),
+              committedBase
+            ]]);
+            const hadFeedbackCorridor = reuse.corridors.has("outer-top") || reuse.corridors.has("outer-bottom");
+            const topCount = grid2.outer.top.trackCount;
+            const bottomCount = grid2.outer.bottom.trackCount;
+            const consider = (pendingIndex, variantIndex, branch, candidateReuse, candidateExteriorTracks, plan) => {
+              try {
+                const preflight = preflightCandidateBranch(branch, networkSnapshots, plans, feedbackNetworkIds, plan, basesByDemand, realizedByDemand, committedBase, diagnostics);
+                const pathLength = routedPathLength(preflight.path);
+                const addedCost = safeAdd(pathLength, preflight.geometryAddedLength, "realized added route length");
+                const evaluated = Object.freeze({
+                  pendingIndex,
+                  variantIndex,
+                  plan,
+                  actions: preflight.actions,
+                  reuse: candidateReuse,
+                  exteriorTracks: candidateExteriorTracks,
+                  realized: preflight.realized,
+                  routedNetworks: preflight.routedNetworks,
+                  path: preflight.path,
+                  addedCost,
+                  trunkReuse: preflight.fullPathLength - pathLength,
+                  preflightBase: Object.freeze({
+                    ...preflight.base,
+                    allocationSignature: preflight.committedAllocationSignature
+                  })
+                });
+                if (!selected || compareEvaluatedCandidates(locations, evaluated, selected) < 0) {
+                  selected = evaluated;
+                }
+                return evaluated;
+              } catch (error) {
+                if (error instanceof RangeError) {
+                  candidateFailure ?? (candidateFailure = error);
+                  return void 0;
+                }
+                throw error;
+              }
+            };
+            for (const entry of orderedPending) {
+              if (selected && entry.candidate.cost > selected.addedCost) {
+                break;
+              }
+              const { from, to } = entry.candidate;
+              if (useFeedbackRouting) {
+                const existingKind = reuse.corridors.has("outer-top") ? "outer-top" : reuse.corridors.has("outer-bottom") ? "outer-bottom" : void 0;
+                const kinds = existingKind ? Object.freeze([existingKind]) : rankedFeedbackCorridorKinds(grid2, preferTopOnTie);
+                for (let variantIndex = 0; variantIndex < kinds.length; variantIndex += 1) {
+                  const branch = allocator.fork();
+                  const candidateReuse = cloneNetworkTrackReuse(reuse);
+                  const candidateExteriorTracks = { ...exteriorTracks };
+                  try {
+                    const plan = planFeedbackConnection(branch.allocator, candidateReuse, candidateExteriorTracks, preferredEndpointEscapes.escapes, preferredChannelLegs, network.id, from, to, nodeById, locations, contextGeometry, feedbackSpan, kinds[variantIndex]);
+                    consider(entry.index, variantIndex, branch, candidateReuse, candidateExteriorTracks, plan);
+                  } catch (error) {
+                    if (error instanceof RangeError) {
+                      candidateFailure ?? (candidateFailure = error);
+                      continue;
+                    }
+                    throw error;
+                  }
+                }
+                continue;
+              }
+              let skipFreshVariant = false;
+              for (let variantIndex = 0; variantIndex <= 2 * (rowCount + 3); variantIndex += 1) {
+                const freshTracks = ordinaryVariantUsesFreshTracks(reuse, network.id, from, to, nodeById, locations, contextGeometry, forcedAdjacent, variantIndex);
+                if (freshTracks && skipFreshVariant) {
+                  skipFreshVariant = false;
+                  continue;
+                }
+                if (!freshTracks)
+                  skipFreshVariant = false;
+                const branch = allocator.fork();
+                const candidateReuse = cloneNetworkTrackReuse(reuse);
+                const candidateExteriorTracks = { ...exteriorTracks };
+                let plan;
+                try {
+                  plan = planOrdinaryConnection(branch.allocator, candidateReuse, network.id, from, to, nodeById, locations, rowCount, contextGeometry, forcedAdjacent, preferredChannelLegs, preferredCorridorTracks, variantIndex);
+                } catch (error) {
+                  if (error instanceof RangeError) {
+                    candidateFailure ?? (candidateFailure = error);
+                    continue;
+                  }
+                  throw error;
+                }
+                if (!plan)
+                  break;
+                const evaluated = consider(entry.index, variantIndex, branch, candidateReuse, candidateExteriorTracks, plan);
+                if (!freshTracks && evaluated)
+                  skipFreshVariant = true;
+                if (evaluated && evaluated.addedCost === entry.candidate.cost) {
+                  break;
+                }
+              }
+            }
+            if (!selected) {
+              throw candidateFailure ?? new RangeError(`no valid routing candidate for network ${network.id}`);
+            }
+            allocator.commit(selected.actions);
+            plans.push(selected.plan);
+            reserveRouteSegments(selected.preflightBase.validation, selected.plan.networkId, selected.path.segments);
+            committedBase = Object.freeze({
+              realized: selected.realized,
+              routedNetworks: selected.routedNetworks,
+              validation: selected.preflightBase.validation,
+              wireLength: safeAdd(selected.preflightBase.wireLength, routedPathLength(selected.path), "committed route wire length"),
+              allocationSignature: selected.preflightBase.allocationSignature
+            });
+            reuse = selected.reuse;
+            exteriorTracks.left = selected.exteriorTracks.left;
+            exteriorTracks.right = selected.exteriorTracks.right;
+            if (useFeedbackRouting && !hadFeedbackCorridor && topCount === bottomCount) {
+              preferTopOnTie = !preferTopOnTie;
+            }
+            pending.splice(selected.pendingIndex, 1);
+            const geometryChanged = contextGeometry !== selected.realized;
+            contextGeometry = selected.realized;
+            contextNodes = new Map(contextGeometry.nodes.map((node) => [node.id, node]));
+            if (geometryChanged) {
+              const routedNetwork = selected.routedNetworks.find((candidate) => candidate.id === network.id);
+              resetPendingTreeTerminals(locations, pending, root2, routedNetwork.paths, contextNodes);
+            } else {
+              improvePendingTreeTerminals(locations, pending, selected.plan.to, selected.path.segments, contextNodes);
+            }
+          }
+        }
+        const finalAllocator = allocator.compactChannelLegs(usedPhysicalChannelLegKeys(plans));
+        const realized = finalAllocator.realizeFinal();
+        const finalAssignment = finalAllocator.channelAssignment(plannedChannelLegHandles(plans), realized);
+        const routedNetworks = materializeRoutedNetworks(networkSnapshots, plans, feedbackNetworkIds, realized, finalAssignment.resolve);
+        validateAndReserveRoutes(realized, routedNetworks);
+        if (diagnostics) {
+          diagnostics.committedChannelLegIntents = plannedChannelLegCount(plans);
+          observer(Object.freeze({ ...diagnostics }));
+        }
+        return Object.freeze({
+          grid: realized,
+          networks: routedNetworks
+        });
+      }
+      function routeNetworks(nodes, networks, options = {}) {
+        return routeNetworksInternal(nodes, networks, options);
+      }
+      function routeNetworksForTesting(nodes, networks, options, observer) {
+        return routeNetworksInternal(nodes, networks, options, observer);
+      }
+      function probeRoutingAllocationTransactionForTesting(nodes, terminal, options = {}) {
+        const nodeSnapshots = snapshotRoutingNodes(nodes);
+        const optionSnapshot = snapshotRoutingOptions(options);
+        const nodeById = new Map(nodeSnapshots.map((node2) => [node2.id, node2]));
+        const node = nodeById.get(terminal.nodeId);
+        if (!node?.pinAnchors?.some((pin2) => pin2.id === terminal.pinId)) {
+          throw new RangeError("transaction probe terminal is not routable");
+        }
+        const channel = sideChannel(node, terminal.pinId);
+        const allocator = new RoutingAllocationJournal(nodeSnapshots, optionSnapshot);
+        if (channel < 0 || channel >= allocator.grid.channels.length) {
+          throw new RangeError("transaction probe terminal needs an internal channel");
+        }
+        const locations = nodeLocations(nodeSnapshots);
+        const geometry = allocator.preview();
+        const intent = (key, networkId, role) => channelLegIntent(key, networkId, channel, terminal, terminal, role, nodeById, locations, geometry);
+        allocator.channelLeg(intent("probe:committed", "probe:committed", "source"));
+        const snapshot = () => Object.freeze({
+          actionCount: allocator.actionCount(),
+          channelTrackCounts: Object.freeze(allocator.grid.channels.map((candidate) => candidate.tracks.trackCount)),
+          demand: routingGeometryDemandSignature(allocator.grid)
+        });
+        const before2 = snapshot();
+        const occupied = (0, geometry_1.horizontal)("probe:committed", 0, 20, -100);
+        const rejectedBranch = allocator.fork();
+        rejectedBranch.allocator.channelLeg(intent("probe:rejected", "probe:rejected", "target"));
+        const rejectedGrid = rejectedBranch.allocator.realizeBranch();
+        const rejectedState = createRouteValidationState(rejectedGrid);
+        validateRouteSegments(rejectedState, "probe:committed", [occupied]);
+        reserveRouteSegments(rejectedState, "probe:committed", [occupied]);
+        let rejected = false;
+        try {
+          validateRouteSegments(rejectedState, "probe:rejected", [
+            (0, geometry_1.horizontal)("probe:rejected", 0, 20, -100)
+          ]);
+        } catch (error) {
+          if (!(error instanceof RangeError))
+            throw error;
+          rejected = true;
+        }
+        const afterRejected = snapshot();
+        const committedBranch = allocator.fork();
+        committedBranch.allocator.channelLeg(intent("probe:accepted", "probe:accepted", "target"));
+        const committedGrid = committedBranch.allocator.realizeBranch();
+        const committedState = createRouteValidationState(committedGrid);
+        validateRouteSegments(committedState, "probe:committed", [occupied]);
+        reserveRouteSegments(committedState, "probe:committed", [occupied]);
+        validateRouteSegments(committedState, "probe:accepted", [
+          (0, geometry_1.horizontal)("probe:accepted", 30, 50, -100)
+        ]);
+        allocator.commit(committedBranch.allocator.actionsSince(committedBranch.baseActionCount));
+        return Object.freeze({
+          rejected,
+          before: before2,
+          afterRejected,
+          afterCommitted: snapshot()
+        });
+      }
+      function probeChannelConstraintAssignmentForTesting() {
+        const nodes = snapshotRoutingNodes([
+          {
+            id: "left",
+            column: 0,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [10, 20, 30].map((y) => ({
+              id: `right-${y}`,
+              x: 100,
+              y
+            }))
+          },
+          {
+            id: "right",
+            column: 1,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [10, 20, 30].map((y) => ({
+              id: `left-${y}`,
+              x: 0,
+              y
+            }))
+          }
+        ]);
+        const allocator = new RoutingAllocationJournal(nodes, {});
+        const locations = nodeLocations(nodes);
+        const nodesById = new Map(nodes.map((node) => [node.id, node]));
+        const geometry = allocator.preview();
+        const terminal = (side, y) => Object.freeze({
+          nodeId: side,
+          pinId: `${side === "left" ? "right" : "left"}-${y}`,
+          role: "bidirectional"
+        });
+        const shared = (key, networkId, first2, second2) => channelLegIntent(key, networkId, 0, first2, second2, "shared", nodesById, locations, geometry);
+        const first = allocator.channelLeg(shared("probe:a", "probe:a", terminal("left", 10), terminal("right", 30)));
+        const second = allocator.channelLeg(shared("probe:b", "probe:b", terminal("right", 10), terminal("left", 20)));
+        const snapshot = () => Object.freeze({
+          actionCount: allocator.actionCount(),
+          trackCount: allocator.grid.channels[0].tracks.trackCount
+        });
+        const before2 = snapshot();
+        const rejectedBranch = allocator.fork();
+        const cycle = rejectedBranch.allocator.channelLeg(shared("probe:c", "probe:c", terminal("right", 20), terminal("left", 30)));
+        let cycleRejected = false;
+        try {
+          rejectedBranch.allocator.channelAssignment([first, second, cycle], rejectedBranch.allocator.realizeBranch());
+        } catch (error) {
+          if (!(error instanceof RangeError))
+            throw error;
+          cycleRejected = true;
+        }
+        const afterRejected = snapshot();
+        const committedBranch = allocator.fork();
+        const accepted = committedBranch.allocator.channelLeg(channelLegIntent("probe:d", "probe:d", 0, terminal("right", 20), terminal("left", 20), "target", nodesById, locations, geometry));
+        const assignment = committedBranch.allocator.channelAssignment([first, second, accepted], committedBranch.allocator.realizeBranch());
+        const chainTracks = Object.freeze([first, second, accepted].map(assignment.resolve));
+        allocator.commit(committedBranch.allocator.actionsSince(committedBranch.baseActionCount));
+        return Object.freeze({
+          chainTracks,
+          cycleRejected,
+          before: before2,
+          afterRejected,
+          afterCommitted: snapshot()
+        });
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/layout.js
+  var require_layout = __commonJS({
+    "packages/schematic-core/dist/layout.js"(exports2) {
+      "use strict";
+      var __classPrivateFieldSet = exports2 && exports2.__classPrivateFieldSet || function(receiver, state, value, kind, f) {
+        if (kind === "m") throw new TypeError("Private method is not writable");
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+        return kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value), value;
+      };
+      var __classPrivateFieldGet = exports2 && exports2.__classPrivateFieldGet || function(receiver, state, kind, f) {
+        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+      };
+      var _RectangleIndex_entries;
+      var _RectangleIndex_maximumRight;
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.layoutSchematic = layoutSchematic;
+      var columns_1 = require_columns();
+      var nodeGeometry_1 = require_nodeGeometry();
+      var placement_1 = require_placement();
+      var pins_1 = require_pins();
+      var renderModel_1 = require_renderModel();
+      var junctions_1 = require_junctions();
+      var router_1 = require_router();
+      var DIRECTION_ORDER = [
+        "north",
+        "east",
+        "south",
+        "west"
+      ];
+      var GRAPH_NODE_KINDS = /* @__PURE__ */ new Set([
+        "port",
+        "instance",
+        "constant",
+        "expression",
+        "opaque",
+        "generateArray"
+      ]);
+      var PIN_DIRECTIONS = /* @__PURE__ */ new Set([
+        "driver",
+        "load",
+        "bidirectional"
+      ]);
+      function snapshotArray(value, label) {
+        if (!Array.isArray(value))
+          throw new RangeError(`${label} must be an array`);
+        const length2 = value.length;
+        const result = new Array(length2);
+        for (let index2 = 0; index2 < length2; index2 += 1)
+          result[index2] = value[index2];
+        return result;
+      }
+      function snapshotWidth(value, label) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`${label} width must be an object`);
+        }
+        const record = value;
+        const kind = record.kind;
+        if (kind === "known") {
+          const bits = record.bits;
+          if (typeof bits !== "number") {
+            throw new RangeError(`${label} known width must contain bits`);
+          }
+          return { kind, bits };
+        }
+        if (kind === "symbolic") {
+          const expression = record.expression;
+          if (typeof expression !== "string") {
+            throw new RangeError(`${label} symbolic width must contain an expression`);
+          }
+          return { kind, expression };
+        }
+        if (kind === "unknown")
+          return { kind };
+        throw new RangeError(`${label} has an invalid width kind`);
+      }
+      function snapshotSourceSpan(value, label) {
+        if (value === void 0)
+          return void 0;
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`${label} sourceSpan must be an object`);
+        }
+        const record = value;
+        const start = record.start;
+        const end = record.end;
+        const uri = record.uri;
+        const compositePartsValue = record.compositeParts;
+        if (typeof start !== "number" || typeof end !== "number" || uri !== void 0 && typeof uri !== "string") {
+          throw new RangeError(`${label} has an invalid sourceSpan`);
+        }
+        const compositeParts = compositePartsValue === void 0 ? void 0 : snapshotArray(compositePartsValue, `${label} compositeParts`).map((part, index2) => {
+          if (typeof part !== "object" || part === null || Array.isArray(part)) {
+            throw new RangeError(`${label} composite part ${index2} is invalid`);
+          }
+          const partRecord = part;
+          const partUri = partRecord.uri;
+          const partStart = partRecord.start;
+          const partEnd = partRecord.end;
+          if (typeof partUri !== "string" || typeof partStart !== "number" || typeof partEnd !== "number") {
+            throw new RangeError(`${label} composite part ${index2} is invalid`);
+          }
+          return { uri: partUri, start: partStart, end: partEnd };
+        });
+        return { start, end, uri, compositeParts };
+      }
+      function snapshotPin(value, nodeId, pinIndex) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`node ${nodeId} pin ${pinIndex} must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const name = record.name;
+        const direction = record.direction;
+        const widthValue = record.width;
+        const readOnly = record.readOnly;
+        const sourceSpanValue = record.sourceSpan;
+        if (typeof id !== "string" || typeof name !== "string" || !PIN_DIRECTIONS.has(direction) || typeof readOnly !== "boolean") {
+          throw new RangeError(`node ${nodeId} pin ${pinIndex} is invalid`);
+        }
+        return {
+          id,
+          name,
+          direction,
+          width: snapshotWidth(widthValue, `node ${nodeId} pin ${id}`),
+          readOnly,
+          sourceSpan: snapshotSourceSpan(sourceSpanValue, `node ${nodeId} pin ${id}`)
+        };
+      }
+      function snapshotNode(value, nodeIndex, seenNodeIds) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`graph node ${nodeIndex} must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const kind = record.kind;
+        const label = record.label;
+        const subtitle = record.subtitle;
+        const definitionKey = record.definitionKey;
+        const pinsValue = record.pins;
+        const readOnly = record.readOnly;
+        const sourceSpanValue = record.sourceSpan;
+        if (typeof id !== "string" || seenNodeIds.has(id)) {
+          throw new RangeError("graph node IDs must be unique strings");
+        }
+        seenNodeIds.add(id);
+        if (!GRAPH_NODE_KINDS.has(kind) || typeof label !== "string" || subtitle !== void 0 && typeof subtitle !== "string" || definitionKey !== void 0 && typeof definitionKey !== "string" || typeof readOnly !== "boolean") {
+          throw new RangeError(`graph node ${id} is invalid`);
+        }
+        const seenPinIds = /* @__PURE__ */ new Set();
+        const pins = snapshotArray(pinsValue, `node ${id} pins`).map((pinValue, pinIndex) => {
+          const pin2 = snapshotPin(pinValue, id, pinIndex);
+          if (seenPinIds.has(pin2.id)) {
+            throw new RangeError(`node ${id} pin IDs must be unique strings`);
+          }
+          seenPinIds.add(pin2.id);
+          return pin2;
+        });
+        return {
+          id,
+          kind,
+          label,
+          subtitle,
+          definitionKey,
+          pins,
+          readOnly,
+          sourceSpan: snapshotSourceSpan(sourceSpanValue, `node ${id}`)
+        };
+      }
+      function snapshotNetwork(value, networkIndex, nodesById, pinsByNode, seenNetworkIds, networkByPin) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`graph network ${networkIndex} must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const name = record.name;
+        const widthValue = record.width;
+        const endpointsValue = record.endpoints;
+        const sourceSpanValue = record.sourceSpan;
+        const adapterLabel = record.adapterLabel;
+        if (typeof id !== "string" || seenNetworkIds.has(id)) {
+          throw new RangeError("graph network IDs must be unique strings");
+        }
+        seenNetworkIds.add(id);
+        if (typeof name !== "string" || adapterLabel !== void 0 && typeof adapterLabel !== "string") {
+          throw new RangeError(`graph network ${id} is invalid`);
+        }
+        const seenTerminals = /* @__PURE__ */ new Set();
+        const endpoints = snapshotArray(endpointsValue, `network ${id} endpoints`).map((endpointValue, endpointIndex) => {
+          if (typeof endpointValue !== "object" || endpointValue === null || Array.isArray(endpointValue)) {
+            throw new RangeError(`network ${id} endpoint ${endpointIndex} must be an object`);
+          }
+          const endpoint = endpointValue;
+          const nodeId = endpoint.nodeId;
+          const pinId = endpoint.pinId;
+          const role = endpoint.role;
+          if (typeof nodeId !== "string" || typeof pinId !== "string" || !PIN_DIRECTIONS.has(role)) {
+            throw new RangeError(`network ${id} endpoint ${endpointIndex} is invalid`);
+          }
+          const node = nodesById.get(nodeId);
+          const pin2 = pinsByNode.get(nodeId)?.get(pinId);
+          if (!node) {
+            throw new RangeError(`unknown node ${nodeId} in network ${id}`);
+          }
+          if (!pin2) {
+            throw new RangeError(`unknown pin ${nodeId}:${pinId} in network ${id}`);
+          }
+          if (pin2.direction !== "bidirectional" && pin2.direction !== role) {
+            throw new RangeError(`endpoint role does not match pin direction in network ${id}`);
+          }
+          const terminalKey = `${nodeId.length}:${nodeId}${pinId}`;
+          if (seenTerminals.has(terminalKey)) {
+            throw new RangeError(`duplicate terminal in network ${id}`);
+          }
+          seenTerminals.add(terminalKey);
+          const previousNetwork = networkByPin.get(terminalKey);
+          if (previousNetwork !== void 0) {
+            throw new RangeError(`pin ${nodeId}:${pinId} belongs to both ${previousNetwork} and ${id}`);
+          }
+          networkByPin.set(terminalKey, id);
+          return { nodeId, pinId, role };
+        });
+        return {
+          id,
+          name,
+          width: snapshotWidth(widthValue, `network ${id}`),
+          endpoints,
+          sourceSpan: snapshotSourceSpan(sourceSpanValue, `network ${id}`),
+          adapterLabel
+        };
+      }
+      function snapshotGraph(value) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError("schematic graph must be an object");
+        }
+        const record = value;
+        const fileUri = record.fileUri;
+        const moduleKey = record.moduleKey;
+        const moduleName = record.moduleName;
+        const nodesValue = record.nodes;
+        const networksValue = record.networks;
+        const diagnosticsValue = record.diagnostics;
+        if (typeof fileUri !== "string" || typeof moduleKey !== "string" || typeof moduleName !== "string") {
+          throw new RangeError("schematic graph identity must contain strings");
+        }
+        const seenNodeIds = /* @__PURE__ */ new Set();
+        const nodes = snapshotArray(nodesValue, "graph nodes").map((nodeValue, nodeIndex) => snapshotNode(nodeValue, nodeIndex, seenNodeIds));
+        const nodesById = new Map(nodes.map((node) => [node.id, node]));
+        const pinsByNode = new Map(nodes.map((node) => [
+          node.id,
+          new Map(node.pins.map((pin2) => [pin2.id, pin2]))
+        ]));
+        const seenNetworkIds = /* @__PURE__ */ new Set();
+        const networkByPin = /* @__PURE__ */ new Map();
+        const networks = snapshotArray(networksValue, "graph networks").map((networkValue, networkIndex) => snapshotNetwork(networkValue, networkIndex, nodesById, pinsByNode, seenNetworkIds, networkByPin));
+        const diagnostics = snapshotArray(diagnosticsValue, "graph diagnostics");
+        return {
+          fileUri,
+          moduleKey,
+          moduleName,
+          nodes,
+          networks,
+          diagnostics
+        };
+      }
+      function setOwn(target, key, value) {
+        Object.defineProperty(target, key, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true
+        });
+      }
+      function snapshotPlacement(value, graph2) {
+        if (value === void 0 || typeof value !== "object" || value === null || Array.isArray(value)) {
+          return void 0;
+        }
+        const nodesValue = value.nodes;
+        if (typeof nodesValue !== "object" || nodesValue === null || Array.isArray(nodesValue)) {
+          return void 0;
+        }
+        const source = nodesValue;
+        const nodes = {};
+        for (const node of graph2.nodes) {
+          if (!Object.prototype.hasOwnProperty.call(source, node.id))
+            continue;
+          const candidateValue = source[node.id];
+          if (typeof candidateValue !== "object" || candidateValue === null || Array.isArray(candidateValue))
+            continue;
+          const candidate = candidateValue;
+          const column = candidate.column;
+          const order = candidate.order;
+          const yOffset = candidate.yOffset;
+          const fixed = candidate.fixed;
+          setOwn(nodes, node.id, {
+            column,
+            order,
+            yOffset,
+            fixed
+          });
+        }
+        return { nodes };
+      }
+      function alignNodeSize(value) {
+        return Math.ceil(value / nodeGeometry_1.SCHEMATIC_NODE_LAYOUT.gridSize) * nodeGeometry_1.SCHEMATIC_NODE_LAYOUT.gridSize;
+      }
+      function freezePoint(point) {
+        return Object.freeze({ x: point.x, y: point.y });
+      }
+      function freezeRectangle(rectangle) {
+        return Object.freeze({
+          x: rectangle.x,
+          y: rectangle.y,
+          width: rectangle.width,
+          height: rectangle.height
+        });
+      }
+      function translateRectangle(rectangle, offset4) {
+        return freezeRectangle({
+          x: rectangle.x + offset4.x,
+          y: rectangle.y + offset4.y,
+          width: rectangle.width,
+          height: rectangle.height
+        });
+      }
+      function renderLabel(label, offset4) {
+        return Object.freeze({
+          fullText: label.fullText,
+          visibleText: label.visibleText,
+          truncated: label.truncated,
+          bounds: translateRectangle(label.clipBounds, offset4)
+        });
+      }
+      function renderPin(pin2, offset4, anchor2) {
+        return Object.freeze({
+          id: pin2.source.id,
+          name: pin2.source.name,
+          direction: pin2.source.direction,
+          side: pin2.side,
+          anchor: freezePoint(anchor2),
+          fullLabel: pin2.fullLabel,
+          visibleLabel: pin2.visibleLabel,
+          truncated: pin2.truncated,
+          clipBounds: translateRectangle(pin2.clipBounds, offset4)
+        });
+      }
+      function freezeSegment(segment) {
+        return Object.freeze({ ...segment });
+      }
+      function rectanglesOverlap(left4, right4) {
+        return Math.max(left4.x, right4.x) < Math.min(left4.x + left4.width, right4.x + right4.width) && Math.max(left4.y, right4.y) < Math.min(left4.y + left4.height, right4.y + right4.height);
+      }
+      var RectangleIndex = class {
+        constructor(rectangles) {
+          _RectangleIndex_entries.set(this, void 0);
+          _RectangleIndex_maximumRight.set(this, void 0);
+          __classPrivateFieldSet(this, _RectangleIndex_entries, [...rectangles].sort((left4, right4) => left4.x - right4.x || left4.y - right4.y), "f");
+          let maximumRight = Number.NEGATIVE_INFINITY;
+          __classPrivateFieldSet(this, _RectangleIndex_maximumRight, __classPrivateFieldGet(this, _RectangleIndex_entries, "f").map((entry) => {
+            maximumRight = Math.max(maximumRight, entry.x + entry.width);
+            return maximumRight;
+          }), "f");
+        }
+        intersects(candidate) {
+          const right4 = candidate.x + candidate.width;
+          let low = 0;
+          let high = __classPrivateFieldGet(this, _RectangleIndex_maximumRight, "f").length;
+          while (low < high) {
+            const middle = low + Math.floor((high - low) / 2);
+            if (__classPrivateFieldGet(this, _RectangleIndex_maximumRight, "f")[middle] <= candidate.x)
+              low = middle + 1;
+            else
+              high = middle;
+          }
+          for (let index2 = low; index2 < __classPrivateFieldGet(this, _RectangleIndex_entries, "f").length; index2 += 1) {
+            const entry = __classPrivateFieldGet(this, _RectangleIndex_entries, "f")[index2];
+            if (entry.x >= right4)
+              return false;
+            if (entry.x + entry.width <= candidate.x)
+              continue;
+            if (rectanglesOverlap(candidate, entry))
+              return true;
+          }
+          return false;
+        }
+      };
+      _RectangleIndex_entries = /* @__PURE__ */ new WeakMap(), _RectangleIndex_maximumRight = /* @__PURE__ */ new WeakMap();
+      function measuredLabelWidth(measureText2, text3) {
+        if (text3.length === 0)
+          return void 0;
+        const width2 = measureText2(text3, renderModel_1.SCHEMATIC_NETWORK_LABEL_STYLE);
+        return Number.isFinite(width2) && width2 >= 0 ? width2 : void 0;
+      }
+      function labelForNetwork(network, segments, measureText2, obstacles, occupiedLabels) {
+        const width2 = measuredLabelWidth(measureText2, network.name);
+        if (width2 === void 0)
+          return void 0;
+        const layout = renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT;
+        const candidates = segments.flatMap((segment, sourceIndex) => segment.orientation === "horizontal" ? [{ segment, sourceIndex, length: segment.x2 - segment.x1 }] : []).sort((left4, right4) => right4.length - left4.length || left4.sourceIndex - right4.sourceIndex);
+        for (const { segment, length: length2 } of candidates) {
+          if (width2 + 2 * layout.endpointPadding > length2)
+            continue;
+          const x2 = segment.x1 + (length2 - width2) / 2;
+          const yCandidates = [
+            segment.y - layout.wireGap - layout.height,
+            segment.y + layout.wireGap
+          ];
+          for (const y of yCandidates) {
+            const bounds = { x: x2, y, width: width2, height: layout.height };
+            if (obstacles.intersects(bounds) || occupiedLabels.some((label) => rectanglesOverlap(bounds, label))) {
+              continue;
+            }
+            occupiedLabels.push(bounds);
+            return Object.freeze({ text: network.name, bounds: freezeRectangle(bounds) });
+          }
+        }
+        return void 0;
+      }
+      function calculateBounds(gridBounds, labels, junctions, empty2) {
+        if (empty2 && labels.length === 0 && junctions.length === 0) {
+          return freezeRectangle({ x: 0, y: 0, width: 0, height: 0 });
+        }
+        let minimumX = gridBounds.x;
+        let minimumY = gridBounds.y;
+        let maximumX = gridBounds.x + gridBounds.width;
+        let maximumY = gridBounds.y + gridBounds.height;
+        for (const label of labels) {
+          minimumX = Math.min(minimumX, label.bounds.x);
+          minimumY = Math.min(minimumY, label.bounds.y);
+          maximumX = Math.max(maximumX, label.bounds.x + label.bounds.width);
+          maximumY = Math.max(maximumY, label.bounds.y + label.bounds.height);
+        }
+        for (const junction of junctions) {
+          minimumX = Math.min(minimumX, junction.point.x - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius);
+          minimumY = Math.min(minimumY, junction.point.y - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius);
+          maximumX = Math.max(maximumX, junction.point.x + renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius);
+          maximumY = Math.max(maximumY, junction.point.y + renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius);
+        }
+        return freezeRectangle({
+          x: minimumX,
+          y: minimumY,
+          width: maximumX - minimumX,
+          height: maximumY - minimumY
+        });
+      }
+      function layoutSchematic(inputGraph, placement, measureText2) {
+        const graph2 = snapshotGraph(inputGraph);
+        const assignment = (0, columns_1.assignColumns)(graph2);
+        const mergedPlacement = (0, placement_1.mergePlacement)(graph2, assignment, snapshotPlacement(placement, graph2));
+        const pinSides = (0, pins_1.resolvePinSides)(graph2);
+        const fittedById = new Map(graph2.nodes.map((node) => {
+          const measuredSize = (0, nodeGeometry_1.measureSchematicNodeSize)(node, pinSides);
+          const size = {
+            width: alignNodeSize(measuredSize.width),
+            height: alignNodeSize(measuredSize.height)
+          };
+          return [
+            node.id,
+            (0, nodeGeometry_1.fitSchematicNode)(node, pinSides, size, measureText2)
+          ];
+        }));
+        const routingNodes = graph2.nodes.map((node) => {
+          const fitted = fittedById.get(node.id);
+          const placed = mergedPlacement.nodes[node.id];
+          return {
+            id: node.id,
+            column: placed.column,
+            order: placed.order,
+            yOffset: placed.yOffset,
+            size: { width: fitted.width, height: fitted.height },
+            pinAnchors: fitted.pins.map((pin2) => ({
+              id: pin2.source.id,
+              x: pin2.anchor.x,
+              y: pin2.anchor.y
+            }))
+          };
+        });
+        const routed = (0, router_1.routeNetworks)(routingNodes, graph2.networks.map((network) => ({
+          id: network.id,
+          terminals: network.endpoints.map((endpoint) => ({ ...endpoint }))
+        })), { columnCount: assignment.columns.length });
+        const realizedById = new Map(routed.grid.nodes.map((node) => [node.id, node]));
+        const renderedNodes = graph2.nodes.map((node) => {
+          const fitted = fittedById.get(node.id);
+          const realized = realizedById.get(node.id);
+          const offset4 = { x: realized.bounds.x, y: realized.bounds.y };
+          const anchors = new Map(realized.pinAnchors.map((pin2) => [pin2.id, pin2.point]));
+          const rendered = Object.freeze({
+            id: node.id,
+            kind: node.kind,
+            label: node.label,
+            subtitle: node.subtitle,
+            column: realized.column,
+            row: realized.row,
+            bounds: freezeRectangle(realized.bounds),
+            title: renderLabel(fitted.title, offset4),
+            renderedSubtitle: fitted.subtitle ? renderLabel(fitted.subtitle, offset4) : void 0,
+            pins: Object.freeze(fitted.pins.map((pin2) => renderPin(pin2, offset4, anchors.get(pin2.source.id))))
+          });
+          return [node.id, rendered];
+        });
+        const nodes = (0, renderModel_1.readonlyMap)(renderedNodes);
+        const routedById = new Map(routed.networks.map((network) => [network.id, network]));
+        const allSegments = graph2.networks.flatMap((network) => routedById.get(network.id)?.segments ?? []);
+        const networkOrder = new Map(graph2.networks.map((network, index2) => [
+          network.id,
+          index2
+        ]));
+        const junctions = (0, junctions_1.deriveJunctions)(allSegments).sort((left4, right4) => (networkOrder.get(left4.networkId) ?? Number.MAX_SAFE_INTEGER) - (networkOrder.get(right4.networkId) ?? Number.MAX_SAFE_INTEGER) || left4.point.x - right4.point.x || left4.point.y - right4.point.y).map((junction) => Object.freeze({
+          networkId: junction.networkId,
+          point: freezePoint(junction.point),
+          directions: (0, renderModel_1.readonlySet)(DIRECTION_ORDER.filter((direction) => junction.directions.has(direction)))
+        }));
+        const labelObstacleIndex = new RectangleIndex([
+          ...renderedNodes.map(([, node]) => node.bounds),
+          ...junctions.map((junction) => ({
+            x: junction.point.x - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
+            y: junction.point.y - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
+            width: 2 * renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
+            height: 2 * renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius
+          }))
+        ]);
+        const occupiedLabels = [];
+        const networks = graph2.networks.map((network) => {
+          const route = routedById.get(network.id);
+          const segments = Object.freeze(route.segments.map(freezeSegment));
+          const label = labelForNetwork(network, segments, measureText2, labelObstacleIndex, occupiedLabels);
+          const terminals = Object.freeze(network.endpoints.map((endpoint) => {
+            const point = realizedById.get(endpoint.nodeId).pinAnchors.find((pin2) => pin2.id === endpoint.pinId).point;
+            return Object.freeze({
+              ...endpoint,
+              point: freezePoint(point)
+            });
+          }));
+          return Object.freeze({
+            id: network.id,
+            name: network.name,
+            selectionDescription: network.name,
+            feedback: route.feedback,
+            terminals,
+            segments,
+            label
+          });
+        });
+        const columns = routed.grid.columns.map((column) => Object.freeze({
+          index: column.index,
+          x: column.x,
+          width: column.width,
+          nodeIds: Object.freeze(routed.grid.nodes.filter((node) => node.column === column.index).sort((left4, right4) => left4.row - right4.row).map((node) => node.id))
+        }));
+        const gridBounds = {
+          x: 0,
+          y: 0,
+          width: routed.grid.width,
+          height: routed.grid.height
+        };
+        const bounds = calculateBounds(gridBounds, networks.flatMap((network) => network.label ? [network.label] : []), junctions, graph2.nodes.length === 0 && allSegments.length === 0);
+        return Object.freeze({
+          columns: Object.freeze(columns),
+          nodes,
+          networks: Object.freeze(networks),
+          junctions: Object.freeze(junctions),
+          bounds
+        });
+      }
+    }
+  });
+
+  // packages/schematic-core/dist/model.js
+  var require_model = __commonJS({
+    "packages/schematic-core/dist/model.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+    }
+  });
+
   // packages/schematic-core/dist/index.js
   var require_dist = __commonJS({
     "packages/schematic-core/dist/index.js"(exports2) {
@@ -1251,11 +5291,53 @@
         for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports3, p)) __createBinding(exports3, m, p);
       };
       Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.MAX_ROUTING_TRACKS = exports2.VerticalReservationIndex = exports2.HorizontalReservationIndex = exports2.routeNetworks = exports2.vertical = exports2.simplifySegments = exports2.segmentIntersectsRectangleInterior = exports2.horizontal = exports2.serializeSchematicRenderModel = exports2.SCHEMATIC_NETWORK_LABEL_STYLE = exports2.SCHEMATIC_NETWORK_LABEL_LAYOUT = void 0;
       __exportStar(require_columns(), exports2);
+      __exportStar(require_layout(), exports2);
       __exportStar(require_model(), exports2);
       __exportStar(require_nodeGeometry(), exports2);
       __exportStar(require_pins(), exports2);
       __exportStar(require_placement(), exports2);
+      var renderModel_1 = require_renderModel();
+      Object.defineProperty(exports2, "SCHEMATIC_NETWORK_LABEL_LAYOUT", { enumerable: true, get: function() {
+        return renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT;
+      } });
+      Object.defineProperty(exports2, "SCHEMATIC_NETWORK_LABEL_STYLE", { enumerable: true, get: function() {
+        return renderModel_1.SCHEMATIC_NETWORK_LABEL_STYLE;
+      } });
+      Object.defineProperty(exports2, "serializeSchematicRenderModel", { enumerable: true, get: function() {
+        return renderModel_1.serializeSchematicRenderModel;
+      } });
+      var geometry_1 = require_geometry();
+      Object.defineProperty(exports2, "horizontal", { enumerable: true, get: function() {
+        return geometry_1.horizontal;
+      } });
+      Object.defineProperty(exports2, "segmentIntersectsRectangleInterior", { enumerable: true, get: function() {
+        return geometry_1.segmentIntersectsRectangleInterior;
+      } });
+      Object.defineProperty(exports2, "simplifySegments", { enumerable: true, get: function() {
+        return geometry_1.simplifySegments;
+      } });
+      Object.defineProperty(exports2, "vertical", { enumerable: true, get: function() {
+        return geometry_1.vertical;
+      } });
+      __exportStar(require_junctions(), exports2);
+      var router_1 = require_router();
+      Object.defineProperty(exports2, "routeNetworks", { enumerable: true, get: function() {
+        return router_1.routeNetworks;
+      } });
+      var occupancy_1 = require_occupancy();
+      Object.defineProperty(exports2, "HorizontalReservationIndex", { enumerable: true, get: function() {
+        return occupancy_1.HorizontalReservationIndex;
+      } });
+      Object.defineProperty(exports2, "VerticalReservationIndex", { enumerable: true, get: function() {
+        return occupancy_1.VerticalReservationIndex;
+      } });
+      __exportStar(require_grid(), exports2);
+      var tracks_1 = require_tracks();
+      Object.defineProperty(exports2, "MAX_ROUTING_TRACKS", { enumerable: true, get: function() {
+        return tracks_1.MAX_ROUTING_TRACKS;
+      } });
     }
   });
 

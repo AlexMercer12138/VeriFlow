@@ -8,7 +8,13 @@ import type {
     SchematicGraph,
     SchematicNetwork,
 } from '../src/model';
-import { pinKey, resolvePinSides } from '../src/pins';
+import { pinKey, resolvePinSides, type PinKey } from '../src/pins';
+
+if (false) {
+    // @ts-expect-error PinKey values must be constructed through pinKey()
+    const raw: PinKey = 'node\0pin';
+    void raw;
+}
 
 function pin(id: string, direction: PinDirection): GraphPin {
     return {
@@ -75,6 +81,42 @@ test('places loads left and drivers right', () => {
     assert.equal(sides.get(pinKey(source.id, source.pins[0].id)), 'right');
     assert.equal(sides.get(pinKey(sink.id, sink.pins[0].id)), 'left');
     assert.equal([...sides.values()].includes('bottom' as never), false);
+});
+
+test('keeps NUL-containing node and pin identity pairs distinct', () => {
+    const source = node('a', 'instance', [pin('b\0c', 'driver')]);
+    const sink = node('a\0b', 'instance', [pin('c', 'load')]);
+    const sourceKey = pinKey(source.id, source.pins[0].id);
+    const sinkKey = pinKey(sink.id, sink.pins[0].id);
+    const sides = resolvePinSides(graph([source, sink], [network(
+        'network:collision',
+        [
+            { nodeId: source.id, pinId: source.pins[0].id, role: 'driver' },
+            { nodeId: sink.id, pinId: sink.pins[0].id, role: 'load' },
+        ]
+    )]));
+
+    assert.notEqual(sourceKey, sinkKey);
+    assert.equal(pinKey(source.id, source.pins[0].id), sourceKey);
+    assert.equal(sides.size, 2);
+    assert.equal(sides.get(sourceKey), 'right');
+    assert.equal(sides.get(sinkKey), 'left');
+
+    const adversarialPairs = [
+        ['', ''],
+        ['"[', ']"'],
+        ['\ud800', '\udfff'],
+        ['\ud800\0"', '\udfff[]'],
+        [':', '1:a'],
+    ] as const;
+    const adversarialKeys = adversarialPairs.map(([nodeId, pinId]) =>
+        pinKey(nodeId, pinId)
+    );
+    assert.equal(new Set(adversarialKeys).size, adversarialPairs.length);
+    assert.deepEqual(
+        adversarialPairs.map(([nodeId, pinId]) => pinKey(nodeId, pinId)),
+        adversarialKeys
+    );
 });
 
 test('uses explicit peer roles to resolve bidirectional endpoints', () => {

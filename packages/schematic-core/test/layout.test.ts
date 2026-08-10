@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
     layoutSchematic,
     measureSchematicNodeSize,
+    pinKey,
     resolvePinSides,
     segmentIntersectsRectangleInterior,
     serializeSchematicRenderModel,
@@ -456,6 +457,48 @@ test('serializes prototype-like and NUL-containing IDs without object-key loss',
         candidate => candidate.id
     ));
     assert.equal(roundTrip.networks[0].id, '__proto__\0network');
+});
+
+test('keeps colliding NUL node and pin pairs distinct through rendering', () => {
+    const source = node('a', 'instance', 'source', [['b\0c', 'driver']]);
+    const sink = node('a\0b', 'instance', 'sink', [['c', 'load']]);
+    source.pins[0] = { ...source.pins[0], id: 'b\0c' };
+    sink.pins[0] = { ...sink.pins[0], id: 'c' };
+    const graph: SchematicGraph = {
+        fileUri: 'file:///pin-key-collision.sv',
+        moduleKey: 'module:pin-key-collision:0',
+        moduleName: 'pin_key_collision',
+        nodes: [source, sink],
+        networks: [network('network:collision', 'collision', [
+            endpoint(source, 0),
+            endpoint(sink, 0),
+        ])],
+        diagnostics: [],
+    };
+
+    const result = layoutSchematic(graph, undefined, text => text.length * 7);
+    const renderedSource = result.nodes.get(source.id)!;
+    const renderedSink = result.nodes.get(sink.id)!;
+    const serialized = serializeSchematicRenderModel(result);
+
+    assert.notEqual(
+        pinKey(source.id, source.pins[0].id),
+        pinKey(sink.id, sink.pins[0].id)
+    );
+    assert.equal(renderedSource.pins[0].side, 'right');
+    assert.equal(
+        renderedSource.pins[0].anchor.x,
+        renderedSource.bounds.x + renderedSource.bounds.width
+    );
+    assert.equal(renderedSink.pins[0].side, 'left');
+    assert.equal(renderedSink.pins[0].anchor.x, renderedSink.bounds.x);
+    assert.deepEqual(serialized.nodes.map(rendered => ({
+        id: rendered.id,
+        pinIds: rendered.pins.map(candidate => candidate.id),
+    })), [
+        { id: 'a', pinIds: ['b\0c'] },
+        { id: 'a\0b', pinIds: ['c'] },
+    ]);
 });
 
 test('exposes no runtime mutation path through maps arrays points or direction sets', () => {

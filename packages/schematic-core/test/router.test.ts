@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import * as schematicCore from '../src';
 import {
+    pinKey,
     routeNetworks,
     segmentIntersectsRectangleInterior,
     simplifySegments,
@@ -411,12 +412,12 @@ test('connects multi-driver networks without driver-load Cartesian expansion', (
         path.to,
     ]);
     assert.deepEqual(new Set(connectedTerminals.map(terminal =>
-        `${terminal.nodeId}\0${terminal.pinId}`
+        pinKey(terminal.nodeId, terminal.pinId)
     )), new Set([
-        'driver-a\0right',
-        'driver-b\0right',
-        'load-a\0left',
-        'load-b\0left',
+        pinKey('driver-a', 'right'),
+        pinKey('driver-b', 'right'),
+        pinKey('load-a', 'left'),
+        pinKey('load-b', 'left'),
     ]));
 });
 
