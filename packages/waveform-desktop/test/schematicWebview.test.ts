@@ -47,6 +47,69 @@ function createElectronFixture(): string {
     return fixtureRoot;
 }
 
+type CapturedSchematicLayout = {
+    placement?: {
+        nodes?: Record<string, {
+            column?: number;
+            order?: number;
+            yOffset?: number;
+            fixed?: boolean;
+        }>;
+    };
+    viewport?: { x: number; y: number; zoom: number };
+    selectedObjectId?: string;
+};
+
+type CapturedSaveMessage = {
+    type?: string;
+    revision?: string;
+    layout?: CapturedSchematicLayout;
+};
+
+async function capturedSaves(page: Page): Promise<CapturedSaveMessage[]> {
+    return page.evaluate(() => {
+        const state = window as unknown as {
+            __veriflowMessages: CapturedSaveMessage[];
+        };
+        return state.__veriflowMessages.filter(message => message.type === 'saveLayout');
+    });
+}
+
+async function dragElement(
+    page: Page,
+    selector: string,
+    deltaX: number,
+    deltaY: number
+): Promise<void> {
+    const target = page.locator(selector);
+    await target.waitFor();
+    const bounds = await target.boundingBox();
+    assert.ok(bounds, `missing drag bounds for ${selector}`);
+    const startX = bounds.x + bounds.width / 2;
+    const startY = bounds.y + bounds.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    for (let step = 1; step <= 8; step += 1) {
+        await page.mouse.move(
+            startX + deltaX * step / 8,
+            startY + deltaY * step / 8
+        );
+    }
+    await page.mouse.up();
+}
+
+async function verticalNodeOrder(page: Page, nodeIds: readonly string[]): Promise<string[]> {
+    const centers = await Promise.all(nodeIds.map(async nodeId => {
+        const bounds = await page.locator(
+            `.x6-node[data-cell-id="${nodeId}"] rect`
+        ).first().boundingBox();
+        assert.ok(bounds, `missing node bounds for ${nodeId}`);
+        return { nodeId, y: bounds.y + bounds.height / 2 };
+    }));
+    return centers.sort((left, right) => left.y - right.y
+        || left.nodeId.localeCompare(right.nodeId)).map(entry => entry.nodeId);
+}
+
 type VisualPinDirection = 'driver' | 'load';
 
 function visualSchematicFixture() {
@@ -1107,6 +1170,370 @@ test('schematic drag preserves active search selection and viewport', {
         assert.deepEqual(after.layout?.viewport, before.viewport);
         assert.equal(after.layout?.placement?.nodes?.[secondId]?.fixed, true);
         assert.notEqual(after.layout?.placement?.nodes?.[secondId]?.yOffset, 0);
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('schematic selection boxes persist single and rubberband batch moves once', {
+    timeout: 60_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+
+        const nodeIds = [
+            'instance:selection-first',
+            'instance:selection-second',
+            'instance:selection-third',
+        ] as const;
+        const runtimeGraph = {
+            fileUri: 'file:///selection-box-runtime.sv',
+            moduleKey: 'module:selection-box-runtime:0',
+            moduleName: 'selection_box_runtime',
+            nodes: nodeIds.map(nodeId => ({
+                id: nodeId,
+                kind: 'instance',
+                label: nodeId.replace('instance:selection-', ''),
+                pins: [],
+                readOnly: false,
+            })),
+            networks: [],
+            diagnostics: [],
+        };
+        const initialLayout: CapturedSchematicLayout = {
+            placement: {
+                nodes: Object.fromEntries(nodeIds.map((nodeId, order) => [
+                    nodeId,
+                    { column: 0, order, yOffset: 0, fixed: false },
+                ])),
+            },
+            viewport: { x: 0, y: 0, zoom: 1 },
+        };
+        const sendGraph = async (
+            revision: string,
+            layout: CapturedSchematicLayout
+        ): Promise<void> => {
+            await page.evaluate(({ graph, selectedLayout, selectedRevision }) => {
+                window.dispatchEvent(new MessageEvent('message', {
+                    data: {
+                        type: 'initialize',
+                        modules: [{ key: graph.moduleKey, name: graph.moduleName }],
+                        selectedModuleKey: graph.moduleKey,
+                    },
+                }));
+                window.dispatchEvent(new MessageEvent('message', {
+                    data: {
+                        type: 'graph',
+                        revision: selectedRevision,
+                        graph,
+                        layout: selectedLayout,
+                    },
+                }));
+            }, { graph: runtimeGraph, selectedLayout: layout, selectedRevision: revision });
+            await page.locator(
+                `.x6-node[data-cell-id="${nodeIds[0]}"]`
+            ).first().waitFor();
+            await page.waitForFunction(expectedNodeIds => {
+                const renderedIds = [...document.querySelectorAll(
+                    '.x6-node[data-cell-id]'
+                )].map(element => element.getAttribute('data-cell-id'));
+                return renderedIds.length === expectedNodeIds.length
+                    && expectedNodeIds.every(nodeId =>
+                        renderedIds.filter(candidate => candidate === nodeId).length === 1
+                    );
+            }, nodeIds);
+        };
+        const clearMessages = async (): Promise<void> => {
+            await page.evaluate(() => {
+                const state = window as unknown as { __veriflowMessages: unknown[] };
+                state.__veriflowMessages = [];
+            });
+        };
+        const waitForSave = async (): Promise<void> => {
+            await page.waitForFunction(() => {
+                const state = window as unknown as {
+                    __veriflowMessages: CapturedSaveMessage[];
+                };
+                return state.__veriflowMessages.some(
+                    message => message.type === 'saveLayout'
+                );
+            });
+            await page.waitForTimeout(400);
+        };
+        const dragNodeView = async (nodeId: string, deltaY: number): Promise<void> => {
+            const body = page.locator(
+                `.x6-node[data-cell-id="${nodeId}"] rect`
+            ).first();
+            const bounds = await body.boundingBox();
+            assert.ok(bounds);
+            const x = bounds.x + bounds.width / 2;
+            const y = bounds.y + bounds.height / 2;
+            await body.dispatchEvent('mousedown', {
+                button: 0,
+                buttons: 1,
+                clientX: x,
+                clientY: y,
+            });
+            await page.evaluate(({ clientX, clientY, dy }) => {
+                for (let step = 1; step <= 8; step += 1) {
+                    document.dispatchEvent(new MouseEvent('mousemove', {
+                        bubbles: true,
+                        button: 0,
+                        buttons: 1,
+                        clientX,
+                        clientY: clientY + dy * step / 8,
+                        view: window,
+                    }));
+                }
+                document.dispatchEvent(new MouseEvent('mouseup', {
+                    bubbles: true,
+                    button: 0,
+                    buttons: 0,
+                    clientX,
+                    clientY: clientY + dy,
+                    view: window,
+                }));
+            }, { clientX: x, clientY: y, dy: deltaY });
+        };
+        const semanticOrder = (layout: CapturedSchematicLayout): string[] =>
+            [...nodeIds].sort((left, right) =>
+                (layout.placement?.nodes?.[left]?.order ?? 0)
+                    - (layout.placement?.nodes?.[right]?.order ?? 0)
+            );
+
+        await sendGraph('fixture:selection-single', initialLayout);
+        await page.locator(
+            `.x6-node[data-cell-id="${nodeIds[0]}"] rect`
+        ).first().click();
+        const singleBoxSelector =
+            `.x6-widget-selection-box[data-cell-id="${nodeIds[0]}"]`;
+        const singleBox = page.locator(singleBoxSelector);
+        await singleBox.waitFor();
+        await page.waitForTimeout(400);
+        await clearMessages();
+        const singleBounds = await singleBox.boundingBox();
+        const thirdBounds = await page.locator(
+            `.x6-node[data-cell-id="${nodeIds[2]}"] rect`
+        ).first().boundingBox();
+        assert.ok(singleBounds && thirdBounds);
+        await dragElement(
+            page,
+            singleBoxSelector,
+            0,
+            thirdBounds.y + thirdBounds.height + 32
+                - (singleBounds.y + singleBounds.height / 2)
+        );
+        await waitForSave();
+
+        const singleSaves = await capturedSaves(page);
+        assert.equal(singleSaves.length, 1);
+        const singleLayout = singleSaves[0].layout!;
+        assert.equal(singleSaves[0].revision, 'fixture:selection-single');
+        assert.equal(singleLayout.placement?.nodes?.[nodeIds[0]]?.fixed, true);
+        assert.deepEqual(semanticOrder(singleLayout), [
+            nodeIds[1],
+            nodeIds[2],
+            nodeIds[0],
+        ]);
+        assert.deepEqual(singleLayout.viewport, initialLayout.viewport);
+        assert.equal(singleLayout.selectedObjectId, nodeIds[0]);
+
+        await sendGraph('fixture:selection-single-reload', singleLayout);
+        assert.deepEqual(await verticalNodeOrder(page, nodeIds), [
+            nodeIds[1],
+            nodeIds[2],
+            nodeIds[0],
+        ]);
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: first'
+        );
+
+        await sendGraph('fixture:selection-multi', initialLayout);
+        await clearMessages();
+        const firstBounds = await page.locator(
+            `.x6-node[data-cell-id="${nodeIds[0]}"] rect`
+        ).first().boundingBox();
+        const secondBounds = await page.locator(
+            `.x6-node[data-cell-id="${nodeIds[1]}"] rect`
+        ).first().boundingBox();
+        const canvasBounds = await page.locator('#canvas').boundingBox();
+        assert.ok(firstBounds && secondBounds && canvasBounds);
+        const startX = Math.min(
+            canvasBounds.x + canvasBounds.width - 4,
+            Math.max(
+                firstBounds.x + firstBounds.width,
+                secondBounds.x + secondBounds.width
+            ) + 12
+        );
+        const startY = Math.max(
+            canvasBounds.y + 4,
+            Math.min(firstBounds.y, secondBounds.y) + 4
+        );
+        const endX = Math.max(
+            canvasBounds.x + 4,
+            Math.min(firstBounds.x, secondBounds.x) + 4
+        );
+        const endY = Math.max(
+            firstBounds.y + firstBounds.height,
+            secondBounds.y + secondBounds.height
+        ) + 12;
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        await page.mouse.move(endX, endY, { steps: 8 });
+        await page.mouse.up();
+        const rubberbandSelection = await page.locator(
+            '.x6-widget-selection-box[data-cell-id]'
+        ).evaluateAll(elements => elements.map(element =>
+            element.getAttribute('data-cell-id')
+        ));
+        assert.deepEqual(rubberbandSelection.sort(), [...nodeIds.slice(0, 2)].sort());
+        await page.waitForTimeout(400);
+
+        const selectionSaves = await capturedSaves(page);
+        assert.equal(selectionSaves.length, 1);
+        const selectionLayout = selectionSaves[0].layout;
+        assert.ok(nodeIds.every(nodeId =>
+            selectionLayout?.placement?.nodes?.[nodeId]?.fixed !== true
+        ));
+        await clearMessages();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 0);
+
+        await dragNodeView(nodeIds[0], 32);
+        await waitForSave();
+        const nodeViewSaves = await capturedSaves(page);
+        assert.equal(nodeViewSaves.length, 1);
+        const nodeViewLayout = nodeViewSaves[0].layout!;
+        assert.equal(nodeViewLayout.placement?.nodes?.[nodeIds[0]]?.fixed, true);
+        assert.equal(nodeViewLayout.placement?.nodes?.[nodeIds[1]]?.fixed, false);
+        assert.equal(nodeViewLayout.placement?.nodes?.[nodeIds[2]]?.fixed, false);
+        const retainedSelection = await page.locator(
+            '.x6-widget-selection-box[data-cell-id]'
+        ).evaluateAll(elements => elements.map(element =>
+            element.getAttribute('data-cell-id')
+        ));
+        assert.deepEqual(retainedSelection.sort(), [...nodeIds.slice(0, 2)].sort());
+        await clearMessages();
+
+        const multiBoxSelector =
+            `.x6-widget-selection-box[data-cell-id="${nodeIds[0]}"]`;
+        const multiBoxBounds = await page.locator(multiBoxSelector).boundingBox();
+        const stationaryThirdBounds = await page.locator(
+            `.x6-node[data-cell-id="${nodeIds[2]}"] rect`
+        ).first().boundingBox();
+        assert.ok(multiBoxBounds && stationaryThirdBounds);
+        await dragElement(
+            page,
+            multiBoxSelector,
+            0,
+            stationaryThirdBounds.y + stationaryThirdBounds.height + 48
+                - (multiBoxBounds.y + multiBoxBounds.height / 2)
+        );
+        await waitForSave();
+
+        const multiSaves = await capturedSaves(page);
+        assert.equal(multiSaves.length, 1);
+        assert.equal(multiSaves[0].revision, 'fixture:selection-multi');
+        const multiLayout = multiSaves[0].layout!;
+        assert.equal(multiLayout.placement?.nodes?.[nodeIds[0]]?.fixed, true);
+        assert.equal(multiLayout.placement?.nodes?.[nodeIds[1]]?.fixed, true);
+        assert.equal(multiLayout.placement?.nodes?.[nodeIds[2]]?.fixed, false);
+        assert.deepEqual(semanticOrder(multiLayout), [
+            nodeIds[2],
+            nodeIds[0],
+            nodeIds[1],
+        ]);
+        assert.deepEqual(multiLayout.viewport, initialLayout.viewport);
+
+        await sendGraph('fixture:selection-multi-reload', multiLayout);
+        assert.deepEqual(await verticalNodeOrder(page, nodeIds), [
+            nodeIds[2],
+            nodeIds[0],
+            nodeIds[1],
+        ]);
+        assert.deepEqual(rendererErrors, []);
+
+        const immediatelyClearedNodes = await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', {
+                data: {
+                    type: 'initialize',
+                    modules: [],
+                    selectedModuleKey: '',
+                },
+            }));
+            return document.querySelectorAll('.x6-node[data-cell-id]').length;
+        });
+        assert.equal(immediatelyClearedNodes, 0);
+        await sendGraph('fixture:selection-after-clear', multiLayout);
+        assert.deepEqual(await verticalNodeOrder(page, nodeIds), [
+            nodeIds[2],
+            nodeIds[0],
+            nodeIds[1],
+        ]);
+
+        await page.waitForTimeout(400);
+        await clearMessages();
+        await page.evaluate(() => {
+            const state = window as unknown as {
+                __veriflowOriginalQueueMicrotask?: typeof window.queueMicrotask;
+                __veriflowQueuedMicrotasks?: VoidFunction[];
+            };
+            state.__veriflowOriginalQueueMicrotask = window.queueMicrotask.bind(window);
+            state.__veriflowQueuedMicrotasks = [];
+            window.queueMicrotask = callback => {
+                state.__veriflowQueuedMicrotasks!.push(callback);
+            };
+        });
+        await dragNodeView(nodeIds[1], 32);
+        const staleCallbackCount = await page.evaluate(() => {
+            const state = window as unknown as {
+                __veriflowOriginalQueueMicrotask?: typeof window.queueMicrotask;
+                __veriflowQueuedMicrotasks?: VoidFunction[];
+            };
+            if (state.__veriflowOriginalQueueMicrotask) {
+                window.queueMicrotask = state.__veriflowOriginalQueueMicrotask;
+            }
+            return state.__veriflowQueuedMicrotasks?.length ?? 0;
+        });
+        assert.equal(staleCallbackCount, 1);
+        await sendGraph('fixture:selection-stale-refresh', initialLayout);
+        await clearMessages();
+        const executedStaleCallbacks = await page.evaluate(() => {
+            const state = window as unknown as {
+                __veriflowOriginalQueueMicrotask?: typeof window.queueMicrotask;
+                __veriflowQueuedMicrotasks?: VoidFunction[];
+            };
+            const callbacks = state.__veriflowQueuedMicrotasks ?? [];
+            delete state.__veriflowOriginalQueueMicrotask;
+            delete state.__veriflowQueuedMicrotasks;
+            callbacks.forEach(callback => callback());
+            return callbacks.length;
+        });
+        assert.equal(executedStaleCallbacks, 1);
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 0);
+        assert.deepEqual(await verticalNodeOrder(page, nodeIds), [...nodeIds]);
         assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();

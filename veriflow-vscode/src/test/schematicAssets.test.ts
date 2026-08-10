@@ -422,9 +422,21 @@ async function testSchematicAssets(): Promise<void> {
         /import\s*{[^}]*\blayoutSchematic\b[^}]*}\s*from '@veriflow\/schematic-core';/s
     );
     assert.match(webviewSource, /layoutSchematic\(model,/);
-    assert.match(webviewSource, /\bsnapNodeToPlacement\b/);
+    assert.match(webviewSource, /\bsnapNodesToPlacement\b/);
     assert.match(webviewSource, /layoutSchematic\(model,\s*layout\.placement,/);
     assert.match(webviewSource, /graph\.on\('node:moved'/);
+    assert.match(webviewSource, /selection\.on\('box:mousedown'/);
+    assert.match(webviewSource, /selection\.on\('box:mouseup'/);
+    const movementFlush = sourceSection(
+        webviewSource,
+        'function flushPendingNodeMoves(',
+        '\nfunction clearSchematicState(',
+        'pending node movement flush'
+    );
+    assert.match(movementFlush, /snapNodesToPlacement\(/);
+    assert.match(movementFlush, /renderSchematic\(/);
+    assert.match(movementFlush, /scheduleLayoutSave\(\)/);
+    assert.match(webviewSource, /queueMicrotask\(\(\) =>/);
     assert.doesNotMatch(webviewSource, /graph\.on\('node:change:position'/);
     assert.match(webviewSource, /renderModel\.networks/);
     assert.match(webviewSource, /networkRoute\.segments/);
@@ -485,6 +497,14 @@ async function testSchematicAssets(): Promise<void> {
         /function clearSchematicState\(\): void\s*{\s*layoutSaveScheduler\.flush\(\);\s*layoutSaveScheduler\.dispose\(\);/,
         'empty-state reset must flush pending host saves before disposal'
     );
+    const emptyStateReset = sourceSection(
+        webviewSource,
+        'function clearSchematicState()',
+        '\nfunction initialize(',
+        'empty-state reset'
+    );
+    assert.match(emptyStateReset, /graph\.resetCells\(\[\]\)/);
+    assert.doesNotMatch(emptyStateReset, /graph\.clearCells\(\)/);
     assert.match(
         webviewSource,
         /window\.addEventListener\('pagehide',\s*flushLayoutSaves\)/
@@ -495,7 +515,7 @@ async function testSchematicAssets(): Promise<void> {
     );
     assert.match(webviewSource, /function clearSchematicState\(\): void/);
     for (const resetOperation of [
-        'graph.clearCells()',
+        'graph.resetCells([])',
         'currentGraph = undefined',
         'currentLayout = undefined',
         'selection.clean()',

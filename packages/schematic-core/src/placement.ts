@@ -65,6 +65,43 @@ function sourceIndexes(graph: SchematicGraph): ReadonlyMap<string, number> {
     return new Map(graph.nodes.map((node, index) => [node.id, index]));
 }
 
+type PlacementEntry = [string, SchematicNodePlacement];
+
+function stableEntryOrder(
+    indexes: ReadonlyMap<string, number>,
+    left: PlacementEntry,
+    right: PlacementEntry
+): number {
+    return (indexes.get(left[0]) ?? 0) - (indexes.get(right[0]) ?? 0)
+        || (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
+}
+
+function insertAtRequestedOrders(
+    base: readonly PlacementEntry[],
+    requested: readonly PlacementEntry[],
+    indexes: ReadonlyMap<string, number>,
+    stableOrder: (left: PlacementEntry, right: PlacementEntry) => number
+): PlacementEntry[] {
+    const arranged = [...base];
+    const groups = new Map<number, PlacementEntry[]>();
+    for (const entry of requested) {
+        const order = safeInteger(entry[1].order, indexes.get(entry[0]) ?? 0);
+        const group = groups.get(order) ?? [];
+        group.push(entry);
+        groups.set(order, group);
+    }
+    for (const order of [...groups.keys()].sort((left, right) => left - right)) {
+        const group = groups.get(order)!;
+        group.sort(stableOrder);
+        arranged.splice(
+            Math.max(0, Math.min(arranged.length, order)),
+            0,
+            ...group
+        );
+    }
+    return arranged;
+}
+
 function normalizeOrdersByIds(
     nodeIds: readonly string[],
     nodes: Record<string, SchematicNodePlacement>
@@ -82,13 +119,15 @@ function normalizeOrdersByIds(
 
     const normalized: Record<string, SchematicNodePlacement> = {};
     for (const entries of byColumn.values()) {
-        entries.sort((left, right) =>
-            safeInteger(left[1].order, indexes.get(left[0]) ?? 0)
-                - safeInteger(right[1].order, indexes.get(right[0]) ?? 0)
-            || Number(right[1].fixed) - Number(left[1].fixed)
-            || (indexes.get(left[0]) ?? 0) - (indexes.get(right[0]) ?? 0)
+        const stableOrder = (left: PlacementEntry, right: PlacementEntry): number =>
+            stableEntryOrder(indexes, left, right);
+        const arranged = insertAtRequestedOrders(
+            entries.filter(([, placement]) => !placement.fixed).sort(stableOrder),
+            entries.filter(([, placement]) => placement.fixed),
+            indexes,
+            stableOrder
         );
-        entries.forEach(([id, placement], order) => {
+        arranged.forEach(([id, placement], order) => {
             setOwn(normalized, id, {
                 ...placement,
                 order,
@@ -246,18 +285,31 @@ export function moveNodesToColumns(
     moves: readonly SchematicNodePlacementMove[]
 ): SchematicPlacement {
     const legalInternalColumns = internalColumns(graph, assignment);
-    const nodes = mergedPlacementNodes(
+    const nodes = normalizeOrders(
         graph,
-        assignment,
-        placement,
-        legalInternalColumns
+        mergedPlacementNodes(
+            graph,
+            assignment,
+            placement,
+            legalInternalColumns
+        )
     );
-    const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
-    for (const move of moves) {
-        const selectedNode = nodesById.get(move.nodeId);
-        const current = selectedNode ? nodes[move.nodeId] : undefined;
+    const nodesById = new Map<string, GraphNode>();
+    const sourceIndex = new Map<string, number>();
+    const originalOrder = new Map<string, number>();
+    graph.nodes.forEach((node, index) => {
+        nodesById.set(node.id, node);
+        sourceIndex.set(node.id, index);
+        originalOrder.set(node.id, nodes[node.id]?.order ?? index);
+    });
+    const movesById = new Map(moves.map(move => [move.nodeId, move]));
+    const movedIds = new Set<string>();
+    for (const [nodeId, move] of movesById) {
+        const selectedNode = nodesById.get(nodeId);
+        const current = selectedNode ? nodes[nodeId] : undefined;
         if (!selectedNode || !current) continue;
-        setOwn(nodes, move.nodeId, {
+        movedIds.add(nodeId);
+        setOwn(nodes, nodeId, {
             column: clampNodeColumn(
                 selectedNode,
                 assignment,
@@ -267,6 +319,29 @@ export function moveNodesToColumns(
             order: safeInteger(move.order, current.order),
             yOffset: safeOffset(move.yOffset),
             fixed: true,
+        });
+    }
+
+    const byColumn = new Map<number, PlacementEntry[]>();
+    for (const node of graph.nodes) {
+        const candidate = nodes[node.id];
+        if (!candidate) continue;
+        const entries = byColumn.get(candidate.column) ?? [];
+        entries.push([node.id, candidate]);
+        byColumn.set(candidate.column, entries);
+    }
+    for (const entries of byColumn.values()) {
+        const stableOrder = (left: PlacementEntry, right: PlacementEntry): number =>
+            (originalOrder.get(left[0]) ?? 0) - (originalOrder.get(right[0]) ?? 0)
+            || stableEntryOrder(sourceIndex, left, right);
+        const arranged = insertAtRequestedOrders(
+            entries.filter(([id]) => !movedIds.has(id)).sort(stableOrder),
+            entries.filter(([id]) => movedIds.has(id)),
+            sourceIndex,
+            stableOrder
+        );
+        arranged.forEach(([id, candidate], order) => {
+            setOwn(nodes, id, { ...candidate, order });
         });
     }
 

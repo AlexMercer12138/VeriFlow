@@ -1067,6 +1067,25 @@
       function sourceIndexes(graph2) {
         return new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
       }
+      function stableEntryOrder(indexes, left4, right4) {
+        return (indexes.get(left4[0]) ?? 0) - (indexes.get(right4[0]) ?? 0) || (left4[0] < right4[0] ? -1 : left4[0] > right4[0] ? 1 : 0);
+      }
+      function insertAtRequestedOrders(base, requested, indexes, stableOrder) {
+        const arranged = [...base];
+        const groups = /* @__PURE__ */ new Map();
+        for (const entry of requested) {
+          const order = safeInteger(entry[1].order, indexes.get(entry[0]) ?? 0);
+          const group = groups.get(order) ?? [];
+          group.push(entry);
+          groups.set(order, group);
+        }
+        for (const order of [...groups.keys()].sort((left4, right4) => left4 - right4)) {
+          const group = groups.get(order);
+          group.sort(stableOrder);
+          arranged.splice(Math.max(0, Math.min(arranged.length, order)), 0, ...group);
+        }
+        return arranged;
+      }
       function normalizeOrdersByIds(nodeIds, nodes) {
         const indexes = new Map(nodeIds.map((id, index2) => [id, index2]));
         const byColumn = /* @__PURE__ */ new Map();
@@ -1081,8 +1100,9 @@
         }
         const normalized = {};
         for (const entries of byColumn.values()) {
-          entries.sort((left4, right4) => safeInteger(left4[1].order, indexes.get(left4[0]) ?? 0) - safeInteger(right4[1].order, indexes.get(right4[0]) ?? 0) || Number(right4[1].fixed) - Number(left4[1].fixed) || (indexes.get(left4[0]) ?? 0) - (indexes.get(right4[0]) ?? 0));
-          entries.forEach(([id, placement], order) => {
+          const stableOrder = (left4, right4) => stableEntryOrder(indexes, left4, right4);
+          const arranged = insertAtRequestedOrders(entries.filter(([, placement]) => !placement.fixed).sort(stableOrder), entries.filter(([, placement]) => placement.fixed), indexes, stableOrder);
+          arranged.forEach(([id, placement], order) => {
             setOwn(normalized, id, {
               ...placement,
               order,
@@ -1178,18 +1198,44 @@
       }
       function moveNodesToColumns(graph2, assignment, placement, moves) {
         const legalInternalColumns = internalColumns(graph2, assignment);
-        const nodes = mergedPlacementNodes(graph2, assignment, placement, legalInternalColumns);
-        const nodesById = new Map(graph2.nodes.map((node) => [node.id, node]));
-        for (const move of moves) {
-          const selectedNode = nodesById.get(move.nodeId);
-          const current = selectedNode ? nodes[move.nodeId] : void 0;
+        const nodes = normalizeOrders(graph2, mergedPlacementNodes(graph2, assignment, placement, legalInternalColumns));
+        const nodesById = /* @__PURE__ */ new Map();
+        const sourceIndex = /* @__PURE__ */ new Map();
+        const originalOrder = /* @__PURE__ */ new Map();
+        graph2.nodes.forEach((node, index2) => {
+          nodesById.set(node.id, node);
+          sourceIndex.set(node.id, index2);
+          originalOrder.set(node.id, nodes[node.id]?.order ?? index2);
+        });
+        const movesById = new Map(moves.map((move) => [move.nodeId, move]));
+        const movedIds = /* @__PURE__ */ new Set();
+        for (const [nodeId, move] of movesById) {
+          const selectedNode = nodesById.get(nodeId);
+          const current = selectedNode ? nodes[nodeId] : void 0;
           if (!selectedNode || !current)
             continue;
-          setOwn(nodes, move.nodeId, {
+          movedIds.add(nodeId);
+          setOwn(nodes, nodeId, {
             column: clampNodeColumn(selectedNode, assignment, move.column, legalInternalColumns),
             order: safeInteger(move.order, current.order),
             yOffset: safeOffset(move.yOffset),
             fixed: true
+          });
+        }
+        const byColumn = /* @__PURE__ */ new Map();
+        for (const node of graph2.nodes) {
+          const candidate = nodes[node.id];
+          if (!candidate)
+            continue;
+          const entries = byColumn.get(candidate.column) ?? [];
+          entries.push([node.id, candidate]);
+          byColumn.set(candidate.column, entries);
+        }
+        for (const entries of byColumn.values()) {
+          const stableOrder = (left4, right4) => (originalOrder.get(left4[0]) ?? 0) - (originalOrder.get(right4[0]) ?? 0) || stableEntryOrder(sourceIndex, left4, right4);
+          const arranged = insertAtRequestedOrders(entries.filter(([id]) => !movedIds.has(id)).sort(stableOrder), entries.filter(([id]) => movedIds.has(id)), sourceIndex, stableOrder);
+          arranged.forEach(([id, candidate], order) => {
+            setOwn(nodes, id, { ...candidate, order });
           });
         }
         return { nodes: normalizeOrders(graph2, nodes) };
@@ -5294,85 +5340,133 @@
     "packages/schematic-core/dist/snapping.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.snapNodeToPlacement = snapNodeToPlacement2;
+      exports2.snapNodesToPlacement = snapNodesToPlacement2;
+      exports2.snapNodeToPlacement = snapNodeToPlacement;
       var columns_1 = require_columns();
       var layout_1 = require_layout();
       var placement_1 = require_placement();
       function centerY(bounds) {
         return bounds.y + bounds.height / 2;
       }
-      function legalInternalColumns(graph2, assignment) {
-        return new Set(graph2.nodes.flatMap((node) => {
+      function snappingColumns(graph2, assignment, renderModel) {
+        const internal = new Set(graph2.nodes.flatMap((node) => {
           if (node.kind === "port")
             return [];
           const column = assignment.nodeColumn.get(node.id);
           return column === void 0 ? [] : [column];
         }));
-      }
-      function targetColumn(graph2, assignment, placement, renderModel, nodeId, dropX) {
-        const current = placement.nodes[nodeId]?.column;
-        if (current === void 0 || !Number.isFinite(dropX))
-          return current ?? 0;
-        const node = graph2.nodes.find((candidate) => candidate.id === nodeId);
-        if (!node || node.kind === "port")
-          return current;
-        const internal = legalInternalColumns(graph2, assignment);
-        const columns = renderModel.columns.filter((column) => internal.has(column.index)).map((column) => ({
+        return renderModel.columns.filter((column) => internal.has(column.index)).map((column) => ({
           index: column.index,
           midpoint: column.x + column.width / 2
         })).sort((left4, right4) => left4.index - right4.index);
-        const currentGeometry = columns.find((column) => column.index === current);
-        if (!currentGeometry)
+      }
+      function targetColumn(node, current, columns, columnPositions, dropX) {
+        if (node.kind === "port" || !Number.isFinite(dropX))
           return current;
-        let target = current;
+        const currentPosition = columnPositions.get(current);
+        if (currentPosition === void 0)
+          return current;
+        const currentGeometry = columns[currentPosition];
         if (dropX > currentGeometry.midpoint) {
-          for (const column of columns) {
-            if (column.index > current && dropX > column.midpoint) {
-              target = column.index;
+          let low = currentPosition + 1;
+          let high = columns.length;
+          while (low < high) {
+            const middle = low + Math.floor((high - low) / 2);
+            if (columns[middle].midpoint < dropX) {
+              low = middle + 1;
+            } else {
+              high = middle;
             }
           }
+          const target = low - 1;
+          return target > currentPosition ? columns[target].index : current;
         } else if (dropX < currentGeometry.midpoint) {
-          for (let index2 = columns.length - 1; index2 >= 0; index2 -= 1) {
-            const column = columns[index2];
-            if (column.index < current && dropX < column.midpoint) {
-              target = column.index;
+          let low = 0;
+          let high = currentPosition;
+          while (low < high) {
+            const middle = low + Math.floor((high - low) / 2);
+            if (columns[middle].midpoint <= dropX) {
+              low = middle + 1;
+            } else {
+              high = middle;
             }
           }
+          return low < currentPosition ? columns[low].index : current;
         }
-        return target;
+        return current;
       }
-      function insertionOrder(graph2, placement, renderModel, nodeId, column, dropY) {
-        const sourceOrder = new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
-        const candidates = graph2.nodes.flatMap((node) => {
-          if (node.id === nodeId || placement.nodes[node.id]?.column !== column)
-            return [];
+      function resolveDrops(graph2, assignment, placement, renderModel, drops) {
+        const columns = snappingColumns(graph2, assignment, renderModel);
+        const columnPositions = new Map(columns.map((column, index2) => [
+          column.index,
+          index2
+        ]));
+        const dropsById = new Map(drops.map((drop) => [drop.nodeId, drop]));
+        return graph2.nodes.flatMap((node) => {
+          const drop = dropsById.get(node.id);
+          const current = placement.nodes[node.id];
           const rendered = renderModel.nodes.get(node.id);
-          return rendered ? [{
-            id: node.id,
-            y: centerY(rendered.bounds),
-            order: placement.nodes[node.id].order
-          }] : [];
+          if (!drop || !current || !rendered)
+            return [];
+          const originalY = centerY(rendered.bounds);
+          const dropY = Number.isFinite(drop.dropCenter.y) && Math.abs(drop.dropCenter.y) <= Number.MAX_SAFE_INTEGER ? drop.dropCenter.y : originalY;
+          return [{
+            nodeId: node.id,
+            column: targetColumn(node, current.column, columns, columnPositions, drop.dropCenter.x),
+            dropY
+          }];
         });
-        candidates.sort((left4, right4) => left4.y - right4.y || left4.order - right4.order || (sourceOrder.get(left4.id) ?? 0) - (sourceOrder.get(right4.id) ?? 0) || (left4.id < right4.id ? -1 : left4.id > right4.id ? 1 : 0));
-        let order = 0;
-        while (order < candidates.length && candidates[order].y <= dropY)
-          order += 1;
-        return order;
       }
-      function snapNodeToPlacement2(graph2, placement, renderModel, nodeId, dropCenter, measureText2) {
+      function snapNodesToPlacement2(graph2, placement, renderModel, drops, measureText2) {
         const assignment = (0, columns_1.assignColumns)(graph2);
         const normalized = (0, placement_1.mergePlacement)(graph2, assignment, placement);
-        const selected = renderModel.nodes.get(nodeId);
-        if (!selected || normalized.nodes[nodeId] === void 0)
+        const resolved = resolveDrops(graph2, assignment, normalized, renderModel, drops);
+        if (resolved.length === 0)
           return normalized;
-        const selectedCenterY = centerY(selected.bounds);
-        const dropY = Number.isFinite(dropCenter.y) && Math.abs(dropCenter.y) <= Number.MAX_SAFE_INTEGER ? dropCenter.y : selectedCenterY;
-        const column = targetColumn(graph2, assignment, normalized, renderModel, nodeId, dropCenter.x);
-        const order = insertionOrder(graph2, normalized, renderModel, nodeId, column, dropY);
-        const provisional = (0, placement_1.moveNodeToColumn)(graph2, assignment, normalized, nodeId, column, order, 0);
-        const provisionalNode = (0, layout_1.layoutSchematic)(graph2, provisional, measureText2).nodes.get(nodeId);
-        const yOffset = provisionalNode === void 0 ? 0 : dropY - centerY(provisionalNode.bounds);
-        return (0, placement_1.moveNodeToColumn)(graph2, assignment, provisional, nodeId, column, order, yOffset);
+        const sourceOrder = new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
+        const moved = new Map(resolved.map((drop) => [drop.nodeId, drop]));
+        const byColumn = /* @__PURE__ */ new Map();
+        for (const node of graph2.nodes) {
+          const current = normalized.nodes[node.id];
+          if (!current)
+            continue;
+          const drop = moved.get(node.id);
+          const rendered = renderModel.nodes.get(node.id);
+          const column = drop?.column ?? current.column;
+          const entries = byColumn.get(column) ?? [];
+          entries.push({
+            nodeId: node.id,
+            y: drop?.dropY ?? (rendered ? centerY(rendered.bounds) : current.order),
+            originalOrder: current.order,
+            sourceOrder: sourceOrder.get(node.id) ?? 0
+          });
+          byColumn.set(column, entries);
+        }
+        const finalOrders = /* @__PURE__ */ new Map();
+        for (const entries of byColumn.values()) {
+          entries.sort((left4, right4) => left4.y - right4.y || left4.originalOrder - right4.originalOrder || left4.sourceOrder - right4.sourceOrder || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0));
+          entries.forEach((entry, order) => finalOrders.set(entry.nodeId, order));
+        }
+        const provisionalMoves = resolved.map((drop) => ({
+          nodeId: drop.nodeId,
+          column: drop.column,
+          order: finalOrders.get(drop.nodeId) ?? normalized.nodes[drop.nodeId].order,
+          yOffset: 0
+        }));
+        const provisional = (0, placement_1.moveNodesToColumns)(graph2, assignment, normalized, provisionalMoves);
+        const provisionalRender = (0, layout_1.layoutSchematic)(graph2, provisional, measureText2);
+        return (0, placement_1.moveNodesToColumns)(graph2, assignment, provisional, resolved.map((drop) => {
+          const provisionalNode = provisionalRender.nodes.get(drop.nodeId);
+          return {
+            nodeId: drop.nodeId,
+            column: drop.column,
+            order: finalOrders.get(drop.nodeId) ?? provisional.nodes[drop.nodeId].order,
+            yOffset: provisionalNode === void 0 ? 0 : drop.dropY - centerY(provisionalNode.bounds)
+          };
+        }));
+      }
+      function snapNodeToPlacement(graph2, placement, renderModel, nodeId, dropCenter, measureText2) {
+        return snapNodesToPlacement2(graph2, placement, renderModel, [{ nodeId, dropCenter }], measureText2);
       }
     }
   });
@@ -22665,7 +22759,7 @@
       const nodeTransform = nodeAttrs.transform;
       const transform3 = nodeTransform ? `${nodeTransform}` : null;
       const nodeMatrix = main_exports2.transformStringToMatrix(transform3);
-      const nodePosition = new Point(nodeMatrix.e, nodeMatrix.f);
+      const nodePosition2 = new Point(nodeMatrix.e, nodeMatrix.f);
       if (nodeTransform) {
         delete nodeAttrs.transform;
         nodeMatrix.e = 0;
@@ -22680,7 +22774,7 @@
             const ts = function_exports.call(def.position, this.view, val, getOptions4());
             if (ts != null) {
               positioned = true;
-              nodePosition.translate(Point.create(ts));
+              nodePosition2.translate(Point.create(ts));
             }
           }
         });
@@ -22704,16 +22798,16 @@
               });
               if (ts != null) {
                 offseted = true;
-                nodePosition.translate(Point.create(ts));
+                nodePosition2.translate(Point.create(ts));
               }
             }
           });
         }
       }
       if (nodeTransform != null || positioned || offseted) {
-        nodePosition.round(1);
-        nodeMatrix.e = nodePosition.x;
-        nodeMatrix.f = nodePosition.y;
+        nodePosition2.round(1);
+        nodeMatrix.e = nodePosition2.x;
+        nodeMatrix.f = nodePosition2.y;
         elem.setAttribute("transform", main_exports2.matrixToTransformString(nodeMatrix));
       }
     }
@@ -30800,13 +30894,13 @@
     autoOffsetNode() {
       const node = this.cell;
       const graph2 = this.graph;
-      const nodePosition = Object.assign({ id: node.id }, node.getPosition());
+      const nodePosition2 = Object.assign({ id: node.id }, node.getPosition());
       const allNodes = graph2.getNodes();
       const restNodePositions = allNodes.map((node2) => {
         const pos = node2.getPosition();
         return { id: node2.id, x: pos.x, y: pos.y };
       }).filter((pos) => {
-        return pos.id !== nodePosition.id;
+        return pos.id !== nodePosition2.id;
       });
       const directions = [
         [1, 1],
@@ -30822,13 +30916,13 @@
       const hasSamePosition = (position2) => restNodePositions.some((pos) => {
         return pos.x === position2.x && pos.y === position2.y;
       });
-      while (hasSamePosition(nodePosition)) {
+      while (hasSamePosition(nodePosition2)) {
         let found = false;
         for (let i = 0; i < directions.length; i += 1) {
           const dir = directions[i];
           const position2 = {
-            x: nodePosition.x + dir[0] * step,
-            y: nodePosition.y + dir[1] * step
+            x: nodePosition2.x + dir[0] * step,
+            y: nodePosition2.y + dir[1] * step
           };
           if (!hasSamePosition(position2)) {
             node.translate(dir[0] * step, dir[1] * step);
@@ -43739,7 +43833,7 @@
       const position2 = node.getPosition();
       const cellBBox = new Rectangle(x - this.offset.x, y - this.offset.y, size.width, size.height);
       const angle = node.getAngle();
-      const nodeCenter2 = cellBBox.getCenter();
+      const nodeCenter3 = cellBBox.getCenter();
       const nodeBBoxRotated = cellBBox.bbox(angle);
       const nodeTopLeft = nodeBBoxRotated.getTopLeft();
       const nodeBottomRight = nodeBBoxRotated.getBottomRight();
@@ -43761,7 +43855,7 @@
         const snapTopLeft = snapBBox.getTopLeft();
         const snapBottomRight = snapBBox.getBottomRight();
         if (verticalLeft == null) {
-          if (Math.abs(snapCenter.x - nodeCenter2.x) < distance) {
+          if (Math.abs(snapCenter.x - nodeCenter3.x) < distance) {
             verticalLeft = snapCenter.x;
             verticalFix = 0.5;
           } else if (Math.abs(snapTopLeft.x - nodeTopLeft.x) < distance) {
@@ -43782,7 +43876,7 @@
           }
         }
         if (horizontalTop == null) {
-          if (Math.abs(snapCenter.y - nodeCenter2.y) < distance) {
+          if (Math.abs(snapCenter.y - nodeCenter3.y) < distance) {
             horizontalTop = snapCenter.y;
             horizontalFix = 0.5;
           } else if (Math.abs(snapTopLeft.y - nodeTopLeft.y) < distance) {
@@ -45558,6 +45652,10 @@
   var searchIndex = -1;
   var errors = 0;
   var warnings = 0;
+  var nodeMoveGeneration = 0;
+  var scheduledNodeMoveGeneration;
+  var pendingNodeMoves = /* @__PURE__ */ new Map();
+  var selectionBoxOrigins = /* @__PURE__ */ new Map();
   function post(message) {
     vscode.postMessage(message);
   }
@@ -45747,23 +45845,32 @@
     graph.zoomTo(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, layout.viewport.zoom)));
     graph.translate(layout.viewport.x, layout.viewport.y);
   }
-  function restoreSelection(layout) {
+  function selectedObjectIds(cells) {
+    return [...new Set(cells.flatMap((cell) => {
+      const data2 = cellData(cell);
+      return data2 && !data2.junction ? [data2.objectId] : [];
+    }))];
+  }
+  function restoreSelection(layout, preservedObjectIds) {
     selection.clean();
-    const matchingCells = layout.selectedObjectId ? graph.getCells().filter(
-      (cell) => cellData(cell)?.objectId === layout.selectedObjectId && cellData(cell)?.junction !== true
-    ) : [];
+    const wantedObjectIds = preservedObjectIds === void 0 ? new Set(layout.selectedObjectId ? [layout.selectedObjectId] : []) : new Set(preservedObjectIds);
+    const matchingCells = graph.getCells().filter((cell) => {
+      const data2 = cellData(cell);
+      return data2 !== void 0 && !data2.junction && wantedObjectIds.has(data2.objectId);
+    });
     if (matchingCells.length > 0) selection.select(matchingCells);
     refreshNetworkSelectionStyles(selection.getSelectedCells());
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
-  function renderSchematic(model, layout) {
+  function renderSchematic(model, layout, preservedSelection) {
     const searchQuery = dom.searchInput.value;
+    clearPendingNodeMoves();
     applyingLayout = true;
     currentGraph = model;
     currentLayout = cloneSchematicLayout(layout);
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
-    graph.clearCells();
+    graph.resetCells([]);
     const renderModel = (0, import_schematic_core.layoutSchematic)(model, layout.placement, measureNodeText);
     currentRenderModel = renderModel;
     graph.batchUpdate("render-schematic", () => {
@@ -45774,7 +45881,7 @@
       renderNetworks(model, renderModel);
     });
     applyViewport(layout);
-    restoreSelection(layout);
+    restoreSelection(layout, preservedSelection);
     refreshSearchMatches(searchQuery, true);
     applyingLayout = false;
     setGraphControls(model.nodes.length > 0);
@@ -45783,6 +45890,72 @@
     const graphWarnings = model.diagnostics.filter((item) => item.severity === "warning").length;
     updateDiagnostics(graphErrors, graphWarnings, model.diagnostics);
     updateMinimapAvailability();
+  }
+  function nodePosition(node) {
+    const position2 = node.getPosition();
+    return { x: position2.x, y: position2.y };
+  }
+  function nodeCenter2(node) {
+    const position2 = nodePosition(node);
+    const size = node.getSize();
+    return {
+      x: position2.x + size.width / 2,
+      y: position2.y + size.height / 2
+    };
+  }
+  function clearPendingNodeMoves() {
+    nodeMoveGeneration += 1;
+    scheduledNodeMoveGeneration = void 0;
+    pendingNodeMoves.clear();
+    selectionBoxOrigins.clear();
+  }
+  function queueNodeMove(node) {
+    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
+      return;
+    }
+    const data2 = cellData(node);
+    if (!data2?.node) return;
+    const dropCenter = nodeCenter2(node);
+    const rendered = currentRenderModel.nodes.get(data2.node.id);
+    if (!rendered) return;
+    const renderedCenter = {
+      x: rendered.bounds.x + rendered.bounds.width / 2,
+      y: rendered.bounds.y + rendered.bounds.height / 2
+    };
+    if (dropCenter.x === renderedCenter.x && dropCenter.y === renderedCenter.y) {
+      return;
+    }
+    pendingNodeMoves.set(data2.node.id, dropCenter);
+    const generation = nodeMoveGeneration;
+    if (scheduledNodeMoveGeneration === generation) return;
+    scheduledNodeMoveGeneration = generation;
+    const model = currentGraph;
+    const revision = currentRevision;
+    queueMicrotask(() => flushPendingNodeMoves(generation, model, revision));
+  }
+  function flushPendingNodeMoves(generation, model, revision) {
+    if (scheduledNodeMoveGeneration === generation) {
+      scheduledNodeMoveGeneration = void 0;
+    }
+    if (generation !== nodeMoveGeneration || currentGraph !== model || currentRevision !== revision || applyingLayout || !currentLayout || !currentRenderModel) {
+      return;
+    }
+    const drops = [...pendingNodeMoves].map(([nodeId, dropCenter]) => ({
+      nodeId,
+      dropCenter
+    }));
+    pendingNodeMoves.clear();
+    if (drops.length === 0) return;
+    currentLayout.placement = (0, import_schematic_core.snapNodesToPlacement)(
+      model,
+      currentLayout.placement,
+      currentRenderModel,
+      drops,
+      measureNodeText
+    );
+    const preservedSelection = selectedObjectIds(selection.getSelectedCells());
+    renderSchematic(model, currentLayout, preservedSelection);
+    scheduleLayoutSave();
   }
   function resetSearchStyles() {
     for (const cell of graph.getCells()) {
@@ -45881,9 +46054,10 @@
   function clearSchematicState() {
     layoutSaveScheduler.flush();
     layoutSaveScheduler.dispose();
+    clearPendingNodeMoves();
     applyingLayout = true;
     selection.clean();
-    graph.clearCells();
+    graph.resetCells([]);
     graph.zoomTo(1);
     graph.translate(0, 0);
     applyingLayout = false;
@@ -46053,26 +46227,7 @@
     post(command);
   });
   graph.on("node:moved", ({ node }) => {
-    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
-      return;
-    }
-    const data2 = cellData(node);
-    if (!data2?.node) return;
-    const position2 = node.getPosition();
-    const size = node.getSize();
-    currentLayout.placement = (0, import_schematic_core.snapNodeToPlacement)(
-      currentGraph,
-      currentLayout.placement,
-      currentRenderModel,
-      data2.node.id,
-      {
-        x: position2.x + size.width / 2,
-        y: position2.y + size.height / 2
-      },
-      measureNodeText
-    );
-    renderSchematic(currentGraph, currentLayout);
-    scheduleLayoutSave();
+    queueNodeMove(node);
   });
   graph.on("scale", updateViewportFromGraph);
   graph.on("translate", updateViewportFromGraph);
@@ -46094,6 +46249,22 @@
     }
     refreshNetworkSelectionStyles(expanded);
     updateSelectionStatus(expanded);
+  });
+  selection.on("box:mousedown", ({ nodes }) => {
+    selectionBoxOrigins = applyingLayout ? /* @__PURE__ */ new Map() : new Map(nodes.map((node) => [node.id, nodePosition(node)]));
+  });
+  selection.on("box:mouseup", () => {
+    const origins = selectionBoxOrigins;
+    selectionBoxOrigins = /* @__PURE__ */ new Map();
+    if (applyingLayout) return;
+    for (const [nodeId, origin] of origins) {
+      const cell = graph.getCellById(nodeId);
+      if (!cell?.isNode()) continue;
+      const position2 = nodePosition(cell);
+      if (position2.x !== origin.x || position2.y !== origin.y) {
+        queueNodeMove(cell);
+      }
+    }
   });
   var resizeObserver = new ResizeObserver(() => {
     graph.resize(dom.canvas.clientWidth, dom.canvas.clientHeight);

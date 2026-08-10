@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    assignColumns,
     createPlacement,
     MAX_SCHEMATIC_PLACEMENT_OFFSET,
     mergePlacement,
@@ -10,6 +11,7 @@ import {
     moveNodesToColumns,
     layoutSchematic,
     snapNodeToPlacement,
+    snapNodesToPlacement,
     type ColumnAssignment,
     type SchematicPlacement,
 } from '../src';
@@ -362,6 +364,39 @@ function connectedGraph(nodes: GraphNode[]): SchematicGraph {
 
 const measure = (text: string): number => text.length * 7;
 
+function nodeCenterY(
+    rendered: ReturnType<typeof layoutSchematic>,
+    nodeId: string
+): number {
+    const bounds = rendered.nodes.get(nodeId)!.bounds;
+    return bounds.y + bounds.height / 2;
+}
+
+function placementOrder(
+    model: SchematicGraph,
+    placement: SchematicPlacement,
+    column: number
+): string[] {
+    return model.nodes
+        .filter(candidate => placement.nodes[candidate.id].column === column)
+        .sort((left, right) => placement.nodes[left.id].order
+            - placement.nodes[right.id].order)
+        .map(candidate => candidate.id);
+}
+
+function renderedRowOrder(
+    model: SchematicGraph,
+    placement: SchematicPlacement,
+    column: number
+): string[] {
+    const rendered = layoutSchematic(model, placement, measure);
+    return model.nodes
+        .filter(candidate => rendered.nodes.get(candidate.id)?.column === column)
+        .sort((left, right) => rendered.nodes.get(left.id)!.row
+            - rendered.nodes.get(right.id)!.row)
+        .map(candidate => candidate.id);
+}
+
 test('keeps the current column until a drop crosses an adjacent column midpoint', () => {
     const chain = connectedGraph([
         node('instance:left', 'instance', 'driver'),
@@ -521,4 +556,197 @@ test('keeps input output and inout boundary nodes in their assigned columns', ()
         );
         assert.equal(snapped.nodes[boundary.id].column, current);
     }
+});
+
+test('moves a same-column node downward to its requested final order across refresh', () => {
+    const model = graph([first, second, third]);
+    const columns = assignment([[first.id, second.id, third.id]]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const column = rendered.columns[0];
+    const thirdNode = rendered.nodes.get(third.id)!;
+    const snapped = snapNodeToPlacement(
+        model,
+        placement,
+        rendered,
+        first.id,
+        {
+            x: column.x + column.width / 2,
+            y: thirdNode.bounds.y + thirdNode.bounds.height + 16,
+        },
+        measure
+    );
+
+    assert.deepEqual(placementOrder(model, snapped, 0), [
+        second.id,
+        third.id,
+        first.id,
+    ]);
+    assert.deepEqual(renderedRowOrder(model, snapped, 0), [
+        second.id,
+        third.id,
+        first.id,
+    ]);
+    const refreshed = mergePlacement(model, columns, snapped);
+    assert.deepEqual(placementOrder(model, refreshed, 0), [
+        second.id,
+        third.id,
+        first.id,
+    ]);
+    assert.deepEqual(renderedRowOrder(model, refreshed, 0), [
+        second.id,
+        third.id,
+        first.id,
+    ]);
+});
+
+test('moves the last same-column node to the first final position', () => {
+    const model = graph([first, second, third]);
+    const columns = assignment([[first.id, second.id, third.id]]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const column = rendered.columns[0];
+    const snapped = snapNodeToPlacement(
+        model,
+        placement,
+        rendered,
+        third.id,
+        {
+            x: column.x + column.width / 2,
+            y: rendered.nodes.get(first.id)!.bounds.y - 16,
+        },
+        measure
+    );
+
+    assert.deepEqual(placementOrder(model, snapped, 0), [
+        third.id,
+        first.id,
+        second.id,
+    ]);
+    assert.deepEqual(renderedRowOrder(model, snapped, 0), [
+        third.id,
+        first.id,
+        second.id,
+    ]);
+});
+
+test('inserts a same-column node between two existing rows', () => {
+    const model = graph([first, second, third]);
+    const columns = assignment([[first.id, second.id, third.id]]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const column = rendered.columns[0];
+    const snapped = snapNodeToPlacement(
+        model,
+        placement,
+        rendered,
+        third.id,
+        {
+            x: column.x + column.width / 2,
+            y: (nodeCenterY(rendered, first.id) + nodeCenterY(rendered, second.id)) / 2,
+        },
+        measure
+    );
+
+    assert.deepEqual(placementOrder(model, snapped, 0), [
+        first.id,
+        third.id,
+        second.id,
+    ]);
+});
+
+test('snaps a same-column batch once while preserving moved drop order', () => {
+    const fourth = node('instance:fourth', 'instance');
+    const model = graph([first, second, third, fourth]);
+    const columns = assignment([[first.id, second.id, third.id, fourth.id]]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const column = rendered.columns[0];
+    const x = column.x + column.width / 2;
+    const secondCenter = nodeCenterY(rendered, second.id);
+    const snapped = snapNodesToPlacement(
+        model,
+        placement,
+        rendered,
+        [{
+            nodeId: first.id,
+            dropCenter: { x, y: secondCenter + 12 },
+        }, {
+            nodeId: third.id,
+            dropCenter: { x, y: secondCenter + 24 },
+        }],
+        measure
+    );
+
+    assert.deepEqual(placementOrder(model, snapped, 0), [
+        second.id,
+        first.id,
+        third.id,
+        fourth.id,
+    ]);
+    assert.equal(snapped.nodes[first.id].fixed, true);
+    assert.equal(snapped.nodes[third.id].fixed, true);
+    assert.deepEqual(
+        placementOrder(model, mergePlacement(model, columns, snapped), 0),
+        [second.id, first.id, third.id, fourth.id]
+    );
+});
+
+test('snaps a cross-column batch with stable relative y and deterministic output', () => {
+    const leftA = node('instance:left-a', 'instance');
+    const rightA = node('instance:right-a', 'instance');
+    const leftB = node('instance:left-b', 'instance');
+    const rightB = node('instance:right-b', 'instance');
+    const firstLane = connectedGraph([leftA, rightA]);
+    const secondLane = connectedGraph([leftB, rightB]);
+    const model: SchematicGraph = {
+        ...firstLane,
+        nodes: [...firstLane.nodes, ...secondLane.nodes],
+        networks: [
+            firstLane.networks[0],
+            { ...secondLane.networks[0], id: 'network:second-lane' },
+        ],
+    };
+    const columns = assignColumns(model);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+    const leftColumn = rendered.columns[0];
+    const rightColumn = rendered.columns[1];
+    const drops = [{
+        nodeId: leftA.id,
+        dropCenter: {
+            x: rightColumn.x + rightColumn.width / 2 + 1,
+            y: nodeCenterY(rendered, rightA.id) + 32,
+        },
+    }, {
+        nodeId: rightB.id,
+        dropCenter: {
+            x: leftColumn.x + leftColumn.width / 2 - 1,
+            y: nodeCenterY(rendered, leftB.id) - 32,
+        },
+    }];
+
+    const snapped = snapNodesToPlacement(
+        model,
+        placement,
+        rendered,
+        drops,
+        measure
+    );
+    const repeated = snapNodesToPlacement(
+        model,
+        placement,
+        rendered,
+        drops,
+        measure
+    );
+
+    assert.equal(snapped.nodes[leftA.id].column, 1);
+    assert.equal(snapped.nodes[rightB.id].column, 0);
+    assert.deepEqual(placementOrder(model, snapped, 0), [rightB.id, leftB.id]);
+    assert.deepEqual(placementOrder(model, snapped, 1), [rightA.id, leftA.id]);
+    const refreshed = mergePlacement(model, columns, snapped);
+    assert.deepEqual(placementOrder(model, refreshed, 0), [rightB.id, leftB.id]);
+    assert.deepEqual(placementOrder(model, refreshed, 1), [rightA.id, leftA.id]);
+    assert.deepEqual(repeated, snapped);
 });

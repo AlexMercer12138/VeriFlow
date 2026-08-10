@@ -18,7 +18,7 @@ import {
 
 import {
     layoutSchematic,
-    snapNodeToPlacement,
+    snapNodesToPlacement,
     SCHEMATIC_NETWORK_LABEL_LAYOUT,
     SCHEMATIC_NETWORK_LABEL_STYLE,
     SCHEMATIC_NODE_LAYOUT,
@@ -636,6 +636,10 @@ let searchMatches: SearchMatch[] = [];
 let searchIndex = -1;
 let errors = 0;
 let warnings = 0;
+let nodeMoveGeneration = 0;
+let scheduledNodeMoveGeneration: number | undefined;
+const pendingNodeMoves = new Map<string, { x: number; y: number }>();
+let selectionBoxOrigins = new Map<string, { x: number; y: number }>();
 
 function post(message: WebviewCommand): void {
     vscode.postMessage(message);
@@ -867,27 +871,44 @@ function applyViewport(layout: SchematicLayout): void {
     graph.translate(layout.viewport.x, layout.viewport.y);
 }
 
-function restoreSelection(layout: SchematicLayout): void {
+function selectedObjectIds(cells: readonly Cell[]): string[] {
+    return [...new Set(cells.flatMap(cell => {
+        const data = cellData(cell);
+        return data && !data.junction ? [data.objectId] : [];
+    }))];
+}
+
+function restoreSelection(
+    layout: SchematicLayout,
+    preservedObjectIds?: readonly string[]
+): void {
     selection.clean();
-    const matchingCells = layout.selectedObjectId
-        ? graph.getCells().filter(cell =>
-            cellData(cell)?.objectId === layout.selectedObjectId
-                && cellData(cell)?.junction !== true
-        )
-        : [];
+    const wantedObjectIds = preservedObjectIds === undefined
+        ? new Set(layout.selectedObjectId ? [layout.selectedObjectId] : [])
+        : new Set(preservedObjectIds);
+    const matchingCells = graph.getCells().filter(cell => {
+        const data = cellData(cell);
+        return data !== undefined && !data.junction
+            && wantedObjectIds.has(data.objectId);
+    });
     if (matchingCells.length > 0) selection.select(matchingCells);
     refreshNetworkSelectionStyles(selection.getSelectedCells());
     updateSelectionStatus(selection.getSelectedCells(), false);
 }
 
-function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
+function renderSchematic(
+    model: SchematicGraph,
+    layout: SchematicLayout,
+    preservedSelection?: readonly string[]
+): void {
     const searchQuery = dom.searchInput.value;
+    clearPendingNodeMoves();
     applyingLayout = true;
     currentGraph = model;
     currentLayout = cloneSchematicLayout(layout);
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
-    graph.clearCells();
+    graph.resetCells([]);
     const renderModel = layoutSchematic(model, layout.placement, measureNodeText);
     currentRenderModel = renderModel;
     graph.batchUpdate('render-schematic', () => {
@@ -898,7 +919,7 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
         renderNetworks(model, renderModel);
     });
     applyViewport(layout);
-    restoreSelection(layout);
+    restoreSelection(layout, preservedSelection);
     refreshSearchMatches(searchQuery, true);
     applyingLayout = false;
 
@@ -908,6 +929,85 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     const graphWarnings = model.diagnostics.filter(item => item.severity === 'warning').length;
     updateDiagnostics(graphErrors, graphWarnings, model.diagnostics);
     updateMinimapAvailability();
+}
+
+function nodePosition(node: Node): { x: number; y: number } {
+    const position = node.getPosition();
+    return { x: position.x, y: position.y };
+}
+
+function nodeCenter(node: Node): { x: number; y: number } {
+    const position = nodePosition(node);
+    const size = node.getSize();
+    return {
+        x: position.x + size.width / 2,
+        y: position.y + size.height / 2,
+    };
+}
+
+function clearPendingNodeMoves(): void {
+    nodeMoveGeneration += 1;
+    scheduledNodeMoveGeneration = undefined;
+    pendingNodeMoves.clear();
+    selectionBoxOrigins.clear();
+}
+
+function queueNodeMove(node: Node): void {
+    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
+        return;
+    }
+    const data = cellData(node);
+    if (!data?.node) return;
+    const dropCenter = nodeCenter(node);
+    const rendered = currentRenderModel.nodes.get(data.node.id);
+    if (!rendered) return;
+    const renderedCenter = {
+        x: rendered.bounds.x + rendered.bounds.width / 2,
+        y: rendered.bounds.y + rendered.bounds.height / 2,
+    };
+    if (dropCenter.x === renderedCenter.x && dropCenter.y === renderedCenter.y) {
+        return;
+    }
+    pendingNodeMoves.set(data.node.id, dropCenter);
+
+    const generation = nodeMoveGeneration;
+    if (scheduledNodeMoveGeneration === generation) return;
+    scheduledNodeMoveGeneration = generation;
+    const model = currentGraph;
+    const revision = currentRevision;
+    queueMicrotask(() => flushPendingNodeMoves(generation, model, revision));
+}
+
+function flushPendingNodeMoves(
+    generation: number,
+    model: SchematicGraph,
+    revision: string
+): void {
+    if (scheduledNodeMoveGeneration === generation) {
+        scheduledNodeMoveGeneration = undefined;
+    }
+    if (generation !== nodeMoveGeneration || currentGraph !== model
+        || currentRevision !== revision || applyingLayout
+        || !currentLayout || !currentRenderModel) {
+        return;
+    }
+    const drops = [...pendingNodeMoves].map(([nodeId, dropCenter]) => ({
+        nodeId,
+        dropCenter,
+    }));
+    pendingNodeMoves.clear();
+    if (drops.length === 0) return;
+
+    currentLayout.placement = snapNodesToPlacement(
+        model,
+        currentLayout.placement,
+        currentRenderModel,
+        drops,
+        measureNodeText
+    );
+    const preservedSelection = selectedObjectIds(selection.getSelectedCells());
+    renderSchematic(model, currentLayout, preservedSelection);
+    scheduleLayoutSave();
 }
 
 function resetSearchStyles(): void {
@@ -1024,9 +1124,10 @@ function runSearch(query: string, notifyHost: boolean): void {
 function clearSchematicState(): void {
     layoutSaveScheduler.flush();
     layoutSaveScheduler.dispose();
+    clearPendingNodeMoves();
     applyingLayout = true;
     selection.clean();
-    graph.clearCells();
+    graph.resetCells([]);
     graph.zoomTo(1);
     graph.translate(0, 0);
     applyingLayout = false;
@@ -1212,26 +1313,7 @@ dom.canvas.addEventListener('keydown', event => {
 });
 
 graph.on('node:moved', ({ node }) => {
-    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
-        return;
-    }
-    const data = cellData(node);
-    if (!data?.node) return;
-    const position = node.getPosition();
-    const size = node.getSize();
-    currentLayout.placement = snapNodeToPlacement(
-        currentGraph,
-        currentLayout.placement,
-        currentRenderModel,
-        data.node.id,
-        {
-            x: position.x + size.width / 2,
-            y: position.y + size.height / 2,
-        },
-        measureNodeText
-    );
-    renderSchematic(currentGraph, currentLayout);
-    scheduleLayoutSave();
+    queueNodeMove(node);
 });
 
 graph.on('scale', updateViewportFromGraph);
@@ -1257,6 +1339,26 @@ selection.on('selection:changed', ({ selected }) => {
     }
     refreshNetworkSelectionStyles(expanded);
     updateSelectionStatus(expanded);
+});
+
+selection.on('box:mousedown', ({ nodes }) => {
+    selectionBoxOrigins = applyingLayout
+        ? new Map()
+        : new Map(nodes.map(node => [node.id, nodePosition(node)]));
+});
+
+selection.on('box:mouseup', () => {
+    const origins = selectionBoxOrigins;
+    selectionBoxOrigins = new Map();
+    if (applyingLayout) return;
+    for (const [nodeId, origin] of origins) {
+        const cell = graph.getCellById(nodeId);
+        if (!cell?.isNode()) continue;
+        const position = nodePosition(cell);
+        if (position.x !== origin.x || position.y !== origin.y) {
+            queueNodeMove(cell);
+        }
+    }
 });
 
 const resizeObserver = new ResizeObserver(() => {
