@@ -195,6 +195,8 @@ function assertNetworkSelectionContracts(source: string): void {
         'network selection styling'
     );
     assert.match(styling, /const selectedIds = selectedNetworkIds\(cells\);/);
+    assert.match(styling, /const selected = selectedIds\.has\(data\.objectId\);/);
+    assert.match(styling, /const stroke = selected\s*\?/);
     assert.match(styling, /if \(data\.junction\) \{[^]*body\/fill[^]*body\/stroke/);
 
     const status = sourceSection(
