@@ -152,6 +152,82 @@ test('normalizes duplicate orders independently within each column', () => {
     });
 });
 
+test('keeps adjacent fixed order groups source-stable', () => {
+    const model = graph([first, second, third]);
+    const columns = assignment([[first.id, second.id, third.id]]);
+    const persisted: SchematicPlacement = {
+        nodes: {
+            [first.id]: { column: 0, order: 0, yOffset: 1, fixed: true },
+            [second.id]: { column: 0, order: 0, yOffset: 2, fixed: true },
+            [third.id]: { column: 0, order: 1, yOffset: 3, fixed: true },
+        },
+    };
+
+    assert.deepEqual(
+        placementOrder(model, mergePlacement(model, columns, persisted), 0),
+        [first.id, second.id, third.id]
+    );
+});
+
+test('keeps adjacent fixed groups stable around automatic nodes', () => {
+    const fourth = node('instance:fourth', 'instance');
+    const model = graph([first, second, third, fourth]);
+    const columns = assignment([[first.id, second.id, third.id, fourth.id]]);
+    const persisted: SchematicPlacement = {
+        nodes: {
+            [first.id]: { column: 0, order: 0, yOffset: 1, fixed: true },
+            [second.id]: { column: 0, order: 0, yOffset: 2, fixed: true },
+            [third.id]: { column: 0, order: 1, yOffset: 3, fixed: true },
+        },
+    };
+
+    assert.deepEqual(
+        placementOrder(model, mergePlacement(model, columns, persisted), 0),
+        [first.id, second.id, third.id, fourth.id]
+    );
+});
+
+test('keeps normalized duplicate placement idempotent across refreshes', () => {
+    const fourth = node('instance:fourth', 'instance');
+    const model = graph([first, second, third, fourth]);
+    const columns = assignment([[first.id, second.id, third.id, fourth.id]]);
+    const persisted: SchematicPlacement = {
+        nodes: {
+            [first.id]: { column: 0, order: 0, yOffset: 1, fixed: true },
+            [second.id]: { column: 0, order: 0, yOffset: 2, fixed: true },
+            [third.id]: { column: 0, order: 1, yOffset: 3, fixed: true },
+        },
+    };
+
+    const once = mergePlacement(model, columns, persisted);
+    const twice = mergePlacement(model, columns, once);
+
+    assert.deepEqual(twice, once);
+    assert.deepEqual(placementOrder(model, twice, 0), [
+        first.id,
+        second.id,
+        third.id,
+        fourth.id,
+    ]);
+});
+
+test('keeps equal legacy y positions source-stable after semantic refresh', () => {
+    const model = graph([first, second, third]);
+    const columns = assignment([[first.id, second.id, third.id]]);
+    const migrated = migrateLegacyPlacement(model, columns, {
+        [first.id]: { y: 12, fixed: true },
+        [second.id]: { y: 12, fixed: true },
+        [third.id]: { y: 24, fixed: true },
+    });
+
+    assert.deepEqual(placementOrder(model, migrated, 0), [
+        first.id,
+        second.id,
+        third.id,
+    ]);
+    assert.deepEqual(mergePlacement(model, columns, migrated), migrated);
+});
+
 test('clamps internal columns and keeps boundary ports on their assigned side', () => {
     const model = graph([input, first, second, output, inout]);
     const columns = assignment([

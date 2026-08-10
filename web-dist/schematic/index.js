@@ -1079,10 +1079,14 @@
           group.push(entry);
           groups.set(order, group);
         }
+        let cursor = 0;
         for (const order of [...groups.keys()].sort((left4, right4) => left4 - right4)) {
           const group = groups.get(order);
           group.sort(stableOrder);
-          arranged.splice(Math.max(0, Math.min(arranged.length, order)), 0, ...group);
+          const requestedIndex = Math.max(0, Math.min(arranged.length, order));
+          const insertionIndex = Math.max(cursor, requestedIndex);
+          arranged.splice(insertionIndex, 0, ...group);
+          cursor = insertionIndex + group.length;
         }
         return arranged;
       }
