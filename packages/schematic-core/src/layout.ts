@@ -16,7 +16,7 @@ import {
     type TextMeasurer,
 } from './nodeGeometry';
 import { mergePlacement, type SchematicPlacement } from './placement';
-import { resolvePinSides } from './pins';
+import { pinKey, resolvePinSides, type PinKey } from './pins';
 import {
     readonlyMap,
     readonlySet,
@@ -215,7 +215,7 @@ function snapshotNetwork(
     nodesById: ReadonlyMap<string, GraphNode>,
     pinsByNode: ReadonlyMap<string, ReadonlyMap<string, GraphPin>>,
     seenNetworkIds: Set<string>,
-    networkByPin: Map<string, string>
+    networkByPin: Map<PinKey, string>
 ): SchematicNetwork {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         throw new RangeError(`graph network ${networkIndex} must be an object`);
@@ -235,7 +235,7 @@ function snapshotNetwork(
         || (adapterLabel !== undefined && typeof adapterLabel !== 'string')) {
         throw new RangeError(`graph network ${id} is invalid`);
     }
-    const seenTerminals = new Set<string>();
+    const seenTerminals = new Set<PinKey>();
     const endpoints = snapshotArray(endpointsValue, `network ${id} endpoints`).map(
         (endpointValue, endpointIndex) => {
             if (typeof endpointValue !== 'object' || endpointValue === null
@@ -265,7 +265,7 @@ function snapshotNetwork(
                     `endpoint role does not match pin direction in network ${id}`
                 );
             }
-            const terminalKey = `${nodeId.length}:${nodeId}${pinId}`;
+            const terminalKey = pinKey(nodeId, pinId);
             if (seenTerminals.has(terminalKey)) {
                 throw new RangeError(`duplicate terminal in network ${id}`);
             }
@@ -315,7 +315,7 @@ function snapshotGraph(value: SchematicGraph): SchematicGraph {
         new Map(node.pins.map(pin => [pin.id, pin])),
     ]));
     const seenNetworkIds = new Set<string>();
-    const networkByPin = new Map<string, string>();
+    const networkByPin = new Map<PinKey, string>();
     const networks = snapshotArray(networksValue, 'graph networks').map(
         (networkValue, networkIndex) => snapshotNetwork(
             networkValue,
@@ -540,6 +540,7 @@ function labelForNetwork(
 
 function calculateBounds(
     gridBounds: Readonly<Rectangle>,
+    segments: readonly Readonly<RouteSegment>[],
     labels: readonly NetworkRouteLabel[],
     junctions: readonly RenderedJunction[],
     empty: boolean
@@ -551,6 +552,19 @@ function calculateBounds(
     let minimumY = gridBounds.y;
     let maximumX = gridBounds.x + gridBounds.width;
     let maximumY = gridBounds.y + gridBounds.height;
+    for (const segment of segments) {
+        if (segment.orientation === 'horizontal') {
+            minimumX = Math.min(minimumX, segment.x1);
+            minimumY = Math.min(minimumY, segment.y);
+            maximumX = Math.max(maximumX, segment.x2);
+            maximumY = Math.max(maximumY, segment.y);
+        } else {
+            minimumX = Math.min(minimumX, segment.x);
+            minimumY = Math.min(minimumY, segment.y1);
+            maximumX = Math.max(maximumX, segment.x);
+            maximumY = Math.max(maximumY, segment.y2);
+        }
+    }
     for (const label of labels) {
         minimumX = Math.min(minimumX, label.bounds.x);
         minimumY = Math.min(minimumY, label.bounds.y);
@@ -735,6 +749,7 @@ export function layoutSchematic(
     };
     const bounds = calculateBounds(
         gridBounds,
+        allSegments,
         networks.flatMap(network => network.label ? [network.label] : []),
         junctions,
         graph.nodes.length === 0 && allSegments.length === 0

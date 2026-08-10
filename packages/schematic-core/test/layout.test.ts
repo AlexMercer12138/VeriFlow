@@ -363,6 +363,63 @@ test('includes nodes wires labels and junction dots in the public bounds', () =>
     })));
 });
 
+test('includes single-column feedback escape segments in public bounds', () => {
+    const first = node('instance:first-scc', 'instance', 'first_scc', [
+        ['from_second', 'load'],
+        ['to_second', 'driver'],
+    ]);
+    const second = node('instance:second-scc', 'instance', 'second_scc', [
+        ['from_first', 'load'],
+        ['to_first', 'driver'],
+    ]);
+    const graph: SchematicGraph = {
+        fileUri: 'file:///single-column-feedback.sv',
+        moduleKey: 'module:single-column-feedback:0',
+        moduleName: 'single_column_feedback',
+        nodes: [first, second],
+        networks: [
+            network('network:first-second', 'first_to_second', [
+                endpoint(first, 1),
+                endpoint(second, 0),
+            ]),
+            network('network:second-first', 'second_to_first', [
+                endpoint(second, 1),
+                endpoint(first, 0),
+            ]),
+        ],
+        diagnostics: [],
+    };
+
+    const result = layoutSchematic(graph, undefined, () => 10_000);
+    const containsPoint = (x: number, y: number): boolean =>
+        x >= result.bounds.x
+        && y >= result.bounds.y
+        && x <= result.bounds.x + result.bounds.width
+        && y <= result.bounds.y + result.bounds.height;
+
+    assert.equal(result.columns.length, 1);
+    assert.ok(result.networks.every(route => route.feedback));
+    for (const route of result.networks) {
+        for (const segment of route.segments) {
+            if (segment.orientation === 'horizontal') {
+                assert.equal(
+                    containsPoint(segment.x1, segment.y)
+                        && containsPoint(segment.x2, segment.y),
+                    true,
+                    `${route.id} horizontal escape is outside public bounds`
+                );
+            } else {
+                assert.equal(
+                    containsPoint(segment.x, segment.y1)
+                        && containsPoint(segment.x, segment.y2),
+                    true,
+                    `${route.id} vertical escape is outside public bounds`
+                );
+            }
+        }
+    }
+});
+
 test('returns compact serializable output for empty and terminal-only networks', () => {
     const empty: SchematicGraph = {
         fileUri: 'file:///empty.sv',

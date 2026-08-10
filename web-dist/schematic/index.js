@@ -4904,7 +4904,7 @@
           if (pin2.direction !== "bidirectional" && pin2.direction !== role) {
             throw new RangeError(`endpoint role does not match pin direction in network ${id}`);
           }
-          const terminalKey = `${nodeId.length}:${nodeId}${pinId}`;
+          const terminalKey = (0, pins_1.pinKey)(nodeId, pinId);
           if (seenTerminals.has(terminalKey)) {
             throw new RangeError(`duplicate terminal in network ${id}`);
           }
@@ -5112,7 +5112,7 @@
         }
         return void 0;
       }
-      function calculateBounds(gridBounds, labels, junctions, empty2) {
+      function calculateBounds(gridBounds, segments, labels, junctions, empty2) {
         if (empty2 && labels.length === 0 && junctions.length === 0) {
           return freezeRectangle({ x: 0, y: 0, width: 0, height: 0 });
         }
@@ -5120,6 +5120,19 @@
         let minimumY = gridBounds.y;
         let maximumX = gridBounds.x + gridBounds.width;
         let maximumY = gridBounds.y + gridBounds.height;
+        for (const segment of segments) {
+          if (segment.orientation === "horizontal") {
+            minimumX = Math.min(minimumX, segment.x1);
+            minimumY = Math.min(minimumY, segment.y);
+            maximumX = Math.max(maximumX, segment.x2);
+            maximumY = Math.max(maximumY, segment.y);
+          } else {
+            minimumX = Math.min(minimumX, segment.x);
+            minimumY = Math.min(minimumY, segment.y1);
+            maximumX = Math.max(maximumX, segment.x);
+            maximumY = Math.max(maximumY, segment.y2);
+          }
+        }
         for (const label of labels) {
           minimumX = Math.min(minimumX, label.bounds.x);
           minimumY = Math.min(minimumY, label.bounds.y);
@@ -5250,7 +5263,7 @@
           width: routed.grid.width,
           height: routed.grid.height
         };
-        const bounds = calculateBounds(gridBounds, networks.flatMap((network) => network.label ? [network.label] : []), junctions, graph2.nodes.length === 0 && allSegments.length === 0);
+        const bounds = calculateBounds(gridBounds, allSegments, networks.flatMap((network) => network.label ? [network.label] : []), junctions, graph2.nodes.length === 0 && allSegments.length === 0);
         return Object.freeze({
           columns: Object.freeze(columns),
           nodes,
