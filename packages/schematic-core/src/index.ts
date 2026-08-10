@@ -24,3 +24,9 @@ export type {
     HorizontalReservation,
     VerticalReservation,
 } from './routing/occupancy';
+export * from './routing/grid';
+export type {
+    RoutingTrackOrientation,
+    RoutingTrackPool,
+} from './routing/tracks';
+export { MAX_ROUTING_TRACKS } from './routing/tracks';
