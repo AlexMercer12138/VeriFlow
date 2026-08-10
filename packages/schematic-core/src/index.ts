@@ -16,6 +16,7 @@ export type {
     VerticalSegment,
 } from './routing/geometry';
 export * from './routing/junctions';
+export * from './routing/router';
 export {
     HorizontalReservationIndex,
     VerticalReservationIndex,
