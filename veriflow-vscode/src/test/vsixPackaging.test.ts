@@ -9,6 +9,11 @@ const repositoryRoot = path.resolve(extensionRoot, '..');
 const mediaRoot = path.resolve(extensionRoot, 'media');
 
 const expectedRuntimeEntries = [
+    'extension/dist/extension.js',
+    'extension/dist/workers/hdlParserWorker.js',
+    'extension/dist/workers/waveformWorker.js',
+    'extension/media/parsers/tree-sitter-systemverilog.wasm',
+    'extension/media/parsers/web-tree-sitter.wasm',
     'extension/media/schematic/index.css',
     'extension/media/schematic/index.html',
     'extension/media/schematic/index.js',
@@ -31,6 +36,7 @@ function exactBuildPath(parent: string, name: string): string {
 }
 
 const buildTargets = [
+    exactBuildPath(path.join(repositoryRoot, 'packages', 'schematic-core'), 'dist'),
     exactBuildPath(extensionRoot, 'dist'),
     exactBuildPath(repositoryRoot, 'web-dist'),
     exactBuildPath(mediaRoot, 'waveform'),
@@ -167,14 +173,16 @@ function run(): void {
             'VSIX is missing the extension/dist/extension.js main bundle'
         );
         const runtimeEntries = entries.filter(entry => (
-            entry.startsWith('extension/media/waveform/')
+            entry.startsWith('extension/dist/')
+            || entry.startsWith('extension/media/parsers/')
+            || entry.startsWith('extension/media/waveform/')
             || entry.startsWith('extension/media/schematic/')
         )).sort();
         assert.deepStrictEqual(
             runtimeEntries,
             expectedRuntimeEntries,
             [
-                'VSIX must contain exactly the eight generated web runtime files.',
+                'VSIX must contain exactly the required compiled and generated runtime files.',
                 `Actual runtime entries: ${JSON.stringify(runtimeEntries)}`,
                 `Packaging stdout:\n${String(result.stdout ?? '')}`,
                 `Packaging stderr:\n${String(result.stderr ?? '')}`,
@@ -187,6 +195,8 @@ function run(): void {
             'extension/web-dist/',
             'extension/packages/waveform-webview/',
             'extension/packages/schematic-webview/',
+            'extension/packages/schematic-core/',
+            'extension/node_modules/@veriflow/schematic-core/',
         ]) {
             assert.deepStrictEqual(
                 entries.filter(entry => entry.startsWith(forbiddenPrefix)),
@@ -194,6 +204,15 @@ function run(): void {
                 `VSIX contains forbidden web source entries under ${forbiddenPrefix}`
             );
         }
+        assert.deepStrictEqual(
+            entries.filter(entry => (
+                entry.includes('/schematic-core/src/')
+                || entry.includes('/schematic-core/dist-test/')
+                || entry.includes('/schematic-core/test/')
+            )),
+            [],
+            'VSIX must not contain schematic-core source or test build output'
+        );
     } finally {
         if (savedTargets) restoreBuildTargets(savedTargets);
         fs.rmSync(temporaryRoot, { recursive: true, force: true });

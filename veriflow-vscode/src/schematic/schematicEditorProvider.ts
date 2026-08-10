@@ -2,12 +2,13 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 
+import type { SchematicGraph } from '@veriflow/schematic-core';
+
 import type { HdlDocument, ModuleModel } from '../core/hdl/model';
 import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { buildSchematicGraph, type InstanceDefinitionBinding } from './graphBuilder';
-import type { SchematicGraph } from './graphModel';
 import {
     mergeLayout,
     relayoutAll,

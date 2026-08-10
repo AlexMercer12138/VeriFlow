@@ -272,7 +272,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile:ts && node ../scripts/build-vscode.mjs",
+    "vscode:prepublish": "node ../scripts/build-vscode.mjs",
     "compile:ts": "tsc -p ./",
     "bundle": "node ./scripts/build.mjs",
     "compile": "npm run compile:ts && npm run bundle",

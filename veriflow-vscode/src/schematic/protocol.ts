@@ -1,5 +1,6 @@
+import type { SchematicGraph } from '@veriflow/schematic-core';
+
 import type { SourceSpan } from '../core/hdl/model';
-import type { SchematicGraph } from './graphModel';
 import {
     normalizeSchematicLayout,
     type SchematicLayout,

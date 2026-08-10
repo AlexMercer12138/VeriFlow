@@ -1,6 +1,7 @@
+import type { GraphNode, SchematicGraph } from '@veriflow/schematic-core';
+
 import type { HdlDefinitionSummary } from '../../core/hdl/workspaceIndexTypes';
 import type { HdlDiagnostic } from '../../core/hdl/model';
-import type { GraphNode, SchematicGraph } from '../../schematic/graphModel';
 import {
     mergeLayout,
     SchematicLayoutStore,

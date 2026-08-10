@@ -412,3 +412,32 @@ desktop and constrained viewports.
 
 Each stage is independently testable and must leave existing HDL inspection,
 Node CLI behavior, and VS Code packaging operational.
+
+## Verified Phase-One Implementation Notes (2026-08-10)
+
+The existing `.v`/`.sv` inspection path now consumes the host-neutral
+`@veriflow/schematic-core` package. The package owns graph types, side-only pin
+resolution, deterministic directed columns, semantic schema-v2 placement,
+measured node geometry, orthogonal network-tree routing, feedback outer lanes,
+junction derivation, labels, bounds, and stable serialization. Its source has a
+test-enforced boundary against VS Code, Electron, X6, and the webview package.
+
+The X6 webview is a renderer and interaction host for the shared render model;
+it no longer computes midpoint routes or bottom pin groups. Drag completion is
+stored as semantic column/order/offset placement and reruns the shared layout.
+The original extension graph-model re-export shim was removed after every
+consumer moved to the package public API. Dagre is not part of this schematic
+path.
+
+Adversarial core fixtures now cover long labels and many pins, unequal adjacent
+column widths, three networks competing for a channel, fanout junctions,
+perpendicular different-network crossings, top and bottom feedback lanes,
+disconnected islands, and pinless modules. The fixtures verify public bounds,
+orthogonality, module avoidance, no different-network collinear overlap, and
+deterministic serialization without a monolithic snapshot.
+
+Standalone web builds now build the shared schematic package before esbuild
+resolves its public exports. Canonical `web-dist` assets remain tracked and are
+validated by the existing generated-asset check; package-local `dist`,
+`dist-test`, and extension `media/schematic` output remain generated artifacts.
+This phase does not implement `.ad`, interface recognition, or RTL export.

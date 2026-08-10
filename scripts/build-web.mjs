@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { browserBuildOptions } from './lib/build-config.mjs';
@@ -35,13 +36,33 @@ async function buildApplication(application) {
     if (application.entryPoint) {
         await build({
             ...browserBuildOptions(),
+            absWorkingDir: root,
             entryPoints: [path.join(sourceRoot, application.entryPoint)],
             outfile: path.join(destinationRoot, 'index.js'),
         });
     }
 }
 
-export async function buildWeb() {
+function buildSchematicCore() {
+    const npmExecPath = process.env.npm_execpath;
+    const command = npmExecPath
+        ? process.execPath
+        : process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const prefix = npmExecPath ? [npmExecPath] : [];
+    execFileSync(command, [
+        ...prefix,
+        'run',
+        'build',
+        '--workspace',
+        '@veriflow/schematic-core',
+    ], {
+        cwd: root,
+        stdio: 'inherit',
+    });
+}
+
+export async function buildWeb(options = {}) {
+    if (options.buildSchematicCore !== false) buildSchematicCore();
     await recreate(webDistRoot);
     for (const application of webApplications) {
         await buildApplication(application);

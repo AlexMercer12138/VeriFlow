@@ -5,10 +5,9 @@ import {
     mergePlacement,
     migrateLegacyPlacement,
     type LegacyNodePlacement,
+    type SchematicGraph,
     type SchematicPlacement,
 } from '@veriflow/schematic-core';
-
-import type { SchematicGraph } from './graphModel';
 
 export type SchematicLayout = {
     placement: SchematicPlacement;

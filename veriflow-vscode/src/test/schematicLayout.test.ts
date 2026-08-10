@@ -3,14 +3,11 @@ import * as assert from 'assert';
 import {
     assignColumns,
     MAX_SCHEMATIC_PLACEMENT_OFFSET,
+    type GraphNode,
+    type GraphPin,
+    type PinDirection,
+    type SchematicGraph,
 } from '@veriflow/schematic-core';
-
-import type {
-    GraphNode,
-    GraphPin,
-    PinDirection,
-    SchematicGraph,
-} from '../schematic/graphModel';
 import {
     autoLayout,
     MAX_SCHEMATIC_LAYOUT_COLUMN,

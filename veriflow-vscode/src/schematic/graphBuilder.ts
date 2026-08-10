@@ -1,4 +1,12 @@
-import { pinKey } from '@veriflow/schematic-core';
+import {
+    pinKey,
+    type GraphNode,
+    type GraphPin,
+    type NetworkEndpoint,
+    type PinDirection,
+    type SchematicGraph,
+    type SchematicNetwork,
+} from '@veriflow/schematic-core';
 
 import type {
     ExpressionModel,
@@ -15,15 +23,6 @@ import type {
     HdlDefinitionSummary,
     IndexedPortSummary,
 } from '../core/hdl/workspaceIndexTypes';
-import type {
-    GraphNode,
-    GraphPin,
-    NetworkEndpoint,
-    PinDirection,
-    SchematicGraph,
-    SchematicNetwork,
-} from './graphModel';
-
 type DefinitionBinding = {
     key: string;
     ports: readonly IndexedPortSummary[];
