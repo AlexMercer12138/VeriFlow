@@ -278,7 +278,9 @@ async function renderedGeometry(page: Page): Promise<{
     pinOverflow: string[];
     segmentNodeIntersections: string[];
     differentNetworkOverlaps: string[];
-    invalidJunctions: string[];
+    junctionCount: number;
+    fanoutJunctionIds: string[];
+    junctionDirectionFailures: string[];
     documentOverflow: boolean;
     toolbarOverlaps: string[];
 }> {
@@ -436,9 +438,13 @@ async function renderedGeometry(page: Page): Promise<{
                     : [`${cell.dataset.cellId}:${port.getAttribute('port') ?? 'pin'}`];
             });
         });
-        const invalidJunctions = [...document.querySelectorAll<SVGGElement>(
+        const junctionCells = [...document.querySelectorAll<SVGGElement>(
             '#canvas .x6-node[data-cell-id*=":junction:"]'
-        )].flatMap(junction => {
+        )];
+        const fanoutJunctionIds = junctionCells
+            .map(junction => junction.dataset.cellId ?? '')
+            .filter(id => id.startsWith('network:visual-fanout:junction:'));
+        const junctionDirectionFailures = junctionCells.flatMap(junction => {
             const id = junction.dataset.cellId ?? '';
             const networkId = id.replace(/:junction:\d+$/, '');
             const bounds = junction.getBoundingClientRect();
@@ -491,7 +497,9 @@ async function renderedGeometry(page: Page): Promise<{
             pinOverflow,
             segmentNodeIntersections,
             differentNetworkOverlaps,
-            invalidJunctions,
+            junctionCount: junctionCells.length,
+            fanoutJunctionIds,
+            junctionDirectionFailures,
             documentOverflow: document.documentElement.scrollWidth
                 > document.documentElement.clientWidth,
             toolbarOverlaps,
@@ -1197,7 +1205,12 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             assert.deepEqual(geometry.pinOverflow, []);
             assert.deepEqual(geometry.segmentNodeIntersections, []);
             assert.deepEqual(geometry.differentNetworkOverlaps, []);
-            assert.deepEqual(geometry.invalidJunctions, []);
+            assert.ok(geometry.junctionCount > 0, `${name} rendered no junctions`);
+            assert.ok(
+                geometry.fanoutJunctionIds.length > 0,
+                `${name} rendered no fanout junction`
+            );
+            assert.deepEqual(geometry.junctionDirectionFailures, []);
             assert.equal(geometry.documentOverflow, false);
             assert.deepEqual(geometry.toolbarOverlaps, []);
 
