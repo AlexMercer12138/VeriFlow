@@ -138,10 +138,13 @@ test('reuses one adjacent channel trunk for same-network fan-out', () => {
 
     assert.equal(route.networks[0].paths.length, 2);
     assert.equal(route.grid.channels[0].trackX.length, 1);
-    assert.equal(route.networks[0].paths.every(path =>
-        path.segments.map(segment => segment.orientation).join('-')
-            === 'horizontal-vertical-horizontal'
-    ), true);
+    assert.deepEqual(route.networks[0].paths.map(path =>
+        path.segments.map(segment => segment.orientation)
+    ), [
+        ['horizontal', 'vertical', 'horizontal'],
+        ['vertical', 'horizontal'],
+    ]);
+    assert.equal(route.networks[0].paths[1].from.kind, 'tree');
 });
 
 test('connects multi-driver networks without driver-load Cartesian expansion', () => {
@@ -166,10 +169,13 @@ test('connects multi-driver networks without driver-load Cartesian expansion', (
     });
 
     assert.equal(route.networks[0].paths.length, 3);
-    assert.deepEqual(new Set(route.networks[0].paths.flatMap(path => [
-        `${path.from.nodeId}\0${path.from.pinId}`,
-        `${path.to.nodeId}\0${path.to.pinId}`,
-    ])), new Set([
+    const connectedTerminals = route.networks[0].paths.flatMap(path => [
+        ...(path.from.kind === 'terminal' ? [path.from.terminal] : []),
+        path.to,
+    ]);
+    assert.deepEqual(new Set(connectedTerminals.map(terminal =>
+        `${terminal.nodeId}\0${terminal.pinId}`
+    )), new Set([
         'driver-a\0right',
         'driver-b\0right',
         'load-a\0left',
@@ -481,9 +487,10 @@ test('uses a stable tree root for a driverless bidirectional network', () => {
 
     assert.equal(route.networks[0].feedback, false);
     assert.equal(route.networks[0].paths.length, 2);
-    assert.equal(route.networks[0].paths.every(path =>
-        path.from.nodeId === 'a' && path.from.pinId === 'right'
-    ), true);
+    assert.equal(route.networks[0].paths[0].from.kind, 'terminal');
+    assert.equal(route.networks[0].paths[0].from.nodeId, 'a');
+    assert.equal(route.networks[0].paths[0].from.pinId, 'right');
+    assert.equal(route.networks[0].paths[1].from.kind, 'tree');
 });
 
 test('routes a one-column driverless network through an outer lane', () => {
@@ -752,11 +759,31 @@ test('keeps large fan-out tree output and abstract demand linear', () => {
     }]);
 
     assert.equal(route.networks[0].paths.length, sinkCount);
+    assert.equal(route.networks[0].paths[0].from.kind, 'terminal');
+    assert.equal(route.networks[0].paths.slice(1).every(path =>
+        path.from.kind === 'tree'
+    ), true);
+    assert.ok(route.networks[0].paths.reduce(
+        (sum, path) => sum + path.segments.length,
+        0
+    ) <= sinkCount * 5);
     assert.equal(route.grid.outer.top.trackY.length, 1);
     assert.ok(route.grid.channels.reduce(
         (sum, channel) => sum + channel.trackX.length,
         0
     ) <= sinkCount + 1);
+    const diagnostics = (
+        routeNetworks as unknown as Record<symbol, Readonly<{
+            realizedDemandSignatures: number;
+            committedRouteMaterializations: number;
+            incrementalCandidateMaterializations: number;
+        }>>
+    )[Symbol.for('@veriflow/schematic-core/routing-diagnostics')];
+    assert.ok(diagnostics.realizedDemandSignatures <= 8);
+    assert.ok(diagnostics.committedRouteMaterializations <= 8);
+    assert.ok(
+        diagnostics.incrementalCandidateMaterializations <= sinkCount * 3
+    );
 });
 
 test('routes a clear aligned adjacent connection directly', () => {
@@ -803,4 +830,558 @@ test('routes an unaligned adjacent connection as H-V-H', () => {
         ['horizontal', 'vertical', 'horizontal']
     );
     assert.equal(route.grid.channels[0].trackX.length, 1);
+});
+
+test('connects adjacent path endpoints using realized pin coordinates', () => {
+    const node = (
+        id: string,
+        column: number,
+        order: number,
+        height: number,
+        yOffset: number,
+        pinId: 'left' | 'right'
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order,
+        yOffset,
+        size: { width: 100, height },
+        pinAnchors: [{
+            id: pinId,
+            x: pinId === 'left' ? 0 : 100,
+            y: 20,
+        }],
+    });
+    const route = routeNetworks([
+        node('left-predecessor', 0, 0, 100, 0, 'right'),
+        node('source', 0, 1, 40, -100, 'right'),
+        node('right-predecessor', 1, 0, 40, 0, 'left'),
+        node('target', 1, 1, 40, -100, 'left'),
+    ], [{
+        id: 'network:realized-adjacent',
+        terminals: [
+            { nodeId: 'source', pinId: 'right', role: 'driver' },
+            { nodeId: 'target', pinId: 'left', role: 'load' },
+        ],
+    }]);
+    const path = route.networks[0].paths[0];
+    const pinPoint = (nodeId: string, pinId: string) => route.grid.nodes
+        .find(node => node.id === nodeId)!.pinAnchors
+        .find(pin => pin.id === pinId)!.point;
+    const pointTouches = (
+        point: Readonly<{ x: number; y: number }>,
+        segment: (typeof path.segments)[number]
+    ): boolean => segment.orientation === 'horizontal'
+        ? point.y === segment.y && point.x >= segment.x1 && point.x <= segment.x2
+        : point.x === segment.x && point.y >= segment.y1 && point.y <= segment.y2;
+
+    assert.equal(path.from.kind, 'terminal');
+    assert.equal(pointTouches(path.from.point, path.segments[0]), true);
+    assert.equal(pointTouches(
+        pinPoint(path.to.nodeId, path.to.pinId),
+        path.segments[path.segments.length - 1]
+    ), true);
+    assert.deepEqual(path.segments.map(segment => segment.orientation), [
+        'horizontal', 'vertical', 'horizontal',
+    ]);
+});
+
+test('routes the same geometry independently of network ID order', () => {
+    const nodes = [
+        routingNode('c0-upper', 0, 0),
+        routingNode('c0-lower', 0, 1),
+        routingNode('c1-upper', 1, 0),
+        routingNode('c1-lower', 1, 1),
+        routingNode('c2-upper', 2, 0),
+        routingNode('c2-lower', 2, 1),
+        routingNode('c3-upper', 3, 0),
+        routingNode('c3-lower', 3, 1),
+    ];
+    const routeWithIds = (firstId: string, secondId: string) => routeNetworks(
+        nodes,
+        [
+            {
+                id: firstId,
+                terminals: [
+                    { nodeId: 'c0-upper', pinId: 'right', role: 'driver' },
+                    { nodeId: 'c2-lower', pinId: 'left', role: 'load' },
+                ],
+            },
+            {
+                id: secondId,
+                terminals: [
+                    { nodeId: 'c1-lower', pinId: 'right', role: 'driver' },
+                    { nodeId: 'c3-upper', pinId: 'left', role: 'load' },
+                ],
+            },
+        ]
+    );
+
+    const first = routeWithIds('a', 'b');
+    const renamed = routeWithIds('z', 'a');
+    const geometryFor = (
+        route: ReturnType<typeof routeNetworks>,
+        networkId: string
+    ) => route.networks.find(network => network.id === networkId)!.segments
+        .map(segment => {
+            const { networkId: _networkId, ...geometry } = segment;
+            return geometry;
+        });
+
+    assert.equal(first.grid.channels[1].trackX.length, 2);
+    assert.equal(renamed.grid.channels[1].trackX.length, 2);
+    assert.deepEqual(geometryFor(first, 'a'), geometryFor(renamed, 'z'));
+    assert.deepEqual(geometryFor(first, 'b'), geometryFor(renamed, 'a'));
+});
+
+test('orders forced adjacent tracks by pin geometry before network IDs', () => {
+    const twoPinNode = (
+        id: string,
+        column: number,
+        side: 'left' | 'right'
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 40 },
+        pinAnchors: [
+            { id: `${side}-high`, x: side === 'left' ? 0 : 100, y: 10 },
+            { id: `${side}-low`, x: side === 'left' ? 0 : 100, y: 30 },
+        ],
+    });
+    const nodes = [
+        twoPinNode('left', 0, 'right'),
+        twoPinNode('right', 1, 'left'),
+    ];
+    const routeWithIds = (fallingId: string, risingId: string) => routeNetworks(
+        nodes,
+        [
+            {
+                id: fallingId,
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-high', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-low', role: 'load' },
+                ],
+            },
+            {
+                id: risingId,
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-low', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-high', role: 'load' },
+                ],
+            },
+        ]
+    );
+    const geometryFor = (
+        route: ReturnType<typeof routeNetworks>,
+        id: string
+    ) => route.networks.find(network => network.id === id)!.segments.map(
+        segment => {
+            const { networkId: _networkId, ...geometry } = segment;
+            return geometry;
+        }
+    );
+
+    const original = routeWithIds('a', 'b');
+    const renamed = routeWithIds('z', 'a');
+
+    assert.deepEqual(geometryFor(original, 'a'), geometryFor(renamed, 'z'));
+    assert.deepEqual(geometryFor(original, 'b'), geometryFor(renamed, 'a'));
+});
+
+test('routes outer escapes independently of network ID order', () => {
+    const nodes = [
+        routingNode('left-top', 0, 0),
+        routingNode('left-bottom', 0, 1),
+        routingNode('right-top', 1, 0),
+    ];
+    const routeWithIds = (outerId: string, localId: string) => routeNetworks(
+        nodes,
+        [
+            {
+                id: outerId,
+                terminals: [
+                    { nodeId: 'left-top', pinId: 'left', role: 'bidirectional' },
+                    { nodeId: 'right-top', pinId: 'left', role: 'bidirectional' },
+                ],
+            },
+            {
+                id: localId,
+                terminals: [
+                    { nodeId: 'left-top', pinId: 'right', role: 'bidirectional' },
+                    { nodeId: 'left-bottom', pinId: 'left', role: 'bidirectional' },
+                ],
+            },
+        ]
+    );
+
+    assert.doesNotThrow(() => routeWithIds('a', 'b'));
+    assert.doesNotThrow(() => routeWithIds('z', 'a'));
+});
+
+test('chooses feedback lane using realized added wire length', () => {
+    const tallNode = (
+        id: string,
+        column: number,
+        pinId: 'left' | 'right'
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 1_000 },
+        pinAnchors: [{
+            id: pinId,
+            x: pinId === 'left' ? 0 : 100,
+            y: 990,
+        }],
+    });
+    const route = routeNetworks([
+        tallNode('load', 0, 'left'),
+        tallNode('driver', 1, 'right'),
+        routingNode('lower-left', 0, 1),
+        routingNode('lower-right', 1, 1),
+    ], [{
+        id: 'network:bottom-is-shorter',
+        terminals: [
+            { nodeId: 'driver', pinId: 'right', role: 'driver' },
+            { nodeId: 'load', pinId: 'left', role: 'load' },
+        ],
+    }]);
+
+    assert.equal(route.grid.outer.top.trackY.length, 0);
+    assert.equal(route.grid.outer.bottom.trackY.length, 1);
+});
+
+test('grows a network tree by reusing an equal-cost existing trunk', () => {
+    const route = routeFixture({
+        nodes: [
+            routingNode('left-upper', 0, 0),
+            routingNode('left-middle', 0, 1),
+            routingNode('root', 0, 2),
+            routingNode('middle-upper', 1, 0),
+            routingNode('middle-middle', 1, 1),
+            routingNode('middle-lower', 1, 2),
+            routingNode('sink-far', 2, 0),
+            routingNode('right-middle', 2, 1),
+            routingNode('sink-near', 2, 2),
+        ],
+        networks: [{
+            id: 'network:dynamic-tree',
+            terminals: [
+                { nodeId: 'sink-far', pinId: 'left', role: 'load' },
+                { nodeId: 'root', pinId: 'right', role: 'driver' },
+                { nodeId: 'sink-near', pinId: 'left', role: 'load' },
+            ],
+        }],
+    });
+
+    assert.deepEqual(
+        route.grid.rowGaps.map(gap => gap.trackY.length),
+        [0, 1]
+    );
+    assert.equal(route.networks[0].paths.length, 2);
+});
+
+test('connects the next terminal to the existing tree at a segment interior', () => {
+    const route = routeFixture({
+        nodes: [
+            routingNode('root', 0, 0),
+            routingNode('left-middle', 0, 1),
+            routingNode('left-lower', 0, 2),
+            routingNode('middle-upper', 1, 0),
+            routingNode('middle-middle', 1, 1),
+            routingNode('middle-lower', 1, 2),
+            routingNode('right-upper', 2, 0),
+            routingNode('right-middle', 2, 1),
+            routingNode('branch', 2, 2, 40, 1_000),
+            routingNode('far', 3, 0),
+            routingNode('far-middle', 3, 1),
+            routingNode('far-lower', 3, 2),
+        ],
+        networks: [{
+            id: 'network:segment-attachment',
+            terminals: [
+                { nodeId: 'branch', pinId: 'left', role: 'load' },
+                { nodeId: 'root', pinId: 'right', role: 'driver' },
+                { nodeId: 'far', pinId: 'left', role: 'load' },
+            ],
+        }],
+    });
+    const network = route.networks[0];
+
+    assert.equal(network.paths[0].to.nodeId, 'far');
+    const attachment = network.paths[1].from as unknown as Readonly<{
+        kind: string;
+        point: Readonly<{ x: number; y: number }>;
+    }>;
+    assert.equal(attachment.kind, 'tree');
+    assert.equal(network.paths[0].segments.some(segment =>
+        segment.orientation === 'horizontal'
+            ? attachment.point.y === segment.y
+                && attachment.point.x >= segment.x1
+                && attachment.point.x <= segment.x2
+            : attachment.point.x === segment.x
+                && attachment.point.y >= segment.y1
+                && attachment.point.y <= segment.y2
+    ), true);
+    const interiorBranch = network.segments.some(horizontalSegment =>
+        horizontalSegment.orientation === 'horizontal'
+        && network.segments.some(verticalSegment =>
+            verticalSegment.orientation === 'vertical'
+            && verticalSegment.x > horizontalSegment.x1
+            && verticalSegment.x < horizontalSegment.x2
+            && horizontalSegment.y >= verticalSegment.y1
+            && horizontalSegment.y <= verticalSegment.y2
+        )
+    );
+    assert.equal(interiorBranch, true);
+});
+
+test('selects the globally cheapest terminal as the tree grows', () => {
+    const nodes: RoutingGridNodeInput[] = [];
+    for (let column = 0; column <= 4; column += 1) {
+        nodes.push(routingNode(
+            column === 0 ? 'root'
+                : column === 3 ? 'seed'
+                    : column === 4 ? 'extension'
+                        : `upper-${column}`,
+            column,
+            0
+        ));
+        nodes.push(routingNode(`middle-${column}`, column, 1));
+        nodes.push(routingNode(
+            column === 2 ? 'branch' : `lower-${column}`,
+            column,
+            2,
+            40,
+            column === 2 ? 1_000 : 0
+        ));
+    }
+    const route = routeNetworks(nodes, [{
+        id: 'network:global-cheapest',
+        terminals: [
+            { nodeId: 'branch', pinId: 'left', role: 'load' },
+            { nodeId: 'extension', pinId: 'left', role: 'load' },
+            { nodeId: 'root', pinId: 'right', role: 'driver' },
+            { nodeId: 'seed', pinId: 'left', role: 'load' },
+        ],
+    }]);
+
+    assert.deepEqual(route.networks[0].paths.map(path => path.to.nodeId), [
+        'seed',
+        'extension',
+        'branch',
+    ]);
+});
+
+test('selects the terminal with the shortest realized added route', () => {
+    const node = (
+        id: string,
+        column: number,
+        pinY: number
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 1_000 },
+        pinAnchors: [
+            { id: 'left', x: 0, y: pinY },
+            { id: 'right', x: 100, y: pinY },
+        ],
+    });
+    const nodes = [
+        node('root', 0, 500),
+        node('near', 1, 500),
+        node('far', 2, 0),
+    ];
+    const root = { nodeId: 'root', pinId: 'left', role: 'driver' as const };
+    const near = { nodeId: 'near', pinId: 'left', role: 'load' as const };
+    const far = { nodeId: 'far', pinId: 'left', role: 'load' as const };
+    const length = (path: RoutedSchematic['networks'][number]['paths'][number]) =>
+        path.segments.reduce((sum, segment) => sum + (
+            segment.orientation === 'horizontal'
+                ? segment.x2 - segment.x1
+                : segment.y2 - segment.y1
+        ), 0);
+    const route = routeNetworks(nodes, [{
+        id: 'network:data',
+        terminals: [root, near, far],
+    }]);
+    const nearOnly = routeNetworks(nodes, [{
+        id: 'network:data',
+        terminals: [root, near],
+    }]);
+    const farOnly = routeNetworks(nodes, [{
+        id: 'network:data',
+        terminals: [root, far],
+    }]);
+
+    assert.equal(length(nearOnly.networks[0].paths[0]), 1_212);
+    assert.equal(length(farOnly.networks[0].paths[0]), 844);
+    assert.equal(route.networks[0].paths[0].to.nodeId, 'far');
+});
+
+test('routes multi-terminal geometry independently of network IDs', () => {
+    const nodes: RoutingGridNodeInput[] = [];
+    for (let column = 0; column < 4; column += 1) {
+        nodes.push(
+            routingNode(`a${column}`, column, 0),
+            routingNode(`b${column}`, column, 1),
+            routingNode(`sp${column}`, column, 2)
+        );
+    }
+    const network = (
+        id: string,
+        prefix: 'a' | 'b'
+    ): RoutingNetworkRequest => ({
+        id,
+        terminals: [
+            { nodeId: `${prefix}0`, pinId: 'right', role: 'driver' },
+            { nodeId: `${prefix}2`, pinId: 'left', role: 'load' },
+            { nodeId: `${prefix}3`, pinId: 'left', role: 'load' },
+        ],
+    });
+    const geometryFor = (
+        route: ReturnType<typeof routeNetworks>,
+        id: string
+    ) => route.networks.find(item => item.id === id)!.segments.map(segment => {
+        const { networkId: _networkId, ...geometry } = segment;
+        return geometry;
+    });
+    const original = routeNetworks(nodes, [
+        network('a', 'a'),
+        network('b', 'b'),
+    ]);
+    const renamed = routeNetworks(nodes, [
+        network('z', 'a'),
+        network('a', 'b'),
+    ]);
+
+    assert.deepEqual(geometryFor(original, 'a'), geometryFor(renamed, 'z'));
+    assert.deepEqual(geometryFor(original, 'b'), geometryFor(renamed, 'a'));
+});
+
+test('connects every incremental path between its attachment and new terminal', () => {
+    const route = routeFixture({
+        nodes: [
+            routingNode('root', 0, 0),
+            routingNode('left-lower', 0, 1),
+            routingNode('middle-upper', 1, 0),
+            routingNode('middle-lower', 1, 1),
+            routingNode('sink-upper', 2, 0),
+            routingNode('sink-lower', 2, 1),
+        ],
+        networks: [{
+            id: 'network:path-attachments',
+            terminals: [
+                { nodeId: 'sink-lower', pinId: 'left', role: 'load' },
+                { nodeId: 'root', pinId: 'right', role: 'driver' },
+                { nodeId: 'sink-upper', pinId: 'left', role: 'load' },
+            ],
+        }],
+    });
+    const network = route.networks[0];
+    const pointTouches = (
+        point: Readonly<{ x: number; y: number }>,
+        segment: (typeof network.segments)[number]
+    ): boolean => segment.orientation === 'horizontal'
+        ? point.y === segment.y && point.x >= segment.x1 && point.x <= segment.x2
+        : point.x === segment.x && point.y >= segment.y1 && point.y <= segment.y2;
+    const pinPoint = (nodeId: string, pinId: string) => route.grid.nodes
+        .find(node => node.id === nodeId)!.pinAnchors
+        .find(pin => pin.id === pinId)!.point;
+    let priorTree: typeof network.segments = [];
+
+    for (const path of network.paths) {
+        assert.ok(path.segments.length > 0);
+        assert.equal(pointTouches(path.from.point, path.segments[0]), true);
+        assert.equal(pointTouches(
+            pinPoint(path.to.nodeId, path.to.pinId),
+            path.segments[path.segments.length - 1]
+        ), true);
+        if (path.from.kind === 'tree') {
+            assert.equal(priorTree.some(segment =>
+                pointTouches(path.from.point, segment)
+            ), true);
+        }
+        priorTree = simplifySegments([...priorTree, ...path.segments]);
+    }
+});
+
+test('keeps an unselected feedback preview out of final track demand', () => {
+    const tallNode = (
+        id: string,
+        column: number,
+        pinId: 'left' | 'right'
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 1_000 },
+        pinAnchors: [{
+            id: pinId,
+            x: pinId === 'left' ? 0 : 100,
+            y: 10,
+        }],
+    });
+    const route = routeNetworks([
+        tallNode('load', 0, 'left'),
+        tallNode('driver', 1, 'right'),
+        routingNode('spacer', 2, 0),
+        routingNode('lower-left', 0, 1),
+        routingNode('lower-middle', 1, 1),
+        routingNode('lower-right', 2, 1),
+    ], [{
+        id: 'network:top-is-shorter',
+        terminals: [
+            { nodeId: 'driver', pinId: 'right', role: 'driver' },
+            { nodeId: 'load', pinId: 'left', role: 'load' },
+        ],
+    }]);
+
+    assert.equal(route.grid.outer.top.trackY.length, 1);
+    assert.equal(route.grid.outer.bottom.trackY.length, 0);
+});
+
+test('commits only the valid fallback for a conflicting adjacent route', () => {
+    const nodes: RoutingGridNodeInput[] = [];
+    for (let column = 0; column < 4; column += 1) {
+        for (let row = 0; row < 3; row += 1) {
+            nodes.push(routingNode(`n${column}${row}`, column, row));
+        }
+    }
+    const route = routeNetworks(nodes, [
+        {
+            id: 'network:a',
+            terminals: [
+                { nodeId: 'n02', pinId: 'left', role: 'bidirectional' },
+                { nodeId: 'n10', pinId: 'right', role: 'bidirectional' },
+            ],
+        },
+        {
+            id: 'network:b',
+            terminals: [
+                { nodeId: 'n21', pinId: 'left', role: 'bidirectional' },
+                { nodeId: 'n20', pinId: 'left', role: 'bidirectional' },
+            ],
+        },
+    ]);
+
+    assert.equal(route.grid.channels[1].trackX.length, 4);
+    assert.equal(route.grid.rowGaps.reduce(
+        (sum, gap) => sum + gap.trackY.length,
+        0
+    ), 1);
+    assert.equal(
+        route.grid.outer.top.trackY.length
+            + route.grid.outer.bottom.trackY.length,
+        1
+    );
+    assert.equal(route.networks.some(network =>
+        network.paths[0].segments.length === 5
+    ), true);
 });
