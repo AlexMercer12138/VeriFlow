@@ -351,8 +351,17 @@ async function testSchematicAssets(): Promise<void> {
         fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')
     ) as { dependencies: Record<string, string> };
     assert.strictEqual(manifest.dependencies['@antv/x6'], '3.1.7');
-    assert.strictEqual(manifest.dependencies['@dagrejs/dagre'], '3.1.0');
+    assert.strictEqual(manifest.dependencies['@dagrejs/dagre'], undefined);
     assert.strictEqual(manifest.dependencies.lucide, '1.28.0');
+    const webviewManifest = JSON.parse(fs.readFileSync(
+        path.join(repositoryRoot, 'packages', 'schematic-webview', 'package.json'),
+        'utf8'
+    )) as { dependencies: Record<string, string> };
+    assert.strictEqual(webviewManifest.dependencies['@dagrejs/dagre'], undefined);
+    assert.doesNotMatch(
+        fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8'),
+        /@dagrejs\/(?:dagre|graphlib)/
+    );
 
     const html = fs.readFileSync(path.join(webDistRoot, 'index.html'), 'utf8');
     for (const expected of [
@@ -413,6 +422,10 @@ async function testSchematicAssets(): Promise<void> {
         /import\s*{[^}]*\blayoutSchematic\b[^}]*}\s*from '@veriflow\/schematic-core';/s
     );
     assert.match(webviewSource, /layoutSchematic\(model,/);
+    assert.match(webviewSource, /\bsnapNodeToPlacement\b/);
+    assert.match(webviewSource, /layoutSchematic\(model,\s*layout\.placement,/);
+    assert.match(webviewSource, /graph\.on\('node:moved'/);
+    assert.doesNotMatch(webviewSource, /graph\.on\('node:change:position'/);
     assert.match(webviewSource, /renderModel\.networks/);
     assert.match(webviewSource, /networkRoute\.segments/);
     assert.match(webviewSource, /renderModel\.junctions/);
@@ -539,7 +552,7 @@ async function testSchematicAssets(): Promise<void> {
         'utf8'
     );
     assert.ok(notices.includes('@antv/x6 3.1.7'));
-    assert.ok(notices.includes('@dagrejs/dagre 3.1.0'));
+    assert.ok(!notices.includes('@dagrejs/dagre'));
     assert.ok(notices.includes('lucide 1.28.0'));
 
     const bundle = await build({

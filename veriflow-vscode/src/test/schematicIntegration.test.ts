@@ -138,13 +138,15 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(firstGraph?.type === 'graph');
     const firstLayout: SchematicLayout = {
         ...firstGraph.layout,
-        nodes: Object.fromEntries(Object.entries(firstGraph.layout.nodes).map(
-            ([id, position]) => [id, {
-                x: position.x + 101,
-                y: position.y + 17,
+        placement: {
+            nodes: Object.fromEntries(Object.entries(
+                firstGraph.layout.placement.nodes
+            ).map(([id, placement]) => [id, {
+                ...placement,
+                yOffset: placement.yOffset + 17,
                 fixed: true,
-            }]
-        )),
+            }])),
+        },
         viewport: { x: 120, y: 240, zoom: 1.5 },
         minimap: false,
         selectedObjectId: `node:${firstKey}`,
@@ -166,15 +168,22 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(secondGraph?.type === 'graph');
     const secondLayout: SchematicLayout = {
         ...secondGraph.layout,
-        nodes: {
-            ...Object.fromEntries(Object.entries(secondGraph.layout.nodes).map(
-                ([id, position]) => [id, {
-                    x: position.x + 202,
-                    y: position.y + 29,
+        placement: {
+            nodes: {
+                ...Object.fromEntries(Object.entries(
+                    secondGraph.layout.placement.nodes
+                ).map(([id, placement]) => [id, {
+                    ...placement,
+                    yOffset: placement.yOffset + 29,
                     fixed: true,
-                }]
-            )),
-            'node:removed': { x: 999, y: 999, fixed: true },
+                }])),
+                'node:removed': {
+                    column: 1,
+                    order: 99,
+                    yOffset: 999,
+                    fixed: true,
+                },
+            },
         },
         viewport: { x: -80, y: 60, zoom: 0.75 },
         minimap: true,
@@ -194,18 +203,17 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(restoredFirst?.type === 'graph');
     assert.deepStrictEqual(restoredFirst.layout.viewport, firstLayout.viewport);
     assert.strictEqual(restoredFirst.layout.minimap, firstLayout.minimap);
-    assert.deepStrictEqual(restoredFirst.layout.nodes[`node:${firstKey}`], {
-        ...firstLayout.nodes[`node:${firstKey}`],
-        x: firstGraph.layout.nodes[`node:${firstKey}`].x,
-    });
+    assert.deepStrictEqual(
+        restoredFirst.layout.placement.nodes[`node:${firstKey}`],
+        firstLayout.placement.nodes[`node:${firstKey}`]
+    );
     for (const side of ['input', 'output'] as const) {
         const id = `port:${side}:${firstKey}`;
-        assert.strictEqual(
-            restoredFirst.layout.nodes[id].x,
-            firstGraph.layout.nodes[id].x,
-            `${side} boundary must remain on its automatic side`
+        assert.deepStrictEqual(
+            restoredFirst.layout.placement.nodes[id],
+            firstLayout.placement.nodes[id],
+            `${side} boundary placement must survive semantically`
         );
-        assert.strictEqual(restoredFirst.layout.nodes[id].y, firstLayout.nodes[id].y);
     }
     assert.strictEqual(
         restoredFirst.layout.selectedObjectId,
@@ -219,20 +227,22 @@ async function testSelectionAndViewportPersistPerModule(): Promise<void> {
     assert.ok(restoredSecond?.type === 'graph');
     assert.deepStrictEqual(restoredSecond.layout.viewport, secondLayout.viewport);
     assert.strictEqual(restoredSecond.layout.minimap, secondLayout.minimap);
-    assert.deepStrictEqual(restoredSecond.layout.nodes[`node:${secondKey}`], {
-        ...secondLayout.nodes[`node:${secondKey}`],
-        x: secondGraph.layout.nodes[`node:${secondKey}`].x,
-    });
+    assert.deepStrictEqual(
+        restoredSecond.layout.placement.nodes[`node:${secondKey}`],
+        secondLayout.placement.nodes[`node:${secondKey}`]
+    );
     for (const side of ['input', 'output'] as const) {
         const id = `port:${side}:${secondKey}`;
-        assert.strictEqual(
-            restoredSecond.layout.nodes[id].x,
-            secondGraph.layout.nodes[id].x,
-            `${side} boundary must remain on its automatic side`
+        assert.deepStrictEqual(
+            restoredSecond.layout.placement.nodes[id],
+            secondLayout.placement.nodes[id],
+            `${side} boundary placement must survive semantically`
         );
-        assert.strictEqual(restoredSecond.layout.nodes[id].y, secondLayout.nodes[id].y);
     }
-    assert.strictEqual('node:removed' in restoredSecond.layout.nodes, false);
+    assert.strictEqual(
+        'node:removed' in restoredSecond.layout.placement.nodes,
+        false
+    );
     assert.strictEqual(
         restoredSecond.layout.selectedObjectId,
         secondLayout.selectedObjectId

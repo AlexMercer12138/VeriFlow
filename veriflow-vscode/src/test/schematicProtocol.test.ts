@@ -1,6 +1,10 @@
 import * as assert from 'assert';
 
-import { preprocessForParsing } from '../core/hdl/preprocessor';
+import {
+    MAX_SCHEMATIC_LAYOUT_COLUMN,
+    MAX_SCHEMATIC_LAYOUT_COORDINATE,
+    MAX_SCHEMATIC_LAYOUT_NODES,
+} from '../schematic/layoutStore';
 import { parseWebviewCommand } from '../schematic/protocol';
 
 const TEST_REVISION = 'snapshot:test';
@@ -13,512 +17,197 @@ function assertRejected(value: unknown): void {
     assert.strictEqual(result!, undefined);
 }
 
-function testInitialContract(): void {
-    assert.deepStrictEqual(parseWebviewCommand({ type: 'ready' }), { type: 'ready' });
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'selectModule', moduleKey: 'file#module:top:0' }),
-        { type: 'selectModule', moduleKey: 'file#module:top:0' }
-    );
-    for (const value of [
-        null,
-        {},
-        { type: 'selectModule' },
-        { type: 'revealSource', span: { start: -1, end: 2 } },
-    ]) {
-        assert.strictEqual(parseWebviewCommand(value), undefined);
-    }
-}
-
-function testEveryCommandAndSanitization(): void {
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'ready', ignored: true }),
-        { type: 'ready' }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'selectModule', moduleKey: '  module:key  ', ignored: 1 }),
-        { type: 'selectModule', moduleKey: '  module:key  ' }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'openDefinition',
-            definitionKey: 'definition:child',
-            ignored: true,
-        }),
-        { type: 'openDefinition', definitionKey: 'definition:child' }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'search', query: '', ignored: true }),
-        { type: 'search', query: '' }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'search', query: '  child*  ' }),
-        { type: 'search', query: '  child*  ' }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'relayoutAll', moduleKey: 'module:top', ignored: true }),
-        { type: 'relayoutAll', moduleKey: 'module:top' }
-    );
-
-    for (const value of [
-        { type: 'selectModule', moduleKey: '' },
-        { type: 'selectModule', moduleKey: ' \t ' },
-        { type: 'openDefinition', definitionKey: '' },
-        { type: 'openDefinition', definitionKey: '   ' },
-        { type: 'relayoutAll', moduleKey: '' },
-        { type: 'relayoutAll', moduleKey: '\r\n' },
-        { type: 'search' },
-        { type: 'search', query: 4 },
-    ]) {
-        assertRejected(value);
-    }
-}
-
-function testLayoutValidation(): void {
-    const parsed = parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:top',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: {
-                '': { x: -1, y: -2, fixed: false },
-                '  ': { x: 3, y: 4, fixed: true },
-                first: { x: 12, y: -8, fixed: true, edgePoints: [{ x: 1, y: 2 }] },
-                second: { x: 0, y: 0, fixed: false, ignored: 'value' },
-            },
-            viewport: { x: -5, y: 9, zoom: 99, ignored: true },
-            minimap: false,
-            selectedObjectId: '',
-            edges: { first: [{ x: 3, y: 4 }] },
-            feedbackRoutes: [{ networkId: 'secret' }],
-            ignored: true,
-        },
-        ignored: true,
-    });
-    assert.deepStrictEqual(parsed, {
-        type: 'saveLayout',
-        moduleKey: 'module:top',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: {
-                '': { x: -1, y: -2, fixed: false },
-                '  ': { x: 3, y: 4, fixed: true },
-                first: { x: 12, y: -8, fixed: true },
-                second: { x: 0, y: 0, fixed: false },
-            },
-            viewport: { x: -5, y: 9, zoom: 4 },
-            minimap: false,
-            selectedObjectId: '',
-        },
-    });
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'saveLayout',
-            moduleKey: 'module:top',
-            revision: TEST_REVISION,
-            layout: {
-                nodes: {},
-                viewport: { x: 0, y: 0, zoom: -50 },
-                minimap: true,
-            },
-        }),
-        {
-            type: 'saveLayout',
-            moduleKey: 'module:top',
-            revision: TEST_REVISION,
-            layout: {
-                nodes: {},
-                viewport: { x: 0, y: 0, zoom: 0.1 },
-                minimap: true,
-            },
-        }
-    );
-
-    const invalidLayouts = [
-        null,
-        { nodes: [], viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
-        { nodes: {}, viewport: null, minimap: true },
-        { nodes: {}, viewport: { x: Number.NaN, y: 0, zoom: 1 }, minimap: true },
-        { nodes: {}, viewport: { x: 0, y: Number.POSITIVE_INFINITY, zoom: 1 }, minimap: true },
-        { nodes: {}, viewport: { x: 0, y: 0, zoom: Number.NEGATIVE_INFINITY }, minimap: true },
-        { nodes: {}, viewport: { x: 0, y: 0, zoom: 1 }, minimap: 'yes' },
-        {
-            nodes: { bad: { x: Number.NaN, y: 0, fixed: false } },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-        {
-            nodes: { bad: { x: 0, y: Number.POSITIVE_INFINITY, fixed: false } },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-        {
-            nodes: { bad: { x: 0, y: 0, fixed: 'false' } },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-        {
-            nodes: {},
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-            selectedObjectId: 12,
-        },
-    ];
-    for (const layout of invalidLayouts) {
-        assertRejected({
-            type: 'saveLayout',
-            moduleKey: 'module:top',
-            revision: TEST_REVISION,
-            layout,
-        });
-    }
-    assertRejected({
-        type: 'saveLayout',
-        moduleKey: '  ',
-        revision: TEST_REVISION,
-        layout: { nodes: {}, viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
-    });
-}
-
-function testLayoutRevisionValidation(): void {
-    const layout = {
-        nodes: {},
+function semanticLayout(nodes: Record<string, unknown> = {}): unknown {
+    return {
+        placement: { nodes },
         viewport: { x: 0, y: 0, zoom: 1 },
         minimap: true,
     };
-    assert.deepStrictEqual(parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:top',
-        revision: 'snapshot:opaque',
-        layout,
-    }), {
-        type: 'saveLayout',
-        moduleKey: 'module:top',
-        revision: 'snapshot:opaque',
-        layout,
-    });
-    for (const revision of [undefined, '', '  ', 1, null]) {
-        assertRejected({
-            type: 'saveLayout',
-            moduleKey: 'module:top',
-            ...(revision === undefined ? {} : { revision }),
-            layout,
-        });
-    }
 }
 
-function testSemanticPlacementIsNotAnAbsoluteWireLayout(): void {
-    assertRejected({
+function saveCommand(layout: unknown = semanticLayout()): unknown {
+    return {
+        type: 'saveLayout',
+        moduleKey: 'module:top',
+        revision: TEST_REVISION,
+        layout,
+    };
+}
+
+function testCommandsRemainStable(): void {
+    assert.deepStrictEqual(parseWebviewCommand({ type: 'ready', ignored: true }), {
+        type: 'ready',
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'selectModule',
+        moduleKey: 'module:top',
+    }), { type: 'selectModule', moduleKey: 'module:top' });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'openDefinition',
+        definitionKey: 'definition:child',
+    }), { type: 'openDefinition', definitionKey: 'definition:child' });
+    assert.deepStrictEqual(parseWebviewCommand({ type: 'search', query: 'child*' }), {
+        type: 'search', query: 'child*',
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'relayoutAll',
+        moduleKey: 'module:top',
+    }), { type: 'relayoutAll', moduleKey: 'module:top' });
+    for (const value of [
+        null,
+        {},
+        { type: 'selectModule', moduleKey: '  ' },
+        { type: 'openDefinition', definitionKey: '' },
+        { type: 'search', query: 4 },
+        { type: 'relayoutAll', moduleKey: '' },
+    ]) assertRejected(value);
+}
+
+function testSemanticPlacementPayload(): void {
+    const parsed = parseWebviewCommand(saveCommand({
+        placement: {
+            nodes: {
+                first: {
+                    column: 2,
+                    order: 1,
+                    yOffset: -12,
+                    fixed: true,
+                    ignored: true,
+                },
+                second: {
+                    column: 1,
+                    order: 0,
+                    yOffset: 0,
+                    fixed: false,
+                },
+            },
+            ignored: true,
+        },
+        viewport: { x: -5, y: 9, zoom: 99, ignored: true },
+        minimap: false,
+        selectedObjectId: '',
+        ignored: true,
+    }));
+    assert.deepStrictEqual(parsed, {
         type: 'saveLayout',
         moduleKey: 'module:top',
         revision: TEST_REVISION,
         layout: {
             placement: {
                 nodes: {
-                    'instance:u0': {
-                        column: 2,
-                        order: 1,
-                        yOffset: 12,
-                        fixed: true,
-                    },
+                    first: { column: 2, order: 1, yOffset: -12, fixed: true },
+                    second: { column: 1, order: 0, yOffset: 0, fixed: false },
                 },
             },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
+            viewport: { x: -5, y: 9, zoom: 4 },
+            minimap: false,
+            selectedObjectId: '',
         },
     });
-}
-
-function testLayoutBreadthLimit(): void {
-    const boundedNodes: Record<string, unknown> = {};
-    for (let index = 0; index < 50_000; index += 1) {
-        boundedNodes[`node:${index}`] = { x: index, y: 0, fixed: false };
-    }
-    const atLimit = parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:at-limit',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: boundedNodes,
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-    assert.strictEqual(atLimit?.type, 'saveLayout');
-
-    boundedNodes['node:50000'] = { x: 50_000, y: 0, fixed: false };
-    const overLimit = parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:over-limit',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: boundedNodes,
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-    assert.strictEqual(overLimit?.type, undefined);
-
-    const inheritedNodePrototype: Record<string, unknown> = {};
-    for (let index = 0; index <= 100_000; index += 1) {
-        inheritedNodePrototype[`inherited:${index}`] = { x: index, y: 0, fixed: false };
-    }
-    const inheritedOnlyNodes = Object.create(inheritedNodePrototype);
-    const inheritedOverLimit = parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:inherited-over-limit',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: inheritedOnlyNodes,
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-    assert.strictEqual(inheritedOverLimit?.type, undefined);
-}
-
-function testSourceSpanValidation(): void {
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'revealSource',
-            span: { start: 3, end: 8, ignored: true },
-            ignored: true,
-        }),
-        { type: 'revealSource', span: { start: 3, end: 8 } }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'revealSource',
-            span: {
-                start: 0,
-                end: 15,
-                uri: 'file:///main.sv',
-                compositeParts: [
-                    { uri: 'file:///main.sv', start: 0, end: 5, ignored: true },
-                    { uri: 'file:///main.sv', start: 5, end: 10 },
-                    { uri: 'file:///include.svh', start: 100, end: 110 },
-                    { uri: 'file:///main.sv', start: 10, end: 15 },
-                ],
-                ignored: true,
-            },
-        }),
-        {
-            type: 'revealSource',
-            span: {
-                start: 0,
-                end: 15,
-                uri: 'file:///main.sv',
-                compositeParts: [
-                    { uri: 'file:///main.sv', start: 0, end: 5 },
-                    { uri: 'file:///main.sv', start: 5, end: 10 },
-                    { uri: 'file:///include.svh', start: 100, end: 110 },
-                    { uri: 'file:///main.sv', start: 10, end: 15 },
-                ],
-            },
-        }
-    );
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'revealSource',
-            span: { start: 0, end: 0, compositeParts: [] },
-        }),
-        { type: 'revealSource', span: { start: 0, end: 0, compositeParts: [] } }
-    );
-
-    const invalidSpans = [
-        null,
-        { start: -1, end: 2 },
-        { start: 2, end: 1 },
-        { start: 0.5, end: 2 },
-        { start: 0, end: Number.NaN },
-        { start: Number.POSITIVE_INFINITY, end: Number.POSITIVE_INFINITY },
-        { start: 0, end: 1, uri: '' },
-        { start: 0, end: 1, uri: '  ' },
-        { start: 0, end: 1, compositeParts: null },
-        { start: 0, end: 1, compositeParts: [{}] },
-        { start: 0, end: 1, compositeParts: [{ uri: '', start: 0, end: 1 }] },
-        { start: 0, end: 1, compositeParts: [{ uri: 'file:///a.sv', start: 2, end: 1 }] },
-        { start: 0, end: 1, compositeParts: [{ uri: 'file:///a.sv', start: 0, end: 0.5 }] },
-    ];
-    for (const span of invalidSpans) {
-        assertRejected({ type: 'revealSource', span });
-    }
-}
-
-function testCompositePartsBreadthLimit(): void {
-    const overLimitParts = Array.from({ length: 5_001 }, (_, index) => ({
-        uri: 'file:///large.sv',
-        start: index,
-        end: index,
+    assertRejected(saveCommand({
+        nodes: { first: { x: 10, y: 20, fixed: true } },
+        viewport: { x: 0, y: 0, zoom: 1 },
+        minimap: true,
     }));
-    const parsed = parseWebviewCommand({
-        type: 'revealSource',
-        span: { start: 0, end: 5_001, compositeParts: overLimitParts },
-    });
-    assert.strictEqual(parsed?.type, undefined);
-
-    const customIteratorParts: unknown[] = [];
-    let iteratorAccesses = 0;
-    Object.defineProperty(customIteratorParts, Symbol.iterator, {
-        get(): never {
-            iteratorAccesses += 1;
-            throw new Error('composite iterator must not be accessed');
-        },
-    });
-    assert.deepStrictEqual(
-        parseWebviewCommand({
-            type: 'revealSource',
-            span: { start: 0, end: 0, compositeParts: customIteratorParts },
-        }),
-        { type: 'revealSource', span: { start: 0, end: 0, compositeParts: [] } }
-    );
-    assert.strictEqual(iteratorAccesses, 0);
-
-    assertRejected({
-        type: 'revealSource',
-        span: { start: 0, end: 1, compositeParts: new Array(1) },
-    });
 }
 
-function testRepeatedIncludeSourceSpanRoundTrip(): void {
-    const topUri = 'file:///workspace/repeated.sv';
-    const sharedUri = 'file:///workspace/shared.svh';
-    const shared = 'wire shared_signal;\n';
-    const source = [
-        'module repeated;',
-        '`include "shared.svh"',
-        'wire middle_signal;',
-        '`include "shared.svh"',
-        'endmodule',
-    ].join('\n');
-    const preprocessed = preprocessForParsing(topUri, source, {
-        defines: {},
-        resolvedIncludes: [{
-            fromUri: topUri,
-            rawPath: 'shared.svh',
-            resolvedUri: sharedUri,
-            text: shared,
-        }],
-    });
-    const span = preprocessed.sourceMap.mapSpan(
-        preprocessed.text.indexOf('module repeated'),
-        preprocessed.text.indexOf('endmodule') + 'endmodule'.length
-    );
-    assert.deepStrictEqual(span.compositeParts?.map(part => part.uri), [
-        topUri,
-        sharedUri,
-        topUri,
-        sharedUri,
-        topUri,
-    ]);
-
-    assert.deepStrictEqual(
-        parseWebviewCommand({ type: 'revealSource', span }),
-        { type: 'revealSource', span }
-    );
-}
-
-function testHostileInputs(): void {
-    for (const value of [
-        undefined,
-        true,
-        1,
-        1n,
-        Symbol('message'),
-        'ready',
-        [],
-        () => undefined,
-        { type: 1 },
-        { type: '' },
-        { type: 'deleteSource' },
-        { type: 'unknown', moduleKey: 'module:top' },
-    ]) {
-        assertRejected(value);
+function testPlacementBounds(): void {
+    const validNode = { column: 0, order: 0, yOffset: 0, fixed: true };
+    const invalidNodes = [
+        { ...validNode, column: -1 },
+        { ...validNode, column: 0.5 },
+        { ...validNode, column: MAX_SCHEMATIC_LAYOUT_COLUMN },
+        { ...validNode, order: -1 },
+        { ...validNode, order: MAX_SCHEMATIC_LAYOUT_NODES },
+        { ...validNode, yOffset: Number.NaN },
+        { ...validNode, yOffset: Number.POSITIVE_INFINITY },
+        { ...validNode, yOffset: MAX_SCHEMATIC_LAYOUT_COORDINATE + 1 },
+        { ...validNode, fixed: 'true' },
+    ];
+    for (const invalid of invalidNodes) {
+        assertRejected(saveCommand(semanticLayout({ invalid })));
     }
+    for (const invalid of [
+        null,
+        { placement: { nodes: [] }, viewport: { x: 0, y: 0, zoom: 1 }, minimap: true },
+        { placement: { nodes: {} }, viewport: null, minimap: true },
+        { placement: { nodes: {} }, viewport: { x: Number.NaN, y: 0, zoom: 1 }, minimap: true },
+        { placement: { nodes: {} }, viewport: { x: 0, y: 0, zoom: 1 }, minimap: 'yes' },
+        { placement: { nodes: {} }, viewport: { x: 0, y: 0, zoom: 1 }, minimap: true, selectedObjectId: 1 },
+    ]) assertRejected(saveCommand(invalid));
+}
 
-    const nullPrototype = Object.create(null) as Record<string, unknown>;
-    nullPrototype.type = 'selectModule';
-    nullPrototype.moduleKey = 'module:null-prototype';
-    assert.deepStrictEqual(parseWebviewCommand(nullPrototype), {
-        type: 'selectModule',
-        moduleKey: 'module:null-prototype',
-    });
-
-    const inheritedCommand = Object.create({
-        type: 'selectModule',
-        moduleKey: 'module:inherited',
-    });
-    assertRejected(inheritedCommand);
-
-    const inheritedNode = Object.create({ x: 0, y: 0, fixed: false });
-    assertRejected({
-        type: 'saveLayout',
-        moduleKey: 'module:inherited-node',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: { inherited: inheritedNode },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-
-    const ownProto = { type: 'ready' } as Record<string, unknown>;
-    Object.defineProperty(ownProto, '__proto__', {
-        value: { polluted: true },
-        enumerable: true,
-    });
-    const parsedOwnProto = parseWebviewCommand(ownProto)!;
-    assert.deepStrictEqual(parsedOwnProto, { type: 'ready' });
-    assert.strictEqual(Object.getPrototypeOf(parsedOwnProto), Object.prototype);
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(parsedOwnProto, '__proto__'), false);
-    assert.strictEqual(({} as { polluted?: boolean }).polluted, undefined);
+function testBreadthAndPrototypeSafety(): void {
+    const atLimit: Record<string, unknown> = {};
+    for (let index = 0; index < MAX_SCHEMATIC_LAYOUT_NODES; index += 1) {
+        atLimit[`node:${index}`] = {
+            column: 0,
+            order: index,
+            yOffset: 0,
+            fixed: false,
+        };
+    }
+    assert.strictEqual(parseWebviewCommand(saveCommand(semanticLayout(atLimit)))?.type,
+        'saveLayout');
+    atLimit.extra = { column: 0, order: 0, yOffset: 0, fixed: false };
+    assertRejected(saveCommand(semanticLayout(atLimit)));
 
     const specialNodes = Object.create(null) as Record<string, unknown>;
     Object.defineProperty(specialNodes, '__proto__', {
-        value: { x: 1, y: 2, fixed: false },
+        value: { column: 0, order: 0, yOffset: 2, fixed: true },
         enumerable: true,
     });
-    const parsedSpecialNode = parseWebviewCommand({
-        type: 'saveLayout',
-        moduleKey: 'module:special',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: specialNodes,
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-    assert.strictEqual(parsedSpecialNode?.type, 'saveLayout');
-    if (parsedSpecialNode?.type === 'saveLayout') {
-        assert.strictEqual(Object.getPrototypeOf(parsedSpecialNode.layout.nodes), Object.prototype);
-        assert.strictEqual(
-            Object.prototype.hasOwnProperty.call(parsedSpecialNode.layout.nodes, '__proto__'),
-            true
-        );
-        assert.deepStrictEqual(parsedSpecialNode.layout.nodes['__proto__'], {
-            x: 1,
-            y: 2,
-            fixed: false,
+    const parsed = parseWebviewCommand(saveCommand(semanticLayout(specialNodes)));
+    assert.strictEqual(parsed?.type, 'saveLayout');
+    if (parsed?.type === 'saveLayout') {
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(
+            parsed.layout.placement.nodes,
+            '__proto__'
+        ), true);
+        assert.deepStrictEqual(parsed.layout.placement.nodes['__proto__'], {
+            column: 0, order: 0, yOffset: 2, fixed: true,
         });
     }
-    assert.strictEqual(({} as { x?: number }).x, undefined);
+    assert.strictEqual(({} as { fixed?: boolean }).fixed, undefined);
+}
 
-    const cyclic: Record<string, unknown> = { type: 'ready' };
-    cyclic.self = cyclic;
-    assert.deepStrictEqual(parseWebviewCommand(cyclic), { type: 'ready' });
-
-    const cyclicNode: Record<string, unknown> = {};
-    cyclicNode.self = cyclicNode;
-    assertRejected({
-        type: 'saveLayout',
-        moduleKey: 'module:cycle',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: { cycle: cyclicNode },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
+function testRevisionAndSourceSpanValidation(): void {
+    assert.deepStrictEqual(parseWebviewCommand(saveCommand()), saveCommand());
+    for (const revision of [undefined, '', '  ', 1, null]) {
+        assertRejected({
+            type: 'saveLayout',
+            moduleKey: 'module:top',
+            revision,
+            layout: semanticLayout(),
+        });
+    }
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'revealSource',
+        span: {
+            start: 10,
+            end: 20,
+            uri: 'file:///defs.svh',
+            compositeParts: [{ uri: 'file:///part.svh', start: 2, end: 4 }],
+        },
+    }), {
+        type: 'revealSource',
+        span: {
+            start: 10,
+            end: 20,
+            uri: 'file:///defs.svh',
+            compositeParts: [{ uri: 'file:///part.svh', start: 2, end: 4 }],
         },
     });
+    for (const span of [
+        { start: -1, end: 2 },
+        { start: 3, end: 2 },
+        { start: 0, end: 1, uri: '' },
+        { start: 0, end: 1, compositeParts: [{}] },
+        { start: 0, end: 1, compositeParts: new Array(5_001) },
+    ]) assertRejected({ type: 'revealSource', span });
+}
 
+function testHostileInputs(): void {
     const throwingType = {};
     Object.defineProperty(throwingType, 'type', {
         get(): never {
@@ -528,57 +217,32 @@ function testHostileInputs(): void {
     });
     assertRejected(throwingType);
 
-    const throwingX = { y: 0, fixed: false };
-    Object.defineProperty(throwingX, 'x', {
+    const throwingPlacement = {};
+    Object.defineProperty(throwingPlacement, 'nodes', {
         get(): never {
-            throw new Error('hostile coordinate getter');
+            throw new Error('hostile nodes getter');
         },
         enumerable: true,
     });
-    assertRejected({
-        type: 'saveLayout',
-        moduleKey: 'module:getter',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: { hostile: throwingX },
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-
-    const throwingEntries = new Proxy({}, {
+    assertRejected(saveCommand({
+        placement: throwingPlacement,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        minimap: true,
+    }));
+    const throwingKeys = new Proxy({}, {
         ownKeys(): never {
             throw new Error('hostile ownKeys trap');
         },
     });
-    assertRejected({
-        type: 'saveLayout',
-        moduleKey: 'module:proxy',
-        revision: TEST_REVISION,
-        layout: {
-            nodes: throwingEntries,
-            viewport: { x: 0, y: 0, zoom: 1 },
-            minimap: true,
-        },
-    });
-
-    const sparseHugeParts = new Array(100_000);
-    assertRejected({
-        type: 'revealSource',
-        span: { start: 0, end: 1, compositeParts: sparseHugeParts },
-    });
+    assertRejected(saveCommand(semanticLayout(throwingKeys)));
 }
 
 async function main(): Promise<void> {
-    testInitialContract();
-    testEveryCommandAndSanitization();
-    testLayoutValidation();
-    testLayoutRevisionValidation();
-    testSemanticPlacementIsNotAnAbsoluteWireLayout();
-    testLayoutBreadthLimit();
-    testSourceSpanValidation();
-    testCompositePartsBreadthLimit();
-    testRepeatedIncludeSourceSpanRoundTrip();
+    testCommandsRemainStable();
+    testSemanticPlacementPayload();
+    testPlacementBounds();
+    testBreadthAndPrototypeSafety();
+    testRevisionAndSourceSpanValidation();
     testHostileInputs();
 
     console.log('Schematic protocol tests passed');

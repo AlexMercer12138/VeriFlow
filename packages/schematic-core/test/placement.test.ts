@@ -7,6 +7,8 @@ import {
     migrateLegacyPlacement,
     moveNodeToColumn,
     moveNodesToColumns,
+    layoutSchematic,
+    snapNodeToPlacement,
     type ColumnAssignment,
     type SchematicPlacement,
 } from '../src';
@@ -318,4 +320,179 @@ test('migrates legacy y ordering inside automatic columns without using x', () =
             [output.id]: { column: 2, order: 0, yOffset: 0, fixed: false },
         },
     });
+});
+
+function connectedGraph(nodes: GraphNode[]): SchematicGraph {
+    const connectedNodes = nodes.map(candidate => ({
+        ...candidate,
+        pins: [{
+            id: `${candidate.id}:in`,
+            name: 'in',
+            direction: 'load' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }, {
+            id: `${candidate.id}:out`,
+            name: 'out',
+            direction: 'driver' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }],
+    }));
+    return {
+        ...graph(connectedNodes),
+        networks: connectedNodes.slice(0, -1).map((source, index) => ({
+            id: `network:${index}`,
+            name: `network_${index}`,
+            width: { kind: 'known', bits: 1 },
+            readOnly: false,
+            endpoints: [{
+                nodeId: source.id,
+                pinId: source.pins[1].id,
+                role: 'driver' as const,
+            }, {
+                nodeId: connectedNodes[index + 1].id,
+                pinId: connectedNodes[index + 1].pins[0].id,
+                role: 'load' as const,
+            }],
+        })),
+    };
+}
+
+const measure = (text: string): number => text.length * 7;
+
+test('keeps the current column until a drop crosses an adjacent column midpoint', () => {
+    const chain = connectedGraph([
+        node('instance:left', 'instance', 'driver'),
+        node('instance:middle', 'instance', 'driver'),
+        node('instance:right', 'instance', 'load'),
+    ]);
+    const placement = createPlacement(chain, assignment([
+        ['instance:left'],
+        ['instance:middle'],
+        ['instance:right'],
+    ]));
+    const rendered = layoutSchematic(chain, placement, measure);
+    const middle = rendered.nodes.get('instance:middle')!;
+    const rightColumn = rendered.columns[2];
+    const rightMidpoint = rightColumn.x + rightColumn.width / 2;
+
+    const before = snapNodeToPlacement(
+        chain,
+        placement,
+        rendered,
+        'instance:middle',
+        { x: rightMidpoint - 1, y: middle.bounds.y + middle.bounds.height / 2 },
+        measure
+    );
+    const atMidpoint = snapNodeToPlacement(
+        chain,
+        placement,
+        rendered,
+        'instance:middle',
+        { x: rightMidpoint, y: middle.bounds.y + middle.bounds.height / 2 },
+        measure
+    );
+    const after = snapNodeToPlacement(
+        chain,
+        placement,
+        rendered,
+        'instance:middle',
+        { x: rightMidpoint + 1, y: middle.bounds.y + middle.bounds.height / 2 },
+        measure
+    );
+
+    assert.equal(before.nodes['instance:middle'].column, 1);
+    assert.equal(atMidpoint.nodes['instance:middle'].column, 1);
+    assert.equal(after.nodes['instance:middle'].column, 2);
+});
+
+test('snaps leftward and clamps finite drops to the outer legal internal columns', () => {
+    const chain = connectedGraph([
+        node('instance:left', 'instance', 'driver'),
+        node('instance:middle', 'instance', 'driver'),
+        node('instance:right', 'instance', 'load'),
+    ]);
+    const placement = createPlacement(chain, assignment([
+        ['instance:left'],
+        ['instance:middle'],
+        ['instance:right'],
+    ]));
+    const rendered = layoutSchematic(chain, placement, measure);
+    const middle = rendered.nodes.get('instance:middle')!;
+    const y = middle.bounds.y + middle.bounds.height / 2;
+
+    assert.equal(snapNodeToPlacement(
+        chain, placement, rendered, 'instance:middle',
+        { x: Number.MIN_SAFE_INTEGER, y }, measure
+    ).nodes['instance:middle'].column, 0);
+    assert.equal(snapNodeToPlacement(
+        chain, placement, rendered, 'instance:middle',
+        { x: Number.MAX_SAFE_INTEGER, y }, measure
+    ).nodes['instance:middle'].column, 2);
+});
+
+test('uses drop y for stable insertion order and semantic offset', () => {
+    const firstParallel = node('instance:first-parallel', 'instance');
+    const special = node('__proto__', 'instance');
+    const lastParallel = node('instance:last-parallel', 'instance');
+    const parallel = graph([firstParallel, special, lastParallel]);
+    const columns = assignment([parallel.nodes.map(candidate => candidate.id)]);
+    const placement = createPlacement(parallel, columns);
+    const rendered = layoutSchematic(parallel, placement, measure);
+    const firstCenter = rendered.nodes.get(firstParallel.id)!.bounds.y
+        + rendered.nodes.get(firstParallel.id)!.bounds.height / 2;
+    const column = rendered.columns[0];
+    const snapped = snapNodeToPlacement(
+        parallel,
+        placement,
+        rendered,
+        special.id,
+        { x: column.x + column.width / 2, y: firstCenter },
+        measure
+    );
+    const originalSpecial = rendered.nodes.get(special.id)!;
+    const originalSpecialCenter = originalSpecial.bounds.y
+        + originalSpecial.bounds.height / 2;
+
+    assert.deepEqual(Object.keys(snapped.nodes), [
+        firstParallel.id,
+        special.id,
+        lastParallel.id,
+    ]);
+    assert.equal(snapped.nodes[firstParallel.id].order, 0);
+    assert.equal(snapped.nodes[special.id].order, 1);
+    assert.equal(snapped.nodes[lastParallel.id].order, 2);
+    assert.equal(snapped.nodes[special.id].fixed, true);
+    assert.equal(
+        snapped.nodes[special.id].yOffset,
+        firstCenter - originalSpecialCenter
+    );
+});
+
+test('keeps input output and inout boundary nodes in their assigned columns', () => {
+    const model = graph([input, first, output, inout]);
+    const columns = assignment([
+        [input.id],
+        [first.id],
+        [output.id, inout.id],
+    ]);
+    const placement = createPlacement(model, columns);
+    const rendered = layoutSchematic(model, placement, measure);
+
+    for (const boundary of [input, output, inout]) {
+        const current = placement.nodes[boundary.id].column;
+        const snapped = snapNodeToPlacement(
+            model,
+            placement,
+            rendered,
+            boundary.id,
+            {
+                x: current === 0 ? Number.MAX_SAFE_INTEGER : Number.MIN_SAFE_INTEGER,
+                y: 123,
+            },
+            measure
+        );
+        assert.equal(snapped.nodes[boundary.id].column, current);
+    }
 });

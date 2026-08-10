@@ -70,7 +70,11 @@ function testSecureSchematicWebviewHtml(): void {
 
 function layout(x: number, selectedObjectId?: string): SchematicLayout {
     return {
-        nodes: { node: { x, y: 20, fixed: true } },
+        placement: {
+            nodes: {
+                node: { column: 0, order: 0, yOffset: x, fixed: true },
+            },
+        },
         viewport: { x: 1, y: 2, zoom: 1 },
         minimap: true,
         ...(selectedObjectId === undefined ? {} : { selectedObjectId }),
@@ -85,8 +89,8 @@ function testSynchronousWebviewLayoutSnapshot(): void {
         'module:current',
         current
     );
-    previous.nodes.node.x = 500;
-    current.nodes.node.x = 1_000;
+    previous.placement.nodes.node.yOffset = 500;
+    current.placement.nodes.node.yOffset = 1_000;
 
     assert.deepStrictEqual(merged, {
         'module:previous': layout(5, 'instance:previous'),
@@ -130,7 +134,7 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
 
     const moduleA = layout(10);
     scheduler.schedule('module:a', 'revision:a1', moduleA);
-    moduleA.nodes.node.x = 999;
+    moduleA.placement.nodes.node.yOffset = 999;
     scheduler.schedule('module:b', 'revision:b1', layout(30));
     assert.strictEqual(pending.size, 2, 'module B must not cancel module A');
 
@@ -138,7 +142,7 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
     assert.deepStrictEqual(saves.map(save => [
         save.moduleKey,
         save.revision,
-        save.layout.nodes.node.x,
+        save.layout.placement.nodes.node.yOffset,
     ]), [
         ['module:a', 'revision:a1', 10],
         ['module:b', 'revision:b1', 30],
@@ -156,7 +160,7 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
 
     const flushedA = layout(60);
     scheduler.schedule('module:a', 'revision:a3', flushedA);
-    flushedA.nodes.node.x = 600;
+    flushedA.placement.nodes.node.yOffset = 600;
     scheduler.schedule('module:b', 'revision:b2', layout(70));
     scheduler.flush();
     assert.strictEqual(pending.size, 0);

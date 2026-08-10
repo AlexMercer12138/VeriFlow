@@ -5285,6 +5285,94 @@
     }
   });
 
+  // packages/schematic-core/dist/snapping.js
+  var require_snapping = __commonJS({
+    "packages/schematic-core/dist/snapping.js"(exports2) {
+      "use strict";
+      Object.defineProperty(exports2, "__esModule", { value: true });
+      exports2.snapNodeToPlacement = snapNodeToPlacement2;
+      var columns_1 = require_columns();
+      var layout_1 = require_layout();
+      var placement_1 = require_placement();
+      function centerY(bounds) {
+        return bounds.y + bounds.height / 2;
+      }
+      function legalInternalColumns(graph2, assignment) {
+        return new Set(graph2.nodes.flatMap((node) => {
+          if (node.kind === "port")
+            return [];
+          const column = assignment.nodeColumn.get(node.id);
+          return column === void 0 ? [] : [column];
+        }));
+      }
+      function targetColumn(graph2, assignment, placement, renderModel, nodeId, dropX) {
+        const current = placement.nodes[nodeId]?.column;
+        if (current === void 0 || !Number.isFinite(dropX))
+          return current ?? 0;
+        const node = graph2.nodes.find((candidate) => candidate.id === nodeId);
+        if (!node || node.kind === "port")
+          return current;
+        const internal = legalInternalColumns(graph2, assignment);
+        const columns = renderModel.columns.filter((column) => internal.has(column.index)).map((column) => ({
+          index: column.index,
+          midpoint: column.x + column.width / 2
+        })).sort((left4, right4) => left4.index - right4.index);
+        const currentGeometry = columns.find((column) => column.index === current);
+        if (!currentGeometry)
+          return current;
+        let target = current;
+        if (dropX > currentGeometry.midpoint) {
+          for (const column of columns) {
+            if (column.index > current && dropX > column.midpoint) {
+              target = column.index;
+            }
+          }
+        } else if (dropX < currentGeometry.midpoint) {
+          for (let index2 = columns.length - 1; index2 >= 0; index2 -= 1) {
+            const column = columns[index2];
+            if (column.index < current && dropX < column.midpoint) {
+              target = column.index;
+            }
+          }
+        }
+        return target;
+      }
+      function insertionOrder(graph2, placement, renderModel, nodeId, column, dropY) {
+        const sourceOrder = new Map(graph2.nodes.map((node, index2) => [node.id, index2]));
+        const candidates = graph2.nodes.flatMap((node) => {
+          if (node.id === nodeId || placement.nodes[node.id]?.column !== column)
+            return [];
+          const rendered = renderModel.nodes.get(node.id);
+          return rendered ? [{
+            id: node.id,
+            y: centerY(rendered.bounds),
+            order: placement.nodes[node.id].order
+          }] : [];
+        });
+        candidates.sort((left4, right4) => left4.y - right4.y || left4.order - right4.order || (sourceOrder.get(left4.id) ?? 0) - (sourceOrder.get(right4.id) ?? 0) || (left4.id < right4.id ? -1 : left4.id > right4.id ? 1 : 0));
+        let order = 0;
+        while (order < candidates.length && candidates[order].y <= dropY)
+          order += 1;
+        return order;
+      }
+      function snapNodeToPlacement2(graph2, placement, renderModel, nodeId, dropCenter, measureText2) {
+        const assignment = (0, columns_1.assignColumns)(graph2);
+        const normalized = (0, placement_1.mergePlacement)(graph2, assignment, placement);
+        const selected = renderModel.nodes.get(nodeId);
+        if (!selected || normalized.nodes[nodeId] === void 0)
+          return normalized;
+        const selectedCenterY = centerY(selected.bounds);
+        const dropY = Number.isFinite(dropCenter.y) && Math.abs(dropCenter.y) <= Number.MAX_SAFE_INTEGER ? dropCenter.y : selectedCenterY;
+        const column = targetColumn(graph2, assignment, normalized, renderModel, nodeId, dropCenter.x);
+        const order = insertionOrder(graph2, normalized, renderModel, nodeId, column, dropY);
+        const provisional = (0, placement_1.moveNodeToColumn)(graph2, assignment, normalized, nodeId, column, order, 0);
+        const provisionalNode = (0, layout_1.layoutSchematic)(graph2, provisional, measureText2).nodes.get(nodeId);
+        const yOffset = provisionalNode === void 0 ? 0 : dropY - centerY(provisionalNode.bounds);
+        return (0, placement_1.moveNodeToColumn)(graph2, assignment, provisional, nodeId, column, order, yOffset);
+      }
+    }
+  });
+
   // packages/schematic-core/dist/index.js
   var require_dist = __commonJS({
     "packages/schematic-core/dist/index.js"(exports2) {
@@ -5337,6 +5425,7 @@
         return geometry_1.vertical;
       } });
       __exportStar(require_junctions(), exports2);
+      __exportStar(require_snapping(), exports2);
       var router_1 = require_router();
       Object.defineProperty(exports2, "routeNetworks", { enumerable: true, get: function() {
         return router_1.routeNetworks;
@@ -44914,10 +45003,11 @@
   }
   function cloneSchematicLayout(layout) {
     return {
-      nodes: Object.fromEntries(Object.entries(layout.nodes).map(([id, node]) => [
-        id,
-        { ...node }
-      ])),
+      placement: {
+        nodes: Object.fromEntries(Object.entries(layout.placement.nodes).map(
+          ([id, node]) => [id, { ...node }]
+        ))
+      },
       viewport: { ...layout.viewport },
       minimap: layout.minimap,
       ...layout.selectedObjectId === void 0 ? {} : { selectedObjectId: layout.selectedObjectId }
@@ -45453,6 +45543,7 @@
   graph.use(selection);
   var currentGraph;
   var currentLayout;
+  var currentRenderModel;
   var currentRevision = "";
   var selectedModuleKey = "";
   var applyingLayout = false;
@@ -45668,7 +45759,8 @@
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
-    const renderModel = (0, import_schematic_core.layoutSchematic)(model, void 0, measureNodeText);
+    const renderModel = (0, import_schematic_core.layoutSchematic)(model, layout.placement, measureNodeText);
+    currentRenderModel = renderModel;
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
         const rendered = renderModel.nodes.get(node.id);
@@ -45769,6 +45861,7 @@
     applyingLayout = false;
     currentGraph = void 0;
     currentLayout = void 0;
+    currentRenderModel = void 0;
     currentRevision = "";
     selectedModuleKey = "";
     searchMatches = [];
@@ -45931,19 +46024,27 @@
     event.preventDefault();
     post(command);
   });
-  graph.on("node:change:position", ({ node }) => {
-    if (applyingLayout || !currentLayout) return;
+  graph.on("node:moved", ({ node }) => {
+    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
+      return;
+    }
     const data2 = cellData(node);
     if (!data2?.node) return;
     const position2 = node.getPosition();
     const size = node.getSize();
-    currentLayout.nodes[data2.node.id] = {
-      x: position2.x + size.width / 2,
-      y: position2.y + size.height / 2,
-      fixed: true
-    };
+    currentLayout.placement = (0, import_schematic_core.snapNodeToPlacement)(
+      currentGraph,
+      currentLayout.placement,
+      currentRenderModel,
+      data2.node.id,
+      {
+        x: position2.x + size.width / 2,
+        y: position2.y + size.height / 2
+      },
+      measureNodeText
+    );
+    renderSchematic(currentGraph, currentLayout);
     scheduleLayoutSave();
-    updateMinimapAvailability();
   });
   graph.on("scale", updateViewportFromGraph);
   graph.on("translate", updateViewportFromGraph);

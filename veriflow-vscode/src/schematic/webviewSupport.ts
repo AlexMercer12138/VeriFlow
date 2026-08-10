@@ -256,10 +256,11 @@ export function placeSchematicNetworkLabel(
 
 export function cloneSchematicLayout(layout: SchematicLayout): SchematicLayout {
     return {
-        nodes: Object.fromEntries(Object.entries(layout.nodes).map(([id, node]) => [
-            id,
-            { ...node },
-        ])),
+        placement: {
+            nodes: Object.fromEntries(Object.entries(layout.placement.nodes).map(
+                ([id, node]) => [id, { ...node }]
+            )),
+        },
         viewport: { ...layout.viewport },
         minimap: layout.minimap,
         ...(layout.selectedObjectId === undefined

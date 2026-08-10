@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import type { HdlDocument } from '../core/hdl/model';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
+import type { SchematicLayout } from '../schematic/layoutStore';
 import { SchematicNavigationRegistry } from '../schematic/navigationRegistry';
 import type { HostEvent } from '../schematic/protocol';
 import { parseWithRealWorker } from './helpers/hdlWorkerFixture';
@@ -56,6 +57,21 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
         await new Promise<void>(resolve => setImmediate(resolve));
     }
     throw new Error(`Timed out waiting for ${label}`);
+}
+
+function offsetLayout(layout: SchematicLayout, yOffset: number): SchematicLayout {
+    return {
+        ...layout,
+        placement: {
+            nodes: Object.fromEntries(Object.entries(layout.placement.nodes).map(
+                ([id, node]) => [id, {
+                    ...node,
+                    yOffset: node.yOffset + yOffset,
+                    fixed: true,
+                }]
+            )),
+        },
+    };
 }
 
 type ProviderHarness = {
@@ -1318,12 +1334,7 @@ async function testLayoutIntentRemainsScopedToItsModuleWhileSaveIsPending(): Pro
             (event): event is Extract<HostEvent, { type: 'graph' }> =>
                 event.type === 'graph' && event.graph.moduleKey === firstKey
         )!;
-        const firstLayout = {
-            ...firstGraph.layout,
-            nodes: Object.fromEntries(Object.entries(firstGraph.layout.nodes).map(
-                ([id, node]) => [id, { ...node, x: node.x + 777, fixed: true }]
-            )),
-        };
+        const firstLayout = offsetLayout(firstGraph.layout, 777);
         harness.setSaveGate(firstSaveGate);
         harness.send({
             type: 'saveLayout',
@@ -1522,16 +1533,7 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
         const moduleKey = harness.moduleKeys[0];
         const initialGraph = harness.messages.find(event => event.type === 'graph');
         assert.ok(initialGraph?.type === 'graph');
-        const pinnedLayout = {
-            ...initialGraph.layout,
-            nodes: Object.fromEntries(Object.entries(initialGraph.layout.nodes).map(
-                ([id, node]) => [id, {
-                    x: node.x + 1000,
-                    y: node.y + 1000,
-                    fixed: true,
-                }]
-            )),
-        };
+        const pinnedLayout = offsetLayout(initialGraph.layout, 1000);
         const initialSaveGate = createGate();
         harness.setSaveGate(initialSaveGate);
         harness.send({
@@ -1566,10 +1568,10 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
         const latest = harness.messages.filter(event => event.type === 'graph').at(-1);
         assert.ok(latest?.type === 'graph');
         assert.ok(latest.graph.nodes.some(node => node.id === 'port:b'));
-        assert.strictEqual(latest.layout.nodes['port:a'].fixed, false);
+        assert.strictEqual(latest.layout.placement.nodes['port:a'].fixed, false);
         assert.notDeepStrictEqual(
-            latest.layout.nodes['port:a'],
-            pinnedLayout.nodes['port:a']
+            latest.layout.placement.nodes['port:a'],
+            pinnedLayout.placement.nodes['port:a']
         );
         relayoutSaveGate.allow();
         await new Promise<void>(resolve => setImmediate(resolve));
@@ -1597,16 +1599,7 @@ async function testDelayedSaveRebasesOntoCurrentGraphRevision(): Promise<void> {
         const oldEvent = harness.messages.filter(event => event.type === 'graph').at(-1);
         assert.ok(oldEvent?.type === 'graph');
         assert.ok(oldEvent.revision.length > 0);
-        const oldLayout = {
-            ...oldEvent.layout,
-            nodes: Object.fromEntries(Object.entries(oldEvent.layout.nodes).map(
-                ([id, position]) => [id, {
-                    ...position,
-                    y: position.y + 123,
-                    fixed: true,
-                }]
-            )),
-        };
+        const oldLayout = offsetLayout(oldEvent.layout, 123);
 
         harness.changeDocument(refreshedText, 2);
         await waitFor(
@@ -1660,10 +1653,13 @@ async function testDelayedSaveRebasesOntoCurrentGraphRevision(): Promise<void> {
         )!;
         assert.notStrictEqual(rebased.revision, oldEvent.revision);
         assert.ok(rebased.graph.nodes.some(node => node.id === 'port:new_o'));
-        assert.strictEqual(rebased.layout.nodes['port:shared_i'].fixed, true);
         assert.strictEqual(
-            rebased.layout.nodes['port:shared_i'].y,
-            oldLayout.nodes['port:shared_i'].y
+            rebased.layout.placement.nodes['port:shared_i'].fixed,
+            true
+        );
+        assert.strictEqual(
+            rebased.layout.placement.nodes['port:shared_i'].yOffset,
+            oldLayout.placement.nodes['port:shared_i'].yOffset
         );
 
         const replayStart = harness.messages.length;
@@ -1728,17 +1724,7 @@ async function testDelayedSaveRebasesAfterModuleRoundTrip(): Promise<void> {
             (event): event is Extract<HostEvent, { type: 'graph' }> =>
                 event.type === 'graph' && event.graph.moduleKey === firstKey
         )!;
-        const delayedLayout = {
-            ...firstEvent.layout,
-            nodes: {
-                ...firstEvent.layout.nodes,
-                'port:first_i': {
-                    ...firstEvent.layout.nodes['port:first_i'],
-                    y: firstEvent.layout.nodes['port:first_i'].y + 144,
-                    fixed: true,
-                },
-            },
-        };
+        const delayedLayout = offsetLayout(firstEvent.layout, 144);
 
         harness.send({ type: 'selectModule', moduleKey: secondKey });
         await waitFor(
@@ -1776,10 +1762,13 @@ async function testDelayedSaveRebasesAfterModuleRoundTrip(): Promise<void> {
             event.type === 'graph' && event.graph.moduleKey === firstKey
         ).at(-1);
         assert.ok(rebased?.type === 'graph');
-        assert.strictEqual(rebased.layout.nodes['port:first_i'].fixed, true);
         assert.strictEqual(
-            rebased.layout.nodes['port:first_i'].y,
-            delayedLayout.nodes['port:first_i'].y
+            rebased.layout.placement.nodes['port:first_i'].fixed,
+            true
+        );
+        assert.strictEqual(
+            rebased.layout.placement.nodes['port:first_i'].yOffset,
+            delayedLayout.placement.nodes['port:first_i'].yOffset
         );
     } finally {
         await harness.dispose();

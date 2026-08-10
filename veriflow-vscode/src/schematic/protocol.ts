@@ -1,17 +1,16 @@
 import type { SourceSpan } from '../core/hdl/model';
 import type { SchematicGraph } from './graphModel';
-import type { SchematicLayout } from './layoutStore';
+import {
+    normalizeSchematicLayout,
+    type SchematicLayout,
+} from './layoutStore';
 
-/** Bounds work on untrusted layouts while accommodating very large schematics. */
-const MAX_LAYOUT_NODES = 50_000;
 /** Bounds source-map work while accommodating deeply composed include expansions. */
 const MAX_COMPOSITE_PARTS = 5_000;
 
 export type WebviewCommand =
     | { type: 'ready' }
     | { type: 'selectModule'; moduleKey: string }
-    // The Task 5 bridge keeps the webview wire payload absolute. The provider
-    // converts it to semantic placement before schema-v2 persistence.
     | {
         type: 'saveLayout';
         moduleKey: string;
@@ -53,97 +52,8 @@ function ownValue(value: Record<string, unknown>, key: string): unknown {
         : undefined;
 }
 
-function finiteNumber(value: unknown): value is number {
-    return typeof value === 'number' && Number.isFinite(value);
-}
-
 function sourceOffset(value: unknown): value is number {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
-function normalizeNodeLayout(value: unknown): SchematicLayout['nodes'][string] | undefined {
-    if (!isRecord(value)) {
-        return undefined;
-    }
-
-    const x = ownValue(value, 'x');
-    const y = ownValue(value, 'y');
-    const fixed = ownValue(value, 'fixed');
-    if (!finiteNumber(x) || !finiteNumber(y) || typeof fixed !== 'boolean') {
-        return undefined;
-    }
-    return { x, y, fixed };
-}
-
-function defineOwnNode(
-    nodes: SchematicLayout['nodes'],
-    id: string,
-    node: SchematicLayout['nodes'][string]
-): void {
-    Object.defineProperty(nodes, id, {
-        value: node,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-    });
-}
-
-function normalizeAbsoluteLayout(value: unknown): SchematicLayout | undefined {
-    if (!isRecord(value)) {
-        return undefined;
-    }
-
-    const nodesValue = ownValue(value, 'nodes');
-    const viewportValue = ownValue(value, 'viewport');
-    const minimap = ownValue(value, 'minimap');
-    const selectedObjectId = ownValue(value, 'selectedObjectId');
-    if (!isRecord(nodesValue)
-        || !isRecord(viewportValue)
-        || typeof minimap !== 'boolean'
-        || (selectedObjectId !== undefined && typeof selectedObjectId !== 'string')) {
-        return undefined;
-    }
-
-    const viewportX = ownValue(viewportValue, 'x');
-    const viewportY = ownValue(viewportValue, 'y');
-    const viewportZoom = ownValue(viewportValue, 'zoom');
-    if (!finiteNumber(viewportX)
-        || !finiteNumber(viewportY)
-        || !finiteNumber(viewportZoom)) {
-        return undefined;
-    }
-
-    const nodes: SchematicLayout['nodes'] = {};
-    let nodeCount = 0;
-    for (const id in nodesValue) {
-        nodeCount += 1;
-        if (nodeCount > MAX_LAYOUT_NODES) {
-            return undefined;
-        }
-        if (!Object.prototype.propertyIsEnumerable.call(nodesValue, id)) {
-            continue;
-        }
-        const candidate = nodesValue[id];
-        const normalizedNode = normalizeNodeLayout(candidate);
-        if (!normalizedNode) {
-            return undefined;
-        }
-        defineOwnNode(nodes, id, normalizedNode);
-    }
-
-    const layout: SchematicLayout = {
-        nodes,
-        viewport: {
-            x: viewportX,
-            y: viewportY,
-            zoom: Math.min(4, Math.max(0.1, viewportZoom)),
-        },
-        minimap,
-    };
-    if (selectedObjectId !== undefined) {
-        layout.selectedObjectId = selectedObjectId;
-    }
-    return layout;
 }
 
 function normalizeSourceSpan(value: unknown): SourceSpan | undefined {
@@ -232,7 +142,7 @@ export function parseWebviewCommand(value: unknown): WebviewCommand | undefined 
                 if (!nonEmptyString(moduleKey) || !nonEmptyString(revision)) {
                     return undefined;
                 }
-                const layout = normalizeAbsoluteLayout(ownValue(value, 'layout'));
+                const layout = normalizeSchematicLayout(ownValue(value, 'layout'));
                 return layout
                     ? { type: 'saveLayout', moduleKey, revision, layout }
                     : undefined;

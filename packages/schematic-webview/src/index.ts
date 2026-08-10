@@ -18,6 +18,7 @@ import {
 
 import {
     layoutSchematic,
+    snapNodeToPlacement,
     SCHEMATIC_NETWORK_LABEL_LAYOUT,
     SCHEMATIC_NETWORK_LABEL_STYLE,
     SCHEMATIC_NODE_LAYOUT,
@@ -624,6 +625,7 @@ graph.use(selection);
 
 let currentGraph: SchematicGraph | undefined;
 let currentLayout: SchematicLayout | undefined;
+let currentRenderModel: SchematicRenderModel | undefined;
 let currentRevision = '';
 let selectedModuleKey = '';
 let applyingLayout = false;
@@ -885,7 +887,8 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
-    const renderModel = layoutSchematic(model, undefined, measureNodeText);
+    const renderModel = layoutSchematic(model, layout.placement, measureNodeText);
+    currentRenderModel = renderModel;
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {
             const rendered = renderModel.nodes.get(node.id);
@@ -996,6 +999,7 @@ function clearSchematicState(): void {
     applyingLayout = false;
     currentGraph = undefined;
     currentLayout = undefined;
+    currentRenderModel = undefined;
     currentRevision = '';
     selectedModuleKey = '';
     searchMatches = [];
@@ -1174,19 +1178,27 @@ dom.canvas.addEventListener('keydown', event => {
     post(command);
 });
 
-graph.on('node:change:position', ({ node }) => {
-    if (applyingLayout || !currentLayout) return;
+graph.on('node:moved', ({ node }) => {
+    if (applyingLayout || !currentGraph || !currentLayout || !currentRenderModel) {
+        return;
+    }
     const data = cellData(node);
     if (!data?.node) return;
     const position = node.getPosition();
     const size = node.getSize();
-    currentLayout.nodes[data.node.id] = {
-        x: position.x + size.width / 2,
-        y: position.y + size.height / 2,
-        fixed: true,
-    };
+    currentLayout.placement = snapNodeToPlacement(
+        currentGraph,
+        currentLayout.placement,
+        currentRenderModel,
+        data.node.id,
+        {
+            x: position.x + size.width / 2,
+            y: position.y + size.height / 2,
+        },
+        measureNodeText
+    );
+    renderSchematic(currentGraph, currentLayout);
     scheduleLayoutSave();
-    updateMinimapAvailability();
 });
 
 graph.on('scale', updateViewportFromGraph);
