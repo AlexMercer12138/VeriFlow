@@ -175,18 +175,24 @@ type AdjacentDescriptor = Readonly<{
 type ChannelLegRole = 'source' | 'target' | 'shared'
     | 'feedback-source' | 'feedback-target';
 
-type ChannelLegIntent = Readonly<{
-    key: string;
-    networkId: string;
-    channel: number;
+type ChannelLegAttachment = Readonly<{
     attachmentSide: 0 | 1;
     escapeDirection: -1 | 1;
     anchorX: number;
     anchorY: number;
     row: number;
     role: ChannelLegRole;
+    nodeId: string;
+    pinId: string;
     terminalIdentity: string;
     peerIdentity: string;
+}>;
+
+type ChannelLegIntent = Readonly<{
+    key: string;
+    networkId: string;
+    channel: number;
+    attachments: readonly ChannelLegAttachment[];
 }>;
 
 type ChannelLegHandle = Readonly<{
@@ -194,6 +200,18 @@ type ChannelLegHandle = Readonly<{
     key: string;
     channel: number;
     reuseKey?: string;
+    intent: ChannelLegIntent;
+}>;
+
+type ActiveChannelLeg = Readonly<{
+    key: string;
+    networkId: string;
+    channel: number;
+    attachments: readonly ChannelLegAttachment[];
+}>;
+
+type ChannelTrackAssignment = Readonly<{
+    resolve: (handle: ChannelLegHandle) => number;
 }>;
 
 type OrdinaryCorridorDemand = Readonly<{
@@ -275,6 +293,9 @@ const ROUTING_DIAGNOSTICS = Symbol.for(
 );
 const ROUTING_TRANSACTION_PROBE = Symbol.for(
     '@veriflow/schematic-core/routing-transaction-probe'
+);
+const ROUTING_CHANNEL_CONSTRAINT_PROBE = Symbol.for(
+    '@veriflow/schematic-core/routing-channel-constraint-probe'
 );
 let latestRoutingDiagnostics: RoutingDiagnostics = Object.freeze({
     realizedDemandSignatures: 0,
@@ -421,9 +442,9 @@ function channelLegRoleRank(role: ChannelLegRole): number {
     }
 }
 
-function compareChannelLegIntents(
-    left: ChannelLegIntent,
-    right: ChannelLegIntent
+function compareChannelLegAttachments(
+    left: ChannelLegAttachment,
+    right: ChannelLegAttachment
 ): number {
     return left.attachmentSide - right.attachmentSide
         || right.escapeDirection - left.escapeDirection
@@ -432,8 +453,41 @@ function compareChannelLegIntents(
         || left.row - right.row
         || channelLegRoleRank(left.role) - channelLegRoleRank(right.role)
         || left.terminalIdentity.localeCompare(right.terminalIdentity)
-        || left.peerIdentity.localeCompare(right.peerIdentity)
-        || left.networkId.localeCompare(right.networkId);
+        || left.peerIdentity.localeCompare(right.peerIdentity);
+}
+
+function compareActiveChannelLegs(
+    left: ActiveChannelLeg,
+    right: ActiveChannelLeg
+): number {
+    const count = Math.min(left.attachments.length, right.attachments.length);
+    for (let index = 0; index < count; index += 1) {
+        const order = compareChannelLegAttachments(
+            left.attachments[index],
+            right.attachments[index]
+        );
+        if (order !== 0) return order;
+    }
+    return left.attachments.length - right.attachments.length
+        || left.networkId.localeCompare(right.networkId)
+        || left.key.localeCompare(right.key);
+}
+
+function channelLegAttachmentKey(attachment: ChannelLegAttachment): string {
+    return [
+        attachment.attachmentSide,
+        attachment.escapeDirection,
+        attachment.anchorX,
+        attachment.anchorY,
+        attachment.row,
+        attachment.role,
+        attachment.terminalIdentity,
+        attachment.peerIdentity,
+    ].join('\0');
+}
+
+function physicalChannelLegKey(handle: ChannelLegHandle): string {
+    return handle.reuseKey ?? handle.key;
 }
 
 class RoutingAllocationJournal {
@@ -467,6 +521,7 @@ class RoutingAllocationJournal {
                 kind: 'channel-leg',
                 key: existing.key,
                 channel: existing.channel,
+                intent,
             });
         }
         const handle = allocateChannelTrack(
@@ -484,34 +539,149 @@ class RoutingAllocationJournal {
             kind: 'channel-leg',
             key: intent.key,
             channel: intent.channel,
+            intent,
         });
     }
 
-    resolveChannelTrack(handle: ChannelLegHandle): number {
-        if (handle.reuseKey) {
-            return this.resolveChannelTrack(Object.freeze({
-                kind: 'channel-leg',
-                key: handle.reuseKey,
-                channel: handle.channel,
-            }));
-        }
-        const intent = this.channelLegs.get(handle.key);
-        if (!intent || intent.channel !== handle.channel) {
-            throw new Error(`unknown channel leg ${handle.key}`);
-        }
-        const ordered = [...this.channelLegs.values()]
-            .filter(candidate => candidate.channel === handle.channel)
-            .sort(compareChannelLegIntents);
-        const index = ordered.findIndex(candidate => candidate.key === handle.key);
-        if (index < 0) throw new Error(`unknown channel leg ${handle.key}`);
-        return index;
-    }
-
-    channelAssignmentSignature(): string {
-        const ordered = [...this.channelLegs.values()].sort((left, right) =>
-            left.channel - right.channel || compareChannelLegIntents(left, right)
+    channelAssignment(
+        handles: readonly ChannelLegHandle[],
+        geometry: RealizedRoutingGrid
+    ): ChannelTrackAssignment {
+        const geometryNodes = new Map(
+            geometry.nodes.map(node => [node.id, node])
         );
-        return ordered.map(intent => `${intent.channel}:${intent.key}`).join('|');
+        const mutable = new Map<string, {
+            key: string;
+            networkId: string;
+            channel: number;
+            attachments: Map<string, ChannelLegAttachment>;
+        }>();
+        for (const handle of handles) {
+            const key = physicalChannelLegKey(handle);
+            const allocated = this.channelLegs.get(key);
+            if (!allocated || allocated.channel !== handle.channel) {
+                throw new Error(`unknown channel leg ${key}`);
+            }
+            const existing = mutable.get(key);
+            if (existing && existing.networkId !== handle.intent.networkId) {
+                throw new RangeError(
+                    `channel leg ${key} cannot be shared by different networks`
+                );
+            }
+            const active = existing ?? {
+                key,
+                networkId: handle.intent.networkId,
+                channel: handle.channel,
+                attachments: new Map<string, ChannelLegAttachment>(),
+            };
+            for (const attachment of handle.intent.attachments) {
+                const node = geometryNodes.get(attachment.nodeId)!;
+                const anchor = node.pinAnchors.find(candidate =>
+                    candidate.id === attachment.pinId
+                )!.point;
+                const realized = Object.freeze({
+                    ...attachment,
+                    anchorX: anchor.x,
+                    anchorY: anchor.y,
+                });
+                active.attachments.set(
+                    channelLegAttachmentKey(realized),
+                    realized
+                );
+            }
+            mutable.set(key, active);
+        }
+
+        const byChannel = new Map<number, ActiveChannelLeg[]>();
+        for (const active of mutable.values()) {
+            const leg = Object.freeze({
+                key: active.key,
+                networkId: active.networkId,
+                channel: active.channel,
+                attachments: Object.freeze(
+                    [...active.attachments.values()].sort(
+                        compareChannelLegAttachments
+                    )
+                ),
+            });
+            const channel = byChannel.get(leg.channel) ?? [];
+            channel.push(leg);
+            byChannel.set(leg.channel, channel);
+        }
+
+        const tracks = new Map<string, number>();
+        for (const [channelIndex, legs] of byChannel) {
+            if (legs.length === 1) {
+                tracks.set(legs[0].key, 0);
+                continue;
+            }
+            const byKey = new Map(legs.map(leg => [leg.key, leg]));
+            const outgoing = new Map(legs.map(leg => [leg.key, new Set<string>()]));
+            const indegree = new Map(legs.map(leg => [leg.key, 0]));
+            const attachmentsByY = new Map<number, {
+                left: Set<string>;
+                right: Set<string>;
+            }>();
+            for (const leg of legs) {
+                for (const attachment of leg.attachments) {
+                    const entries = attachmentsByY.get(attachment.anchorY) ?? {
+                        left: new Set<string>(),
+                        right: new Set<string>(),
+                    };
+                    entries[attachment.escapeDirection > 0 ? 'left' : 'right']
+                        .add(leg.key);
+                    attachmentsByY.set(attachment.anchorY, entries);
+                }
+            }
+            for (const entries of attachmentsByY.values()) {
+                for (const leftKey of entries.left) {
+                    for (const rightKey of entries.right) {
+                        if (leftKey === rightKey) continue;
+                        const left = byKey.get(leftKey)!;
+                        const right = byKey.get(rightKey)!;
+                        if (left.networkId === right.networkId) continue;
+                        const edges = outgoing.get(leftKey)!;
+                        if (edges.has(rightKey)) continue;
+                        edges.add(rightKey);
+                        indegree.set(rightKey, indegree.get(rightKey)! + 1);
+                    }
+                }
+            }
+
+            const ready = legs.filter(leg => indegree.get(leg.key) === 0)
+                .sort(compareActiveChannelLegs);
+            const ordered: ActiveChannelLeg[] = [];
+            while (ready.length > 0) {
+                const leg = ready.shift()!;
+                ordered.push(leg);
+                for (const nextKey of outgoing.get(leg.key)!) {
+                    const nextIndegree = indegree.get(nextKey)! - 1;
+                    indegree.set(nextKey, nextIndegree);
+                    if (nextIndegree === 0) {
+                        ready.push(byKey.get(nextKey)!);
+                        ready.sort(compareActiveChannelLegs);
+                    }
+                }
+            }
+            if (ordered.length !== legs.length) {
+                throw new RangeError(
+                    `infeasible shared channel topology in channel ${channelIndex}`
+                );
+            }
+            ordered.forEach((leg, track) => {
+                tracks.set(leg.key, track);
+            });
+        }
+        return Object.freeze({
+            resolve: (handle: ChannelLegHandle): number => {
+                const key = physicalChannelLegKey(handle);
+                const track = tracks.get(key);
+                if (track === undefined) {
+                    throw new Error(`inactive channel leg ${key}`);
+                }
+                return track;
+            },
+        });
     }
 
     actionCount(): number {
@@ -850,9 +1020,12 @@ function routingGeometryDemandSignature(
     ].join(',');
 }
 
-function routingDemandSignature(allocator: RoutingAllocationJournal): string {
+function routingDemandSignature(
+    allocator: RoutingAllocationJournal,
+    allocationSignature: string
+): string {
     return `${routingGeometryDemandSignature(allocator.grid)}\0${
-        allocator.channelAssignmentSignature()
+        allocationSignature
     }`;
 }
 
@@ -1085,21 +1258,40 @@ function channelLegIntent(
     locations: ReadonlyMap<string, NodeLocation>,
     geometry: RealizedRoutingGrid
 ): ChannelLegIntent {
-    const node = nodes.get(terminal.nodeId)!;
-    const pin = node.pinAnchors!.find(candidate => candidate.id === terminal.pinId)!;
-    const anchor = realizedPinPoint(geometry, terminal);
+    const attachment = (
+        current: RoutingTerminalRequest,
+        other: RoutingTerminalRequest,
+        attachmentRole: ChannelLegRole
+    ): ChannelLegAttachment => {
+        const node = nodes.get(current.nodeId)!;
+        const pin = node.pinAnchors!.find(
+            candidate => candidate.id === current.pinId
+        )!;
+        const anchor = realizedPinPoint(geometry, current);
+        return Object.freeze({
+            attachmentSide: node.column === channel ? 0 : 1,
+            escapeDirection: pin.x === 0 ? -1 : 1,
+            anchorX: anchor.x,
+            anchorY: anchor.y,
+            row: locations.get(current.nodeId)!.row,
+            role: attachmentRole,
+            nodeId: current.nodeId,
+            pinId: current.pinId,
+            terminalIdentity: terminalIdentity(current),
+            peerIdentity: terminalIdentity(other),
+        });
+    };
+    const attachments = role === 'shared'
+        ? [
+            attachment(terminal, peer, 'source'),
+            attachment(peer, terminal, 'target'),
+        ]
+        : [attachment(terminal, peer, role)];
     return Object.freeze({
         key,
         networkId,
         channel,
-        attachmentSide: node.column === channel ? 0 : 1,
-        escapeDirection: pin.x === 0 ? -1 : 1,
-        anchorX: anchor.x,
-        anchorY: anchor.y,
-        row: locations.get(terminal.nodeId)!.row,
-        role,
-        terminalIdentity: terminalIdentity(terminal),
-        peerIdentity: terminalIdentity(peer),
+        attachments: Object.freeze(attachments),
     });
 }
 
@@ -1141,6 +1333,7 @@ function aliasChannelLeg(
         key: intent.key,
         channel: intent.channel,
         reuseKey: physical.reuseKey ?? physical.key,
+        intent,
     });
 }
 
@@ -2542,6 +2735,42 @@ function usedPhysicalChannelLegKeys(
     return result;
 }
 
+function plannedChannelLegHandles(
+    plans: readonly PlannedPath[]
+): readonly ChannelLegHandle[] {
+    const result: ChannelLegHandle[] = [];
+    for (const plan of plans) {
+        if (plan.kind === 'adjacent') {
+            result.push(plan.track);
+        } else if (plan.kind === 'corridor') {
+            result.push(plan.sourceTrack, plan.targetTrack);
+        } else if (plan.kind === 'feedback') {
+            if (plan.sourceEscape.kind === 'channel') {
+                result.push(plan.sourceEscape.track);
+            }
+            if (plan.targetEscape.kind === 'channel') {
+                result.push(plan.targetEscape.track);
+            }
+        }
+    }
+    return Object.freeze(result);
+}
+
+function committedChannelMappingSignature(
+    handles: readonly ChannelLegHandle[],
+    assignment: ChannelTrackAssignment
+): string {
+    const physical = new Map<string, ChannelLegHandle>();
+    for (const handle of handles) {
+        physical.set(physicalChannelLegKey(handle), handle);
+    }
+    return [...physical.values()].map(handle => [
+        handle.channel,
+        physicalChannelLegKey(handle),
+        assignment.resolve(handle),
+    ].join(':')).join('|');
+}
+
 function routedPathLength(path: RoutedNetworkPath): number {
     return path.segments.reduce((sum, segment) => safeAdd(
         sum,
@@ -2583,18 +2812,35 @@ function preflightCandidateBranch(
     fullPathLength: number;
     geometryAddedLength: number;
     base: CandidatePreflightBase;
+    committedAllocationSignature: string;
 }> {
     const geometryDemand = routingGeometryDemandSignature(branch.allocator.grid);
-    const allocationSignature = branch.allocator.channelAssignmentSignature();
+    let realized = realizedByDemand.get(geometryDemand);
+    if (!realized) {
+        realized = branch.allocator.realizeBranch();
+        realizedByDemand.set(geometryDemand, realized);
+        diagnostics.realizedDemandSignatures += 1;
+    }
+    const committedHandles = plannedChannelLegHandles(plans);
+    const activeHandles = Object.freeze([
+        ...committedHandles,
+        ...plannedChannelLegHandles([candidate]),
+    ]);
+    const assignment = branch.allocator.channelAssignment(
+        activeHandles,
+        realized
+    );
+    const allocationSignature = committedChannelMappingSignature(
+        committedHandles,
+        assignment
+    );
+    const committedAllocationSignature = committedChannelMappingSignature(
+        activeHandles,
+        assignment
+    );
     const demand = `${geometryDemand}\0${allocationSignature}`;
     let base = basesByDemand.get(demand);
     if (!base) {
-        let realized = realizedByDemand.get(geometryDemand);
-        if (!realized) {
-            realized = branch.allocator.realizeBranch();
-            realizedByDemand.set(geometryDemand, realized);
-            diagnostics.realizedDemandSignatures += 1;
-        }
         if (geometryPreservesCommittedRoutes(
             committedBase.realized,
             realized
@@ -2615,7 +2861,7 @@ function preflightCandidateBranch(
                 plans,
                 feedbackNetworkIds,
                 realized,
-                handle => branch.allocator.resolveChannelTrack(handle)
+                assignment.resolve
             );
             diagnostics.committedRouteMaterializations += 1;
             base = Object.freeze({
@@ -2636,7 +2882,7 @@ function preflightCandidateBranch(
         candidate,
         base.realized,
         realizedNodesById,
-        handle => branch.allocator.resolveChannelTrack(handle)
+        assignment.resolve
     );
     const existingNetwork = base.routedNetworks.find(
         network => network.id === candidate.networkId
@@ -2696,6 +2942,7 @@ function preflightCandidateBranch(
         ),
         geometryAddedLength: base.wireLength - committedBase.wireLength,
         base,
+        committedAllocationSignature,
     });
 }
 
@@ -2810,12 +3057,13 @@ export function routeNetworks(
     };
     const initialRealized = allocator.preview();
     diagnostics.realizedDemandSignatures += 1;
+    const initialAssignment = allocator.channelAssignment([], initialRealized);
     const initialRoutedNetworks = materializeRoutedNetworks(
         networkSnapshots,
         plans,
         feedbackNetworkIds,
         initialRealized,
-        handle => allocator.resolveChannelTrack(handle)
+        initialAssignment.resolve
     );
     diagnostics.committedRouteMaterializations += 1;
     const realizedByDemand = new Map<string, RealizedRoutingGrid>([[
@@ -2830,7 +3078,7 @@ export function routeNetworks(
             initialRoutedNetworks
         ),
         wireLength: routedNetworksWireLength(initialRoutedNetworks),
-        allocationSignature: allocator.channelAssignmentSignature(),
+        allocationSignature: '',
     });
     let preferTopOnTie = true;
     for (const context of contexts) {
@@ -2881,7 +3129,10 @@ export function routeNetworks(
             let selected: EvaluatedRouteCandidate | undefined;
             let candidateFailure: RangeError | undefined;
             const basesByDemand = new Map<string, CandidatePreflightBase>([[
-                routingDemandSignature(allocator),
+                routingDemandSignature(
+                    allocator,
+                    committedBase.allocationSignature
+                ),
                 committedBase,
             ]]);
             const hadFeedbackCorridor = reuse.corridors.has('outer-top')
@@ -2927,7 +3178,11 @@ export function routeNetworks(
                         path: preflight.path,
                         addedCost,
                         trunkReuse: preflight.fullPathLength - pathLength,
-                        preflightBase: preflight.base,
+                        preflightBase: Object.freeze({
+                            ...preflight.base,
+                            allocationSignature:
+                                preflight.committedAllocationSignature,
+                        }),
                     });
                     if (!selected || compareEvaluatedCandidates(
                         locations,
@@ -3130,12 +3385,16 @@ export function routeNetworks(
         usedPhysicalChannelLegKeys(plans)
     );
     const realized = finalAllocator.realizeFinal();
+    const finalAssignment = finalAllocator.channelAssignment(
+        plannedChannelLegHandles(plans),
+        realized
+    );
     const routedNetworks = materializeRoutedNetworks(
         networkSnapshots,
         plans,
         feedbackNetworkIds,
         realized,
-        handle => finalAllocator.resolveChannelTrack(handle)
+        finalAssignment.resolve
     );
     validateAndReserveRoutes(realized, routedNetworks);
     diagnostics.committedChannelLegIntents = plannedChannelLegCount(plans);
@@ -3250,6 +3509,143 @@ function probeRoutingAllocationTransaction(
     });
 }
 
+type ChannelConstraintProbeSnapshot = Readonly<{
+    actionCount: number;
+    trackCount: number;
+}>;
+
+type ChannelConstraintProbeResult = Readonly<{
+    chainTracks: readonly number[];
+    cycleRejected: boolean;
+    before: ChannelConstraintProbeSnapshot;
+    afterRejected: ChannelConstraintProbeSnapshot;
+    afterCommitted: ChannelConstraintProbeSnapshot;
+}>;
+
+function probeChannelConstraintAssignment(): ChannelConstraintProbeResult {
+    const nodes = snapshotRoutingNodes([
+        {
+            id: 'left',
+            column: 0,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [10, 20, 30].map(y => ({
+                id: `right-${y}`,
+                x: 100,
+                y,
+            })),
+        },
+        {
+            id: 'right',
+            column: 1,
+            order: 0,
+            yOffset: 0,
+            size: { width: 100, height: 40 },
+            pinAnchors: [10, 20, 30].map(y => ({
+                id: `left-${y}`,
+                x: 0,
+                y,
+            })),
+        },
+    ]);
+    const allocator = new RoutingAllocationJournal(nodes, {});
+    const locations = nodeLocations(nodes);
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const geometry = allocator.preview();
+    const terminal = (
+        side: 'left' | 'right',
+        y: 10 | 20 | 30
+    ): RoutingTerminalRequest => Object.freeze({
+        nodeId: side,
+        pinId: `${side === 'left' ? 'right' : 'left'}-${y}`,
+        role: 'bidirectional',
+    });
+    const shared = (
+        key: string,
+        networkId: string,
+        first: RoutingTerminalRequest,
+        second: RoutingTerminalRequest
+    ): ChannelLegIntent => channelLegIntent(
+        key,
+        networkId,
+        0,
+        first,
+        second,
+        'shared',
+        nodesById,
+        locations,
+        geometry
+    );
+    const first = allocator.channelLeg(shared(
+        'probe:a',
+        'probe:a',
+        terminal('left', 10),
+        terminal('right', 30)
+    ));
+    const second = allocator.channelLeg(shared(
+        'probe:b',
+        'probe:b',
+        terminal('right', 10),
+        terminal('left', 20)
+    ));
+    const snapshot = (): ChannelConstraintProbeSnapshot => Object.freeze({
+        actionCount: allocator.actionCount(),
+        trackCount: allocator.grid.channels[0].tracks.trackCount,
+    });
+    const before = snapshot();
+
+    const rejectedBranch = allocator.fork();
+    const cycle = rejectedBranch.allocator.channelLeg(shared(
+        'probe:c',
+        'probe:c',
+        terminal('right', 20),
+        terminal('left', 30)
+    ));
+    let cycleRejected = false;
+    try {
+        rejectedBranch.allocator.channelAssignment(
+            [first, second, cycle],
+            rejectedBranch.allocator.realizeBranch()
+        );
+    } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        cycleRejected = true;
+    }
+    const afterRejected = snapshot();
+
+    const committedBranch = allocator.fork();
+    const accepted = committedBranch.allocator.channelLeg(channelLegIntent(
+        'probe:d',
+        'probe:d',
+        0,
+        terminal('right', 20),
+        terminal('left', 20),
+        'target',
+        nodesById,
+        locations,
+        geometry
+    ));
+    const assignment = committedBranch.allocator.channelAssignment(
+        [first, second, accepted],
+        committedBranch.allocator.realizeBranch()
+    );
+    const chainTracks = Object.freeze(
+        [first, second, accepted].map(assignment.resolve)
+    );
+    allocator.commit(committedBranch.allocator.actionsSince(
+        committedBranch.baseActionCount
+    ));
+
+    return Object.freeze({
+        chainTracks,
+        cycleRejected,
+        before,
+        afterRejected,
+        afterCommitted: snapshot(),
+    });
+}
+
 Object.defineProperty(routeNetworks, ROUTING_DIAGNOSTICS, {
     configurable: false,
     enumerable: false,
@@ -3261,4 +3657,11 @@ Object.defineProperty(routeNetworks, ROUTING_TRANSACTION_PROBE, {
     enumerable: false,
     writable: false,
     value: probeRoutingAllocationTransaction,
+});
+
+Object.defineProperty(routeNetworks, ROUTING_CHANNEL_CONSTRAINT_PROBE, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: probeChannelConstraintAssignment,
 });

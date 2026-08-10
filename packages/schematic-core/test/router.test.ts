@@ -194,6 +194,7 @@ test('separates different networks on a shared adjacent channel', () => {
         network.paths[0].segments.map(segment => segment.orientation).join('-')
             === 'horizontal-vertical-horizontal-vertical-horizontal'
     ), true);
+    assertEveryAllocatedTrackReferenced(route);
 });
 
 test('routes fan-out as one tree and reuses the same-network trunk', () => {
@@ -1271,6 +1272,55 @@ test('globally orders mixed ordinary and feedback channel legs', () => {
     assertEveryTerminalAnchorConnected(route, networks);
 });
 
+test('orders a feedback source before both attachments of a shared leg', () => {
+    const nodes = [
+        routingNode('left-top', 0, 0),
+        routingNode('left-middle', 0, 1),
+        routingNode('left-bottom', 0, 2),
+        routingNode('right-top', 1, 0),
+        routingNode('right-middle', 1, 1),
+    ];
+    const routeWithIds = (ordinaryId: string, feedbackId: string) => {
+        const networks: RoutingNetworkRequest[] = [
+            {
+                id: ordinaryId,
+                terminals: [
+                    { nodeId: 'left-top', pinId: 'right', role: 'driver' },
+                    { nodeId: 'right-middle', pinId: 'left', role: 'load' },
+                ],
+            },
+            {
+                id: feedbackId,
+                terminals: [
+                    { nodeId: 'left-middle', pinId: 'right', role: 'driver' },
+                    { nodeId: 'left-bottom', pinId: 'left', role: 'load' },
+                ],
+            },
+        ];
+        const route = routeNetworks(nodes, networks);
+        const tracks = route.grid.channels[0].trackX;
+
+        assert.equal(tracks.length, 2);
+        assert.equal(
+            terminalLegX(route, feedbackId, networks[1].terminals[0]),
+            tracks[0]
+        );
+        assert.equal(
+            terminalLegX(route, ordinaryId, networks[0].terminals[0]),
+            tracks[1]
+        );
+        assert.equal(
+            terminalLegX(route, ordinaryId, networks[0].terminals[1]),
+            tracks[1]
+        );
+        assertNoDifferentNetworkCollinearOverlap(route);
+        assertEveryTerminalAnchorConnected(route, networks);
+    };
+
+    assert.doesNotThrow(() => routeWithIds('a', 'b'));
+    assert.doesNotThrow(() => routeWithIds('z', 'a'));
+});
+
 test('preserves channel-leg multiplicity across one network tree', () => {
     const networks: RoutingNetworkRequest[] = [{
         id: 'tree',
@@ -1704,4 +1754,36 @@ test('orders global legs and isolates a rejected fallback branch', () => {
         result.before.channelTrackCounts[0] + 1
     );
     assert.notEqual(result.afterCommitted.demand, result.before.demand);
+});
+
+test('topologically orders channel legs and rejects a cycle transactionally', () => {
+    type Snapshot = Readonly<{
+        actionCount: number;
+        trackCount: number;
+    }>;
+    type Probe = () => Readonly<{
+        chainTracks: readonly number[];
+        cycleRejected: boolean;
+        before: Snapshot;
+        afterRejected: Snapshot;
+        afterCommitted: Snapshot;
+    }>;
+    const probe = (
+        routeNetworks as unknown as Record<symbol, Probe>
+    )[Symbol.for(
+        '@veriflow/schematic-core/routing-channel-constraint-probe'
+    )];
+    const result = probe();
+
+    assert.deepEqual(result.chainTracks, [0, 1, 2]);
+    assert.equal(result.cycleRejected, true);
+    assert.deepEqual(result.afterRejected, result.before);
+    assert.equal(
+        result.afterCommitted.actionCount,
+        result.before.actionCount + 1
+    );
+    assert.equal(
+        result.afterCommitted.trackCount,
+        result.before.trackCount + 1
+    );
 });
