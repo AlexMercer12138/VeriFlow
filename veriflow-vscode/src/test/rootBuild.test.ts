@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -26,6 +27,39 @@ function assertHostNeutralSchematicCore(root: string): void {
                     `${path.relative(root, candidate)} imports a host or renderer dependency`
                 );
             }
+        }
+    }
+}
+
+function assertSymlinkedTemporaryRootRemainsIsolated(root: string): void {
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-temp-alias-'));
+    const realTemporaryRoot = path.join(scratchRoot, 'real');
+    const aliasTemporaryRoot = path.join(scratchRoot, 'alias');
+    const temporaryEnvironment = process.platform === 'win32' ? 'TEMP' : 'TMPDIR';
+    const previousTemporaryRoot = process.env[temporaryEnvironment];
+    let isolated: ReturnType<typeof createIsolatedRepository> | undefined;
+    try {
+        fs.mkdirSync(realTemporaryRoot);
+        fs.symlinkSync(
+            realTemporaryRoot,
+            aliasTemporaryRoot,
+            process.platform === 'win32' ? 'junction' : 'dir'
+        );
+        process.env[temporaryEnvironment] = aliasTemporaryRoot;
+        assert.strictEqual(path.resolve(os.tmpdir()), path.resolve(aliasTemporaryRoot));
+
+        isolated = createIsolatedRepository(root, 'veriflow-temp-alias');
+        assert.ok(fs.existsSync(isolated.repositoryRoot));
+    } finally {
+        try {
+            isolated?.dispose();
+        } finally {
+            if (previousTemporaryRoot === undefined) {
+                delete process.env[temporaryEnvironment];
+            } else {
+                process.env[temporaryEnvironment] = previousTemporaryRoot;
+            }
+            fs.rmSync(scratchRoot, { recursive: true, force: true });
         }
     }
 }
@@ -134,6 +168,7 @@ async function run(): Promise<void> {
         'npm run build:parser && npm run build:vscode'
     );
     assertHostNeutralSchematicCore(root);
+    assertSymlinkedTemporaryRootRemainsIsolated(root);
     assertStandaloneWebBuildFromCleanCore(root);
 }
 

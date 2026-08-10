@@ -200,11 +200,12 @@ export function createIsolatedRepository(
             false,
             'isolated repository copied nested node_modules'
         );
+        const canonicalFixtureRoot = fs.realpathSync(fixtureRoot);
         const workspaceLinks = linkInstalledDependencies(repositoryRoot, fixtureRoot);
         for (const workspaceLink of workspaceLinks) {
             const linked = fs.realpathSync(workspaceLink);
             assert.ok(
-                isInside(fixtureRoot, linked),
+                isInside(canonicalFixtureRoot, linked),
                 `${workspaceLink} escaped the isolated repository: ${linked}`
             );
         }
