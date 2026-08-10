@@ -243,6 +243,11 @@ select {
     cursor: pointer;
 }
 
+.veriflow-junction-dot {
+    pointer-events: none;
+    vector-effect: non-scaling-stroke;
+}
+
 .x6-node:focus-visible,
 .x6-edge:focus-visible {
     outline: none;

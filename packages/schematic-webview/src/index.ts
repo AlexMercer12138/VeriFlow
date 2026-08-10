@@ -3,7 +3,6 @@ import {
     MiniMap,
     Selection,
     type Cell,
-    type Edge,
     type Node,
 } from '@antv/x6';
 import {
@@ -18,25 +17,22 @@ import {
 } from 'lucide';
 
 import {
-    fitSchematicNode,
-    measureSchematicNodeSize,
-    resolvePinSides,
+    layoutSchematic,
+    SCHEMATIC_NETWORK_LABEL_LAYOUT,
+    SCHEMATIC_NETWORK_LABEL_STYLE,
     SCHEMATIC_NODE_LAYOUT,
     SCHEMATIC_TEXT_STYLES,
     type GraphNode,
     type GraphNodeKind,
-    type MeasuredNode,
-    type NetworkEndpoint,
-    type PinKey,
-    type PinSide,
+    type NetworkRoute,
+    type RenderedNodeGeometry,
+    type RouteSegment,
     type SchematicGraph,
+    type SchematicRenderModel,
     type SchematicNetwork,
     type TextMeasurementStyle,
 } from '@veriflow/schematic-core';
-import {
-    deriveFeedbackRoutes,
-    type SchematicLayout,
-} from '../../../veriflow-vscode/src/schematic/layoutStore';
+import type { SchematicLayout } from '../../../veriflow-vscode/src/schematic/layoutStore';
 import type { HostEvent, WebviewCommand } from '../../../veriflow-vscode/src/schematic/protocol';
 import {
     cloneSchematicLayout,
@@ -44,7 +40,6 @@ import {
     formatSchematicDiagnosticDetails,
     mergeSchematicWebviewLayouts,
     navigationCommandForCell,
-    placeSchematicNetworkLabel,
     summarizeSchematicSelection,
 } from '../../../veriflow-vscode/src/schematic/webviewSupport';
 
@@ -66,14 +61,8 @@ type CellData = {
     objectType: 'node' | 'network';
     node?: GraphNode;
     network?: SchematicNetwork;
-};
-
-type RenderedNode = {
-    model: GraphNode;
-    cell: Node;
-    width: number;
-    height: number;
-    pins: Map<string, { x: number; y: number }>;
+    networkRoute?: NetworkRoute;
+    junction?: boolean;
 };
 
 type SearchMatch = { cell: Cell; objectId: string; description: string };
@@ -148,11 +137,6 @@ function previewApi(): VsCodeApi {
 const vscode = typeof window.acquireVsCodeApi === 'function'
     ? window.acquireVsCodeApi()
     : previewApi();
-
-function truncate(value: string, limit: number): string {
-    if (value.length <= limit) return value;
-    return limit <= 3 ? value.slice(0, limit) : `${value.slice(0, limit - 3)}...`;
-}
 
 let textMeasureContext: CanvasRenderingContext2D | null | undefined;
 
@@ -307,74 +291,69 @@ function portGroups() {
 }
 
 function pinItems(
-    node: MeasuredNode
-): { items: object[]; positions: Map<string, { x: number; y: number }> } {
-    const positions = new Map<string, { x: number; y: number }>();
-    const items = node.pins.map(resolved => {
-        const pin = resolved.source;
-        const position = resolved.anchor;
-        positions.set(pin.id, position);
+    model: GraphNode,
+    rendered: RenderedNodeGeometry
+): object[] {
+    const pinsById = new Map(model.pins.map(pin => [pin.id, pin]));
+    return rendered.pins.map(pin => {
+        const source = pinsById.get(pin.id);
         return {
             id: pin.id,
-            group: resolved.side,
-            args: position,
+            group: pin.side,
+            args: {
+                x: pin.anchor.x - rendered.bounds.x,
+                y: pin.anchor.y - rendered.bounds.y,
+            },
             attrs: {
                 portBody: {
-                    strokeDasharray: pin.readOnly ? '2 1' : undefined,
+                    strokeDasharray: source?.readOnly ? '2 1' : undefined,
                 },
                 portLabelClip: {
-                    x: resolved.side === 'left' ? 0 : -resolved.clipBounds.width,
-                    y: -resolved.clipBounds.height / 2,
-                    width: resolved.clipBounds.width,
-                    height: resolved.clipBounds.height,
+                    x: pin.side === 'left' ? 0 : -pin.clipBounds.width,
+                    y: -pin.clipBounds.height / 2,
+                    width: pin.clipBounds.width,
+                    height: pin.clipBounds.height,
                 },
                 text: {
-                    text: resolved.visibleLabel,
+                    text: pin.visibleLabel,
                     title: pin.name,
-                    x: resolved.side === 'left' ? 0 : resolved.clipBounds.width,
-                    y: resolved.clipBounds.height / 2,
+                    x: pin.side === 'left' ? 0 : pin.clipBounds.width,
+                    y: pin.clipBounds.height / 2,
                     fill: 'var(--vscode-editor-foreground, #202124)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.pin.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.pin.fontWeight,
-                    textAnchor: resolved.side === 'left' ? 'start' : 'end',
+                    textAnchor: pin.side === 'left' ? 'start' : 'end',
                     textVerticalAnchor: 'middle',
                     pointerEvents: 'none',
                 },
             },
         };
     });
-    return { items, positions };
 }
 
-function positionFor(layout: SchematicLayout, nodeId: string): { x: number; y: number } {
-    return layout.nodes[nodeId] ?? { x: 0, y: 0 };
+function relativeBounds(
+    bounds: Readonly<{ x: number; y: number; width: number; height: number }>,
+    nodeBounds: RenderedNodeGeometry['bounds']
+): { x: number; y: number; width: number; height: number } {
+    return {
+        x: bounds.x - nodeBounds.x,
+        y: bounds.y - nodeBounds.y,
+        width: bounds.width,
+        height: bounds.height,
+    };
 }
 
 function createRenderedNode(
     model: GraphNode,
-    layout: SchematicLayout,
-    pinSides: ReadonlyMap<PinKey, PinSide>
-): RenderedNode {
-    const subtitle = model.subtitle ?? (model.readOnly ? 'read-only' : undefined);
-    const displayModel = subtitle === model.subtitle
-        ? model
-        : { ...model, subtitle };
-    const layoutSize = measureSchematicNodeSize(model, pinSides);
-    const measured = fitSchematicNode(
-        displayModel,
-        pinSides,
-        layoutSize,
-        measureNodeText
-    );
-    const { width, height } = measured;
-    const center = positionFor(layout, model.id);
-    const ports = pinItems(measured);
+    rendered: RenderedNodeGeometry
+): Node {
+    const { width, height } = rendered.bounds;
     const cell = graph.addNode({
         id: model.id,
         shape: shapeNames[model.kind],
-        x: center.x - width / 2,
-        y: center.y - height / 2,
+        x: rendered.bounds.x,
+        y: rendered.bounds.y,
         width,
         height,
         data: {
@@ -393,20 +372,22 @@ function createRenderedNode(
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
             },
             accent: { height },
-            labelClip: measured.title.clipBounds,
+            labelClip: relativeBounds(rendered.title.bounds, rendered.bounds),
             label: {
-                text: measured.title.visibleText,
-                title: model.label,
+                text: rendered.title.visibleText,
+                title: rendered.title.fullText,
             },
-            subtitleClip: measured.subtitle?.clipBounds ?? {
+            subtitleClip: rendered.renderedSubtitle
+                ? relativeBounds(rendered.renderedSubtitle.bounds, rendered.bounds)
+                : {
                 x: 0,
                 y: 0,
                 width: 0,
                 height: 0,
             },
             subtitle: {
-                text: measured.subtitle?.visibleText ?? '',
-                title: subtitle ?? '',
+                text: rendered.renderedSubtitle?.visibleText ?? '',
+                title: rendered.renderedSubtitle?.fullText ?? '',
                 cursor: model.kind === 'instance' && model.definitionKey
                     ? 'pointer'
                     : 'default',
@@ -420,48 +401,81 @@ function createRenderedNode(
         },
         ports: {
             groups: portGroups(),
-            items: ports.items,
+            items: pinItems(model, rendered),
         },
         zIndex: 2,
     });
-    return { model, cell, width, height, pins: ports.positions };
+    return cell;
 }
 
-function endpointPosition(
-    endpoint: NetworkEndpoint,
-    renderedNodes: ReadonlyMap<string, RenderedNode>
-): { x: number; y: number } | undefined {
-    const rendered = renderedNodes.get(endpoint.nodeId);
-    const relativePin = rendered?.pins.get(endpoint.pinId);
-    if (!rendered || !relativePin) return undefined;
-    const topLeft = rendered.cell.getPosition();
-    return { x: topLeft.x + relativePin.x, y: topLeft.y + relativePin.y };
+function segmentEndpoints(segment: Readonly<RouteSegment>): readonly [
+    { x: number; y: number },
+    { x: number; y: number },
+] {
+    return segment.orientation === 'horizontal'
+        ? [{ x: segment.x1, y: segment.y }, { x: segment.x2, y: segment.y }]
+        : [{ x: segment.x, y: segment.y1 }, { x: segment.x, y: segment.y2 }];
 }
 
-function endpointTerminal(endpoint: NetworkEndpoint) {
-    return { cell: endpoint.nodeId, port: endpoint.pinId };
+function samePoint(
+    left: Readonly<{ x: number; y: number }>,
+    right: Readonly<{ x: number; y: number }>
+): boolean {
+    return left.x === right.x && left.y === right.y;
 }
 
-function compareEndpoint(left: NetworkEndpoint, right: NetworkEndpoint): number {
-    return left.nodeId.localeCompare(right.nodeId)
-        || left.pinId.localeCompare(right.pinId)
-        || left.role.localeCompare(right.role);
-}
-
-function networkPairs(network: SchematicNetwork): Array<{
-    source: NetworkEndpoint;
-    target: NetworkEndpoint;
-}> {
-    const endpoints = [...network.endpoints].sort(compareEndpoint);
-    const drivers = endpoints.filter(endpoint => endpoint.role === 'driver');
-    const sources = drivers.length > 0 ? drivers : endpoints.slice(0, 1);
-    const targets = drivers.length > 0
-        ? endpoints.filter(endpoint => endpoint.role !== 'driver')
-        : endpoints.slice(1);
-    return sources.flatMap(source => targets
-        .filter(target => target.nodeId !== source.nodeId || target.pinId !== source.pinId)
-        .map(target => ({ source, target }))
+function terminatesAtLoad(
+    route: NetworkRoute,
+    point: Readonly<{ x: number; y: number }>
+): boolean {
+    return route.terminals.some(terminal =>
+        terminal.role === 'load' && samePoint(terminal.point, point)
     );
+}
+
+function labelForSegment(
+    route: NetworkRoute,
+    segment: Readonly<RouteSegment>
+): object[] {
+    const label = route.label;
+    if (!label || segment.orientation !== 'horizontal') return [];
+    const labelCenterX = label.bounds.x + label.bounds.width / 2;
+    const expectedAbove = segment.y
+        - SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap
+        - SCHEMATIC_NETWORK_LABEL_LAYOUT.height;
+    const expectedBelow = segment.y + SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap;
+    if (labelCenterX < segment.x1 || labelCenterX > segment.x2
+        || (label.bounds.y !== expectedAbove && label.bounds.y !== expectedBelow)) {
+        return [];
+    }
+    const distance = (labelCenterX - segment.x1) / (segment.x2 - segment.x1);
+    const centerY = label.bounds.y + label.bounds.height / 2;
+    return [{
+        attrs: {
+            text: {
+                text: label.text,
+                fill: 'var(--vscode-editor-foreground, #202124)',
+                fontFamily: 'var(--vscode-font-family, sans-serif)',
+                fontSize: SCHEMATIC_NETWORK_LABEL_STYLE.fontSize,
+                fontWeight: SCHEMATIC_NETWORK_LABEL_STYLE.fontWeight,
+            },
+            rect: {
+                x: -label.bounds.width / 2,
+                y: -label.bounds.height / 2,
+                width: label.bounds.width,
+                height: label.bounds.height,
+                fill: 'var(--vscode-editor-background, #ffffff)',
+                stroke: 'var(--vscode-panel-border, #c7c7c7)',
+                strokeWidth: 1,
+                rx: 2,
+                ry: 2,
+            },
+        },
+        position: {
+            distance,
+            offset: { x: 0, y: centerY - segment.y },
+        },
+    }];
 }
 
 function networkStrokeWidth(network: SchematicNetwork): number {
@@ -470,67 +484,25 @@ function networkStrokeWidth(network: SchematicNetwork): number {
 
 function renderNetworks(
     model: SchematicGraph,
-    layout: SchematicLayout,
-    renderedNodes: ReadonlyMap<string, RenderedNode>
-): Edge[] {
-    const feedbackRoutes = new Map(
-        deriveFeedbackRoutes(model, layout).map(route => [route.networkId, route])
-    );
-    const nodeBounds = [...renderedNodes.values()].map(rendered => {
-        const center = positionFor(layout, rendered.model.id);
-        return {
-            x: center.x - rendered.width / 2,
-            y: center.y - rendered.height / 2,
-            width: rendered.width,
-            height: rendered.height,
-        };
-    });
-    const edges: Edge[] = [];
-    for (const network of model.networks) {
-        const pairs = networkPairs(network);
-        const feedback = feedbackRoutes.get(network.id);
-        const allPositions = network.endpoints.flatMap(endpoint => {
-            const position = endpointPosition(endpoint, renderedNodes);
-            return position ? [position] : [];
-        });
-        const trunkX = allPositions.length > 0
-            ? (Math.min(...allPositions.map(point => point.x))
-                + Math.max(...allPositions.map(point => point.x))) / 2
-            : 0;
-        pairs.forEach(({ source, target }, index) => {
-            const sourcePosition = endpointPosition(source, renderedNodes);
-            const targetPosition = endpointPosition(target, renderedNodes);
-            if (!sourcePosition || !targetPosition) return;
-            const vertices = feedback
-                ? [
-                    { x: sourcePosition.x, y: feedback.trunk.y },
-                    { x: targetPosition.x, y: feedback.trunk.y },
-                ]
-                : [
-                    { x: trunkX, y: sourcePosition.y },
-                    { x: trunkX, y: targetPosition.y },
-                ];
-            const directed = source.role === 'driver' && target.role === 'load';
-            const label = network.adapterLabel
-                ? `${network.name} ${network.adapterLabel}`
-                : network.name;
-            const labelText = truncate(label, 28);
-            const labelPlacement = placeSchematicNetworkLabel(
-                [sourcePosition, ...vertices, targetPosition],
-                nodeBounds,
-                labelText,
-                index
-            );
-            const edge = graph.addEdge({
-                id: `${network.id}:segment:${index}`,
+    renderModel: SchematicRenderModel
+): void {
+    const networksById = new Map(model.networks.map(network => [network.id, network]));
+    const routesById = new Map(renderModel.networks.map(route => [route.id, route]));
+    for (const networkRoute of renderModel.networks) {
+        const network = networksById.get(networkRoute.id);
+        if (!network) continue;
+        networkRoute.segments.forEach((segment, index) => {
+            const [source, target] = segmentEndpoints(segment);
+            graph.addEdge({
+                id: `${networkRoute.id}:segment:${index}`,
                 shape: 'veriflow-network',
-                source: endpointTerminal(source),
-                target: endpointTerminal(target),
-                vertices,
+                source,
+                target,
                 data: {
                     objectId: network.id,
                     objectType: 'network',
                     network,
+                    networkRoute,
                 } satisfies CellData,
                 attrs: {
                     root: {
@@ -541,35 +513,58 @@ function renderNetworks(
                     },
                     line: {
                         strokeWidth: networkStrokeWidth(network),
-                        targetMarker: directed
+                        sourceMarker: terminatesAtLoad(networkRoute, source)
+                            ? { name: 'block', width: 6, height: 6 }
+                            : null,
+                        targetMarker: terminatesAtLoad(networkRoute, target)
                             ? { name: 'block', width: 6, height: 6 }
                             : null,
                     },
                 },
-                labels: labelPlacement ? [{
-                    attrs: {
-                        text: {
-                            text: labelText,
-                            fill: 'var(--vscode-editor-foreground, #202124)',
-                            fontFamily: 'var(--vscode-font-family, sans-serif)',
-                            fontSize: 10,
-                        },
-                        rect: {
-                            fill: 'var(--vscode-editor-background, #ffffff)',
-                            stroke: 'var(--vscode-panel-border, #c7c7c7)',
-                            strokeWidth: 1,
-                            rx: 2,
-                            ry: 2,
-                        },
-                    },
-                    position: labelPlacement.position,
-                }] : [],
-                zIndex: 1,
+                labels: labelForSegment(networkRoute, segment),
+                zIndex: 0,
             });
-            edges.push(edge);
         });
     }
-    return edges;
+
+    renderModel.junctions.forEach((junction, index) => {
+        const network = networksById.get(junction.networkId);
+        const networkRoute = routesById.get(junction.networkId);
+        if (!network || !networkRoute) return;
+        const radius = SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius;
+        graph.addNode({
+            shape: 'circle',
+            id: `${junction.networkId}:junction:${index}`,
+            x: junction.point.x - radius,
+            y: junction.point.y - radius,
+            width: radius * 2,
+            height: radius * 2,
+            data: {
+                objectId: network.id,
+                objectType: 'network',
+                network,
+                networkRoute,
+                junction: true,
+            } satisfies CellData,
+            attrs: {
+                root: {
+                    tabindex: -1,
+                    'aria-hidden': 'true',
+                    pointerEvents: 'none',
+                },
+                body: {
+                    class: 'veriflow-junction-dot',
+                    fill: 'var(--vscode-editor-foreground, #505050)',
+                    stroke: 'var(--vscode-editor-foreground, #505050)',
+                    strokeWidth: 1,
+                    pointerEvents: 'none',
+                },
+                label: { text: '' },
+            },
+            interacting: false,
+            zIndex: 1,
+        });
+    });
 }
 
 const selection = new Selection({
@@ -582,6 +577,7 @@ const selection = new Selection({
     showEdgeSelectionBox: true,
     pointerEvents: 'auto',
     eventTypes: ['leftMouseDown'],
+    filter: cell => cellData(cell)?.junction !== true,
 });
 
 const graph = new Graph({
@@ -631,6 +627,7 @@ let currentLayout: SchematicLayout | undefined;
 let currentRevision = '';
 let selectedModuleKey = '';
 let applyingLayout = false;
+let expandingNetworkSelection = false;
 let minimapPlugin: MiniMap | undefined;
 let minimapAvailable = false;
 let searchMatches: SearchMatch[] = [];
@@ -717,21 +714,87 @@ function cellData(cell: Cell): CellData | undefined {
         : undefined;
 }
 
+function selectedNetworkIds(cells: readonly Cell[]): Set<string> {
+    return new Set(cells.flatMap(cell => {
+        const data = cellData(cell);
+        return data?.objectType === 'network' ? [data.objectId] : [];
+    }));
+}
+
+function expandNetworkSelection(cells: readonly Cell[]): Cell[] {
+    const networkIds = selectedNetworkIds(cells);
+    if (networkIds.size === 0) return [...cells];
+    const expanded = new Map(cells.flatMap(cell => {
+        const data = cellData(cell);
+        return data?.junction ? [] : [[cell.id, cell] as const];
+    }));
+    for (const cell of graph.getCells()) {
+        const data = cellData(cell);
+        if (data?.objectType === 'network' && !data.junction
+            && networkIds.has(data.objectId)) {
+            expanded.set(cell.id, cell);
+        }
+    }
+    return [...expanded.values()];
+}
+
+function sameCellSelection(left: readonly Cell[], right: readonly Cell[]): boolean {
+    if (left.length !== right.length) return false;
+    const rightIds = new Set(right.map(cell => cell.id));
+    return left.every(cell => rightIds.has(cell.id));
+}
+
+function refreshNetworkSelectionStyles(cells: readonly Cell[]): void {
+    const selectedIds = selectedNetworkIds(cells);
+    const searchedIds = new Set(searchMatches.map(match => match.objectId));
+    for (const cell of graph.getCells()) {
+        const data = cellData(cell);
+        if (data?.objectType !== 'network') continue;
+        const selected = selectedIds.has(data.objectId);
+        const searched = searchedIds.has(data.objectId);
+        const stroke = selected
+            ? 'var(--vscode-focusBorder, #007acc)'
+            : searched
+                ? 'var(--vscode-editor-findMatchBorder, #f0a000)'
+                : 'var(--vscode-editor-foreground, #505050)';
+        if (data.junction) {
+            cell.attr('body/fill', stroke);
+            cell.attr('body/stroke', stroke);
+            cell.attr('body/strokeWidth', selected || searched ? 2 : 1);
+        } else {
+            cell.attr('line/stroke', stroke);
+            cell.attr('line/strokeWidth', selected || searched
+                ? Math.max(2, networkStrokeWidth(data.network!))
+                : networkStrokeWidth(data.network!));
+        }
+    }
+}
+
 function descriptionFor(data: CellData): string {
     if (data.node) return `${data.node.kind}: ${data.node.label}`;
+    if (data.networkRoute) {
+        return `network: ${data.networkRoute.selectionDescription}`;
+    }
     if (data.network) return `network: ${data.network.name}`;
     return data.objectId;
 }
 
 function updateSelectionStatus(cells: Cell[], persist = true): void {
     if (!currentLayout) return;
-    const summary = summarizeSchematicSelection(cells.flatMap(cell => {
+    const itemsByObjectId = new Map<string, {
+        objectId: string;
+        description: string;
+    }>();
+    for (const cell of cells) {
         const data = cellData(cell);
-        return data ? [{
-            objectId: data.objectId,
-            description: descriptionFor(data),
-        }] : [];
-    }));
+        if (data && !itemsByObjectId.has(data.objectId)) {
+            itemsByObjectId.set(data.objectId, {
+                objectId: data.objectId,
+                description: descriptionFor(data),
+            });
+        }
+    }
+    const summary = summarizeSchematicSelection([...itemsByObjectId.values()]);
     if (summary.selectedObjectId === undefined) {
         delete currentLayout.selectedObjectId;
     } else {
@@ -804,12 +867,14 @@ function applyViewport(layout: SchematicLayout): void {
 
 function restoreSelection(layout: SchematicLayout): void {
     selection.clean();
-    const matchingCell = layout.selectedObjectId
-        ? graph.getCells().find(cell =>
+    const matchingCells = layout.selectedObjectId
+        ? graph.getCells().filter(cell =>
             cellData(cell)?.objectId === layout.selectedObjectId
+                && cellData(cell)?.junction !== true
         )
-        : undefined;
-    if (matchingCell) selection.select(matchingCell);
+        : [];
+    if (matchingCells.length > 0) selection.select(matchingCells);
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
     updateSelectionStatus(selection.getSelectedCells(), false);
 }
 
@@ -820,13 +885,13 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
-    const renderedNodes = new Map<string, RenderedNode>();
-    const pinSides = resolvePinSides(model);
+    const renderModel = layoutSchematic(model, undefined, measureNodeText);
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {
-            renderedNodes.set(node.id, createRenderedNode(node, layout, pinSides));
+            const rendered = renderModel.nodes.get(node.id);
+            if (rendered) createRenderedNode(node, rendered);
         }
-        renderNetworks(model, layout, renderedNodes);
+        renderNetworks(model, renderModel);
     });
     applyViewport(layout);
     restoreSelection(layout);
@@ -843,12 +908,16 @@ function renderSchematic(model: SchematicGraph, layout: SchematicLayout): void {
 
 function resetSearchStyles(): void {
     for (const cell of graph.getCells()) {
-        if (cell.isNode()) {
+        const data = cellData(cell);
+        if (data?.junction) {
+            cell.attr('body/fill', 'var(--vscode-editor-foreground, #505050)');
+            cell.attr('body/stroke', 'var(--vscode-editor-foreground, #505050)');
+            cell.attr('body/strokeWidth', 1);
+        } else if (cell.isNode()) {
             cell.attr('body/stroke', 'var(--vscode-editorWidget-border, #8c8c8c)');
             cell.attr('body/strokeWidth', 1);
         } else {
             cell.attr('line/stroke', 'var(--vscode-editor-foreground, #505050)');
-            const data = cellData(cell);
             cell.attr('line/strokeWidth', data?.network
                 ? networkStrokeWidth(data.network)
                 : 1);
@@ -866,7 +935,7 @@ function searchText(data: CellData): string {
         ].join('\n');
     }
     return [
-        data.network?.name ?? '',
+        data.networkRoute?.displayName ?? data.network?.name ?? '',
         data.network?.adapterLabel ?? '',
         'network',
     ].join('\n');
@@ -907,14 +976,11 @@ function runSearch(query: string, notifyHost: boolean): void {
     resetSearchStyles();
     searchMatches = collectSearchMatches(query);
     for (const match of searchMatches) {
-        if (match.cell.isNode()) {
-            match.cell.attr('body/stroke', 'var(--vscode-editor-findMatchBorder, #f0a000)');
-            match.cell.attr('body/strokeWidth', 2);
-        } else {
-            match.cell.attr('line/stroke', 'var(--vscode-editor-findMatchBorder, #f0a000)');
-            match.cell.attr('line/strokeWidth', 2);
-        }
+        if (cellData(match.cell)?.objectType === 'network') continue;
+        match.cell.attr('body/stroke', 'var(--vscode-editor-findMatchBorder, #f0a000)');
+        match.cell.attr('body/strokeWidth', 2);
     }
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
     if (notifyHost) post({ type: 'search', query });
     showSearchMatch(0);
 }
@@ -1137,7 +1203,15 @@ graph.on('node:open-definition' as never, ({ cell }: { cell: Cell }) => {
 });
 
 selection.on('selection:changed', ({ selected }) => {
-    if (!applyingLayout) updateSelectionStatus(selected);
+    if (applyingLayout || expandingNetworkSelection) return;
+    const expanded = expandNetworkSelection(selected);
+    if (!sameCellSelection(selected, expanded)) {
+        expandingNetworkSelection = true;
+        selection.reset(expanded);
+        expandingNetworkSelection = false;
+    }
+    refreshNetworkSelectionStyles(expanded);
+    updateSelectionStatus(expanded);
 });
 
 const resizeObserver = new ResizeObserver(() => {

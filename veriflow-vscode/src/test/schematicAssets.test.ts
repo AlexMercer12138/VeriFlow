@@ -247,9 +247,28 @@ async function testSchematicAssets(): Promise<void> {
     assert.deepStrictEqual(temporaryImportOwners, [
         'packages/schematic-webview/src/index.ts',
     ]);
-    assert.match(webviewSource, /resolvePinSides\(model\)/);
-    assert.match(webviewSource, /measureSchematicNodeSize\(/);
-    assert.match(webviewSource, /fitSchematicNode\(/);
+    assert.match(
+        webviewSource,
+        /import\s*{[^}]*\blayoutSchematic\b[^}]*}\s*from '@veriflow\/schematic-core';/s
+    );
+    assert.match(webviewSource, /layoutSchematic\(model,/);
+    assert.match(webviewSource, /renderModel\.networks/);
+    assert.match(webviewSource, /networkRoute\.segments/);
+    assert.match(webviewSource, /renderModel\.junctions/);
+    assert.match(webviewSource, /graph\.addNode\(\{[^}]*shape:\s*'circle'/s);
+    assert.match(webviewSource, /function expandNetworkSelection\(/);
+    assert.match(
+        webviewSource,
+        /function refreshNetworkSelectionStyles\([^]*searchMatches\.map\(/
+    );
+    assert.match(
+        webviewSource,
+        /sourceMarker:\s*terminatesAtLoad\(networkRoute, source\)/
+    );
+    assert.match(
+        webviewSource,
+        /targetMarker:\s*terminatesAtLoad\(networkRoute, target\)/
+    );
     assert.match(webviewSource, /SCHEMATIC_NODE_LAYOUT/);
     assert.ok(
         webviewSource.includes(
@@ -272,12 +291,14 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(webviewSource, /tagName: 'clipPath'/);
     assert.doesNotMatch(webviewSource, /clipPath:/);
     assert.doesNotMatch(webviewSource, /nextClipPathId/);
-    assert.doesNotMatch(
-        webviewSource,
-        /bottom:\s*{\s*position:\s*{\s*name:\s*'absolute'/
-    );
+    assert.doesNotMatch(webviewSource, /\bbottom:\s*{/);
     assert.doesNotMatch(webviewSource, /pin\.side\s*===\s*'bottom'/);
     assert.doesNotMatch(webviewSource, /function nodeDimensions\(/);
+    assert.doesNotMatch(webviewSource, /\bnetworkPairs\b/);
+    assert.doesNotMatch(webviewSource, /\btrunkX\b/);
+    assert.doesNotMatch(webviewSource, /\bderiveFeedbackRoutes\b/);
+    assert.doesNotMatch(webviewSource, /\bvertices:\s*/);
+    assert.doesNotMatch(webviewSource, /\brouter:\s*/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
     assert.doesNotMatch(webviewSource, /\bsaveTimer\b/);
     assert.match(

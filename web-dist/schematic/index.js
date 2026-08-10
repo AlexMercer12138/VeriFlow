@@ -494,9 +494,9 @@
     "packages/schematic-core/dist/pins.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.pinKey = pinKey2;
-      exports2.resolvePinSides = resolvePinSides3;
-      function pinKey2(nodeId, pinId) {
+      exports2.pinKey = pinKey;
+      exports2.resolvePinSides = resolvePinSides;
+      function pinKey(nodeId, pinId) {
         return `${nodeId.length}:${nodeId}${pinId}`;
       }
       function boundaryPinSide(node) {
@@ -507,7 +507,7 @@
       function compareEndpoints(left4, right4) {
         return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
       }
-      function resolvePinSides3(graph2) {
+      function resolvePinSides(graph2) {
         const orderedPins = [];
         const networksByPin = /* @__PURE__ */ new Map();
         const nodeIndexes = /* @__PURE__ */ new Map();
@@ -517,14 +517,14 @@
           nodeIndexes.set(node.id, nodeIndex);
           nodesById.set(node.id, node);
           node.pins.forEach((pin2, pinIndex) => {
-            const key = pinKey2(node.id, pin2.id);
+            const key = pinKey(node.id, pin2.id);
             orderedPins.push({ key, node, direction: pin2.direction });
             pinIndexes.set(key, pinIndex);
           });
         });
         const orderedNetworks = graph2.networks.map((network) => network.endpoints.flatMap((endpoint) => {
           const node = nodesById.get(endpoint.nodeId);
-          const key = pinKey2(endpoint.nodeId, endpoint.pinId);
+          const key = pinKey(endpoint.nodeId, endpoint.pinId);
           const nodeIndex = nodeIndexes.get(endpoint.nodeId);
           const pinIndex = pinIndexes.get(key);
           if (!node || nodeIndex === void 0 || pinIndex === void 0)
@@ -601,7 +601,7 @@
     "packages/schematic-core/dist/columns.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.assignColumns = assignColumns2;
+      exports2.assignColumns = assignColumns;
       var pins_1 = require_pins();
       function addDependencyEdge(edgesByPair, source, target, networkId) {
         const key = `${source.nodeIndex}\0${target.nodeIndex}`;
@@ -808,7 +808,7 @@
         }
         return { order, adjacency };
       }
-      function assignColumns2(graph2) {
+      function assignColumns(graph2) {
         const { placementEdges, semanticEdges, semanticSelfCycleNetworkIds } = buildDependencyEdges(graph2);
         const { components, componentByNode } = stronglyConnectedComponents(graph2.nodes.length, placementEdges);
         const { order, adjacency } = topologicalComponents(components, componentByNode, placementEdges);
@@ -873,8 +873,8 @@
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.SCHEMATIC_TEXT_STYLES = exports2.SCHEMATIC_NODE_LAYOUT = void 0;
       exports2.measureSchematicNode = measureSchematicNode;
-      exports2.measureSchematicNodeSize = measureSchematicNodeSize3;
-      exports2.fitSchematicNode = fitSchematicNode2;
+      exports2.measureSchematicNodeSize = measureSchematicNodeSize;
+      exports2.fitSchematicNode = fitSchematicNode;
       var pins_1 = require_pins();
       exports2.SCHEMATIC_NODE_LAYOUT = {
         gridSize: 2,
@@ -1018,11 +1018,11 @@
       function measureSchematicNode(node, sideMap, measure) {
         return calculateSchematicNode(node, sideMap, measure);
       }
-      function measureSchematicNodeSize3(node, sideMap) {
+      function measureSchematicNodeSize(node, sideMap) {
         const measured = measureSchematicNode(node, sideMap, (text3) => text3.length * LAYOUT_CHARACTER_WIDTH);
         return { width: measured.width, height: measured.height };
       }
-      function fitSchematicNode2(node, sideMap, size, measure) {
+      function fitSchematicNode(node, sideMap, size, measure) {
         return calculateSchematicNode(node, sideMap, measure, size);
       }
     }
@@ -1033,11 +1033,11 @@
     "packages/schematic-core/dist/placement.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.createPlacement = createPlacement2;
-      exports2.mergePlacement = mergePlacement2;
+      exports2.createPlacement = createPlacement;
+      exports2.mergePlacement = mergePlacement;
       exports2.moveNodeToColumn = moveNodeToColumn;
-      exports2.moveNodesToColumns = moveNodesToColumns2;
-      exports2.migrateLegacyPlacement = migrateLegacyPlacement2;
+      exports2.moveNodesToColumns = moveNodesToColumns;
+      exports2.migrateLegacyPlacement = migrateLegacyPlacement;
       function setOwn(target, id, value) {
         Object.defineProperty(target, id, {
           value,
@@ -1124,7 +1124,7 @@
         const right4 = legalInternalColumns[low];
         return column - left4 <= right4 - column ? left4 : right4;
       }
-      function createPlacement2(graph2, assignment) {
+      function createPlacement(graph2, assignment) {
         const nodes = {};
         const orderByColumn = /* @__PURE__ */ new Map();
         for (const node of graph2.nodes) {
@@ -1140,12 +1140,12 @@
         }
         return { nodes };
       }
-      function mergePlacement2(graph2, assignment, persisted) {
+      function mergePlacement(graph2, assignment, persisted) {
         const nodes = mergedPlacementNodes(graph2, assignment, persisted, internalColumns(graph2, assignment));
         return { nodes: normalizeOrders(graph2, nodes) };
       }
       function mergedPlacementNodes(graph2, assignment, persisted, legalInternalColumns) {
-        const automatic = createPlacement2(graph2, assignment);
+        const automatic = createPlacement(graph2, assignment);
         if (!persisted || typeof persisted !== "object" || persisted === null || typeof persisted.nodes !== "object" || persisted.nodes === null) {
           return automatic.nodes;
         }
@@ -1165,14 +1165,14 @@
         return automatic.nodes;
       }
       function moveNodeToColumn(graph2, assignment, placement, nodeId, column, order, yOffset) {
-        return moveNodesToColumns2(graph2, assignment, placement, [{
+        return moveNodesToColumns(graph2, assignment, placement, [{
           nodeId,
           column,
           order,
           yOffset
         }]);
       }
-      function moveNodesToColumns2(graph2, assignment, placement, moves) {
+      function moveNodesToColumns(graph2, assignment, placement, moves) {
         const legalInternalColumns = internalColumns(graph2, assignment);
         const nodes = mergedPlacementNodes(graph2, assignment, placement, legalInternalColumns);
         const nodesById = new Map(graph2.nodes.map((node) => [node.id, node]));
@@ -1190,8 +1190,8 @@
         }
         return { nodes: normalizeOrders(graph2, nodes) };
       }
-      function migrateLegacyPlacement2(graph2, assignment, legacyNodes) {
-        const placement = createPlacement2(graph2, assignment);
+      function migrateLegacyPlacement(graph2, assignment, legacyNodes) {
+        const placement = createPlacement(graph2, assignment);
         const sourceIndex = sourceIndexes(graph2);
         const legacyOrder = /* @__PURE__ */ new Map();
         const byColumn = /* @__PURE__ */ new Map();
@@ -1373,14 +1373,14 @@
           x2: Math.max(x1, x2)
         };
       }
-      function vertical(networkId, x2, y1, y2) {
-        assertGridCoordinate(x2, "x");
+      function vertical(networkId, x, y1, y2) {
+        assertGridCoordinate(x, "x");
         assertGridCoordinate(y1, "y1");
         assertGridCoordinate(y2, "y2");
         return {
           orientation: "vertical",
           networkId,
-          x: x2,
+          x,
           y1: Math.min(y1, y2),
           y2: Math.max(y1, y2)
         };
@@ -1486,9 +1486,9 @@
             result.push(horizontal(interval.networkId, interval.start, interval.end, y));
           }
         }
-        for (const [x2, lane] of verticalLanes) {
+        for (const [x, lane] of verticalLanes) {
           for (const interval of simplifyLane(lane)) {
-            result.push(vertical(interval.networkId, x2, interval.start, interval.end));
+            result.push(vertical(interval.networkId, x, interval.start, interval.end));
           }
         }
         result.sort(compareSegments);
@@ -1702,13 +1702,13 @@
         }
         const junctions = [];
         for (const [networkId, byX] of directionsByNetwork) {
-          for (const [x2, byY] of byX) {
+          for (const [x, byY] of byX) {
             for (const [y, directions] of byY) {
               if (directions.size < 3)
                 continue;
               junctions.push({
                 networkId,
-                point: { x: x2, y },
+                point: { x, y },
                 directions: new Set(DIRECTION_ORDER.filter((direction) => directions.has(direction)))
               });
             }
@@ -1893,11 +1893,11 @@
         }
         const record = value;
         const id = record.id;
-        const x2 = record.x;
+        const x = record.x;
         const y = record.y;
         return Object.freeze({
           id,
-          x: x2,
+          x,
           y
         });
       }
@@ -2343,10 +2343,10 @@
         const nodes = state.nodes.map((node) => {
           const column = columns[node.column];
           const centeredOffset = Math.floor((column.width - node.width) / (2 * metrics.gridStep)) * metrics.gridStep;
-          const x2 = safeAdd(column.x, centeredOffset, `node ${node.id} horizontal position`);
+          const x = safeAdd(column.x, centeredOffset, `node ${node.id} horizontal position`);
           const y = safeAdd(topHeight, relativeTops.get(node.id), `node ${node.id} vertical position`);
           const bounds = freezeRectangle({
-            x: x2,
+            x,
             y,
             width: node.width,
             height: node.height
@@ -2354,7 +2354,7 @@
           const pinAnchors = node.pinAnchors.map((pin2) => Object.freeze({
             id: pin2.id,
             point: Object.freeze({
-              x: safeAdd(x2, pin2.x, `pin ${pin2.id} x`),
+              x: safeAdd(x, pin2.x, `pin ${pin2.id} x`),
               y: safeAdd(y, pin2.y, `pin ${pin2.id} y`)
             })
           }));
@@ -2737,11 +2737,11 @@
             }
             const pin2 = pinValue;
             const pinId = pin2.id;
-            const x2 = pin2.x;
+            const x = pin2.x;
             const y = pin2.y;
             return Object.freeze({
               id: pinId,
-              x: x2,
+              x,
               y
             });
           });
@@ -3176,8 +3176,8 @@
       }
       function pointToSegmentDistance(point, segment) {
         if (segment.orientation === "horizontal") {
-          const x2 = Math.max(segment.x1, Math.min(point.x, segment.x2));
-          return Math.abs(point.x - x2) + Math.abs(point.y - segment.y);
+          const x = Math.max(segment.x1, Math.min(point.x, segment.x2));
+          return Math.abs(point.x - x) + Math.abs(point.y - segment.y);
         }
         const y = Math.max(segment.y1, Math.min(point.y, segment.y2));
         return Math.abs(point.x - segment.x) + Math.abs(point.y - y);
@@ -3743,7 +3743,7 @@
       function freezeSegments(segments) {
         return Object.freeze(segments.map((segment) => Object.freeze({ ...segment })));
       }
-      function samePoint(left4, right4) {
+      function samePoint2(left4, right4) {
         return left4.x === right4.x && left4.y === right4.y;
       }
       function collinearPoints(first, second, third) {
@@ -3755,7 +3755,7 @@
           const point = { x: value.x, y: value.y };
           (0, geometry_1.assertGridCoordinate)(point.x, "path point x");
           (0, geometry_1.assertGridCoordinate)(point.y, "path point y");
-          if (points.length > 0 && samePoint(points[points.length - 1], point)) {
+          if (points.length > 0 && samePoint2(points[points.length - 1], point)) {
             continue;
           }
           points.push(point);
@@ -3764,7 +3764,7 @@
             if (!collinearPoints(points[last - 2], points[last - 1], points[last]))
               break;
             points.splice(last - 1, 1);
-            if (points.length >= 2 && samePoint(points[points.length - 2], points[points.length - 1])) {
+            if (points.length >= 2 && samePoint2(points[points.length - 2], points[points.length - 1])) {
               points.pop();
             }
           }
@@ -3903,7 +3903,7 @@
         for (const segment of segments) {
           current = traversalEnd(segment, current);
         }
-        if (!samePoint(current, target)) {
+        if (!samePoint2(current, target)) {
           throw new RangeError("routed path does not end at its terminal anchor");
         }
       }
@@ -4711,7 +4711,7 @@
       var _RectangleIndex_entries;
       var _RectangleIndex_maximumRight;
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.layoutSchematic = layoutSchematic;
+      exports2.layoutSchematic = layoutSchematic2;
       var columns_1 = require_columns();
       var nodeGeometry_1 = require_nodeGeometry();
       var placement_1 = require_placement();
@@ -5087,8 +5087,8 @@
         const width2 = measureText2(text3, renderModel_1.SCHEMATIC_NETWORK_LABEL_STYLE);
         return Number.isFinite(width2) && width2 >= 0 ? width2 : void 0;
       }
-      function labelForNetwork(network, segments, measureText2, obstacles, occupiedLabels) {
-        const width2 = measuredLabelWidth(measureText2, network.name);
+      function labelForNetwork(displayName, segments, measureText2, obstacles, occupiedLabels) {
+        const width2 = measuredLabelWidth(measureText2, displayName);
         if (width2 === void 0)
           return void 0;
         const layout = renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT;
@@ -5096,18 +5096,18 @@
         for (const { segment, length: length2 } of candidates) {
           if (width2 + 2 * layout.endpointPadding > length2)
             continue;
-          const x2 = segment.x1 + (length2 - width2) / 2;
+          const x = segment.x1 + (length2 - width2) / 2;
           const yCandidates = [
             segment.y - layout.wireGap - layout.height,
             segment.y + layout.wireGap
           ];
           for (const y of yCandidates) {
-            const bounds = { x: x2, y, width: width2, height: layout.height };
+            const bounds = { x, y, width: width2, height: layout.height };
             if (obstacles.intersects(bounds) || occupiedLabels.some((label) => rectanglesOverlap(bounds, label))) {
               continue;
             }
             occupiedLabels.push(bounds);
-            return Object.freeze({ text: network.name, bounds: freezeRectangle(bounds) });
+            return Object.freeze({ text: displayName, bounds: freezeRectangle(bounds) });
           }
         }
         return void 0;
@@ -5152,7 +5152,7 @@
           height: maximumY - minimumY
         });
       }
-      function layoutSchematic(inputGraph, placement, measureText2) {
+      function layoutSchematic2(inputGraph, placement, measureText2) {
         const graph2 = snapshotGraph(inputGraph);
         const assignment = (0, columns_1.assignColumns)(graph2);
         const mergedPlacement = (0, placement_1.mergePlacement)(graph2, assignment, snapshotPlacement(placement, graph2));
@@ -5233,7 +5233,8 @@
         const networks = graph2.networks.map((network) => {
           const route = routedById.get(network.id);
           const segments = Object.freeze(route.segments.map(freezeSegment));
-          const label = labelForNetwork(network, segments, measureText2, labelObstacleIndex, occupiedLabels);
+          const displayName = network.adapterLabel ? `${network.name} ${network.adapterLabel}` : network.name;
+          const label = labelForNetwork(displayName, segments, measureText2, labelObstacleIndex, occupiedLabels);
           const terminals = Object.freeze(network.endpoints.map((endpoint) => {
             const point = realizedById.get(endpoint.nodeId).pinAnchors.find((pin2) => pin2.id === endpoint.pinId).point;
             return Object.freeze({
@@ -5244,6 +5245,7 @@
           return Object.freeze({
             id: network.id,
             name: network.name,
+            displayName,
             selectionDescription: network.name,
             feedback: route.feedback,
             terminals,
@@ -9330,11 +9332,11 @@
 
   // node_modules/@antv/x6/es/geometry/point.js
   var Point = class _Point extends Geometry {
-    static create(x2, y) {
-      if (x2 == null || typeof x2 === "number") {
-        return new _Point(x2, y);
+    static create(x, y) {
+      if (x == null || typeof x === "number") {
+        return new _Point(x, y);
       }
-      return _Point.clone(x2);
+      return _Point.clone(x);
     }
     static clone(p) {
       if (_Point.isPoint(p)) {
@@ -9377,19 +9379,19 @@
      * @see http://en.wikipedia.org/wiki/Polar_coordinate_system
      */
     static fromPolar(r, rad, origin = new _Point()) {
-      let x2 = Math.abs(r * Math.cos(rad));
+      let x = Math.abs(r * Math.cos(rad));
       let y = Math.abs(r * Math.sin(rad));
       const org = _Point.clone(origin);
       const deg = normalize(toDeg(rad));
       if (deg < 90) {
         y = -y;
       } else if (deg < 180) {
-        x2 = -x2;
+        x = -x;
         y = -y;
       } else if (deg < 270) {
-        x2 = -x2;
+        x = -x;
       }
-      return new _Point(org.x + x2, org.y + y);
+      return new _Point(org.x + x, org.y + y);
     }
     /**
      * Converts rectangular to polar coordinates.
@@ -9440,9 +9442,9 @@
     static isPointData(p) {
       return p != null && Array.isArray(p) && p.length === 2 && typeof p[0] === "number" && typeof p[1] === "number";
     }
-    constructor(x2, y) {
+    constructor(x, y) {
       super();
-      this.x = x2 == null ? 0 : x2;
+      this.x = x == null ? 0 : x;
       this.y = y == null ? 0 : y;
     }
     /**
@@ -9453,14 +9455,14 @@
       this.y = round(this.y, precision);
       return this;
     }
-    add(x2, y) {
-      const p = _Point.create(x2, y);
+    add(x, y) {
+      const p = _Point.create(x, y);
       this.x += p.x;
       this.y += p.y;
       return this;
     }
-    update(x2, y) {
-      const p = _Point.create(x2, y);
+    update(x, y) {
+      const p = _Point.create(x, y);
       this.x = p.x;
       this.y = p.y;
       return this;
@@ -9546,8 +9548,8 @@
     theta(p = new _Point()) {
       const ref2 = _Point.create(p);
       const y = -(ref2.y - this.y);
-      const x2 = ref2.x - this.x;
-      let rad = Math.atan2(y, x2);
+      const x = ref2.x - this.x;
+      let rad = Math.atan2(y, x);
       if (rad < 0) {
         rad = 2 * Math.PI + rad;
       }
@@ -9639,8 +9641,8 @@
       const lon2 = ref2.x;
       const dLon = toRad(lon2 - lon1);
       const y = Math.sin(dLon) * Math.cos(lat2);
-      const x2 = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-      const brng = toDeg(Math.atan2(y, x2));
+      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+      const brng = toDeg(Math.atan2(y, x));
       const bearings = ["NE", "E", "SE", "S", "SW", "W", "NW", "N"];
       let index2 = brng - 22.5;
       if (index2 < 0) {
@@ -9742,11 +9744,11 @@
     static isRectangleLike(o) {
       return o != null && typeof o === "object" && typeof o.x === "number" && typeof o.y === "number" && typeof o.width === "number" && typeof o.height === "number";
     }
-    static create(x2, y, width2, height2) {
-      if (x2 == null || typeof x2 === "number") {
-        return new _Rectangle(x2, y, width2, height2);
+    static create(x, y, width2, height2) {
+      if (x == null || typeof x === "number") {
+        return new _Rectangle(x, y, width2, height2);
       }
-      return _Rectangle.clone(x2);
+      return _Rectangle.clone(x);
     }
     static clone(rect2) {
       if (_Rectangle.isRectangle(rect2)) {
@@ -9826,9 +9828,9 @@
     get leftLine() {
       return new Line(this.topLeft, this.bottomLeft);
     }
-    constructor(x2, y, width2, height2) {
+    constructor(x, y, width2, height2) {
       super();
-      this.x = x2 == null ? 0 : x2;
+      this.x = x == null ? 0 : x;
       this.y = y == null ? 0 : y;
       this.width = width2 == null ? 0 : width2;
       this.height = height2 == null ? 0 : height2;
@@ -9895,10 +9897,10 @@
         return this.clone();
       }
       const rad = toRad(angle);
-      const st2 = Math.abs(Math.sin(rad));
+      const st = Math.abs(Math.sin(rad));
       const ct = Math.abs(Math.cos(rad));
-      const w = this.width * ct + this.height * st2;
-      const h = this.width * st2 + this.height * ct;
+      const w = this.width * ct + this.height * st;
+      const h = this.width * st + this.height * ct;
       return new _Rectangle(this.x + (this.width - w) / 2, this.y + (this.height - h) / 2, w, h);
     }
     round(precision = 0) {
@@ -9908,8 +9910,8 @@
       this.height = round(this.height, precision);
       return this;
     }
-    add(x2, y, width2, height2) {
-      const rect2 = _Rectangle.create(x2, y, width2, height2);
+    add(x, y, width2, height2) {
+      const rect2 = _Rectangle.create(x, y, width2, height2);
       const minX = Math.min(this.x, rect2.x);
       const minY = Math.min(this.y, rect2.y);
       const maxX = Math.max(this.x + this.width, rect2.x + rect2.width);
@@ -9920,8 +9922,8 @@
       this.height = maxY - minY;
       return this;
     }
-    update(x2, y, width2, height2) {
-      const rect2 = _Rectangle.create(x2, y, width2, height2);
+    update(x, y, width2, height2) {
+      const rect2 = _Rectangle.create(x, y, width2, height2);
       this.x = rect2.x;
       this.y = rect2.y;
       this.width = rect2.width;
@@ -10063,23 +10065,23 @@
       const scale2 = this.getMaxScaleToFit(limit, origin);
       return Math.min(scale2.sx, scale2.sy);
     }
-    containsPoint(x2, y) {
-      return containsPoint(this, Point.create(x2, y));
+    containsPoint(x, y) {
+      return containsPoint(this, Point.create(x, y));
     }
-    containsRect(x2, y, width2, height2) {
-      const b = _Rectangle.create(x2, y, width2, height2);
+    containsRect(x, y, width2, height2) {
+      const b = _Rectangle.create(x, y, width2, height2);
       const x1 = this.x;
       const y1 = this.y;
       const w1 = this.width;
       const h1 = this.height;
-      const x22 = b.x;
+      const x2 = b.x;
       const y2 = b.y;
       const w2 = b.width;
       const h2 = b.height;
       if (w1 === 0 || h1 === 0 || w2 === 0 || h2 === 0) {
         return false;
       }
-      return x22 >= x1 && y2 >= y1 && x22 + w2 <= x1 + w1 && y2 + h2 <= y1 + h1;
+      return x2 >= x1 && y2 >= y1 && x2 + w2 <= x1 + w1 && y2 + h2 <= y1 + h1;
     }
     /**
      * Returns an array of the intersection points of the rectangle and the line.
@@ -10132,8 +10134,8 @@
       }
       return result;
     }
-    intersectsWithRect(x2, y, width2, height2) {
-      const ref2 = _Rectangle.create(x2, y, width2, height2);
+    intersectsWithRect(x, y, width2, height2) {
+      const ref2 = _Rectangle.create(x, y, width2, height2);
       if (!this.isIntersectWithRect(ref2)) {
         return null;
       }
@@ -10145,8 +10147,8 @@
       const yy = Math.max(myOrigin.y, rOrigin.y);
       return new _Rectangle(xx, yy, Math.min(myCorner.x, rCorner.x) - xx, Math.min(myCorner.y, rCorner.y) - yy);
     }
-    isIntersectWithRect(x2, y, width2, height2) {
-      const ref2 = _Rectangle.create(x2, y, width2, height2);
+    isIntersectWithRect(x, y, width2, height2) {
+      const ref2 = _Rectangle.create(x, y, width2, height2);
       const myOrigin = this.origin;
       const myCorner = this.corner;
       const rOrigin = ref2.origin;
@@ -10549,12 +10551,12 @@
       const determinant = (end.x - start.x) * (ref2.y - start.y) - (end.y - start.y) * (ref2.x - start.x);
       return determinant / this.length();
     }
-    pointSquaredDistance(x2, y) {
-      const p = Point.create(x2, y);
+    pointSquaredDistance(x, y) {
+      const p = Point.create(x, y);
       return this.closestPoint(p).squaredDistance(p);
     }
-    pointDistance(x2, y) {
-      const p = Point.create(x2, y);
+    pointDistance(x, y) {
+      const p = Point.create(x, y);
       return this.closestPoint(p).distance(p);
     }
     /**
@@ -10587,8 +10589,8 @@
       tangentLine.translate(tangentStart.x - start.x, tangentStart.y - start.y);
       return tangentLine;
     }
-    relativeCcw(x2, y) {
-      const ref2 = Point.create(x2, y);
+    relativeCcw(x, y) {
+      const ref2 = Point.create(x, y);
       let dx1 = ref2.x - this.start.x;
       let dy1 = ref2.y - this.start.y;
       const dx2 = this.end.x - this.start.x;
@@ -10632,11 +10634,11 @@
     static isEllipse(instance) {
       return instance != null && instance instanceof _Ellipse;
     }
-    static create(x2, y, a, b) {
-      if (x2 == null || typeof x2 === "number") {
-        return new _Ellipse(x2, y, a, b);
+    static create(x, y, a, b) {
+      if (x == null || typeof x === "number") {
+        return new _Ellipse(x, y, a, b);
       }
-      return _Ellipse.parse(x2);
+      return _Ellipse.parse(x);
     }
     static parse(e) {
       if (_Ellipse.isEllipse(e)) {
@@ -10654,9 +10656,9 @@
     get center() {
       return new Point(this.x, this.y);
     }
-    constructor(x2, y, a, b) {
+    constructor(x, y, a, b) {
       super();
-      this.x = x2 == null ? 0 : x2;
+      this.x = x == null ? 0 : x;
       this.y = y == null ? 0 : y;
       this.a = a == null ? 0 : a;
       this.b = b == null ? 0 : b;
@@ -10680,16 +10682,16 @@
       this.b += 2 * h;
       return this;
     }
-    normalizedDistance(x2, y) {
-      const ref2 = Point.create(x2, y);
+    normalizedDistance(x, y) {
+      const ref2 = Point.create(x, y);
       const dx = ref2.x - this.x;
       const dy = ref2.y - this.y;
       const a = this.a;
       const b = this.b;
       return dx * dx / (a * a) + dy * dy / (b * b);
     }
-    containsPoint(x2, y) {
-      return this.normalizedDistance(x2, y) <= 1;
+    containsPoint(x, y) {
+      return this.normalizedDistance(x, y) <= 1;
     }
     /**
      * Returns an array of the intersection points of the ellipse and the line.
@@ -10762,10 +10764,10 @@
       const mSquared = m * m;
       const aSquared = this.a * this.a;
       const bSquared = this.b * this.b;
-      let x2 = Math.sqrt(1 / (1 / aSquared + mSquared / bSquared));
-      x2 = dx < 0 ? -x2 : x2;
-      const y = m * x2;
-      result = new Point(this.x + x2, this.y + y);
+      let x = Math.sqrt(1 / (1 / aSquared + mSquared / bSquared));
+      x = dx < 0 ? -x : x;
+      const y = m * x;
+      result = new Point(this.x + x, this.y + y);
       if (angle) {
         return result.rotate(-angle, this.getCenter());
       }
@@ -10787,16 +10789,16 @@
       const refPointDelta = 30;
       const q1 = x0 > center2.x + a / 2;
       const q3 = x0 < center2.x - a / 2;
-      let x2;
+      let x;
       let y;
       if (q1 || q3) {
         y = x0 > center2.x ? y0 - refPointDelta : y0 + refPointDelta;
-        x2 = a * a / (x0 - cx) - a * a * (y0 - cy) * (y - cy) / (b * b * (x0 - cx)) + cx;
+        x = a * a / (x0 - cx) - a * a * (y0 - cy) * (y - cy) / (b * b * (x0 - cx)) + cx;
       } else {
-        x2 = y0 > center2.y ? x0 + refPointDelta : x0 - refPointDelta;
-        y = b * b / (y0 - cy) - b * b * (x0 - cx) * (x2 - cx) / (a * a * (y0 - cy)) + cy;
+        x = y0 > center2.y ? x0 + refPointDelta : x0 - refPointDelta;
+        y = b * b / (y0 - cy) - b * b * (x0 - cx) * (x - cx) / (a * a * (y0 - cy)) + cy;
       }
-      return new Point(x2, y).theta(ref2);
+      return new Point(x, y).theta(ref2);
     }
     scale(sx, sy) {
       this.a *= sx;
@@ -10915,15 +10917,15 @@
     }
     return draw(pts, options.round, options.initialMove == null || options.initialMove, options.close, options.exclude);
   }
-  function arcToCurves(x0, y0, r1, r2, angle = 0, largeArcFlag = 0, sweepFlag = 0, x2, y) {
+  function arcToCurves(x0, y0, r1, r2, angle = 0, largeArcFlag = 0, sweepFlag = 0, x, y) {
     if (r1 === 0 || r2 === 0) {
       return [];
     }
-    x2 -= x0;
+    x -= x0;
     y -= y0;
     r1 = Math.abs(r1);
     r2 = Math.abs(r2);
-    const ctx = -x2 / 2;
+    const ctx = -x / 2;
     const cty = -y / 2;
     const cpsi = Math.cos(angle * Math.PI / 180);
     const spsi = Math.sin(angle * Math.PI / 180);
@@ -10948,7 +10950,7 @@
     }
     const txd = sds * r1 * ryd / r2;
     const tyd = -1 * sds * r2 * rxd / r1;
-    const tx = cpsi * txd - spsi * tyd + x2 / 2;
+    const tx = cpsi * txd - spsi * tyd + x / 2;
     const ty = spsi * txd + cpsi * tyd + y / 2;
     let rad = Math.atan2((ryd - tyd) / r2, (rxd - txd) / r1) - Math.atan2(0, 1);
     let s1 = rad >= 0 ? rad : 2 * Math.PI + rad;
@@ -10969,7 +10971,7 @@
     const spsir2 = spsi * r2;
     let mc = Math.cos(s1);
     let ms = Math.sin(s1);
-    let x22 = -t * (cpsir1 * ms + spsir2 * mc);
+    let x2 = -t * (cpsir1 * ms + spsir2 * mc);
     let y2 = -t * (spsir1 * ms - cpsir2 * mc);
     let x3 = 0;
     let y3 = 0;
@@ -10983,13 +10985,13 @@
       const dx = -t * (cpsir1 * ms + spsir2 * mc);
       const dy = -t * (spsir1 * ms - cpsir2 * mc);
       const index2 = n * 6;
-      result[index2] = Number(x22 + x0);
+      result[index2] = Number(x2 + x0);
       result[index2 + 1] = Number(y2 + y0);
       result[index2 + 2] = Number(x3 - dx + x0);
       result[index2 + 3] = Number(y3 - dy + y0);
       result[index2 + 4] = Number(x3 + x0);
       result[index2 + 5] = Number(y3 + y0);
-      x22 = x3 + dx;
+      x2 = x3 + dx;
       y2 = y3 + dy;
     }
     return result.map((num) => +num.toFixed(2));
@@ -11057,12 +11059,12 @@
       const points = this.points;
       for (let i = 0, ii = points.length; i < ii; i += 1) {
         const point = points[i];
-        const x3 = point.x;
+        const x = point.x;
         const y = point.y;
-        if (x3 < x1)
-          x1 = x3;
-        if (x3 > x2)
-          x2 = x3;
+        if (x < x1)
+          x1 = x;
+        if (x > x2)
+          x2 = x;
         if (y < y1)
           y1 = y;
         if (y > y2)
@@ -11114,7 +11116,7 @@
         return false;
       }
       const ref2 = Point.clone(p);
-      const x2 = ref2.x;
+      const x = ref2.x;
       const y = ref2.y;
       const points = this.points;
       const count = points.length;
@@ -11131,9 +11133,9 @@
           return true;
         }
         if (y <= start.y && y > end.y || y > start.y && y <= end.y) {
-          const xDifference = start.x - x2 > end.x - x2 ? start.x - x2 : end.x - x2;
+          const xDifference = start.x - x > end.x - x ? start.x - x : end.x - x;
           if (xDifference >= 0) {
-            const rayEnd = new Point(x2 + xDifference, y);
+            const rayEnd = new Point(x + xDifference, y);
             const ray = new Line(p, rayEnd);
             if (segment.intersectsWithLine(ray)) {
               intersectionCount += 1;
@@ -11502,7 +11504,7 @@
         if (t2 > 0 && t2 < 1)
           tvalues.push(t2);
       }
-      let x4;
+      let x;
       let y;
       let mt;
       let j = tvalues.length;
@@ -11511,11 +11513,11 @@
         j -= 1;
         t = tvalues[j];
         mt = 1 - t;
-        x4 = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3;
-        bounds[0][j] = x4;
+        x = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3;
+        bounds[0][j] = x;
         y = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3;
         bounds[1][j] = y;
-        points[j] = { X: x4, Y: y };
+        points[j] = { X: x, Y: y };
       }
       tvalues[jlen] = 0;
       tvalues[jlen + 1] = 1;
@@ -11967,19 +11969,19 @@
   };
   function getFirstControlPoints(rhs) {
     const n = rhs.length;
-    const x2 = [];
+    const x = [];
     const tmp = [];
     let b = 2;
-    x2[0] = rhs[0] / b;
+    x[0] = rhs[0] / b;
     for (let i = 1; i < n; i += 1) {
       tmp[i] = 1 / b;
       b = (i < n - 1 ? 4 : 3.5) - tmp[i];
-      x2[i] = (rhs[i] - x2[i - 1]) / b;
+      x[i] = (rhs[i] - x[i - 1]) / b;
     }
     for (let i = 1; i < n; i += 1) {
-      x2[n - i - 1] -= tmp[n - i] * x2[n - i];
+      x[n - i - 1] -= tmp[n - i] * x[n - i];
     }
-    return x2;
+    return x;
   }
   function getCurveControlPoints(points) {
     const knots = points.map((p) => Point.clone(p));
@@ -11997,7 +11999,7 @@
     }
     rhs[0] = knots[0].x + 2 * knots[1].x;
     rhs[n - 1] = (8 * knots[n - 1].x + knots[n].x) / 2;
-    const x2 = getFirstControlPoints(rhs);
+    const x = getFirstControlPoints(rhs);
     for (let i = 1; i < n - 1; i += 1) {
       rhs[i] = 4 * knots[i].y + 2 * knots[i + 1].y;
     }
@@ -12005,11 +12007,11 @@
     rhs[n - 1] = (8 * knots[n - 1].y + knots[n].y) / 2;
     const y = getFirstControlPoints(rhs);
     for (let i = 0; i < n; i += 1) {
-      firstControlPoints.push(new Point(x2[i], y[i]));
+      firstControlPoints.push(new Point(x[i], y[i]));
       if (i < n - 1) {
-        secondControlPoints.push(new Point(2 * knots[i + 1].x - x2[i + 1], 2 * knots[i + 1].y - y[i + 1]));
+        secondControlPoints.push(new Point(2 * knots[i + 1].x - x[i + 1], 2 * knots[i + 1].y - y[i + 1]));
       } else {
-        secondControlPoints.push(new Point((knots[n].x + x2[n - 1]) / 2, (knots[n].y + y[n - 1]) / 2));
+        secondControlPoints.push(new Point((knots[n].x + x[n - 1]) / 2, (knots[n].y + y[n - 1]) / 2));
       }
     }
     return [firstControlPoints, secondControlPoints];
@@ -12088,18 +12090,18 @@
       }
       const segments = [];
       for (let i = 0; i < len; i += 2) {
-        const x2 = +args[i];
+        const x = +args[i];
         const y = +args[i + 1];
-        segments.push(new _LineTo(x2, y));
+        segments.push(new _LineTo(x, y));
       }
       return segments;
     }
-    constructor(x2, y) {
+    constructor(x, y) {
       super();
-      if (Line.isLine(x2)) {
-        this.endPoint = x2.end.clone().round(2);
+      if (Line.isLine(x)) {
+        this.endPoint = x.end.clone().round(2);
       } else {
-        this.endPoint = Point.create(x2, y).round(2);
+        this.endPoint = Point.create(x, y).round(2);
       }
     }
     get type() {
@@ -12318,24 +12320,24 @@
       }
       const segments = [];
       for (let i = 0; i < len; i += 2) {
-        const x2 = +args[i];
+        const x = +args[i];
         const y = +args[i + 1];
         if (i === 0) {
-          segments.push(new _MoveTo(x2, y));
+          segments.push(new _MoveTo(x, y));
         } else {
-          segments.push(new LineTo(x2, y));
+          segments.push(new LineTo(x, y));
         }
       }
       return segments;
     }
-    constructor(x2, y) {
+    constructor(x, y) {
       super();
       this.isVisible = false;
       this.isSubpathStart = true;
-      if (Line.isLine(x2) || Curve.isCurve(x2)) {
-        this.endPoint = x2.end.clone().round(2);
+      if (Line.isLine(x) || Curve.isCurve(x)) {
+        this.endPoint = x.end.clone().round(2);
       } else {
-        this.endPoint = Point.create(x2, y).round(2);
+        this.endPoint = Point.create(x, y).round(2);
       }
     }
     get start() {
@@ -12584,10 +12586,10 @@
   };
 
   // node_modules/@antv/x6/es/geometry/path/normalize.js
-  function rotate(x2, y, rad) {
+  function rotate(x, y, rad) {
     return {
-      x: x2 * Math.cos(rad) - y * Math.sin(rad),
-      y: x2 * Math.sin(rad) + y * Math.cos(rad)
+      x: x * Math.cos(rad) - y * Math.sin(rad),
+      y: x * Math.sin(rad) + y * Math.cos(rad)
     };
   }
   function q2c(x1, y1, ax, ay, x2, y2) {
@@ -12618,9 +12620,9 @@
       xy = rotate(x2, y2, -rad);
       x2 = xy.x;
       y2 = xy.y;
-      const x3 = (x1 - x2) / 2;
+      const x = (x1 - x2) / 2;
       const y = (y1 - y2) / 2;
-      let h = x3 * x3 / (rx * rx) + y * y / (ry * ry);
+      let h = x * x / (rx * rx) + y * y / (ry * ry);
       if (h > 1) {
         h = Math.sqrt(h);
         rx = h * rx;
@@ -12628,9 +12630,9 @@
       }
       const rx2 = rx * rx;
       const ry2 = ry * ry;
-      const k = (largeArcFlag === sweepFlag ? -1 : 1) * Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x3 * x3) / (rx2 * y * y + ry2 * x3 * x3)));
+      const k = (largeArcFlag === sweepFlag ? -1 : 1) * Math.sqrt(Math.abs((rx2 * ry2 - rx2 * y * y - ry2 * x * x) / (rx2 * y * y + ry2 * x * x)));
       cx = k * rx * y / ry + (x1 + x2) / 2;
-      cy = k * -ry * x3 / rx + (y1 + y2) / 2;
+      cy = k * -ry * x / rx + (y1 + y2) / 2;
       f1 = Math.asin((y1 - cy) / ry);
       f2 = Math.asin((y2 - cy) / ry);
       f1 = x1 < cx ? Math.PI - f1 : f1;
@@ -12753,7 +12755,7 @@
     if (!pathArray || !pathArray.length) {
       return [["M", 0, 0]];
     }
-    let x2 = 0;
+    let x = 0;
     let y = 0;
     let mx = 0;
     let my = 0;
@@ -12772,25 +12774,25 @@
             r[3] = segment[3];
             r[4] = segment[4];
             r[5] = segment[5];
-            r[6] = +segment[6] + x2;
+            r[6] = +segment[6] + x;
             r[7] = +segment[7] + y;
             break;
           case "V":
             r[1] = +segment[1] + y;
             break;
           case "H":
-            r[1] = +segment[1] + x2;
+            r[1] = +segment[1] + x;
             break;
           case "M":
-            mx = +segment[1] + x2;
+            mx = +segment[1] + x;
             my = +segment[2] + y;
             for (let j = 1, jj = segment.length; j < jj; j += 1) {
-              r[j] = +segment[j] + (j % 2 ? x2 : y);
+              r[j] = +segment[j] + (j % 2 ? x : y);
             }
             break;
           default:
             for (let j = 1, jj = segment.length; j < jj; j += 1) {
-              r[j] = +segment[j] + (j % 2 ? x2 : y);
+              r[j] = +segment[j] + (j % 2 ? x : y);
             }
             break;
         }
@@ -12801,11 +12803,11 @@
       }
       switch (r[0]) {
         case "Z":
-          x2 = +mx;
+          x = +mx;
           y = +my;
           break;
         case "H":
-          x2 = r[1];
+          x = r[1];
           break;
         case "V":
           y = r[1];
@@ -12813,11 +12815,11 @@
         case "M":
           mx = r[r.length - 2];
           my = r[r.length - 1];
-          x2 = r[r.length - 2];
+          x = r[r.length - 2];
           y = r[r.length - 1];
           break;
         default:
-          x2 = r[r.length - 2];
+          x = r[r.length - 2];
           y = r[r.length - 1];
           break;
       }
@@ -13068,11 +13070,11 @@
       }
       return this;
     }
-    quadTo(x1, y1, x2, y) {
+    quadTo(x1, y1, x, y) {
       const start = this.end || new Point();
       const data2 = ["M", start.x, start.y];
       if (typeof x1 === "number") {
-        data2.push("Q", x1, y1, x2, y);
+        data2.push("Q", x1, y1, x, y);
       } else {
         const p = y1;
         data2.push(`Q`, x1.x, x1.y, p.x, p.y);
@@ -14177,8 +14179,8 @@
       target.appendChild(elem);
     }
   }
-  function isElement(x2) {
-    return !!x2 && x2.nodeType === 1;
+  function isElement(x) {
+    return !!x && x.nodeType === 1;
   }
   function isHTMLElement(elem) {
     try {
@@ -14318,22 +14320,22 @@
       } else if (attr2 === "style") {
         const to = typeof target[attr2] === "object";
         const so = typeof source[attr2] === "object";
-        let tt2;
+        let tt;
         let ss;
         if (to && so) {
-          tt2 = target[attr2];
+          tt = target[attr2];
           ss = source[attr2];
         } else if (to) {
-          tt2 = target[attr2];
+          tt = target[attr2];
           ss = styleToObject(source[attr2]);
         } else if (so) {
-          tt2 = styleToObject(target[attr2]);
+          tt = styleToObject(target[attr2]);
           ss = source[attr2];
         } else {
-          tt2 = styleToObject(target[attr2]);
+          tt = styleToObject(target[attr2]);
           ss = styleToObject(source[attr2]);
         }
-        target[attr2] = mergeAttrs(tt2, ss);
+        target[attr2] = mergeAttrs(tt, ss);
       } else {
         target[attr2] = source[attr2];
       }
@@ -15247,8 +15249,8 @@
       toggleClass(this.node, className3, stateVal);
       return this;
     }
-    toLocalPoint(x2, y) {
-      return toLocalPoint(this.node, x2, y);
+    toLocalPoint(x, y) {
+      return toLocalPoint(this.node, x, y);
     }
     /**
      * Samples the underlying SVG element (it currently works only on
@@ -15392,9 +15394,9 @@
     let textPath2 = options.textPath;
     const verticalAnchor = options.textVerticalAnchor;
     const namedVerticalAnchor = verticalAnchor === "middle" || verticalAnchor === "bottom" || verticalAnchor === "top";
-    let x2 = options.x;
-    if (x2 === void 0) {
-      x2 = elem.getAttribute("x") || 0;
+    let x = options.x;
+    if (x === void 0) {
+      x = elem.getAttribute("x") || 0;
     }
     const iai = options.includeAnnotationIndices;
     let annotations2 = options.annotations;
@@ -15494,7 +15496,7 @@
         lineNode.setAttribute("dy", dy);
       }
       if (i > 0 || textPath2) {
-        lineNode.setAttribute("x", x2);
+        lineNode.setAttribute("x", x);
       }
       lineNode.className.baseVal = lineClassName;
       containerNode.appendChild(lineNode);
@@ -15800,7 +15802,7 @@
   }
   function rectToPathData(r) {
     let d;
-    const x2 = r.x;
+    const x = r.x;
     const y = r.y;
     const width2 = r.width;
     const height2 = r.height;
@@ -15811,7 +15813,7 @@
     if (topRx || bottomRx || topRy || bottomRy) {
       d = [
         "M",
-        x2,
+        x,
         y + topRy,
         "v",
         height2 - topRy - bottomRy,
@@ -15856,7 +15858,7 @@
         "Z"
       ];
     } else {
-      d = ["M", x2, y, "H", x2 + width2, "V", y + height2, "H", x2, "V", y, "Z"];
+      d = ["M", x, y, "H", x + width2, "V", y + height2, "H", x, "V", y, "Z"];
     }
     return d.join(" ");
   }
@@ -15927,10 +15929,10 @@
   var transformRegex = /(\w+)\(([^,)]+),?([^)]+)?\)/gi;
   var transformSeparatorRegex = /[ ,]+/;
   var transformationListRegex = /^(\w+)\((.*)\)/;
-  function createSVGPoint(x2, y) {
+  function createSVGPoint(x, y) {
     const svgDocument = createSvgElement("svg");
     const p = svgDocument.createSVGPoint();
-    p.x = x2;
+    p.x = x;
     p.y = y;
     return p;
   }
@@ -16222,10 +16224,10 @@
     }
     return matrix;
   }
-  function toLocalPoint(elem, x2, y) {
+  function toLocalPoint(elem, x, y) {
     const svg = elem instanceof SVGSVGElement ? elem : elem.ownerSVGElement;
     const p = svg.createSVGPoint();
-    p.x = x2;
+    p.x = x;
     p.y = y;
     try {
       const ctm = svg.getScreenCTM();
@@ -16780,13 +16782,13 @@
   };
   var Private;
   (function(Private2) {
-    function on3(elem, types, selector, data2, fn, once) {
+    function on2(elem, types, selector, data2, fn, once) {
       if (typeof types === "object") {
         if (typeof selector !== "string") {
           data2 = data2 || selector;
           selector = void 0;
         }
-        Object.keys(types).forEach((type) => on3(elem, type, selector, data2, types[type], once));
+        Object.keys(types).forEach((type) => on2(elem, type, selector, data2, types[type], once));
         return;
       }
       if (data2 == null && fn == null) {
@@ -16817,7 +16819,7 @@
       }
       on(elem, types, fn, data2, selector);
     }
-    Private2.on = on3;
+    Private2.on = on2;
     function off2(elem, events, selector, fn) {
       const evt = events;
       if (evt && evt.preventDefault != null && evt.handleObj != null) {
@@ -17539,8 +17541,8 @@
   var bounce = ((t) => {
     for (let a = 0, b = 1; ; a += b, b /= 2) {
       if (t >= (7 - 4 * a) / 11) {
-        const q2 = (11 - 6 * a - 11 * t) / 4;
-        return -q2 * q2 + b * b;
+        const q = (11 - 6 * a - 11 * t) / 4;
+        return -q * q + b * b;
       }
     }
   });
@@ -17551,17 +17553,17 @@
     reflect(f) {
       return (t) => 0.5 * (t < 0.5 ? f(2 * t) : 2 - f(2 - 2 * t));
     },
-    clamp(f, n = 0, x2 = 1) {
+    clamp(f, n = 0, x = 1) {
       return (t) => {
         const r = f(t);
-        return r < n ? n : r > x2 ? x2 : r;
+        return r < n ? n : r > x ? x : r;
       };
     },
     back(s = 1.70158) {
       return (t) => t * t * ((s + 1) * t - s);
     },
-    elastic(x2 = 1.5) {
-      return (t) => Math.pow(2, 10 * (t - 1)) * Math.cos(20 * Math.PI * x2 / 3 * t);
+    elastic(x = 1.5) {
+      return (t) => Math.pow(2, 10 * (t - 1)) * Math.cos(20 * Math.PI * x / 3 * t);
     }
   };
   function easeInSine(t) {
@@ -19157,10 +19159,10 @@
     crossCheckLines.forEach((crossCheckLine) => {
       const intersection = line2.intersectsWithLine(crossCheckLine);
       if (intersection) {
-        const { x: x2, y } = intersection;
+        const { x, y } = intersection;
         const { start, end } = crossCheckLine;
-        const startIsIntersection = Math.round(start.x) === Math.round(x2) && Math.round(start.y) === Math.round(y);
-        const endIsIntersection = Math.round(end.x) === Math.round(x2) && Math.round(end.y) === Math.round(y);
+        const startIsIntersection = Math.round(start.x) === Math.round(x) && Math.round(start.y) === Math.round(y);
+        const endIsIntersection = Math.round(end.x) === Math.round(x) && Math.round(end.y) === Math.round(y);
         if (startIsIntersection || endIsIntersection) {
           return;
         }
@@ -19596,8 +19598,8 @@
 
   // node_modules/@antv/x6/es/registry/filter/blur.js
   function blur(args = {}) {
-    const x2 = getNumber3(args.x, 2);
-    const stdDeviation = args.y != null && Number.isFinite(args.y) ? [x2, args.y] : x2;
+    const x = getNumber3(args.x, 2);
+    const stdDeviation = args.y != null && Number.isFinite(args.y) ? [x, args.y] : x;
     return `
     <filter>
       <feGaussianBlur stdDeviation="${stdDeviation}"/>
@@ -20207,8 +20209,8 @@
     }
   };
   function toResult(preset, args) {
-    const { x: x2, y, angle, attrs } = args || {};
-    return object_exports.defaultsDeep({}, { angle, attrs, position: { x: x2, y } }, preset, defaults2);
+    const { x, y, angle, attrs } = args || {};
+    return object_exports.defaultsDeep({}, { angle, attrs, position: { x, y } }, preset, defaults2);
   }
 
   // node_modules/@antv/x6/es/registry/port-label-layout/side.js
@@ -20416,7 +20418,7 @@
 
   // node_modules/@antv/x6/es/registry/port-layout/absolute.js
   var absolute = (portsPositionArgs, elemBBox) => {
-    return portsPositionArgs.map(({ x: x2, y, angle }) => toResult2(normalizePoint(elemBBox, { x: x2, y }), angle || 0));
+    return portsPositionArgs.map(({ x, y, angle }) => toResult2(normalizePoint(elemBBox, { x, y }), angle || 0));
   };
 
   // node_modules/@antv/x6/es/registry/port-layout/ellipse.js
@@ -20893,9 +20895,9 @@
           const bbox3 = node.getBBox().moveAndExpand(options.paddingBox);
           const origin = bbox3.getOrigin().snapToGrid(mapGridSize);
           const corner = bbox3.getCorner().snapToGrid(mapGridSize);
-          for (let x2 = origin.x; x2 <= corner.x; x2 += mapGridSize) {
+          for (let x = origin.x; x <= corner.x; x += mapGridSize) {
             for (let y = origin.y; y <= corner.y; y += mapGridSize) {
-              const key = new Point(x2, y).toString();
+              const key = new Point(x, y).toString();
               if (map[key] == null) {
                 map[key] = [];
               }
@@ -21141,9 +21143,9 @@
   }
   function snapGrid(point, grid2) {
     const source = grid2.source;
-    const x2 = snapToGrid(point.x - source.x, grid2.x) + source.x;
+    const x = snapToGrid(point.x - source.x, grid2.x) + source.x;
     const y = snapToGrid(point.y - source.y, grid2.y) + source.y;
-    return new Point(x2, y);
+    return new Point(x, y);
   }
   function round2(point, precision) {
     return point.round(precision);
@@ -21353,10 +21355,10 @@
       const first = vertices[i];
       const second = vertices[i + 1];
       if (first.x === second.x) {
-        const x2 = gridSize * Math.round(first.x / gridSize);
-        if (first.x !== x2) {
-          first.x = x2;
-          second.x = x2;
+        const x = gridSize * Math.round(first.x / gridSize);
+        if (first.x !== x) {
+          first.x = x;
+          second.x = x;
         }
       } else if (first.y === second.y) {
         const y = gridSize * Math.round(first.y / gridSize);
@@ -23176,7 +23178,7 @@
     notifyUnhighlight(magnet, options) {
     }
     // #endregion
-    getEdgeTerminal(magnet, x2, y, edge, type) {
+    getEdgeTerminal(magnet, x, y, edge, type) {
       const cell = this.cell;
       const portId = this.findAttr("port", magnet);
       const selector = magnet.getAttribute("data-selector");
@@ -23273,39 +23275,39 @@
       this.graph.trigger(name, args);
       return this;
     }
-    getEventArgs(e, x2, y) {
+    getEventArgs(e, x, y) {
       const view = this;
       const cell = view.cell;
-      if (x2 == null || y == null) {
+      if (x == null || y == null) {
         return { e, view, cell };
       }
-      return { e, x: x2, y, view, cell };
+      return { e, x, y, view, cell };
     }
-    onClick(e, x2, y) {
-      this.notify("cell:click", this.getEventArgs(e, x2, y));
+    onClick(e, x, y) {
+      this.notify("cell:click", this.getEventArgs(e, x, y));
     }
-    onDblClick(e, x2, y) {
-      this.notify("cell:dblclick", this.getEventArgs(e, x2, y));
+    onDblClick(e, x, y) {
+      this.notify("cell:dblclick", this.getEventArgs(e, x, y));
     }
-    onContextMenu(e, x2, y) {
-      this.notify("cell:contextmenu", this.getEventArgs(e, x2, y));
+    onContextMenu(e, x, y) {
+      this.notify("cell:contextmenu", this.getEventArgs(e, x, y));
     }
-    onMouseDown(e, x2, y) {
+    onMouseDown(e, x, y) {
       if (this.cell.model) {
         this.cachedModelForMouseEvent = this.cell.model;
         this.cachedModelForMouseEvent.startBatch("mouse");
       }
-      this.notify("cell:mousedown", this.getEventArgs(e, x2, y));
+      this.notify("cell:mousedown", this.getEventArgs(e, x, y));
     }
-    onMouseUp(e, x2, y) {
-      this.notify("cell:mouseup", this.getEventArgs(e, x2, y));
+    onMouseUp(e, x, y) {
+      this.notify("cell:mouseup", this.getEventArgs(e, x, y));
       if (this.cachedModelForMouseEvent) {
         this.cachedModelForMouseEvent.stopBatch("mouse", { cell: this.cell });
         this.cachedModelForMouseEvent = null;
       }
     }
-    onMouseMove(e, x2, y) {
-      this.notify("cell:mousemove", this.getEventArgs(e, x2, y));
+    onMouseMove(e, x, y) {
+      this.notify("cell:mousemove", this.getEventArgs(e, x, y));
     }
     onMouseOver(e) {
       this.notify("cell:mouseover", this.getEventArgs(e));
@@ -23319,20 +23321,20 @@
     onMouseLeave(e) {
       this.notify("cell:mouseleave", this.getEventArgs(e));
     }
-    onMouseWheel(e, x2, y, delta) {
-      this.notify("cell:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x2, y)));
+    onMouseWheel(e, x, y, delta) {
+      this.notify("cell:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x, y)));
     }
-    onCustomEvent(e, name, x2, y) {
-      this.notify("cell:customevent", Object.assign({ name }, this.getEventArgs(e, x2, y)));
-      this.notify(name, Object.assign({}, this.getEventArgs(e, x2, y)));
+    onCustomEvent(e, name, x, y) {
+      this.notify("cell:customevent", Object.assign({ name }, this.getEventArgs(e, x, y)));
+      this.notify(name, Object.assign({}, this.getEventArgs(e, x, y)));
     }
-    onMagnetMouseDown(e, magnet, x2, y) {
+    onMagnetMouseDown(e, magnet, x, y) {
     }
-    onMagnetDblClick(e, magnet, x2, y) {
+    onMagnetDblClick(e, magnet, x, y) {
     }
-    onMagnetContextMenu(e, magnet, x2, y) {
+    onMagnetContextMenu(e, magnet, x, y) {
     }
-    onLabelMouseDown(e, x2, y) {
+    onLabelMouseDown(e, x, y) {
     }
     checkMouseleave(e) {
       const target = this.getEventTarget(e, { fromPoint: true });
@@ -24082,7 +24084,7 @@
     getNodeMatrix() {
       const view = this.cellView;
       const options = this.options;
-      let { x: x2 = 0, y = 0 } = options;
+      let { x = 0, y = 0 } = options;
       const { offset: offset4, useCellGeometry, rotate: rotate3 } = options;
       let bbox3 = getViewBBox(view, useCellGeometry);
       const angle = view.cell.getAngle();
@@ -24098,7 +24100,7 @@
         offsetX = offset4.x;
         offsetY = offset4.y;
       }
-      x2 = number_exports.normalizePercentage(x2, bbox3.width);
+      x = number_exports.normalizePercentage(x, bbox3.width);
       y = number_exports.normalizePercentage(y, bbox3.height);
       let matrix = main_exports2.createSVGMatrix();
       if (this.parent.options.local) {
@@ -24109,7 +24111,7 @@
       if (rotate3) {
         matrix = matrix.rotate(angle);
       }
-      matrix = matrix.translate(x2 + offsetX - bbox3.width / 2, y + offsetY - bbox3.height / 2);
+      matrix = matrix.translate(x + offsetX - bbox3.width / 2, y + offsetY - bbox3.height / 2);
       return matrix;
     }
     getEdgeMatrix() {
@@ -24240,14 +24242,14 @@
       let pos = Point.create();
       let minWidth = 20;
       let translate2 = "";
-      let { x: x2, y } = this.options;
+      let { x, y } = this.options;
       const { width: width2, height: height2 } = this.options;
-      if (typeof x2 !== "undefined" && typeof y !== "undefined") {
+      if (typeof x !== "undefined" && typeof y !== "undefined") {
         const bbox3 = cell.getBBox();
-        x2 = number_exports.normalizePercentage(x2, bbox3.width);
+        x = number_exports.normalizePercentage(x, bbox3.width);
         y = number_exports.normalizePercentage(y, bbox3.height);
-        pos = bbox3.topLeft.translate(x2, y);
-        minWidth = bbox3.width - x2 * 2;
+        pos = bbox3.topLeft.translate(x, y);
+        minWidth = bbox3.width - x * 2;
       } else {
         const bbox3 = cell.getBBox();
         pos = bbox3.center;
@@ -24762,11 +24764,11 @@
       }
       this.addClass(this.prefixClassName("edge-tool-segment"));
     }
-    updatePosition(x2, y, angle, view) {
-      const p = view.getClosestPoint(new Point(x2, y)) || new Point(x2, y);
+    updatePosition(x, y, angle, view) {
+      const p = view.getClosestPoint(new Point(x, y)) || new Point(x, y);
       let matrix = main_exports2.createSVGMatrix().translate(p.x, p.y);
-      if (!p.equals({ x: x2, y })) {
-        const line2 = new Line(x2, y, p.x, p.y);
+      if (!p.equals({ x, y })) {
+        const line2 = new Line(x, y, p.x, p.y);
         let deg = line2.vector().vectorAngle(new Point(1, 0));
         if (deg !== 0) {
           deg += 90;
@@ -24927,29 +24929,29 @@
     }
     getMouseEventArgs(evt) {
       const e = this.normalizeEvent(evt);
-      const { x: x2, y } = this.graph.snapToGrid(e.clientX, e.clientY);
-      return { e, x: x2, y };
+      const { x, y } = this.graph.snapToGrid(e.clientX, e.clientY);
+      return { e, x, y };
     }
     onHandleChange({ e }) {
       this.focus();
       const edgeView = this.cellView;
       edgeView.cell.startBatch("move-vertex", { ui: true, toolId: this.cid });
       if (!this.options.stopPropagation) {
-        const { e: evt, x: x2, y } = this.getMouseEventArgs(e);
-        this.eventData(evt, { start: { x: x2, y } });
-        edgeView.notifyMouseDown(evt, x2, y);
+        const { e: evt, x, y } = this.getMouseEventArgs(e);
+        this.eventData(evt, { start: { x, y } });
+        edgeView.notifyMouseDown(evt, x, y);
       }
     }
     onHandleChanging({ handle, e }) {
       const edgeView = this.cellView;
       const index2 = handle.options.index;
-      const { e: evt, x: x2, y } = this.getMouseEventArgs(e);
-      const vertex = { x: x2, y };
+      const { e: evt, x, y } = this.getMouseEventArgs(e);
+      const vertex = { x, y };
       this.snapVertex(vertex, index2);
       edgeView.cell.setVertexAt(index2, vertex, { ui: true, toolId: this.cid });
       handle.updatePosition(vertex.x, vertex.y);
       if (!this.options.stopPropagation) {
-        edgeView.notifyMouseMove(evt, x2, y);
+        edgeView.notifyMouseMove(evt, x, y);
       }
     }
     stopBatch(vertexAdded) {
@@ -24975,14 +24977,14 @@
       }
       this.blur();
       this.stopBatch(this.eventData(e).vertexAdded);
-      const { e: evt, x: x2, y } = this.getMouseEventArgs(e);
+      const { e: evt, x, y } = this.getMouseEventArgs(e);
       if (!this.options.stopPropagation) {
-        edgeView.notifyMouseUp(evt, x2, y);
+        edgeView.notifyMouseUp(evt, x, y);
         const { start } = this.eventData(evt);
         if (start) {
           const { x: startX, y: startY } = start;
-          if (startX === x2 && startY === y) {
-            edgeView.onClick(evt, x2, y);
+          if (startX === x && startY === y) {
+            edgeView.onClick(evt, x, y);
           }
         }
       }
@@ -25096,8 +25098,8 @@
       }
       this.addClass(this.prefixClassName("edge-tool-vertex"));
     }
-    updatePosition(x2, y) {
-      this.setAttrs({ cx: x2, cy: y });
+    updatePosition(x, y) {
+      this.setAttrs({ cx: x, cy: y });
     }
     onMouseDown(evt) {
       if (this.options.guard(evt)) {
@@ -27064,10 +27066,10 @@
       this.initPorts();
     }
     preprocess(metadata, ignoreIdCheck) {
-      const { x: x2, y, width: width2, height: height2 } = metadata, others = __rest(metadata, ["x", "y", "width", "height"]);
-      if (x2 != null || y != null) {
+      const { x, y, width: width2, height: height2 } = metadata, others = __rest(metadata, ["x", "y", "width", "height"]);
+      if (x != null || y != null) {
         const position2 = others.position;
-        others.position = Object.assign(Object.assign({}, position2), { x: x2 != null ? x2 : position2 ? position2.x : 0, y: y != null ? y : position2 ? position2.y : 0 });
+        others.position = Object.assign(Object.assign({}, position2), { x: x != null ? x : position2 ? position2.x : 0, y: y != null ? y : position2 ? position2.y : 0 });
       }
       if (width2 != null || height2 != null) {
         const size = others.size;
@@ -27188,15 +27190,15 @@
       return pos ? Object.assign({}, pos) : { x: 0, y: 0 };
     }
     setPosition(arg0, arg1, arg2 = {}) {
-      let x2;
+      let x;
       let y;
       let options;
       if (typeof arg0 === "object") {
-        x2 = arg0.x;
+        x = arg0.x;
         y = arg0.y;
         options = arg1 || {};
       } else {
-        x2 = arg0;
+        x = arg0;
         y = arg1;
         options = arg2 || {};
       }
@@ -27204,15 +27206,15 @@
         const parent = this.getParent();
         if (parent != null && parent.isNode()) {
           const parentPosition = parent.getPosition();
-          x2 += parentPosition.x;
+          x += parentPosition.x;
           y += parentPosition.y;
         }
       }
       if (options.deep) {
         const currentPosition = this.getPosition();
-        this.translate(x2 - currentPosition.x, y - currentPosition.y, options);
+        this.translate(x - currentPosition.x, y - currentPosition.y, options);
       } else {
-        this.store.set("position", { x: x2, y }, options);
+        this.store.set("position", { x, y }, options);
       }
       return this;
     }
@@ -27227,9 +27229,9 @@
         const ra = options.restrict;
         const dx = position2.x - bbox3.x;
         const dy = position2.y - bbox3.y;
-        const x2 = Math.max(ra.x + dx, Math.min(ra.x + ra.width + dx - bbox3.width, position2.x + tx));
+        const x = Math.max(ra.x + dx, Math.min(ra.x + ra.width + dx - bbox3.width, position2.x + tx));
         const y = Math.max(ra.y + dy, Math.min(ra.y + ra.height + dy - bbox3.height, position2.y + ty));
-        tx = x2 - position2.x;
+        tx = x - position2.x;
         ty = y - position2.y;
       }
       const translatedPosition = {
@@ -27342,14 +27344,14 @@
           cell.fit(options);
         });
       }
-      let { x: x2, y, width: width2, height: height2 } = Cell.getCellsBBox(embeds);
+      let { x, y, width: width2, height: height2 } = Cell.getCellsBBox(embeds);
       const padding = number_exports.normalizeSides(options.padding);
-      x2 -= padding.left;
+      x -= padding.left;
       y -= padding.top;
       width2 += padding.left + padding.right;
       height2 += padding.bottom + padding.top;
       this.store.set({
-        position: { x: x2, y },
+        position: { x, y },
         size: { width: width2, height: height2 }
       }, options);
       this.stopBatch("fit-embeds");
@@ -29399,15 +29401,15 @@
     cloneCells(cells) {
       return Cell.cloneCells(cells);
     }
-    getNodesFromPoint(x2, y) {
-      const p = typeof x2 === "number" ? { x: x2, y: y || 0 } : x2;
+    getNodesFromPoint(x, y) {
+      const p = typeof x === "number" ? { x, y: y || 0 } : x;
       return this.getNodes().filter((node) => {
         return node.getBBox().containsPoint(p);
       });
     }
-    getNodesInArea(x2, y, w, h, options) {
-      const rect2 = typeof x2 === "number" ? new Rectangle(x2, y, w, h) : Rectangle.create(x2);
-      const opts = typeof x2 === "number" ? options : y;
+    getNodesInArea(x, y, w, h, options) {
+      const rect2 = typeof x === "number" ? new Rectangle(x, y, w, h) : Rectangle.create(x);
+      const opts = typeof x === "number" ? options : y;
       const strict = opts === null || opts === void 0 ? void 0 : opts.strict;
       return this.getNodes().filter((node) => {
         const angle = node.angle();
@@ -29415,9 +29417,9 @@
         return strict ? rect2.containsRect(bbox3) : rect2.isIntersectWithRect(bbox3);
       });
     }
-    getEdgesInArea(x2, y, w, h, options) {
-      const rect2 = typeof x2 === "number" ? new Rectangle(x2, y, w, h) : Rectangle.create(x2);
-      const opts = typeof x2 === "number" ? options : y;
+    getEdgesInArea(x, y, w, h, options) {
+      const rect2 = typeof x === "number" ? new Rectangle(x, y, w, h) : Rectangle.create(x);
+      const opts = typeof x === "number" ? options : y;
       const strict = opts === null || opts === void 0 ? void 0 : opts.strict;
       return this.getEdges().filter((edge) => {
         const bbox3 = edge.getBBox();
@@ -30218,14 +30220,14 @@
     existPortLabel(port2) {
       return port2.attrs && port2.attrs.text;
     }
-    getEventArgs(e, x2, y) {
+    getEventArgs(e, x, y) {
       const view = this;
       const node = view.cell;
       const cell = node;
-      if (x2 == null || y == null) {
+      if (x == null || y == null) {
         return { e, view, node, cell };
       }
-      return { e, x: x2, y, view, node, cell };
+      return { e, x, y, view, node, cell };
     }
     getPortEventArgs(e, port2, pos) {
       const view = this;
@@ -30244,17 +30246,17 @@
       }
       return { e, view, node, cell, port: port2 };
     }
-    notifyMouseDown(e, x2, y) {
-      super.onMouseDown(e, x2, y);
-      this.notify("node:mousedown", this.getEventArgs(e, x2, y));
+    notifyMouseDown(e, x, y) {
+      super.onMouseDown(e, x, y);
+      this.notify("node:mousedown", this.getEventArgs(e, x, y));
     }
-    notifyMouseMove(e, x2, y) {
-      super.onMouseMove(e, x2, y);
-      this.notify("node:mousemove", this.getEventArgs(e, x2, y));
+    notifyMouseMove(e, x, y) {
+      super.onMouseMove(e, x, y);
+      this.notify("node:mousemove", this.getEventArgs(e, x, y));
     }
-    notifyMouseUp(e, x2, y) {
-      super.onMouseUp(e, x2, y);
-      this.notify("node:mouseup", this.getEventArgs(e, x2, y));
+    notifyMouseUp(e, x, y) {
+      super.onMouseUp(e, x, y);
+      this.notify("node:mouseup", this.getEventArgs(e, x, y));
     }
     notifyPortEvent(name, e, pos) {
       const port2 = this.findAttr("port", e.target);
@@ -30269,70 +30271,70 @@
         e.type = originType;
       }
     }
-    onClick(e, x2, y) {
-      super.onClick(e, x2, y);
-      this.notify("node:click", this.getEventArgs(e, x2, y));
-      this.notifyPortEvent("node:port:click", e, { x: x2, y });
+    onClick(e, x, y) {
+      super.onClick(e, x, y);
+      this.notify("node:click", this.getEventArgs(e, x, y));
+      this.notifyPortEvent("node:port:click", e, { x, y });
     }
-    onDblClick(e, x2, y) {
-      super.onDblClick(e, x2, y);
-      this.notify("node:dblclick", this.getEventArgs(e, x2, y));
-      this.notifyPortEvent("node:port:dblclick", e, { x: x2, y });
+    onDblClick(e, x, y) {
+      super.onDblClick(e, x, y);
+      this.notify("node:dblclick", this.getEventArgs(e, x, y));
+      this.notifyPortEvent("node:port:dblclick", e, { x, y });
     }
-    onContextMenu(e, x2, y) {
-      super.onContextMenu(e, x2, y);
-      this.notify("node:contextmenu", this.getEventArgs(e, x2, y));
-      this.notifyPortEvent("node:port:contextmenu", e, { x: x2, y });
+    onContextMenu(e, x, y) {
+      super.onContextMenu(e, x, y);
+      this.notify("node:contextmenu", this.getEventArgs(e, x, y));
+      this.notifyPortEvent("node:port:contextmenu", e, { x, y });
     }
-    onMouseDown(e, x2, y) {
+    onMouseDown(e, x, y) {
       if (this.isPropagationStopped(e)) {
         return;
       }
-      this.notifyMouseDown(e, x2, y);
-      this.notifyPortEvent("node:port:mousedown", e, { x: x2, y });
-      this.startNodeDragging(e, x2, y);
+      this.notifyMouseDown(e, x, y);
+      this.notifyPortEvent("node:port:mousedown", e, { x, y });
+      this.startNodeDragging(e, x, y);
     }
-    onMouseMove(e, x2, y) {
+    onMouseMove(e, x, y) {
       const data2 = this.getEventData(e);
       const action = data2.action;
       if (action === "magnet") {
-        this.dragMagnet(e, x2, y);
+        this.dragMagnet(e, x, y);
       } else {
         if (action === "move") {
           const meta = data2;
           const view = meta.targetView || this;
-          view.dragNode(e, x2, y);
+          view.dragNode(e, x, y);
           view.notify("node:moving", {
             e,
-            x: x2,
+            x,
             y,
             view,
             cell: view.cell,
             node: view.cell
           });
         }
-        this.notifyMouseMove(e, x2, y);
-        this.notifyPortEvent("node:port:mousemove", e, { x: x2, y });
+        this.notifyMouseMove(e, x, y);
+        this.notifyPortEvent("node:port:mousemove", e, { x, y });
       }
       this.setEventData(e, data2);
     }
-    onMouseUp(e, x2, y) {
+    onMouseUp(e, x, y) {
       const data2 = this.getEventData(e);
       const action = data2.action;
       if (action === "magnet") {
-        this.stopMagnetDragging(e, x2, y);
+        this.stopMagnetDragging(e, x, y);
       } else {
-        this.notifyMouseUp(e, x2, y);
-        this.notifyPortEvent("node:port:mouseup", e, { x: x2, y });
+        this.notifyMouseUp(e, x, y);
+        this.notifyPortEvent("node:port:mouseup", e, { x, y });
         if (action === "move") {
           const meta = data2;
           const view = meta.targetView || this;
-          view.stopNodeDragging(e, x2, y);
+          view.stopNodeDragging(e, x, y);
         }
       }
       const magnet = data2.targetMagnet;
       if (magnet) {
-        this.onMagnetClick(e, magnet, x2, y);
+        this.onMagnetClick(e, magnet, x, y);
       }
       this.checkMouseleave(e);
     }
@@ -30357,30 +30359,30 @@
       super.onMouseLeave(e);
       this.notify("node:mouseleave", this.getEventArgs(e));
     }
-    onMouseWheel(e, x2, y, delta) {
-      super.onMouseWheel(e, x2, y, delta);
-      this.notify("node:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x2, y)));
+    onMouseWheel(e, x, y, delta) {
+      super.onMouseWheel(e, x, y, delta);
+      this.notify("node:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x, y)));
     }
-    onMagnetClick(e, magnet, x2, y) {
+    onMagnetClick(e, magnet, x, y) {
       const graph2 = this.graph;
       const count = graph2.view.getMouseMovedCount(e);
       if (count > graph2.options.clickThreshold) {
         return;
       }
-      this.notify("node:magnet:click", Object.assign({ magnet }, this.getEventArgs(e, x2, y)));
+      this.notify("node:magnet:click", Object.assign({ magnet }, this.getEventArgs(e, x, y)));
     }
-    onMagnetDblClick(e, magnet, x2, y) {
-      this.notify("node:magnet:dblclick", Object.assign({ magnet }, this.getEventArgs(e, x2, y)));
+    onMagnetDblClick(e, magnet, x, y) {
+      this.notify("node:magnet:dblclick", Object.assign({ magnet }, this.getEventArgs(e, x, y)));
     }
-    onMagnetContextMenu(e, magnet, x2, y) {
-      this.notify("node:magnet:contextmenu", Object.assign({ magnet }, this.getEventArgs(e, x2, y)));
+    onMagnetContextMenu(e, magnet, x, y) {
+      this.notify("node:magnet:contextmenu", Object.assign({ magnet }, this.getEventArgs(e, x, y)));
     }
-    onMagnetMouseDown(e, magnet, x2, y) {
-      this.startMagnetDragging(e, x2, y);
+    onMagnetMouseDown(e, magnet, x, y) {
+      this.startMagnetDragging(e, x, y);
     }
-    onCustomEvent(e, name, x2, y) {
-      this.notify("node:customevent", Object.assign({ name }, this.getEventArgs(e, x2, y)));
-      super.onCustomEvent(e, name, x2, y);
+    onCustomEvent(e, name, x, y) {
+      this.notify("node:customevent", Object.assign({ name }, this.getEventArgs(e, x, y)));
+      super.onCustomEvent(e, name, x, y);
     }
     prepareEmbedding(e) {
       const graph2 = this.graph;
@@ -30530,7 +30532,7 @@
       }
       return false;
     }
-    startMagnetDragging(e, x2, y) {
+    startMagnetDragging(e, x, y) {
       if (!this.can("magnetConnectable")) {
         return;
       }
@@ -30542,28 +30544,28 @@
       });
       if (this.validateMagnet(this, magnet, e)) {
         if (graph2.options.magnetThreshold <= 0) {
-          this.startConnectting(e, magnet, x2, y);
+          this.startConnectting(e, magnet, x, y);
         }
         this.setEventData(e, {
           action: "magnet"
         });
         this.stopPropagation(e);
       } else {
-        this.onMouseDown(e, x2, y);
+        this.onMouseDown(e, x, y);
       }
       graph2.view.delegateDragEvents(e, this);
     }
-    startConnectting(e, magnet, x2, y) {
+    startConnectting(e, magnet, x, y) {
       this.graph.model.startBatch("add-edge");
-      const edgeView = this.createEdgeFromMagnet(magnet, x2, y);
+      const edgeView = this.createEdgeFromMagnet(magnet, x, y);
       edgeView.setEventData(e, edgeView.prepareArrowheadDragging("target", {
-        x: x2,
+        x,
         y,
         isNewEdge: true,
         fallbackAction: "remove"
       }));
       this.setEventData(e, { edgeView });
-      edgeView.notifyMouseDown(e, x2, y);
+      edgeView.notifyMouseDown(e, x, y);
     }
     getDefaultEdge(sourceView, sourceMagnet) {
       let edge;
@@ -30577,20 +30579,20 @@
       }
       return edge;
     }
-    createEdgeFromMagnet(magnet, x2, y) {
+    createEdgeFromMagnet(magnet, x, y) {
       const graph2 = this.graph;
       const model = graph2.model;
       const edge = this.getDefaultEdge(this, magnet);
-      edge.setSource(Object.assign(Object.assign({}, edge.getSource()), this.getEdgeTerminal(magnet, x2, y, edge, "source")));
-      edge.setTarget(Object.assign(Object.assign({}, edge.getTarget()), { x: x2, y }));
+      edge.setSource(Object.assign(Object.assign({}, edge.getSource()), this.getEdgeTerminal(magnet, x, y, edge, "source")));
+      edge.setTarget(Object.assign(Object.assign({}, edge.getTarget()), { x, y }));
       edge.addTo(model, { async: false, ui: true });
       return edge.findView(graph2);
     }
-    dragMagnet(e, x2, y) {
+    dragMagnet(e, x, y) {
       const data2 = this.getEventData(e);
       const edgeView = data2.edgeView;
       if (edgeView) {
-        edgeView.onMouseMove(e, x2, y);
+        edgeView.onMouseMove(e, x, y);
         this.autoScrollGraph(e.clientX, e.clientY);
       } else {
         const graph2 = this.graph;
@@ -30606,28 +30608,28 @@
             return;
           }
         }
-        this.startConnectting(e, targetMagnet, x2, y);
+        this.startConnectting(e, targetMagnet, x, y);
       }
     }
-    stopMagnetDragging(e, x2, y) {
+    stopMagnetDragging(e, x, y) {
       const data2 = this.eventData(e);
       const edgeView = data2.edgeView;
       if (edgeView) {
-        edgeView.onMouseUp(e, x2, y);
+        edgeView.onMouseUp(e, x, y);
         this.graph.model.stopBatch("add-edge");
       }
     }
-    notifyUnhandledMouseDown(e, x2, y) {
+    notifyUnhandledMouseDown(e, x, y) {
       this.notify("node:unhandled:mousedown", {
         e,
-        x: x2,
+        x,
         y,
         view: this,
         cell: this.cell,
         node: this.cell
       });
     }
-    notifyNodeMove(name, e, x2, y, cell) {
+    notifyNodeMove(name, e, x, y, cell) {
       let cells = [cell];
       const selection2 = this.graph.getPlugin("selection");
       if (selection2 && selection2.isSelectionMovable()) {
@@ -30639,7 +30641,7 @@
       cells.forEach((c) => {
         this.notify(name, {
           e,
-          x: x2,
+          x,
           y,
           cell: c,
           node: c,
@@ -30658,10 +30660,10 @@
       }
       return area || null;
     }
-    startNodeDragging(e, x2, y) {
+    startNodeDragging(e, x, y) {
       const targetView = this.getDelegatedView();
       if (targetView == null || !targetView.can("nodeMovable")) {
-        return this.notifyUnhandledMouseDown(e, x2, y);
+        return this.notifyUnhandledMouseDown(e, x, y);
       }
       this.setEventData(e, {
         targetView,
@@ -30670,11 +30672,11 @@
       const position2 = Point.create(targetView.cell.getPosition());
       targetView.setEventData(e, {
         moving: false,
-        offset: position2.diff(x2, y),
+        offset: position2.diff(x, y),
         restrict: this.getRestrictArea(targetView)
       });
     }
-    dragNode(e, x2, y) {
+    dragNode(e, x, y) {
       const node = this.cell;
       const graph2 = this.graph;
       const gridSize = graph2.getGridSize();
@@ -30684,10 +30686,10 @@
       if (!data2.moving) {
         data2.moving = true;
         this.addClass("node-moving");
-        this.notifyNodeMove("node:move", e, x2, y, this.cell);
+        this.notifyNodeMove("node:move", e, x, y, this.cell);
       }
       this.autoScrollGraph(e.clientX, e.clientY);
-      const posX = snapToGrid(x2 + offset4.x, gridSize);
+      const posX = snapToGrid(x + offset4.x, gridSize);
       const posY = snapToGrid(y + offset4.y, gridSize);
       node.setPosition(posX, posY, {
         restrict,
@@ -30747,7 +30749,7 @@
         step += graph2.getGridSize();
       }
     }
-    stopNodeDragging(e, x2, y) {
+    stopNodeDragging(e, x, y) {
       const data2 = this.getEventData(e);
       const graph2 = this.graph;
       if (data2.embedding) {
@@ -30759,16 +30761,16 @@
           this.autoOffsetNode();
         }
         this.removeClass("node-moving");
-        this.notifyNodeMove("node:moved", e, x2, y, this.cell);
+        this.notifyNodeMove("node:moved", e, x, y, this.cell);
       }
       data2.moving = false;
       data2.embedding = false;
     }
     // eslint-disable-next-line
-    autoScrollGraph(x2, y) {
+    autoScrollGraph(x, y) {
       const scroller = this.graph.getPlugin("scroller");
       if (scroller) {
-        scroller.autoScroll(x2, y);
+        scroller.autoScroll(x, y);
       }
     }
   };
@@ -31601,7 +31603,7 @@
         segmentSubdivisions: this.getConnectionSubdivisions()
       });
     }
-    getLabelPosition(x2, y, p3, p4) {
+    getLabelPosition(x, y, p3, p4) {
       var _a;
       const pos = { distance: 0 };
       let angle = 0;
@@ -31622,7 +31624,7 @@
       const pathOptions = {
         segmentSubdivisions: this.getConnectionSubdivisions()
       };
-      const labelPoint = new Point(x2, y);
+      const labelPoint = new Point(x, y);
       const t = (_a = path2.closestPointT(labelPoint, pathOptions)) !== null && _a !== void 0 ? _a : 0;
       const totalLength = this.getConnectionLength() || 0;
       let labelDistance = path2.lengthAtT(t, pathOptions);
@@ -31712,10 +31714,10 @@
       }
       return main_exports2.createSVGMatrix().translate(translation.x, translation.y).rotate(angle);
     }
-    getVertexIndex(x2, y) {
+    getVertexIndex(x, y) {
       const edge = this.cell;
       const vertices = edge.getVertices();
-      const vertexLength = this.getClosestPointLength(new Point(x2, y));
+      const vertexLength = this.getClosestPointLength(new Point(x, y));
       let index2 = 0;
       if (vertexLength != null) {
         for (const ii = vertices.length; index2 < ii; index2 += 1) {
@@ -31728,93 +31730,93 @@
       }
       return index2;
     }
-    getEventArgs(e, x2, y) {
+    getEventArgs(e, x, y) {
       const view = this;
       const edge = view.cell;
       const cell = edge;
-      if (x2 == null || y == null) {
+      if (x == null || y == null) {
         return { e, view, edge, cell };
       }
-      return { e, x: x2, y, view, edge, cell };
+      return { e, x, y, view, edge, cell };
     }
-    notifyUnhandledMouseDown(e, x2, y) {
+    notifyUnhandledMouseDown(e, x, y) {
       this.notify("edge:unhandled:mousedown", {
         e,
-        x: x2,
+        x,
         y,
         view: this,
         cell: this.cell,
         edge: this.cell
       });
     }
-    notifyMouseDown(e, x2, y) {
-      super.onMouseDown(e, x2, y);
-      this.notify("edge:mousedown", this.getEventArgs(e, x2, y));
+    notifyMouseDown(e, x, y) {
+      super.onMouseDown(e, x, y);
+      this.notify("edge:mousedown", this.getEventArgs(e, x, y));
     }
-    notifyMouseMove(e, x2, y) {
-      super.onMouseMove(e, x2, y);
-      this.notify("edge:mousemove", this.getEventArgs(e, x2, y));
+    notifyMouseMove(e, x, y) {
+      super.onMouseMove(e, x, y);
+      this.notify("edge:mousemove", this.getEventArgs(e, x, y));
     }
-    notifyMouseUp(e, x2, y) {
-      super.onMouseUp(e, x2, y);
-      this.notify("edge:mouseup", this.getEventArgs(e, x2, y));
+    notifyMouseUp(e, x, y) {
+      super.onMouseUp(e, x, y);
+      this.notify("edge:mouseup", this.getEventArgs(e, x, y));
     }
-    onClick(e, x2, y) {
-      super.onClick(e, x2, y);
-      this.notify("edge:click", this.getEventArgs(e, x2, y));
+    onClick(e, x, y) {
+      super.onClick(e, x, y);
+      this.notify("edge:click", this.getEventArgs(e, x, y));
     }
-    onDblClick(e, x2, y) {
-      super.onDblClick(e, x2, y);
-      this.notify("edge:dblclick", this.getEventArgs(e, x2, y));
+    onDblClick(e, x, y) {
+      super.onDblClick(e, x, y);
+      this.notify("edge:dblclick", this.getEventArgs(e, x, y));
     }
-    onContextMenu(e, x2, y) {
-      super.onContextMenu(e, x2, y);
-      this.notify("edge:contextmenu", this.getEventArgs(e, x2, y));
+    onContextMenu(e, x, y) {
+      super.onContextMenu(e, x, y);
+      this.notify("edge:contextmenu", this.getEventArgs(e, x, y));
     }
-    onMouseDown(e, x2, y) {
-      this.notifyMouseDown(e, x2, y);
-      this.startEdgeDragging(e, x2, y);
+    onMouseDown(e, x, y) {
+      this.notifyMouseDown(e, x, y);
+      this.startEdgeDragging(e, x, y);
     }
-    onMouseMove(e, x2, y) {
+    onMouseMove(e, x, y) {
       const data2 = this.getEventData(e);
       switch (data2.action) {
         case "drag-label": {
-          this.dragLabel(e, x2, y);
+          this.dragLabel(e, x, y);
           break;
         }
         case "drag-arrowhead": {
-          this.dragArrowhead(e, x2, y);
+          this.dragArrowhead(e, x, y);
           break;
         }
         case "drag-edge": {
-          this.dragEdge(e, x2, y);
+          this.dragEdge(e, x, y);
           break;
         }
         default:
           break;
       }
-      this.notifyMouseMove(e, x2, y);
+      this.notifyMouseMove(e, x, y);
       return data2;
     }
-    onMouseUp(e, x2, y) {
+    onMouseUp(e, x, y) {
       const data2 = this.getEventData(e);
       switch (data2.action) {
         case "drag-label": {
-          this.stopLabelDragging(e, x2, y);
+          this.stopLabelDragging(e, x, y);
           break;
         }
         case "drag-arrowhead": {
-          this.stopArrowheadDragging(e, x2, y);
+          this.stopArrowheadDragging(e, x, y);
           break;
         }
         case "drag-edge": {
-          this.stopEdgeDragging(e, x2, y);
+          this.stopEdgeDragging(e, x, y);
           break;
         }
         default:
           break;
       }
-      this.notifyMouseUp(e, x2, y);
+      this.notifyMouseUp(e, x, y);
       this.checkMouseleave(e);
       return data2;
     }
@@ -31834,11 +31836,11 @@
       super.onMouseLeave(e);
       this.notify("edge:mouseleave", this.getEventArgs(e));
     }
-    onMouseWheel(e, x2, y, delta) {
-      super.onMouseWheel(e, x2, y, delta);
-      this.notify("edge:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x2, y)));
+    onMouseWheel(e, x, y, delta) {
+      super.onMouseWheel(e, x, y, delta);
+      this.notify("edge:mousewheel", Object.assign({ delta }, this.getEventArgs(e, x, y)));
     }
-    onCustomEvent(e, name, x2, y) {
+    onCustomEvent(e, name, x, y) {
       const tool = main_exports2.findParentByClass(e.target, "edge-tool", this.container);
       if (tool) {
         e.stopPropagation();
@@ -31847,67 +31849,67 @@
             this.cell.remove({ ui: true });
             return;
           }
-          this.notify("edge:customevent", Object.assign({ name }, this.getEventArgs(e, x2, y)));
+          this.notify("edge:customevent", Object.assign({ name }, this.getEventArgs(e, x, y)));
         }
-        this.notifyMouseDown(e, x2, y);
+        this.notifyMouseDown(e, x, y);
       } else {
-        this.notify("edge:customevent", Object.assign({ name }, this.getEventArgs(e, x2, y)));
-        super.onCustomEvent(e, name, x2, y);
+        this.notify("edge:customevent", Object.assign({ name }, this.getEventArgs(e, x, y)));
+        super.onCustomEvent(e, name, x, y);
       }
     }
-    onLabelMouseDown(e, x2, y) {
-      this.notifyMouseDown(e, x2, y);
-      this.startLabelDragging(e, x2, y);
+    onLabelMouseDown(e, x, y) {
+      this.notifyMouseDown(e, x, y);
+      this.startLabelDragging(e, x, y);
       const stopPropagation = this.getEventData(e).stopPropagation;
       if (stopPropagation) {
         e.stopPropagation();
       }
     }
     // #region drag edge
-    startEdgeDragging(e, x2, y) {
+    startEdgeDragging(e, x, y) {
       if (!this.can("edgeMovable")) {
-        this.notifyUnhandledMouseDown(e, x2, y);
+        this.notifyUnhandledMouseDown(e, x, y);
         return;
       }
       this.setEventData(e, {
-        x: x2,
+        x,
         y,
         moving: false,
         action: "drag-edge"
       });
     }
-    dragEdge(e, x2, y) {
+    dragEdge(e, x, y) {
       const data2 = this.getEventData(e);
       if (!data2.moving) {
         data2.moving = true;
         this.addClass("edge-moving");
         this.notify("edge:move", {
           e,
-          x: x2,
+          x,
           y,
           view: this,
           cell: this.cell,
           edge: this.cell
         });
       }
-      this.cell.translate(x2 - data2.x, y - data2.y, { ui: true });
-      this.setEventData(e, { x: x2, y });
+      this.cell.translate(x - data2.x, y - data2.y, { ui: true });
+      this.setEventData(e, { x, y });
       this.notify("edge:moving", {
         e,
-        x: x2,
+        x,
         y,
         view: this,
         cell: this.cell,
         edge: this.cell
       });
     }
-    stopEdgeDragging(e, x2, y) {
+    stopEdgeDragging(e, x, y) {
       const data2 = this.getEventData(e);
       if (data2.moving) {
         this.removeClass("edge-moving");
         this.notify("edge:moved", {
           e,
-          x: x2,
+          x,
           y,
           view: this,
           cell: this.cell,
@@ -32146,8 +32148,8 @@
       }
       return true;
     }
-    arrowheadDragging(target, x2, y, data2) {
-      data2.x = x2;
+    arrowheadDragging(target, x, y, data2) {
+      data2.x = x;
       data2.y = y;
       if (data2.currentTarget !== target) {
         if (data2.currentMagnet && data2.currentView) {
@@ -32158,7 +32160,7 @@
         data2.currentView = this.graph.findViewByElem(target);
         if (data2.currentView) {
           data2.currentMagnet = data2.currentView.findMagnet(target);
-          if (data2.currentMagnet && this.validateConnection(...data2.getValidateConnectionArgs(data2.currentView, data2.currentMagnet), data2.currentView.getEdgeTerminal(data2.currentMagnet, x2, y, this.cell, data2.terminalType))) {
+          if (data2.currentMagnet && this.validateConnection(...data2.getValidateConnectionArgs(data2.currentView, data2.currentMagnet), data2.currentView.getEdgeTerminal(data2.currentMagnet, x, y, this.cell, data2.terminalType))) {
             data2.currentView.highlight(data2.currentMagnet, {
               type: "magnetAdsorbed"
             });
@@ -32170,9 +32172,9 @@
         }
       }
       data2.currentTarget = target;
-      this.cell.prop(data2.terminalType, { x: x2, y }, Object.assign(Object.assign({}, data2.options), { ui: true }));
+      this.cell.prop(data2.terminalType, { x, y }, Object.assign(Object.assign({}, data2.options), { ui: true }));
     }
-    arrowheadDragged(data2, x2, y) {
+    arrowheadDragged(data2, x, y) {
       const view = data2.currentView;
       const magnet = data2.currentMagnet;
       if (!magnet || !view) {
@@ -32180,22 +32182,22 @@
       }
       view.unhighlight(magnet, { type: "magnetAdsorbed" });
       const type = data2.terminalType;
-      const terminal = view.getEdgeTerminal(magnet, x2, y, this.cell, type);
+      const terminal = view.getEdgeTerminal(magnet, x, y, this.cell, type);
       this.cell.setTerminal(type, terminal, { ui: true });
     }
-    snapArrowhead(x2, y, data2) {
+    snapArrowhead(x, y, data2) {
       const graph2 = this.graph;
       const { snap: snap2, allowEdge } = graph2.options.connecting;
       const radius = typeof snap2 === "object" && snap2.radius || 50;
       const anchor2 = typeof snap2 === "object" && snap2.anchor || "center";
       const views = graph2.renderer.findViewsInArea({
-        x: x2 - radius,
+        x: x - radius,
         y: y - radius,
         width: 2 * radius,
         height: 2 * radius
       }, { nodeOnly: true });
       if (allowEdge) {
-        const edgeViews = graph2.renderer.findEdgeViewsFromPoint({ x: x2, y }, radius).filter((view) => {
+        const edgeViews = graph2.renderer.findEdgeViewsFromPoint({ x, y }, radius).filter((view) => {
           return view !== this;
         });
         views.push(...edgeViews);
@@ -32206,7 +32208,7 @@
       data2.closestMagnet = null;
       let distance;
       let minDistance = Number.MAX_SAFE_INTEGER;
-      const pos = new Point(x2, y);
+      const pos = new Point(x, y);
       views.forEach((view) => {
         if (view.container.getAttribute("magnet") !== "false") {
           if (view.isNodeView()) {
@@ -32220,7 +32222,7 @@
             }
           }
           if (distance < radius && distance < minDistance) {
-            if (prevMagnet === view.container || this.validateConnection(...data2.getValidateConnectionArgs(view, null), view.getEdgeTerminal(view.container, x2, y, this.cell, data2.terminalType))) {
+            if (prevMagnet === view.container || this.validateConnection(...data2.getValidateConnectionArgs(view, null), view.getEdgeTerminal(view.container, x, y, this.cell, data2.terminalType))) {
               minDistance = distance;
               data2.closestView = view;
               data2.closestMagnet = view.container;
@@ -32232,7 +32234,7 @@
             const bbox3 = view.getBBoxOfElement(magnet);
             distance = anchor2 === "center" ? pos.distance(bbox3.getCenter()) : pos.distance(bbox3.getNearestPointToPoint(pos));
             if (distance < radius && distance < minDistance) {
-              if (prevMagnet === magnet || this.validateConnection(...data2.getValidateConnectionArgs(view, magnet), view.getEdgeTerminal(magnet, x2, y, this.cell, data2.terminalType))) {
+              if (prevMagnet === magnet || this.validateConnection(...data2.getValidateConnectionArgs(view, magnet), view.getEdgeTerminal(magnet, x, y, this.cell, data2.terminalType))) {
                 minDistance = distance;
                 data2.closestView = view;
                 data2.closestMagnet = magnet;
@@ -32257,9 +32259,9 @@
         closestView.highlight(closestMagnet, {
           type: "magnetAdsorbed"
         });
-        this.cell.setTerminal(type, closestView.getEdgeTerminal(closestMagnet, x2, y, this.cell, type), {}, Object.assign(Object.assign({}, data2.options), { ui: true }));
+        this.cell.setTerminal(type, closestView.getEdgeTerminal(closestMagnet, x, y, this.cell, type), {}, Object.assign(Object.assign({}, data2.options), { ui: true }));
       } else {
-        this.cell.setTerminal(type, { x: x2, y }, {}, Object.assign(Object.assign({}, data2.options), { ui: true }));
+        this.cell.setTerminal(type, { x, y }, {}, Object.assign(Object.assign({}, data2.options), { ui: true }));
       }
     }
     snapArrowheadEnd(data2) {
@@ -32365,31 +32367,31 @@
       });
       data2.marked = null;
     }
-    startArrowheadDragging(e, x2, y) {
+    startArrowheadDragging(e, x, y) {
       if (!this.can("arrowheadMovable")) {
-        this.notifyUnhandledMouseDown(e, x2, y);
+        this.notifyUnhandledMouseDown(e, x, y);
         return;
       }
       const elem = e.target;
       const type = elem.getAttribute("data-terminal");
-      const data2 = this.prepareArrowheadDragging(type, { x: x2, y });
+      const data2 = this.prepareArrowheadDragging(type, { x, y });
       this.setEventData(e, data2);
     }
-    dragArrowhead(e, x2, y) {
+    dragArrowhead(e, x, y) {
       const data2 = this.getEventData(e);
       if (this.graph.options.connecting.snap) {
-        this.snapArrowhead(x2, y, data2);
+        this.snapArrowhead(x, y, data2);
       } else {
-        this.arrowheadDragging(this.getEventTarget(e), x2, y, data2);
+        this.arrowheadDragging(this.getEventTarget(e), x, y, data2);
       }
     }
-    stopArrowheadDragging(e, x2, y) {
+    stopArrowheadDragging(e, x, y) {
       const graph2 = this.graph;
       const data2 = this.getEventData(e);
       if (graph2.options.connecting.snap) {
         this.snapArrowheadEnd(data2);
       } else {
-        this.arrowheadDragged(data2, x2, y);
+        this.arrowheadDragged(data2, x, y);
       }
       const valid = this.validateEdge(this.cell, data2.terminalType, data2.initialTerminal);
       if (valid) {
@@ -32422,11 +32424,11 @@
       }
       this.graph.view.delegateDragEvents(e, this);
     }
-    dragLabel(e, x2, y) {
+    dragLabel(e, x, y) {
       const data2 = this.getEventData(e);
       const originLabel = this.cell.getLabelAt(data2.index);
       const label = object_exports.merge({}, originLabel, {
-        position: this.getLabelPosition(x2, y, data2.positionAngle, data2.positionArgs)
+        position: this.getLabelPosition(x, y, data2.positionAngle, data2.positionArgs)
       });
       this.cell.setLabelAt(data2.index, label);
     }
@@ -33177,9 +33179,9 @@
       const scale2 = this.graph.transform.getScale();
       const ts = this.graph.translate();
       if (typeof backgroundPosition === "object") {
-        const x2 = ts.tx + scale2.sx * (backgroundPosition.x || 0);
+        const x = ts.tx + scale2.sx * (backgroundPosition.x || 0);
         const y = ts.ty + scale2.sy * (backgroundPosition.y || 0);
-        backgroundPosition = `${x2}px ${y}px`;
+        backgroundPosition = `${x}px ${y}px`;
       }
       if (typeof backgroundSize === "object") {
         backgroundSize = Rectangle.fromSize(backgroundSize).scale(scale2.sx, scale2.sy);
@@ -33299,65 +33301,65 @@
     getPageOffset() {
       return this.getClientOffset().translate(window.scrollX, window.scrollY);
     }
-    snapToGrid(x2, y) {
-      const p = typeof x2 === "number" ? this.clientToLocalPoint(x2, y) : this.clientToLocalPoint(x2.x, x2.y);
+    snapToGrid(x, y) {
+      const p = typeof x === "number" ? this.clientToLocalPoint(x, y) : this.clientToLocalPoint(x.x, x.y);
       return p.snapToGrid(this.graph.getGridSize());
     }
-    localToGraphPoint(x2, y) {
-      const localPoint = Point.create(x2, y);
+    localToGraphPoint(x, y) {
+      const localPoint = Point.create(x, y);
       return util_exports2.transformPoint(localPoint, this.graph.matrix());
     }
-    localToClientPoint(x2, y) {
-      const localPoint = Point.create(x2, y);
+    localToClientPoint(x, y) {
+      const localPoint = Point.create(x, y);
       return util_exports2.transformPoint(localPoint, this.getClientMatrix());
     }
-    localToPagePoint(x2, y) {
-      const p = typeof x2 === "number" ? this.localToGraphPoint(x2, y) : this.localToGraphPoint(x2);
+    localToPagePoint(x, y) {
+      const p = typeof x === "number" ? this.localToGraphPoint(x, y) : this.localToGraphPoint(x);
       return p.translate(this.getPageOffset());
     }
-    localToGraphRect(x2, y, width2, height2) {
-      const localRect = Rectangle.create(x2, y, width2, height2);
+    localToGraphRect(x, y, width2, height2) {
+      const localRect = Rectangle.create(x, y, width2, height2);
       return util_exports2.transformRectangle(localRect, this.graph.matrix());
     }
-    localToClientRect(x2, y, width2, height2) {
-      const localRect = Rectangle.create(x2, y, width2, height2);
+    localToClientRect(x, y, width2, height2) {
+      const localRect = Rectangle.create(x, y, width2, height2);
       return util_exports2.transformRectangle(localRect, this.getClientMatrix());
     }
-    localToPageRect(x2, y, width2, height2) {
-      const rect2 = typeof x2 === "number" ? this.localToGraphRect(x2, y, width2, height2) : this.localToGraphRect(x2);
+    localToPageRect(x, y, width2, height2) {
+      const rect2 = typeof x === "number" ? this.localToGraphRect(x, y, width2, height2) : this.localToGraphRect(x);
       return rect2.translate(this.getPageOffset());
     }
-    graphToLocalPoint(x2, y) {
-      const graphPoint = Point.create(x2, y);
+    graphToLocalPoint(x, y) {
+      const graphPoint = Point.create(x, y);
       return util_exports2.transformPoint(graphPoint, this.graph.matrix().inverse());
     }
-    clientToLocalPoint(x2, y) {
-      const clientPoint = Point.create(x2, y);
+    clientToLocalPoint(x, y) {
+      const clientPoint = Point.create(x, y);
       return util_exports2.transformPoint(clientPoint, this.getClientMatrix().inverse());
     }
-    clientToGraphPoint(x2, y) {
-      const clientPoint = Point.create(x2, y);
+    clientToGraphPoint(x, y) {
+      const clientPoint = Point.create(x, y);
       return util_exports2.transformPoint(clientPoint, this.graph.matrix().multiply(this.getClientMatrix().inverse()));
     }
-    pageToLocalPoint(x2, y) {
-      const pagePoint = Point.create(x2, y);
+    pageToLocalPoint(x, y) {
+      const pagePoint = Point.create(x, y);
       const graphPoint = pagePoint.diff(this.getPageOffset());
       return this.graphToLocalPoint(graphPoint);
     }
-    graphToLocalRect(x2, y, width2, height2) {
-      const graphRect = Rectangle.create(x2, y, width2, height2);
+    graphToLocalRect(x, y, width2, height2) {
+      const graphRect = Rectangle.create(x, y, width2, height2);
       return util_exports2.transformRectangle(graphRect, this.graph.matrix().inverse());
     }
-    clientToLocalRect(x2, y, width2, height2) {
-      const clientRect = Rectangle.create(x2, y, width2, height2);
+    clientToLocalRect(x, y, width2, height2) {
+      const clientRect = Rectangle.create(x, y, width2, height2);
       return util_exports2.transformRectangle(clientRect, this.getClientMatrix().inverse());
     }
-    clientToGraphRect(x2, y, width2, height2) {
-      const clientRect = Rectangle.create(x2, y, width2, height2);
+    clientToGraphRect(x, y, width2, height2) {
+      const clientRect = Rectangle.create(x, y, width2, height2);
       return util_exports2.transformRectangle(clientRect, this.graph.matrix().multiply(this.getClientMatrix().inverse()));
     }
-    pageToLocalRect(x2, y, width2, height2) {
-      const graphRect = Rectangle.create(x2, y, width2, height2);
+    pageToLocalRect(x, y, width2, height2) {
+      const graphRect = Rectangle.create(x, y, width2, height2);
       const pageOffset = this.getPageOffset();
       graphRect.x -= pageOffset.x;
       graphRect.y -= pageOffset.y;
@@ -33704,16 +33706,16 @@
         if (typeof update === "function") {
           update(patternElem.childNodes[0], options2);
         }
-        let x2 = options2.ox % options2.width;
-        if (x2 < 0) {
-          x2 += options2.width;
+        let x = options2.ox % options2.width;
+        if (x < 0) {
+          x += options2.width;
         }
         let y = options2.oy % options2.height;
         if (y < 0) {
           y += options2.height;
         }
         main_exports2.attr(patternElem, {
-          x: x2,
+          x,
           y,
           width: options2.width,
           height: options2.height
@@ -34209,18 +34211,18 @@
       var _a;
       return this.pannable && !e.ctrlKey && ((_a = this.widgetOptions.eventTypes) === null || _a === void 0 ? void 0 : _a.includes("mouseWheel"));
     }
-    autoPanning(x2, y) {
+    autoPanning(x, y) {
       const buffer = 10;
       const graphArea = this.graph.getGraphArea();
       let dx = 0;
       let dy = 0;
-      if (x2 <= graphArea.left + buffer) {
+      if (x <= graphArea.left + buffer) {
         dx = -buffer;
       }
       if (y <= graphArea.top + buffer) {
         dy = -buffer;
       }
-      if (x2 >= graphArea.right - buffer) {
+      if (x >= graphArea.right - buffer) {
         dx = buffer;
       }
       if (y >= graphArea.bottom - buffer) {
@@ -34627,18 +34629,18 @@
     zoomToFit(options = {}) {
       return this.zoomToRect(this.getContentArea(options), options);
     }
-    centerPoint(x2, y) {
+    centerPoint(x, y) {
       const clientSize = this.getComputedSize();
       const scale2 = this.getScale();
       const ts = this.getTranslation();
       const cx = clientSize.width / 2;
       const cy = clientSize.height / 2;
-      x2 = typeof x2 === "number" ? x2 : cx;
+      x = typeof x === "number" ? x : cx;
       y = typeof y === "number" ? y : cy;
-      x2 = cx - x2 * scale2.sx;
+      x = cx - x * scale2.sx;
       y = cy - y * scale2.sy;
-      if (ts.tx !== x2 || ts.ty !== y) {
-        this.translate(x2, y);
+      if (ts.tx !== x || ts.ty !== y) {
+        this.translate(x, y);
       }
     }
     centerContent(options) {
@@ -34649,11 +34651,11 @@
     centerCell(cell) {
       return this.positionCell(cell, "center");
     }
-    positionPoint(point, x2, y) {
+    positionPoint(point, x, y) {
       const clientSize = this.getComputedSize();
-      x2 = number_exports.normalizePercentage(x2, Math.max(0, clientSize.width));
-      if (x2 < 0) {
-        x2 = clientSize.width + x2;
+      x = number_exports.normalizePercentage(x, Math.max(0, clientSize.width));
+      if (x < 0) {
+        x = clientSize.width + x;
       }
       y = number_exports.normalizePercentage(y, Math.max(0, clientSize.height));
       if (y < 0) {
@@ -34661,7 +34663,7 @@
       }
       const ts = this.getTranslation();
       const scale2 = this.getScale();
-      const dx = x2 - point.x * scale2.sx;
+      const dx = x - point.x * scale2.sx;
       const dy = y - point.y * scale2.sy;
       if (ts.tx !== dx || ts.ty !== dy) {
         this.translate(dx, dy);
@@ -35062,13 +35064,13 @@
       }
     }
     onMagnetMouseDown(e) {
-      this.handleMagnetEvent(e, (view, e2, magnet, x2, y) => {
-        view.onMagnetMouseDown(e2, magnet, x2, y);
+      this.handleMagnetEvent(e, (view, e2, magnet, x, y) => {
+        view.onMagnetMouseDown(e2, magnet, x, y);
       });
     }
     onMagnetDblClick(e) {
-      this.handleMagnetEvent(e, (view, e2, magnet, x2, y) => {
-        view.onMagnetDblClick(e2, magnet, x2, y);
+      this.handleMagnetEvent(e, (view, e2, magnet, x, y) => {
+        view.onMagnetDblClick(e2, magnet, x, y);
       });
     }
     onMagnetContextMenu(e) {
@@ -35076,8 +35078,8 @@
       if (this.isPreventDefaultContextMenu(view)) {
         e.preventDefault();
       }
-      this.handleMagnetEvent(e, (view2, e2, magnet, x2, y) => {
-        view2.onMagnetContextMenu(e2, magnet, x2, y);
+      this.handleMagnetEvent(e, (view2, e2, magnet, x, y) => {
+        view2.onMagnetContextMenu(e2, magnet, x, y);
       });
     }
     onLabelMouseDown(evt) {
@@ -35559,11 +35561,11 @@
     cloneCells(cells) {
       return this.model.cloneCells(cells);
     }
-    getNodesFromPoint(x2, y) {
-      return this.model.getNodesFromPoint(x2, y);
+    getNodesFromPoint(x, y) {
+      return this.model.getNodesFromPoint(x, y);
     }
-    getNodesInArea(x2, y, w, h, options) {
-      return this.model.getNodesInArea(x2, y, w, h, options);
+    getNodesInArea(x, y, w, h, options) {
+      return this.model.getNodesInArea(x, y, w, h, options);
     }
     getNodesUnderNode(node, options = {}) {
       return this.model.getNodesUnderNode(node, options);
@@ -35632,18 +35634,18 @@
     findViewByElem(elem) {
       return this.renderer.findViewByElem(elem);
     }
-    findViewsFromPoint(x2, y) {
-      const p = typeof x2 === "number" ? { x: x2, y } : x2;
+    findViewsFromPoint(x, y) {
+      const p = typeof x === "number" ? { x, y } : x;
       return this.renderer.findViewsFromPoint(p);
     }
-    findViewsInArea(x2, y, width2, height2, options) {
-      const rect2 = typeof x2 === "number" ? {
-        x: x2,
+    findViewsInArea(x, y, width2, height2, options) {
+      const rect2 = typeof x === "number" ? {
+        x,
         y,
         width: width2,
         height: height2
-      } : x2;
-      const localOptions = typeof x2 === "number" ? options : y;
+      } : x;
+      const localOptions = typeof x === "number" ? options : y;
       return this.renderer.findViewsInArea(rect2, localOptions);
     }
     matrix(mat) {
@@ -35760,12 +35762,12 @@
     center(options) {
       return this.centerPoint(options);
     }
-    centerPoint(x2, y, options) {
+    centerPoint(x, y, options) {
       const scroller = this.getPlugin("scroller");
       if (scroller) {
-        scroller.centerPoint(x2, y, options);
+        scroller.centerPoint(x, y, options);
       } else {
-        this.transform.centerPoint(x2, y);
+        this.transform.centerPoint(x, y);
       }
       return this;
     }
@@ -35787,12 +35789,12 @@
       }
       return this;
     }
-    positionPoint(point, x2, y, options = {}) {
+    positionPoint(point, x, y, options = {}) {
       const scroller = this.getPlugin("scroller");
       if (scroller) {
-        scroller.positionPoint(point, x2, y, options);
+        scroller.positionPoint(point, x, y, options);
       } else {
-        this.transform.positionPoint(point, x2, y);
+        this.transform.positionPoint(point, x, y);
       }
       return this;
     }
@@ -35823,71 +35825,71 @@
       }
       return this;
     }
-    snapToGrid(x2, y) {
-      return this.coord.snapToGrid(x2, y);
+    snapToGrid(x, y) {
+      return this.coord.snapToGrid(x, y);
     }
-    pageToLocal(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.pageToLocalRect(x2);
+    pageToLocal(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.pageToLocalRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.pageToLocalRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.pageToLocalRect(x, y, width2, height2);
       }
-      return this.coord.pageToLocalPoint(x2, y);
+      return this.coord.pageToLocalPoint(x, y);
     }
-    localToPage(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.localToPageRect(x2);
+    localToPage(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.localToPageRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.localToPageRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.localToPageRect(x, y, width2, height2);
       }
-      return this.coord.localToPagePoint(x2, y);
+      return this.coord.localToPagePoint(x, y);
     }
-    clientToLocal(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.clientToLocalRect(x2);
+    clientToLocal(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.clientToLocalRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.clientToLocalRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.clientToLocalRect(x, y, width2, height2);
       }
-      return this.coord.clientToLocalPoint(x2, y);
+      return this.coord.clientToLocalPoint(x, y);
     }
-    localToClient(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.localToClientRect(x2);
+    localToClient(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.localToClientRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.localToClientRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.localToClientRect(x, y, width2, height2);
       }
-      return this.coord.localToClientPoint(x2, y);
+      return this.coord.localToClientPoint(x, y);
     }
-    localToGraph(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.localToGraphRect(x2);
+    localToGraph(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.localToGraphRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.localToGraphRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.localToGraphRect(x, y, width2, height2);
       }
-      return this.coord.localToGraphPoint(x2, y);
+      return this.coord.localToGraphPoint(x, y);
     }
-    graphToLocal(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.graphToLocalRect(x2);
+    graphToLocal(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.graphToLocalRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.graphToLocalRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.graphToLocalRect(x, y, width2, height2);
       }
-      return this.coord.graphToLocalPoint(x2, y);
+      return this.coord.graphToLocalPoint(x, y);
     }
-    clientToGraph(x2, y, width2, height2) {
-      if (Rectangle.isRectangleLike(x2)) {
-        return this.coord.clientToGraphRect(x2);
+    clientToGraph(x, y, width2, height2) {
+      if (Rectangle.isRectangleLike(x)) {
+        return this.coord.clientToGraphRect(x);
       }
-      if (typeof x2 === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
-        return this.coord.clientToGraphRect(x2, y, width2, height2);
+      if (typeof x === "number" && typeof y === "number" && typeof width2 === "number" && typeof height2 === "number") {
+        return this.coord.clientToGraphRect(x, y, width2, height2);
       }
-      return this.coord.clientToGraphPoint(x2, y);
+      return this.coord.clientToGraphPoint(x, y);
     }
     // #endregion
     // #region defs
@@ -36885,18 +36887,18 @@
   }
   function getClientPosition(elem) {
     var box;
-    var x2;
+    var x;
     var y;
     var doc = elem.ownerDocument;
     var body = doc.body;
     var docElem = doc && doc.documentElement;
     box = elem.getBoundingClientRect();
-    x2 = Math.floor(box.left);
+    x = Math.floor(box.left);
     y = Math.floor(box.top);
-    x2 -= docElem.clientLeft || body.clientLeft || 0;
+    x -= docElem.clientLeft || body.clientLeft || 0;
     y -= docElem.clientTop || body.clientTop || 0;
     return {
-      left: x2,
+      left: x,
       top: y
     };
   }
@@ -37476,7 +37478,7 @@
     var H = align2.charAt(1);
     var w = region.width;
     var h = region.height;
-    var x2 = region.left;
+    var x = region.left;
     var y = region.top;
     if (V === "c") {
       y += h / 2;
@@ -37484,12 +37486,12 @@
       y += h;
     }
     if (H === "c") {
-      x2 += w / 2;
+      x += w / 2;
     } else if (H === "r") {
-      x2 += w;
+      x += w;
     }
     return {
-      left: x2,
+      left: x,
       top: y
     };
   }
@@ -37831,8 +37833,8 @@
         });
       }
     }
-    updateNodePosition(x2, y) {
-      const local = this.targetGraph.clientToLocal(x2, y);
+    updateNodePosition(x, y) {
+      const local = this.targetGraph.clientToLocal(x, y);
       const bbox3 = this.draggingBBox;
       if (bbox3) {
         local.x -= bbox3.width / 2;
@@ -37910,13 +37912,13 @@
         const draggingView = this.draggingView;
         const draggingBBox = this.draggingBBox;
         const snapOffset = this.snapOffset;
-        let x2 = draggingBBox.x;
+        let x = draggingBBox.x;
         let y = draggingBBox.y;
         if (snapOffset) {
-          x2 += snapOffset.x;
+          x += snapOffset.x;
           y += snapOffset.y;
         }
-        draggingNode.position(x2, y, { silent: true });
+        draggingNode.position(x, y, { silent: true });
         const ret = this.drop(draggingNode, { x: e.clientX, y: e.clientY });
         const callback = (node) => {
           if (node) {
@@ -38273,11 +38275,11 @@
         const context2D = imgDataCanvas.getContext("2d");
         imgDataCanvas.width = size.width;
         imgDataCanvas.height = size.height;
-        const x2 = size.width - 1;
+        const x = size.width - 1;
         const y = size.height - 1;
         context2D.fillStyle = "rgb(1,1,1)";
-        context2D.fillRect(x2, y, 1, 1);
-        const data2 = context2D.getImageData(x2, y, 1, 1).data;
+        context2D.fillRect(x, y, 1, 1);
+        const data2 = context2D.getImageData(x, y, 1, 1).data;
         if (data2[0] !== 1 || data2[1] !== 1 || data2[2] !== 1) {
           throw new Error("size exceeded");
         }
@@ -39436,22 +39438,22 @@
     startSelecting(evt) {
       evt = this.normalizeEvent(evt);
       this.clean();
-      let x2;
+      let x;
       let y;
       const graphContainer = this.graph.container;
       if (evt.offsetX != null && evt.offsetY != null && graphContainer.contains(evt.target)) {
-        x2 = evt.offsetX;
+        x = evt.offsetX;
         y = evt.offsetY;
       } else {
         const offset4 = main_exports2.offset(graphContainer);
         const scrollLeft = graphContainer.scrollLeft;
         const scrollTop = graphContainer.scrollTop;
-        x2 = evt.clientX - offset4.left + window.pageXOffset + scrollLeft;
+        x = evt.clientX - offset4.left + window.pageXOffset + scrollLeft;
         y = evt.clientY - offset4.top + window.pageYOffset + scrollTop;
       }
       main_exports2.css(this.container, {
         top: y,
-        left: x2,
+        left: x,
         width: 1,
         height: 1
       });
@@ -39459,7 +39461,7 @@
         action: "selecting",
         clientX: evt.clientX,
         clientY: evt.clientY,
-        offsetX: x2,
+        offsetX: x,
         offsetY: y,
         scrollerX: 0,
         scrollerY: 0,
@@ -39787,10 +39789,10 @@
         });
       }
     }
-    autoScrollGraph(x2, y) {
+    autoScrollGraph(x, y) {
       const scroller = this.graph.getPlugin("scroller");
       if (scroller === null || scroller === void 0 ? void 0 : scroller.autoScroll) {
-        return scroller.autoScroll(x2, y);
+        return scroller.autoScroll(x, y);
       }
       return { scrollerX: 0, scrollerY: 0 };
     }
@@ -39967,11 +39969,11 @@
         edges
       };
     }
-    notifyBoxEvent(name, e, x2, y, cells) {
+    notifyBoxEvent(name, e, x, y, cells) {
       var _a, _b;
       const activeView = (_b = (_a = this.getEventData(e)) === null || _a === void 0 ? void 0 : _a.activeView) !== null && _b !== void 0 ? _b : null;
       const { view, cell, nodes, edges } = this.getBoxEventCells(cells, activeView);
-      this.trigger(name, { e, view, x: x2, y, cell, nodes, edges });
+      this.trigger(name, { e, view, x, y, cell, nodes, edges });
     }
     getSelectedClassName(cell) {
       return this.prefixClassName(`${cell.isNode() ? "node" : "edge"}-selected`);
@@ -41146,12 +41148,12 @@
       height2 /= scale2.sy;
       this.ratio = Math.min(maxWidth / width2, maxHeight / height2);
       const ratio2 = this.ratio;
-      const x2 = origin.x * ratio2 / scale2.sx;
+      const x = origin.x * ratio2 / scale2.sx;
       const y = origin.y * ratio2 / scale2.sy;
       width2 *= ratio2;
       height2 *= ratio2;
       this.targetGraph.resize(width2, height2);
-      this.targetGraph.translate(x2, y);
+      this.targetGraph.translate(x, y);
       if (this.scroller) {
         this.targetGraph.scale(ratio2, ratio2);
       } else {
@@ -41238,19 +41240,19 @@
     }
     scrollTo(evt) {
       const e = this.normalizeEvent(evt);
-      let x2;
+      let x;
       let y;
       const ts = this.targetGraph.translate();
       ts.ty = ts.ty || 0;
       if (e.offsetX == null) {
         const offset4 = main_exports2.offset(this.targetGraph.container);
-        x2 = e.pageX - offset4.left;
+        x = e.pageX - offset4.left;
         y = e.pageY - offset4.top;
       } else {
-        x2 = e.offsetX;
+        x = e.offsetX;
         y = e.offsetY;
       }
-      const cx = (x2 - ts.tx) / this.ratio;
+      const cx = (x - ts.tx) / this.ratio;
       const cy = (y - ts.ty) / this.ratio;
       this.sourceGraph.centerPoint(cx, cy);
     }
@@ -41600,12 +41602,12 @@
      * coordinates is specified, only scroll in the specified dimension and
      * keep the other coordinate unchanged.
      */
-    scrollToPoint(x2, y) {
+    scrollToPoint(x, y) {
       const size = this.getClientSize();
       const ctm = this.graph.matrix();
       const prop2 = {};
-      if (typeof x2 === "number") {
-        prop2.scrollLeft = x2 - size.width / 2 + ctm.e + (this.padding.left || 0);
+      if (typeof x === "number") {
+        prop2.scrollLeft = x - size.width / 2 + ctm.e + (this.padding.left || 0);
       }
       if (typeof y === "number") {
         prop2.scrollTop = y - size.height / 2 + ctm.f + (this.padding.top || 0);
@@ -41648,7 +41650,7 @@
     center(optons) {
       return this.centerPoint(optons);
     }
-    centerPoint(x2, y, options) {
+    centerPoint(x, y, options) {
       const ctm = this.graph.matrix();
       const sx = ctm.a;
       const sy = ctm.d;
@@ -41658,13 +41660,13 @@
       const tHeight = ty + this.graph.options.height;
       let localOptions;
       this.storeClientSize();
-      if (typeof x2 === "number" || typeof y === "number") {
+      if (typeof x === "number" || typeof y === "number") {
         localOptions = options;
         const visibleCenter = this.getVisibleArea().getCenter();
-        if (typeof x2 === "number") {
-          x2 *= sx;
+        if (typeof x === "number") {
+          x *= sx;
         } else {
-          x2 = visibleCenter.x;
+          x = visibleCenter.x;
         }
         if (typeof y === "number") {
           y *= sy;
@@ -41672,23 +41674,23 @@
           y = visibleCenter.y;
         }
       } else {
-        localOptions = x2;
-        x2 = (tx + tWidth) / 2;
+        localOptions = x;
+        x = (tx + tWidth) / 2;
         y = (ty + tHeight) / 2;
       }
       if (localOptions && localOptions.padding) {
-        return this.positionPoint({ x: x2, y }, "50%", "50%", localOptions);
+        return this.positionPoint({ x, y }, "50%", "50%", localOptions);
       }
       const padding = this.getPadding();
       const clientSize = this.getClientSize();
       const cx = clientSize.width / 2;
       const cy = clientSize.height / 2;
-      const left4 = cx - padding.left - x2 + tx;
-      const right4 = cx - padding.right + x2 - tWidth;
+      const left4 = cx - padding.left - x + tx;
+      const right4 = cx - padding.right + x - tWidth;
       const top4 = cy - padding.top - y + ty;
       const bottom4 = cy - padding.bottom + y - tHeight;
       this.addPadding(Math.max(left4, 0), Math.max(right4, 0), Math.max(top4, 0), Math.max(bottom4, 0));
-      const result = this.scrollToPoint(x2, y);
+      const result = this.scrollToPoint(x, y);
       this.restoreClientSize();
       return result;
     }
@@ -41739,7 +41741,7 @@
           return this;
       }
     }
-    positionPoint(point, x2, y, options = {}) {
+    positionPoint(point, x, y, options = {}) {
       const { padding: pad } = options, localOptions = __rest(options, ["padding"]);
       const padding = number_exports.normalizeSides(pad);
       const clientRect = Rectangle.fromSize(this.getClientSize());
@@ -41749,15 +41751,15 @@
         width: -padding.right - padding.left,
         height: -padding.top - padding.bottom
       });
-      x2 = number_exports.normalizePercentage(x2, Math.max(0, targetRect.width));
-      if (x2 < 0) {
-        x2 = targetRect.width + x2;
+      x = number_exports.normalizePercentage(x, Math.max(0, targetRect.width));
+      if (x < 0) {
+        x = targetRect.width + x;
       }
       y = number_exports.normalizePercentage(y, Math.max(0, targetRect.height));
       if (y < 0) {
         y = targetRect.height + y;
       }
-      const origin = targetRect.getTopLeft().translate(x2, y);
+      const origin = targetRect.getTopLeft().translate(x, y);
       const diff = clientRect.getCenter().diff(origin);
       const scale2 = this.zoom();
       const rawDiff = diff.scale(1 / scale2, 1 / scale2);
@@ -41831,11 +41833,11 @@
     zoomToFit(options = {}) {
       return this.zoomToRect(this.graph.getContentArea(options), options);
     }
-    transitionToPoint(x2, y, options) {
-      if (typeof x2 === "object") {
+    transitionToPoint(x, y, options) {
+      if (typeof x === "object") {
         options = y;
-        y = x2.y;
-        x2 = x2.x;
+        y = x.y;
+        x = x.x;
       } else {
         y = y;
       }
@@ -41847,7 +41849,7 @@
       const scale2 = this.sx;
       const targetScale = Math.max(options.scale || scale2, 1e-6);
       const clientSize = this.getClientSize();
-      const targetPoint = new Point(x2, y);
+      const targetPoint = new Point(x, y);
       const localPoint = this.clientToLocalPoint(clientSize.width / 2, clientSize.height / 2);
       if (scale2 === targetScale) {
         const translate2 = localPoint.diff(targetPoint).scale(scale2, scale2).round();
@@ -41863,7 +41865,7 @@
       main_exports2.addClass(this.container, transitionClassName);
       main_exports2.Event.off(this.content, transitionEventName);
       main_exports2.Event.on(this.content, transitionEventName, (e) => {
-        this.syncTransition(targetScale, { x: x2, y });
+        this.syncTransition(targetScale, { x, y });
         if (typeof onTransitionEnd === "function") {
           function_exports.call(onTransitionEnd, this, e.originalEvent);
         }
@@ -41945,15 +41947,15 @@
       this.trigger("pan:stop", { e });
     }
     clientToLocalPoint(a, b) {
-      let x2 = typeof a === "object" ? a.x : a;
+      let x = typeof a === "object" ? a.x : a;
       let y = typeof a === "object" ? a.y : b;
       const ctm = this.graph.matrix();
-      x2 += this.container.scrollLeft - this.padding.left - ctm.e;
+      x += this.container.scrollLeft - this.padding.left - ctm.e;
       y += this.container.scrollTop - this.padding.top - ctm.f;
-      return new Point(x2 / ctm.a, y / ctm.d);
+      return new Point(x / ctm.a, y / ctm.d);
     }
-    localToBackgroundPoint(x2, y) {
-      const p = typeof x2 === "object" ? Point.create(x2) : new Point(x2, y);
+    localToBackgroundPoint(x, y) {
+      const p = typeof x === "object" ? Point.create(x) : new Point(x, y);
       const ctm = this.graph.matrix();
       const padding = this.padding;
       return util_exports2.transformPoint(p, ctm).translate(padding.left, padding.top);
@@ -42266,8 +42268,8 @@
     center(optons) {
       return this.centerPoint(optons);
     }
-    centerPoint(x2, y, options) {
-      this.scrollerImpl.centerPoint(x2, y, options);
+    centerPoint(x, y, options) {
+      this.scrollerImpl.centerPoint(x, y, options);
       return this;
     }
     centerContent(options) {
@@ -42278,8 +42280,8 @@
       this.scrollerImpl.centerCell(cell, options);
       return this;
     }
-    positionPoint(point, x2, y, options = {}) {
-      this.scrollerImpl.positionPoint(point, x2, y, options);
+    positionPoint(point, x, y, options = {}) {
+      this.scrollerImpl.positionPoint(point, x, y, options);
       return this;
     }
     positionRect(rect2, direction, options) {
@@ -42356,8 +42358,8 @@
       this.scrollerImpl.scrollbarPosition(left4, top4);
       return this;
     }
-    scrollToPoint(x2, y) {
-      this.scrollerImpl.scrollToPoint(x2, y);
+    scrollToPoint(x, y) {
+      this.scrollerImpl.scrollToPoint(x, y);
       return this;
     }
     scrollToContent() {
@@ -42368,8 +42370,8 @@
       this.scrollerImpl.scrollToCell(cell);
       return this;
     }
-    transitionToPoint(x2, y, options) {
-      this.scrollerImpl.transitionToPoint(x2, y, options);
+    transitionToPoint(x, y, options) {
+      this.scrollerImpl.transitionToPoint(x, y, options);
       return this;
     }
     transitionToRect(rect2, options = {}) {
@@ -42385,8 +42387,8 @@
     autoScroll(clientX, clientY) {
       return this.scrollerImpl.autoScroll(clientX, clientY);
     }
-    clientToLocalPoint(x2, y) {
-      return this.scrollerImpl.clientToLocalPoint(x2, y);
+    clientToLocalPoint(x, y) {
+      return this.scrollerImpl.clientToLocalPoint(x, y);
     }
     getVisibleArea() {
       return this.scrollerImpl.getVisibleArea();
@@ -43424,12 +43426,12 @@
         this.snapOnResizing(data2.cell, data2);
       }
     }
-    captureCursorOffset({ view, x: x2, y }) {
+    captureCursorOffset({ view, x, y }) {
       const targetView = view.getDelegatedView();
       if (targetView && this.isNodeMovable(targetView)) {
         const pos = view.cell.getPosition();
         this.offset = {
-          x: x2 - pos.x,
+          x: x - pos.x,
           y: y - pos.y
         };
       }
@@ -43634,7 +43636,7 @@
         }
       }
     }
-    snapOnMoving({ view, e, x: x2, y }) {
+    snapOnMoving({ view, e, x, y }) {
       const targetView = view.getEventData(e).delegatedView || view;
       if (!this.isNodeMovable(targetView)) {
         return;
@@ -43642,7 +43644,7 @@
       const node = targetView.cell;
       const size = node.getSize();
       const position2 = node.getPosition();
-      const cellBBox = new Rectangle(x2 - this.offset.x, y - this.offset.y, size.width, size.height);
+      const cellBBox = new Rectangle(x - this.offset.x, y - this.offset.y, size.width, size.height);
       const angle = node.getAngle();
       const nodeCenter2 = cellBBox.getCenter();
       const nodeBBoxRotated = cellBBox.bbox(angle);
@@ -44884,773 +44886,7 @@
   ];
 
   // packages/schematic-webview/src/index.ts
-  var import_schematic_core2 = __toESM(require_dist());
-
-  // node_modules/@dagrejs/dagre/dist/dagre.esm.js
-  var Re = Object.defineProperty;
-  var Mn = (e, n) => {
-    for (var t in n) Re(e, t, { get: n[t], enumerable: true });
-  };
-  var oe = {};
-  Mn(oe, { Graph: () => x, alg: () => X, json: () => Pe, version: () => An });
-  var Pn = Object.defineProperty;
-  var Me = (e, n) => {
-    for (var t in n) Pn(e, t, { get: n[t], enumerable: true });
-  };
-  var x = class {
-    constructor(e) {
-      this._isDirected = true, this._isMultigraph = false, this._isCompound = false, this._nodes = {}, this._in = {}, this._preds = {}, this._out = {}, this._sucs = {}, this._edgeObjs = {}, this._edgeLabels = {}, this._nodeCount = 0, this._edgeCount = 0, this._defaultNodeLabelFn = () => {
-      }, this._defaultEdgeLabelFn = () => {
-      }, e && (this._isDirected = "directed" in e ? e.directed : true, this._isMultigraph = "multigraph" in e ? e.multigraph : false, this._isCompound = "compound" in e ? e.compound : false), this._isCompound && (this._parent = {}, this._children = {}, this._children["\0"] = {});
-    }
-    isDirected() {
-      return this._isDirected;
-    }
-    isMultigraph() {
-      return this._isMultigraph;
-    }
-    isCompound() {
-      return this._isCompound;
-    }
-    setGraph(e) {
-      return this._label = e, this;
-    }
-    graph() {
-      return this._label;
-    }
-    setDefaultNodeLabel(e) {
-      return typeof e != "function" ? this._defaultNodeLabelFn = () => e : this._defaultNodeLabelFn = e, this;
-    }
-    nodeCount() {
-      return this._nodeCount;
-    }
-    nodes() {
-      return Object.keys(this._nodes);
-    }
-    sources() {
-      return this.nodes().filter((e) => Object.keys(this._in[e]).length === 0);
-    }
-    sinks() {
-      return this.nodes().filter((e) => Object.keys(this._out[e]).length === 0);
-    }
-    setNodes(e, n) {
-      return e.forEach((t) => {
-        n !== void 0 ? this.setNode(t, n) : this.setNode(t);
-      }), this;
-    }
-    setNode(e, n) {
-      return e in this._nodes ? (arguments.length > 1 && (this._nodes[e] = n), this) : (this._nodes[e] = arguments.length > 1 ? n : this._defaultNodeLabelFn(e), this._isCompound && (this._parent[e] = "\0", this._children[e] = {}, this._children["\0"][e] = true), this._in[e] = {}, this._preds[e] = {}, this._out[e] = {}, this._sucs[e] = {}, ++this._nodeCount, this);
-    }
-    node(e) {
-      return this._nodes[e];
-    }
-    hasNode(e) {
-      return e in this._nodes;
-    }
-    removeNode(e) {
-      if (e in this._nodes) {
-        let n = (t) => this.removeEdge(this._edgeObjs[t]);
-        delete this._nodes[e], this._isCompound && (this._removeFromParentsChildList(e), delete this._parent[e], this.children(e).forEach((t) => {
-          this.setParent(t);
-        }), delete this._children[e]), Object.keys(this._in[e]).forEach(n), delete this._in[e], delete this._preds[e], Object.keys(this._out[e]).forEach(n), delete this._out[e], delete this._sucs[e], --this._nodeCount;
-      }
-      return this;
-    }
-    setParent(e, n) {
-      if (!this._isCompound) throw new Error("Cannot set parent in a non-compound graph");
-      if (n === void 0) n = "\0";
-      else {
-        n += "";
-        for (let t = n; t !== void 0; t = this.parent(t)) if (t === e) throw new Error("Setting " + n + " as parent of " + e + " would create a cycle");
-        this.setNode(n);
-      }
-      return this.setNode(e), this._removeFromParentsChildList(e), this._parent[e] = n, this._children[n][e] = true, this;
-    }
-    parent(e) {
-      if (this._isCompound) {
-        let n = this._parent[e];
-        if (n !== "\0") return n;
-      }
-    }
-    children(e = "\0") {
-      if (this._isCompound) {
-        let n = this._children[e];
-        if (n) return Object.keys(n);
-      } else {
-        if (e === "\0") return this.nodes();
-        if (this.hasNode(e)) return [];
-      }
-      return [];
-    }
-    predecessors(e) {
-      let n = this._preds[e];
-      if (n) return Object.keys(n);
-    }
-    successors(e) {
-      let n = this._sucs[e];
-      if (n) return Object.keys(n);
-    }
-    neighbors(e) {
-      let n = this.predecessors(e);
-      if (n) {
-        let t = new Set(n);
-        for (let r of this.successors(e)) t.add(r);
-        return Array.from(t.values());
-      }
-    }
-    isLeaf(e) {
-      let n;
-      return this.isDirected() ? n = this.successors(e) : n = this.neighbors(e), n.length === 0;
-    }
-    filterNodes(e) {
-      let n = new this.constructor({ directed: this._isDirected, multigraph: this._isMultigraph, compound: this._isCompound });
-      n.setGraph(this.graph()), Object.entries(this._nodes).forEach(([o, i]) => {
-        e(o) && n.setNode(o, i);
-      }), Object.values(this._edgeObjs).forEach((o) => {
-        n.hasNode(o.v) && n.hasNode(o.w) && n.setEdge(o, this.edge(o));
-      });
-      let t = {}, r = (o) => {
-        let i = this.parent(o);
-        return !i || n.hasNode(i) ? (t[o] = i != null ? i : void 0, i != null ? i : void 0) : i in t ? t[i] : r(i);
-      };
-      return this._isCompound && n.nodes().forEach((o) => n.setParent(o, r(o))), n;
-    }
-    setDefaultEdgeLabel(e) {
-      return typeof e != "function" ? this._defaultEdgeLabelFn = () => e : this._defaultEdgeLabelFn = e, this;
-    }
-    edgeCount() {
-      return this._edgeCount;
-    }
-    edges() {
-      return Object.values(this._edgeObjs);
-    }
-    setPath(e, n) {
-      return e.reduce((t, r) => (n !== void 0 ? this.setEdge(t, r, n) : this.setEdge(t, r), r)), this;
-    }
-    setEdge(e, n, t, r) {
-      let o, i, s, a, d = false;
-      typeof e == "object" && e !== null && "v" in e ? (o = e.v, i = e.w, s = e.name, arguments.length === 2 && (a = n, d = true)) : (o = e, i = n, s = r, arguments.length > 2 && (a = t, d = true)), o = "" + o, i = "" + i, s !== void 0 && (s = "" + s);
-      let l = B(this._isDirected, o, i, s);
-      if (l in this._edgeLabels) return d && (this._edgeLabels[l] = a), this;
-      if (s !== void 0 && !this._isMultigraph) throw new Error("Cannot set a named edge when isMultigraph = false");
-      this.setNode(o), this.setNode(i), this._edgeLabels[l] = d ? a : this._defaultEdgeLabelFn(o, i, s);
-      let u = Fn(this._isDirected, o, i, s);
-      return o = u.v, i = u.w, Object.freeze(u), this._edgeObjs[l] = u, Ie(this._preds[i], o), Ie(this._sucs[o], i), this._in[i][l] = u, this._out[o][l] = u, this._edgeCount++, this;
-    }
-    edge(e, n, t) {
-      let r = arguments.length === 1 ? re(this._isDirected, e) : B(this._isDirected, e, n, t);
-      return this._edgeLabels[r];
-    }
-    edgeAsObj(e, n, t) {
-      let r = arguments.length === 1 ? this.edge(e) : this.edge(e, n, t);
-      return typeof r != "object" ? { label: r } : r;
-    }
-    hasEdge(e, n, t) {
-      return (arguments.length === 1 ? re(this._isDirected, e) : B(this._isDirected, e, n, t)) in this._edgeLabels;
-    }
-    removeEdge(e, n, t) {
-      let r = arguments.length === 1 ? re(this._isDirected, e) : B(this._isDirected, e, n, t), o = this._edgeObjs[r];
-      if (o) {
-        let i = o.v, s = o.w;
-        delete this._edgeLabels[r], delete this._edgeObjs[r], Se(this._preds[s], i), Se(this._sucs[i], s), delete this._in[s][r], delete this._out[i][r], this._edgeCount--;
-      }
-      return this;
-    }
-    inEdges(e, n) {
-      return this.isDirected() ? this.filterEdges(this._in[e], e, n) : this.nodeEdges(e, n);
-    }
-    outEdges(e, n) {
-      return this.isDirected() ? this.filterEdges(this._out[e], e, n) : this.nodeEdges(e, n);
-    }
-    nodeEdges(e, n) {
-      if (e in this._nodes) return this.filterEdges({ ...this._in[e], ...this._out[e] }, e, n);
-    }
-    _removeFromParentsChildList(e) {
-      delete this._children[this._parent[e]][e];
-    }
-    filterEdges(e, n, t) {
-      if (!e) return;
-      let r = Object.values(e);
-      return t ? r.filter((o) => o.v === n && o.w === t || o.v === t && o.w === n) : r;
-    }
-  };
-  function Ie(e, n) {
-    e[n] ? e[n]++ : e[n] = 1;
-  }
-  function Se(e, n) {
-    e[n] !== void 0 && !--e[n] && delete e[n];
-  }
-  function B(e, n, t, r) {
-    let o = "" + n, i = "" + t;
-    if (!e && o > i) {
-      let s = o;
-      o = i, i = s;
-    }
-    return o + "" + i + "" + (r === void 0 ? "\0" : r);
-  }
-  function Fn(e, n, t, r) {
-    let o = "" + n, i = "" + t;
-    if (!e && o > i) {
-      let a = o;
-      o = i, i = a;
-    }
-    let s = { v: o, w: i };
-    return r && (s.name = r), s;
-  }
-  function re(e, n) {
-    return B(e, n.v, n.w, n.name);
-  }
-  var An = "4.0.1";
-  var Pe = {};
-  Me(Pe, { read: () => Wn, write: () => Vn });
-  function Vn(e) {
-    let n = { options: { directed: e.isDirected(), multigraph: e.isMultigraph(), compound: e.isCompound() }, nodes: Dn(e), edges: Yn(e) }, t = e.graph();
-    return t !== void 0 && (n.value = structuredClone(t)), n;
-  }
-  function Dn(e) {
-    return e.nodes().map((n) => {
-      let t = e.node(n), r = e.parent(n), o = { v: n };
-      return t !== void 0 && (o.value = t), r !== void 0 && (o.parent = r), o;
-    });
-  }
-  function Yn(e) {
-    return e.edges().map((n) => {
-      let t = e.edge(n), r = { v: n.v, w: n.w };
-      return n.name !== void 0 && (r.name = n.name), t !== void 0 && (r.value = t), r;
-    });
-  }
-  function Wn(e) {
-    let n = new x(e.options);
-    return e.value !== void 0 && n.setGraph(e.value), e.nodes.forEach((t) => {
-      n.setNode(t.v, t.value), t.parent && n.setParent(t.v, t.parent);
-    }), e.edges.forEach((t) => {
-      n.setEdge({ v: t.v, w: t.w, name: t.name }, t.value);
-    }), n;
-  }
-  var X = {};
-  Me(X, { CycleException: () => J, bellmanFord: () => Fe, components: () => zn, dijkstra: () => U, dijkstraAll: () => $n, findCycles: () => Un, floydWarshall: () => Kn, isAcyclic: () => Zn, postorder: () => nt, preorder: () => tt, prim: () => rt, shortestPaths: () => ot, tarjan: () => Ve, topsort: () => De });
-  var Bn = () => 1;
-  function Fe(e, n, t, r) {
-    return Xn(e, String(n), t || Bn, r || function(o) {
-      return e.outEdges(o);
-    });
-  }
-  function Xn(e, n, t, r) {
-    let o = {}, i, s = 0, a = e.nodes(), d = function(c) {
-      let f = t(c);
-      o[c.v].distance + f < o[c.w].distance && (o[c.w] = { distance: o[c.v].distance + f, predecessor: c.v }, i = true);
-    }, l = function() {
-      a.forEach(function(c) {
-        r(c).forEach(function(f) {
-          let b = f.v === c ? f.v : f.w, m = b === f.v ? f.w : f.v;
-          d({ v: b, w: m });
-        });
-      });
-    };
-    a.forEach(function(c) {
-      let f = c === n ? 0 : Number.POSITIVE_INFINITY;
-      o[c] = { distance: f, predecessor: "" };
-    });
-    let u = a.length;
-    for (let c = 1; c < u && (i = false, s++, l(), !!i); c++) ;
-    if (s === u - 1 && (i = false, l(), i)) throw new Error("The graph contains a negative weight cycle");
-    return o;
-  }
-  function zn(e) {
-    let n = {}, t = [], r;
-    function o(i) {
-      i in n || (n[i] = true, r.push(i), e.successors(i).forEach(o), e.predecessors(i).forEach(o));
-    }
-    return e.nodes().forEach(function(i) {
-      r = [], o(i), r.length && t.push(r);
-    }), t;
-  }
-  var Ae = class {
-    constructor() {
-      this._arr = [], this._keyIndices = {};
-    }
-    size() {
-      return this._arr.length;
-    }
-    keys() {
-      return this._arr.map((e) => e.key);
-    }
-    has(e) {
-      return e in this._keyIndices;
-    }
-    priority(e) {
-      let n = this._keyIndices[e];
-      if (n !== void 0) return this._arr[n].priority;
-    }
-    min() {
-      if (this.size() === 0) throw new Error("Queue underflow");
-      return this._arr[0].key;
-    }
-    add(e, n) {
-      let t = this._keyIndices, r = String(e);
-      if (!(r in t)) {
-        let o = this._arr, i = o.length;
-        return t[r] = i, o.push({ key: r, priority: n }), this._decrease(i), true;
-      }
-      return false;
-    }
-    removeMin() {
-      this._swap(0, this._arr.length - 1);
-      let e = this._arr.pop();
-      return delete this._keyIndices[e.key], this._heapify(0), e.key;
-    }
-    decrease(e, n) {
-      let t = this._keyIndices[e];
-      if (t === void 0) throw new Error(`Key not found: ${e}`);
-      let r = this._arr[t].priority;
-      if (n > r) throw new Error(`New priority is greater than current priority. Key: ${e} Old: ${r} New: ${n}`);
-      this._arr[t].priority = n, this._decrease(t);
-    }
-    _heapify(e) {
-      let n = this._arr, t = 2 * e, r = t + 1, o = e;
-      t < n.length && (o = n[t].priority < n[o].priority ? t : o, r < n.length && (o = n[r].priority < n[o].priority ? r : o), o !== e && (this._swap(e, o), this._heapify(o)));
-    }
-    _decrease(e) {
-      let n = this._arr, t = n[e].priority, r;
-      for (; e !== 0 && (r = e >> 1, !(n[r].priority < t)); ) this._swap(e, r), e = r;
-    }
-    _swap(e, n) {
-      let t = this._arr, r = this._keyIndices, o = t[e], i = t[n];
-      t[e] = i, t[n] = o, r[i.key] = e, r[o.key] = n;
-    }
-  };
-  var Hn = () => 1;
-  function U(e, n, t, r) {
-    let o = function(i) {
-      return e.outEdges(i);
-    };
-    return qn(e, String(n), t || Hn, r || o);
-  }
-  function qn(e, n, t, r) {
-    let o = {}, i = new Ae(), s, a, d = function(l) {
-      let u = l.v !== s ? l.v : l.w, c = o[u], f = t(l), b = a.distance + f;
-      if (f < 0) throw new Error("dijkstra does not allow negative edge weights. Bad edge: " + l + " Weight: " + f);
-      b < c.distance && (c.distance = b, c.predecessor = s, i.decrease(u, b));
-    };
-    for (e.nodes().forEach(function(l) {
-      let u = l === n ? 0 : Number.POSITIVE_INFINITY;
-      o[l] = { distance: u, predecessor: "" }, i.add(l, u);
-    }); i.size() > 0 && (s = i.removeMin(), a = o[s], a.distance !== Number.POSITIVE_INFINITY); ) r(s).forEach(d);
-    return o;
-  }
-  function $n(e, n, t) {
-    return e.nodes().reduce(function(r, o) {
-      return r[o] = U(e, o, n, t), r;
-    }, {});
-  }
-  function Ve(e) {
-    let n = 0, t = [], r = {}, o = [];
-    function i(s) {
-      let a = r[s] = { onStack: true, lowlink: n, index: n++ };
-      if (t.push(s), e.successors(s).forEach(function(d) {
-        d in r ? r[d].onStack && (a.lowlink = Math.min(a.lowlink, r[d].index)) : (i(d), a.lowlink = Math.min(a.lowlink, r[d].lowlink));
-      }), a.lowlink === a.index) {
-        let d = [], l;
-        do
-          l = t.pop(), r[l].onStack = false, d.push(l);
-        while (s !== l);
-        o.push(d);
-      }
-    }
-    return e.nodes().forEach(function(s) {
-      s in r || i(s);
-    }), o;
-  }
-  function Un(e) {
-    return Ve(e).filter(function(n) {
-      return n.length > 1 || n.length === 1 && e.hasEdge(n[0], n[0]);
-    });
-  }
-  var Jn = () => 1;
-  function Kn(e, n, t) {
-    return Qn(e, n || Jn, t || function(r) {
-      return e.outEdges(r);
-    });
-  }
-  function Qn(e, n, t) {
-    let r = {}, o = e.nodes();
-    return o.forEach(function(i) {
-      r[i] = {}, r[i][i] = { distance: 0, predecessor: "" }, o.forEach(function(s) {
-        i !== s && (r[i][s] = { distance: Number.POSITIVE_INFINITY, predecessor: "" });
-      }), t(i).forEach(function(s) {
-        let a = s.v === i ? s.w : s.v, d = n(s);
-        r[i][a] = { distance: d, predecessor: i };
-      });
-    }), o.forEach(function(i) {
-      let s = r[i];
-      o.forEach(function(a) {
-        let d = r[a];
-        o.forEach(function(l) {
-          let u = d[i], c = s[l], f = d[l], b = u.distance + c.distance;
-          b < f.distance && (f.distance = b, f.predecessor = c.predecessor);
-        });
-      });
-    }), r;
-  }
-  var J = class extends Error {
-    constructor(...e) {
-      super(...e);
-    }
-  };
-  function De(e) {
-    let n = {}, t = {}, r = [];
-    function o(i) {
-      if (i in t) throw new J();
-      i in n || (t[i] = true, n[i] = true, e.predecessors(i).forEach(o), delete t[i], r.push(i));
-    }
-    if (e.sinks().forEach(o), Object.keys(n).length !== e.nodeCount()) throw new J();
-    return r;
-  }
-  function Zn(e) {
-    try {
-      De(e);
-    } catch (n) {
-      if (n instanceof J) return false;
-      throw n;
-    }
-    return true;
-  }
-  function et(e, n, t, r, o) {
-    Array.isArray(n) || (n = [n]);
-    let i = ((a) => {
-      var d;
-      return (d = e.isDirected() ? e.successors(a) : e.neighbors(a)) != null ? d : [];
-    }), s = {};
-    return n.forEach(function(a) {
-      if (!e.hasNode(a)) throw new Error("Graph does not have node: " + a);
-      o = Ye(e, a, t === "post", s, i, r, o);
-    }), o;
-  }
-  function Ye(e, n, t, r, o, i, s) {
-    return n in r || (r[n] = true, t || (s = i(s, n)), o(n).forEach(function(a) {
-      s = Ye(e, a, t, r, o, i, s);
-    }), t && (s = i(s, n))), s;
-  }
-  function We(e, n, t) {
-    return et(e, n, t, function(r, o) {
-      return r.push(o), r;
-    }, []);
-  }
-  function nt(e, n) {
-    return We(e, n, "post");
-  }
-  function tt(e, n) {
-    return We(e, n, "pre");
-  }
-  function rt(e, n) {
-    let t = new x(), r = {}, o = new Ae(), i;
-    function s(d) {
-      let l = d.v === i ? d.w : d.v, u = o.priority(l);
-      if (u !== void 0) {
-        let c = n(d);
-        c < u && (r[l] = i, o.decrease(l, c));
-      }
-    }
-    if (e.nodeCount() === 0) return t;
-    e.nodes().forEach(function(d) {
-      o.add(d, Number.POSITIVE_INFINITY), t.setNode(d);
-    }), o.decrease(e.nodes()[0], 0);
-    let a = false;
-    for (; o.size() > 0; ) {
-      if (i = o.removeMin(), i in r) t.setEdge(i, r[i]);
-      else {
-        if (a) throw new Error("Input graph is not connected: " + e);
-        a = true;
-      }
-      e.nodeEdges(i).forEach(s);
-    }
-    return t;
-  }
-  function ot(e, n, t, r) {
-    return it(e, n, t, r != null ? r : ((o) => {
-      let i = e.outEdges(o);
-      return i != null ? i : [];
-    }));
-  }
-  function it(e, n, t, r) {
-    if (t === void 0) return U(e, n, t, r);
-    let o = false, i = e.nodes();
-    for (let s = 0; s < i.length; s++) {
-      let a = r(i[s]);
-      for (let d = 0; d < a.length; d++) {
-        let l = a[d], u = l.v === i[s] ? l.v : l.w, c = u === l.v ? l.w : l.v;
-        t({ v: u, w: c }) < 0 && (o = true);
-      }
-      if (o) return Fe(e, n, t, r);
-    }
-    return U(e, n, t, r);
-  }
-  function Be(e) {
-    let n = new x().setGraph(e.graph());
-    return e.nodes().forEach((t) => n.setNode(t, e.node(t))), e.edges().forEach((t) => {
-      let r = n.edge(t.v, t.w) || { weight: 0, minlen: 1 }, o = e.edge(t);
-      n.setEdge(t.v, t.w, { weight: r.weight + o.weight, minlen: Math.max(r.minlen, o.minlen) });
-    }), n;
-  }
-  function st(e, n = He) {
-    let t = [];
-    for (let r = 0; r < e.length; r += n) {
-      let o = e.slice(r, r + n);
-      t.push(o);
-    }
-    return t;
-  }
-  var He = 65535;
-  function O(e, n) {
-    if (n.length > He) {
-      let t = st(n);
-      return e(...t.map((r) => e(...r)));
-    } else return e(...n);
-  }
-  function q(e) {
-    let n = {};
-    function t(r) {
-      let o = e.node(r);
-      if (Object.hasOwn(n, r)) return o.rank;
-      n[r] = true;
-      let i = e.outEdges(r), s = i ? i.map((d) => d == null ? Number.POSITIVE_INFINITY : t(d.w) - e.edge(d).minlen) : [], a = O(Math.min, s);
-      return a === Number.POSITIVE_INFINITY && (a = 0), o.rank = a;
-    }
-    e.sources().forEach(t);
-  }
-  function F(e, n) {
-    return e.node(n.w).rank - e.node(n.v).rank - e.edge(n).minlen;
-  }
-  var Z = Et;
-  function Et(e) {
-    let n = new x({ directed: false }), t = e.nodes();
-    if (t.length === 0) throw new Error("Graph must have at least one node");
-    let r = t[0], o = e.nodeCount();
-    n.setNode(r, {});
-    let i, s;
-    for (; Lt(n, e) < o && (i = yt(n, e), !!i); ) s = n.hasNode(i.v) ? F(e, i) : -F(e, i), wt(n, e, s);
-    return n;
-  }
-  function Lt(e, n) {
-    function t(r) {
-      let o = n.nodeEdges(r);
-      o && o.forEach((i) => {
-        let s = i.v, a = r === s ? i.w : s;
-        !e.hasNode(a) && !F(n, i) && (e.setNode(a, {}), e.setEdge(r, a, {}), t(a));
-      });
-    }
-    return e.nodes().forEach(t), e.nodeCount();
-  }
-  function yt(e, n) {
-    return n.edges().reduce((r, o) => {
-      let i = Number.POSITIVE_INFINITY;
-      return e.hasNode(o.v) !== e.hasNode(o.w) && (i = F(n, o)), i < r[0] ? [i, o] : r;
-    }, [Number.POSITIVE_INFINITY, null])[1];
-  }
-  function wt(e, n, t) {
-    e.nodes().forEach((r) => n.node(r).rank += t);
-  }
-  var { preorder: Nt, postorder: Gt } = X;
-  D.initLowLimValues = ge;
-  D.initCutValues = he;
-  D.calcCutValue = rn;
-  D.leaveEdge = sn;
-  D.enterEdge = an;
-  D.exchangeEdges = dn;
-  function D(e) {
-    e = Be(e), q(e);
-    let n = Z(e);
-    ge(n), he(n, e);
-    let t, r;
-    for (; t = sn(n); ) r = an(n, e, t), dn(n, e, t, r);
-  }
-  function he(e, n) {
-    let t = Gt(e, e.nodes());
-    t = t.slice(0, t.length - 1), t.forEach((r) => vt(e, n, r));
-  }
-  function vt(e, n, t) {
-    let o = e.node(t).parent, i = e.edge(t, o);
-    i.cutvalue = rn(e, n, t);
-  }
-  function rn(e, n, t) {
-    let o = e.node(t).parent, i = true, s = n.edge(t, o), a = 0;
-    s || (i = false, s = n.edge(o, t)), a = s.weight;
-    let d = n.nodeEdges(t);
-    return d && d.forEach((l) => {
-      let u = l.v === t, c = u ? l.w : l.v;
-      if (c !== o) {
-        let f = u === i, b = n.edge(l).weight;
-        if (a += f ? b : -b, xt(e, t, c)) {
-          let E = e.edge(t, c).cutvalue;
-          a += f ? -E : E;
-        }
-      }
-    }), a;
-  }
-  function ge(e, n) {
-    arguments.length < 2 && (n = e.nodes()[0]), on2(e, {}, 1, n);
-  }
-  function on2(e, n, t, r, o) {
-    let i = t, s = e.node(r);
-    n[r] = true;
-    let a = e.neighbors(r);
-    return a && a.forEach((d) => {
-      Object.hasOwn(n, d) || (t = on2(e, n, t, d, r));
-    }), s.low = i, s.lim = t++, o ? s.parent = o : delete s.parent, t;
-  }
-  function sn(e) {
-    return e.edges().find((n) => e.edge(n).cutvalue < 0);
-  }
-  function an(e, n, t) {
-    let r = t.v, o = t.w;
-    n.hasEdge(r, o) || (r = t.w, o = t.v);
-    let i = e.node(r), s = e.node(o), a = i, d = false;
-    return i.lim > s.lim && (a = s, d = true), n.edges().filter((u) => d === nn(e, e.node(u.v), a) && d !== nn(e, e.node(u.w), a)).reduce((u, c) => F(n, c) < F(n, u) ? c : u);
-  }
-  function dn(e, n, t, r) {
-    let o = t.v, i = t.w;
-    e.removeEdge(o, i), e.setEdge(r.v, r.w, {}), ge(e), he(e, n), kt(e, n);
-  }
-  function kt(e, n) {
-    let t = e.nodes().find((o) => !e.node(o).parent);
-    if (!t) return;
-    let r = Nt(e, [t]);
-    r = r.slice(1), r.forEach((o) => {
-      let s = e.node(o).parent, a = n.edge(o, s), d = false;
-      a || (a = n.edge(s, o), d = true), n.node(o).rank = n.node(s).rank + (d ? a.minlen : -a.minlen);
-    });
-  }
-  function xt(e, n, t) {
-    return e.hasEdge(n, t);
-  }
-  function nn(e, n, t) {
-    return t.low <= n.lim && n.lim <= t.lim;
-  }
-
-  // veriflow-vscode/src/schematic/layoutStore.ts
   var import_schematic_core = __toESM(require_dist());
-  var MIN_ZOOM = 0.1;
-  var MAX_ZOOM = 4;
-  var SCHEMATIC_PORT_SIZE = {
-    width: import_schematic_core.SCHEMATIC_NODE_LAYOUT.portWidth,
-    height: import_schematic_core.SCHEMATIC_NODE_LAYOUT.portHeight
-  };
-  var FEEDBACK_LANE_SEPARATION = 32;
-  function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-  function finiteNumber(value) {
-    return typeof value === "number" && Number.isFinite(value);
-  }
-  function normalizeNodeLayout(value) {
-    if (!isRecord(value) || !finiteNumber(value.x) || !finiteNumber(value.y) || typeof value.fixed !== "boolean") {
-      return void 0;
-    }
-    return { x: value.x, y: value.y, fixed: value.fixed };
-  }
-  function normalizeLayout(value) {
-    if (!isRecord(value) || !isRecord(value.nodes) || !isRecord(value.viewport) || !finiteNumber(value.viewport.x) || !finiteNumber(value.viewport.y) || !finiteNumber(value.viewport.zoom) || typeof value.minimap !== "boolean" || value.selectedObjectId !== void 0 && typeof value.selectedObjectId !== "string") {
-      return void 0;
-    }
-    const nodes = {};
-    for (const [id, candidate] of Object.entries(value.nodes)) {
-      const normalized2 = normalizeNodeLayout(candidate);
-      if (normalized2) {
-        Object.defineProperty(nodes, id, {
-          value: normalized2,
-          enumerable: true,
-          configurable: true,
-          writable: true
-        });
-      }
-    }
-    const normalized = {
-      nodes,
-      viewport: {
-        x: value.viewport.x,
-        y: value.viewport.y,
-        zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value.viewport.zoom))
-      },
-      minimap: value.minimap
-    };
-    if (value.selectedObjectId !== void 0) {
-      normalized.selectedObjectId = value.selectedObjectId;
-    }
-    return normalized;
-  }
-  function compareIds(left4, right4) {
-    return left4 < right4 ? -1 : left4 > right4 ? 1 : 0;
-  }
-  function schematicNodeSize(node, resolvedSides) {
-    const sides = resolvedSides ?? new Map(node.pins.map((pin2) => [
-      (0, import_schematic_core.pinKey)(node.id, pin2.id),
-      pin2.direction === "driver" ? "right" : "left"
-    ]));
-    return (0, import_schematic_core.measureSchematicNodeSize)(node, sides);
-  }
-  function resolvedNodeSizes(graph2) {
-    const resolvedSides = (0, import_schematic_core.resolvePinSides)(graph2);
-    return new Map(graph2.nodes.map((node) => [
-      node.id,
-      schematicNodeSize(node, resolvedSides)
-    ]));
-  }
-  function deriveFeedbackRoutes(graph2, layout) {
-    const normalizedLayout = normalizeLayout(layout);
-    if (!normalizedLayout) {
-      return [];
-    }
-    const nodesById = new Map(graph2.nodes.map((node) => [node.id, node]));
-    const nodeSizes = resolvedNodeSizes(graph2);
-    const positionedNodes = graph2.nodes.flatMap((node) => {
-      const position2 = normalizedLayout.nodes[node.id];
-      return position2 ? [{ node, position: position2 }] : [];
-    });
-    if (positionedNodes.length === 0) {
-      return [];
-    }
-    const minY = Math.min(...positionedNodes.map(({ node, position: position2 }) => position2.y - nodeSizes.get(node.id).height / 2));
-    const maxY = Math.max(...positionedNodes.map(({ node, position: position2 }) => position2.y + nodeSizes.get(node.id).height / 2));
-    const feedbackNetworks = [...graph2.networks].sort((left4, right4) => compareIds(left4.id, right4.id)).flatMap((network) => {
-      const endpoints = network.endpoints.filter(
-        (endpoint) => (endpoint.role === "driver" || endpoint.role === "load") && nodesById.has(endpoint.nodeId) && normalizedLayout.nodes[endpoint.nodeId] !== void 0
-      ).sort((left4, right4) => compareIds(left4.nodeId, right4.nodeId) || compareIds(left4.pinId, right4.pinId) || compareIds(left4.role, right4.role));
-      const drivers = endpoints.filter((endpoint) => endpoint.role === "driver");
-      const loads = endpoints.filter((endpoint) => endpoint.role === "load");
-      const hasFeedback = drivers.some((driver) => loads.some(
-        (load) => normalizedLayout.nodes[load.nodeId].x <= normalizedLayout.nodes[driver.nodeId].x
-      ));
-      return hasFeedback ? [{ network, endpoints }] : [];
-    });
-    return feedbackNetworks.map(({ network, endpoints }, index2) => {
-      const side = index2 % 2 === 0 ? "top" : "bottom";
-      const lane = Math.floor(index2 / 2);
-      const endpointLayouts = endpoints.map((endpoint) => {
-        const selectedNode = nodesById.get(endpoint.nodeId);
-        const position2 = normalizedLayout.nodes[endpoint.nodeId];
-        const verticalDirection = side === "top" ? -1 : 1;
-        return {
-          nodeId: endpoint.nodeId,
-          pinId: endpoint.pinId,
-          role: endpoint.role,
-          x: position2.x,
-          y: position2.y + verticalDirection * nodeSizes.get(selectedNode.id).height / 2
-        };
-      });
-      const trunkY = side === "top" ? minY - (lane + 1) * FEEDBACK_LANE_SEPARATION : maxY + (lane + 1) * FEEDBACK_LANE_SEPARATION;
-      return {
-        networkId: network.id,
-        side,
-        lane,
-        trunk: {
-          x1: Math.min(...endpointLayouts.map((endpoint) => endpoint.x)),
-          x2: Math.max(...endpointLayouts.map((endpoint) => endpoint.x)),
-          y: trunkY
-        },
-        endpoints: endpointLayouts
-      };
-    });
-  }
 
   // veriflow-vscode/src/schematic/webviewSupport.ts
   function formatSchematicDiagnosticDetails(diagnostics) {
@@ -45675,83 +44911,6 @@
       selectedObjectId: last.objectId,
       statusText: items.length === 1 ? last.description : `${items.length} objects selected`
     };
-  }
-  function placeSchematicNetworkLabel(route, nodeBounds, label, segmentIndex = 0) {
-    if (segmentIndex !== 0) return void 0;
-    const labelWidth = Math.max(24, label.length * 10 + 8);
-    const labelHeight = 16;
-    const clearance = 4;
-    let cumulativeLength = 0;
-    const segments = [];
-    for (let index2 = 0; index2 + 1 < route.length; index2 += 1) {
-      const start = route[index2];
-      const end = route[index2 + 1];
-      const length2 = Math.hypot(end.x - start.x, end.y - start.y);
-      if (length2 > 0) {
-        segments.push({ index: index2, start, end, length: length2, startLength: cumulativeLength });
-        cumulativeLength += length2;
-      }
-    }
-    if (segments.length === 0) {
-      segments.push({
-        index: 0,
-        start: route[0] ?? { x: 0, y: 0 },
-        end: route[0] ?? { x: 0, y: 0 },
-        length: 0,
-        startLength: 0
-      });
-    }
-    const candidates = segments.map((segment) => {
-      const x2 = (segment.start.x + segment.end.x) / 2;
-      const y = (segment.start.y + segment.end.y) / 2;
-      return {
-        segment,
-        center: { x: x2, y },
-        distance: cumulativeLength > 0 ? (segment.startLength + segment.length / 2) / cumulativeLength : 0
-      };
-    }).sort((left4, right4) => right4.segment.length - left4.segment.length || left4.segment.index - right4.segment.index);
-    const overlapsNode = (bounds) => nodeBounds.some(
-      (node) => bounds.x < node.x + node.width + clearance && bounds.x + bounds.width > node.x - clearance && bounds.y < node.y + node.height + clearance && bounds.y + bounds.height > node.y - clearance
-    );
-    const placement = (candidate, offsetY) => ({
-      position: {
-        distance: candidate.distance,
-        offset: { x: 0, y: offsetY }
-      },
-      bounds: {
-        x: candidate.center.x - labelWidth / 2,
-        y: candidate.center.y + offsetY - labelHeight / 2,
-        width: labelWidth,
-        height: labelHeight
-      }
-    });
-    for (const candidate of candidates) {
-      const centered = placement(candidate, 0);
-      if (!overlapsNode(centered.bounds)) return centered;
-    }
-    const shifted = [];
-    candidates.forEach((candidate, rank) => {
-      const left4 = candidate.center.x - labelWidth / 2;
-      const right4 = candidate.center.x + labelWidth / 2;
-      const offsets = /* @__PURE__ */ new Set();
-      for (const node of nodeBounds) {
-        if (left4 >= node.x + node.width + clearance || right4 <= node.x - clearance) {
-          continue;
-        }
-        offsets.add(node.y - clearance - labelHeight / 2 - candidate.center.y);
-        offsets.add(
-          node.y + node.height + clearance + labelHeight / 2 - candidate.center.y
-        );
-      }
-      for (const offsetY of offsets) {
-        const shiftedPlacement = placement(candidate, offsetY);
-        if (!overlapsNode(shiftedPlacement.bounds)) {
-          shifted.push({ rank, offsetY, placement: shiftedPlacement });
-        }
-      }
-    });
-    shifted.sort((left4, right4) => Math.abs(left4.offsetY) - Math.abs(right4.offsetY) || left4.rank - right4.rank || left4.offsetY - right4.offsetY);
-    return shifted[0]?.placement ?? placement(candidates[0], 0);
   }
   function cloneSchematicLayout(layout) {
     return {
@@ -45813,8 +44972,8 @@
   };
 
   // packages/schematic-webview/src/index.ts
-  var MIN_ZOOM2 = 0.1;
-  var MAX_ZOOM2 = 4;
+  var MIN_ZOOM = 0.1;
+  var MAX_ZOOM = 4;
   var SAVE_DELAY_MS = 250;
   var shapeNames = {
     port: "veriflow-port",
@@ -45875,10 +45034,6 @@
     };
   }
   var vscode = typeof window.acquireVsCodeApi === "function" ? window.acquireVsCodeApi() : previewApi();
-  function truncate(value, limit) {
-    if (value.length <= limit) return value;
-    return limit <= 3 ? value.slice(0, limit) : `${value.slice(0, limit - 3)}...`;
-  }
   var textMeasureContext;
   function measureNodeText(text3, style2) {
     if (textMeasureContext === void 0) {
@@ -45897,8 +45052,8 @@
     for (const [kind, shapeName] of Object.entries(shapeNames)) {
       Graph.registerNode(shapeName, {
         inherit: "rect",
-        width: kind === "port" ? import_schematic_core2.SCHEMATIC_NODE_LAYOUT.portWidth : import_schematic_core2.SCHEMATIC_NODE_LAYOUT.minimumWidth,
-        height: kind === "port" ? import_schematic_core2.SCHEMATIC_NODE_LAYOUT.portHeight : import_schematic_core2.SCHEMATIC_NODE_LAYOUT.minimumHeight,
+        width: kind === "port" ? import_schematic_core.SCHEMATIC_NODE_LAYOUT.portWidth : import_schematic_core.SCHEMATIC_NODE_LAYOUT.minimumWidth,
+        height: kind === "port" ? import_schematic_core.SCHEMATIC_NODE_LAYOUT.portHeight : import_schematic_core.SCHEMATIC_NODE_LAYOUT.minimumHeight,
         markup: [
           { tagName: "rect", selector: "body" },
           { tagName: "rect", selector: "accent" },
@@ -45949,22 +45104,22 @@
           },
           label: {
             x: 0,
-            y: import_schematic_core2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
+            y: import_schematic_core.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
             fill: "var(--vscode-editor-foreground, #202124)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.title.fontSize,
-            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.title.fontWeight,
+            fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.title.fontSize,
+            fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.title.fontWeight,
             textAnchor: "start",
             textVerticalAnchor: "middle",
             pointerEvents: "none"
           },
           subtitle: {
             x: 0,
-            y: import_schematic_core2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
+            y: import_schematic_core.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
             fill: "var(--vscode-descriptionForeground, #616161)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
-            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.subtitle.fontWeight,
+            fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
+            fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.subtitle.fontWeight,
             textAnchor: "start",
             textVerticalAnchor: "middle"
           }
@@ -46001,7 +45156,7 @@
         label: {
           position: {
             name: "right",
-            args: { x: import_schematic_core2.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
+            args: { x: import_schematic_core.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
           }
         }
       },
@@ -46011,71 +45166,65 @@
         label: {
           position: {
             name: "left",
-            args: { x: -import_schematic_core2.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
+            args: { x: -import_schematic_core.SCHEMATIC_NODE_LAYOUT.pinLabelInset }
           }
         }
       }
     };
   }
-  function pinItems(node) {
-    const positions = /* @__PURE__ */ new Map();
-    const items = node.pins.map((resolved) => {
-      const pin2 = resolved.source;
-      const position2 = resolved.anchor;
-      positions.set(pin2.id, position2);
+  function pinItems(model, rendered) {
+    const pinsById = new Map(model.pins.map((pin2) => [pin2.id, pin2]));
+    return rendered.pins.map((pin2) => {
+      const source = pinsById.get(pin2.id);
       return {
         id: pin2.id,
-        group: resolved.side,
-        args: position2,
+        group: pin2.side,
+        args: {
+          x: pin2.anchor.x - rendered.bounds.x,
+          y: pin2.anchor.y - rendered.bounds.y
+        },
         attrs: {
           portBody: {
-            strokeDasharray: pin2.readOnly ? "2 1" : void 0
+            strokeDasharray: source?.readOnly ? "2 1" : void 0
           },
           portLabelClip: {
-            x: resolved.side === "left" ? 0 : -resolved.clipBounds.width,
-            y: -resolved.clipBounds.height / 2,
-            width: resolved.clipBounds.width,
-            height: resolved.clipBounds.height
+            x: pin2.side === "left" ? 0 : -pin2.clipBounds.width,
+            y: -pin2.clipBounds.height / 2,
+            width: pin2.clipBounds.width,
+            height: pin2.clipBounds.height
           },
           text: {
-            text: resolved.visibleLabel,
+            text: pin2.visibleLabel,
             title: pin2.name,
-            x: resolved.side === "left" ? 0 : resolved.clipBounds.width,
-            y: resolved.clipBounds.height / 2,
+            x: pin2.side === "left" ? 0 : pin2.clipBounds.width,
+            y: pin2.clipBounds.height / 2,
             fill: "var(--vscode-editor-foreground, #202124)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: import_schematic_core2.SCHEMATIC_TEXT_STYLES.pin.fontSize,
-            fontWeight: import_schematic_core2.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
-            textAnchor: resolved.side === "left" ? "start" : "end",
+            fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontSize,
+            fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
+            textAnchor: pin2.side === "left" ? "start" : "end",
             textVerticalAnchor: "middle",
             pointerEvents: "none"
           }
         }
       };
     });
-    return { items, positions };
   }
-  function positionFor(layout, nodeId) {
-    return layout.nodes[nodeId] ?? { x: 0, y: 0 };
+  function relativeBounds(bounds, nodeBounds) {
+    return {
+      x: bounds.x - nodeBounds.x,
+      y: bounds.y - nodeBounds.y,
+      width: bounds.width,
+      height: bounds.height
+    };
   }
-  function createRenderedNode(model, layout, pinSides) {
-    const subtitle = model.subtitle ?? (model.readOnly ? "read-only" : void 0);
-    const displayModel = subtitle === model.subtitle ? model : { ...model, subtitle };
-    const layoutSize = (0, import_schematic_core2.measureSchematicNodeSize)(model, pinSides);
-    const measured = (0, import_schematic_core2.fitSchematicNode)(
-      displayModel,
-      pinSides,
-      layoutSize,
-      measureNodeText
-    );
-    const { width: width2, height: height2 } = measured;
-    const center2 = positionFor(layout, model.id);
-    const ports = pinItems(measured);
+  function createRenderedNode(model, rendered) {
+    const { width: width2, height: height2 } = rendered.bounds;
     const cell = graph.addNode({
       id: model.id,
       shape: shapeNames[model.kind],
-      x: center2.x - width2 / 2,
-      y: center2.y - height2 / 2,
+      x: rendered.bounds.x,
+      y: rendered.bounds.y,
       width: width2,
       height: height2,
       data: {
@@ -46094,20 +45243,20 @@
           strokeDasharray: model.readOnly ? "4 2" : void 0
         },
         accent: { height: height2 },
-        labelClip: measured.title.clipBounds,
+        labelClip: relativeBounds(rendered.title.bounds, rendered.bounds),
         label: {
-          text: measured.title.visibleText,
-          title: model.label
+          text: rendered.title.visibleText,
+          title: rendered.title.fullText
         },
-        subtitleClip: measured.subtitle?.clipBounds ?? {
+        subtitleClip: rendered.renderedSubtitle ? relativeBounds(rendered.renderedSubtitle.bounds, rendered.bounds) : {
           x: 0,
           y: 0,
           width: 0,
           height: 0
         },
         subtitle: {
-          text: measured.subtitle?.visibleText ?? "",
-          title: subtitle ?? "",
+          text: rendered.renderedSubtitle?.visibleText ?? "",
+          title: rendered.renderedSubtitle?.fullText ?? "",
           cursor: model.kind === "instance" && model.definitionKey ? "pointer" : "default",
           textDecoration: model.kind === "instance" && model.definitionKey ? "underline" : "none",
           event: model.kind === "instance" && model.definitionKey ? "node:open-definition" : void 0
@@ -46115,89 +45264,82 @@
       },
       ports: {
         groups: portGroups(),
-        items: ports.items
+        items: pinItems(model, rendered)
       },
       zIndex: 2
     });
-    return { model, cell, width: width2, height: height2, pins: ports.positions };
+    return cell;
   }
-  function endpointPosition(endpoint, renderedNodes) {
-    const rendered = renderedNodes.get(endpoint.nodeId);
-    const relativePin = rendered?.pins.get(endpoint.pinId);
-    if (!rendered || !relativePin) return void 0;
-    const topLeft2 = rendered.cell.getPosition();
-    return { x: topLeft2.x + relativePin.x, y: topLeft2.y + relativePin.y };
+  function segmentEndpoints(segment) {
+    return segment.orientation === "horizontal" ? [{ x: segment.x1, y: segment.y }, { x: segment.x2, y: segment.y }] : [{ x: segment.x, y: segment.y1 }, { x: segment.x, y: segment.y2 }];
   }
-  function endpointTerminal(endpoint) {
-    return { cell: endpoint.nodeId, port: endpoint.pinId };
+  function samePoint(left4, right4) {
+    return left4.x === right4.x && left4.y === right4.y;
   }
-  function compareEndpoint(left4, right4) {
-    return left4.nodeId.localeCompare(right4.nodeId) || left4.pinId.localeCompare(right4.pinId) || left4.role.localeCompare(right4.role);
-  }
-  function networkPairs(network) {
-    const endpoints = [...network.endpoints].sort(compareEndpoint);
-    const drivers = endpoints.filter((endpoint) => endpoint.role === "driver");
-    const sources = drivers.length > 0 ? drivers : endpoints.slice(0, 1);
-    const targets = drivers.length > 0 ? endpoints.filter((endpoint) => endpoint.role !== "driver") : endpoints.slice(1);
-    return sources.flatMap(
-      (source) => targets.filter((target) => target.nodeId !== source.nodeId || target.pinId !== source.pinId).map((target) => ({ source, target }))
+  function terminatesAtLoad(route, point) {
+    return route.terminals.some(
+      (terminal) => terminal.role === "load" && samePoint(terminal.point, point)
     );
+  }
+  function labelForSegment(route, segment) {
+    const label = route.label;
+    if (!label || segment.orientation !== "horizontal") return [];
+    const labelCenterX = label.bounds.x + label.bounds.width / 2;
+    const expectedAbove = segment.y - import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap - import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.height;
+    const expectedBelow = segment.y + import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap;
+    if (labelCenterX < segment.x1 || labelCenterX > segment.x2 || label.bounds.y !== expectedAbove && label.bounds.y !== expectedBelow) {
+      return [];
+    }
+    const distance = (labelCenterX - segment.x1) / (segment.x2 - segment.x1);
+    const centerY = label.bounds.y + label.bounds.height / 2;
+    return [{
+      attrs: {
+        text: {
+          text: label.text,
+          fill: "var(--vscode-editor-foreground, #202124)",
+          fontFamily: "var(--vscode-font-family, sans-serif)",
+          fontSize: import_schematic_core.SCHEMATIC_NETWORK_LABEL_STYLE.fontSize,
+          fontWeight: import_schematic_core.SCHEMATIC_NETWORK_LABEL_STYLE.fontWeight
+        },
+        rect: {
+          x: -label.bounds.width / 2,
+          y: -label.bounds.height / 2,
+          width: label.bounds.width,
+          height: label.bounds.height,
+          fill: "var(--vscode-editor-background, #ffffff)",
+          stroke: "var(--vscode-panel-border, #c7c7c7)",
+          strokeWidth: 1,
+          rx: 2,
+          ry: 2
+        }
+      },
+      position: {
+        distance,
+        offset: { x: 0, y: centerY - segment.y }
+      }
+    }];
   }
   function networkStrokeWidth(network) {
     return network.width.kind === "known" && network.width.bits > 1 ? 2 : 1;
   }
-  function renderNetworks(model, layout, renderedNodes) {
-    const feedbackRoutes = new Map(
-      deriveFeedbackRoutes(model, layout).map((route) => [route.networkId, route])
-    );
-    const nodeBounds = [...renderedNodes.values()].map((rendered) => {
-      const center2 = positionFor(layout, rendered.model.id);
-      return {
-        x: center2.x - rendered.width / 2,
-        y: center2.y - rendered.height / 2,
-        width: rendered.width,
-        height: rendered.height
-      };
-    });
-    const edges = [];
-    for (const network of model.networks) {
-      const pairs = networkPairs(network);
-      const feedback = feedbackRoutes.get(network.id);
-      const allPositions = network.endpoints.flatMap((endpoint) => {
-        const position2 = endpointPosition(endpoint, renderedNodes);
-        return position2 ? [position2] : [];
-      });
-      const trunkX = allPositions.length > 0 ? (Math.min(...allPositions.map((point) => point.x)) + Math.max(...allPositions.map((point) => point.x))) / 2 : 0;
-      pairs.forEach(({ source, target }, index2) => {
-        const sourcePosition = endpointPosition(source, renderedNodes);
-        const targetPosition = endpointPosition(target, renderedNodes);
-        if (!sourcePosition || !targetPosition) return;
-        const vertices = feedback ? [
-          { x: sourcePosition.x, y: feedback.trunk.y },
-          { x: targetPosition.x, y: feedback.trunk.y }
-        ] : [
-          { x: trunkX, y: sourcePosition.y },
-          { x: trunkX, y: targetPosition.y }
-        ];
-        const directed = source.role === "driver" && target.role === "load";
-        const label = network.adapterLabel ? `${network.name} ${network.adapterLabel}` : network.name;
-        const labelText = truncate(label, 28);
-        const labelPlacement = placeSchematicNetworkLabel(
-          [sourcePosition, ...vertices, targetPosition],
-          nodeBounds,
-          labelText,
-          index2
-        );
-        const edge = graph.addEdge({
-          id: `${network.id}:segment:${index2}`,
+  function renderNetworks(model, renderModel) {
+    const networksById = new Map(model.networks.map((network) => [network.id, network]));
+    const routesById = new Map(renderModel.networks.map((route) => [route.id, route]));
+    for (const networkRoute of renderModel.networks) {
+      const network = networksById.get(networkRoute.id);
+      if (!network) continue;
+      networkRoute.segments.forEach((segment, index2) => {
+        const [source, target] = segmentEndpoints(segment);
+        graph.addEdge({
+          id: `${networkRoute.id}:segment:${index2}`,
           shape: "veriflow-network",
-          source: endpointTerminal(source),
-          target: endpointTerminal(target),
-          vertices,
+          source,
+          target,
           data: {
             objectId: network.id,
             objectType: "network",
-            network
+            network,
+            networkRoute
           },
           attrs: {
             root: {
@@ -46208,33 +45350,53 @@
             },
             line: {
               strokeWidth: networkStrokeWidth(network),
-              targetMarker: directed ? { name: "block", width: 6, height: 6 } : null
+              sourceMarker: terminatesAtLoad(networkRoute, source) ? { name: "block", width: 6, height: 6 } : null,
+              targetMarker: terminatesAtLoad(networkRoute, target) ? { name: "block", width: 6, height: 6 } : null
             }
           },
-          labels: labelPlacement ? [{
-            attrs: {
-              text: {
-                text: labelText,
-                fill: "var(--vscode-editor-foreground, #202124)",
-                fontFamily: "var(--vscode-font-family, sans-serif)",
-                fontSize: 10
-              },
-              rect: {
-                fill: "var(--vscode-editor-background, #ffffff)",
-                stroke: "var(--vscode-panel-border, #c7c7c7)",
-                strokeWidth: 1,
-                rx: 2,
-                ry: 2
-              }
-            },
-            position: labelPlacement.position
-          }] : [],
-          zIndex: 1
+          labels: labelForSegment(networkRoute, segment),
+          zIndex: 0
         });
-        edges.push(edge);
       });
     }
-    return edges;
+    renderModel.junctions.forEach((junction, index2) => {
+      const network = networksById.get(junction.networkId);
+      const networkRoute = routesById.get(junction.networkId);
+      if (!network || !networkRoute) return;
+      const radius = import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius;
+      graph.addNode({
+        shape: "circle",
+        id: `${junction.networkId}:junction:${index2}`,
+        x: junction.point.x - radius,
+        y: junction.point.y - radius,
+        width: radius * 2,
+        height: radius * 2,
+        data: {
+          objectId: network.id,
+          objectType: "network",
+          network,
+          networkRoute,
+          junction: true
+        },
+        attrs: {
+          root: {
+            tabindex: -1,
+            "aria-hidden": "true",
+            pointerEvents: "none"
+          },
+          body: {
+            class: "veriflow-junction-dot",
+            fill: "var(--vscode-editor-foreground, #505050)",
+            stroke: "var(--vscode-editor-foreground, #505050)",
+            strokeWidth: 1,
+            pointerEvents: "none"
+          },
+          label: { text: "" }
+        },
+        interacting: false,
+        zIndex: 1
+      });
+    });
   }
   var selection = new Selection({
     enabled: true,
@@ -46245,7 +45407,8 @@
     showNodeSelectionBox: true,
     showEdgeSelectionBox: true,
     pointerEvents: "auto",
-    eventTypes: ["leftMouseDown"]
+    eventTypes: ["leftMouseDown"],
+    filter: (cell) => cellData(cell)?.junction !== true
   });
   var graph = new Graph({
     container: dom.canvas,
@@ -46260,12 +45423,12 @@
         thickness: 1
       }
     },
-    scaling: { min: MIN_ZOOM2, max: MAX_ZOOM2 },
+    scaling: { min: MIN_ZOOM, max: MAX_ZOOM },
     mousewheel: {
       enabled: true,
       factor: 1.1,
-      minScale: MIN_ZOOM2,
-      maxScale: MAX_ZOOM2,
+      minScale: MIN_ZOOM,
+      maxScale: MAX_ZOOM,
       modifiers: null,
       zoomAtMousePosition: true
     },
@@ -46293,6 +45456,7 @@
   var currentRevision = "";
   var selectedModuleKey = "";
   var applyingLayout = false;
+  var expandingNetworkSelection = false;
   var minimapPlugin;
   var minimapAvailable = false;
   var searchMatches = [];
@@ -46362,20 +45526,72 @@
     const candidate = data2;
     return typeof candidate.objectId === "string" && (candidate.objectType === "node" || candidate.objectType === "network") ? candidate : void 0;
   }
+  function selectedNetworkIds(cells) {
+    return new Set(cells.flatMap((cell) => {
+      const data2 = cellData(cell);
+      return data2?.objectType === "network" ? [data2.objectId] : [];
+    }));
+  }
+  function expandNetworkSelection(cells) {
+    const networkIds = selectedNetworkIds(cells);
+    if (networkIds.size === 0) return [...cells];
+    const expanded = new Map(cells.flatMap((cell) => {
+      const data2 = cellData(cell);
+      return data2?.junction ? [] : [[cell.id, cell]];
+    }));
+    for (const cell of graph.getCells()) {
+      const data2 = cellData(cell);
+      if (data2?.objectType === "network" && !data2.junction && networkIds.has(data2.objectId)) {
+        expanded.set(cell.id, cell);
+      }
+    }
+    return [...expanded.values()];
+  }
+  function sameCellSelection(left4, right4) {
+    if (left4.length !== right4.length) return false;
+    const rightIds = new Set(right4.map((cell) => cell.id));
+    return left4.every((cell) => rightIds.has(cell.id));
+  }
+  function refreshNetworkSelectionStyles(cells) {
+    const selectedIds = selectedNetworkIds(cells);
+    const searchedIds = new Set(searchMatches.map((match) => match.objectId));
+    for (const cell of graph.getCells()) {
+      const data2 = cellData(cell);
+      if (data2?.objectType !== "network") continue;
+      const selected = selectedIds.has(data2.objectId);
+      const searched = searchedIds.has(data2.objectId);
+      const stroke3 = selected ? "var(--vscode-focusBorder, #007acc)" : searched ? "var(--vscode-editor-findMatchBorder, #f0a000)" : "var(--vscode-editor-foreground, #505050)";
+      if (data2.junction) {
+        cell.attr("body/fill", stroke3);
+        cell.attr("body/stroke", stroke3);
+        cell.attr("body/strokeWidth", selected || searched ? 2 : 1);
+      } else {
+        cell.attr("line/stroke", stroke3);
+        cell.attr("line/strokeWidth", selected || searched ? Math.max(2, networkStrokeWidth(data2.network)) : networkStrokeWidth(data2.network));
+      }
+    }
+  }
   function descriptionFor(data2) {
     if (data2.node) return `${data2.node.kind}: ${data2.node.label}`;
+    if (data2.networkRoute) {
+      return `network: ${data2.networkRoute.selectionDescription}`;
+    }
     if (data2.network) return `network: ${data2.network.name}`;
     return data2.objectId;
   }
   function updateSelectionStatus(cells, persist = true) {
     if (!currentLayout) return;
-    const summary = summarizeSchematicSelection(cells.flatMap((cell) => {
+    const itemsByObjectId = /* @__PURE__ */ new Map();
+    for (const cell of cells) {
       const data2 = cellData(cell);
-      return data2 ? [{
-        objectId: data2.objectId,
-        description: descriptionFor(data2)
-      }] : [];
-    }));
+      if (data2 && !itemsByObjectId.has(data2.objectId)) {
+        itemsByObjectId.set(data2.objectId, {
+          objectId: data2.objectId,
+          description: descriptionFor(data2)
+        });
+      }
+    }
+    const summary = summarizeSchematicSelection([...itemsByObjectId.values()]);
     if (summary.selectedObjectId === void 0) {
       delete currentLayout.selectedObjectId;
     } else {
@@ -46433,15 +45649,16 @@
     setMinimapVisibility();
   }
   function applyViewport(layout) {
-    graph.zoomTo(Math.min(MAX_ZOOM2, Math.max(MIN_ZOOM2, layout.viewport.zoom)));
+    graph.zoomTo(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, layout.viewport.zoom)));
     graph.translate(layout.viewport.x, layout.viewport.y);
   }
   function restoreSelection(layout) {
     selection.clean();
-    const matchingCell = layout.selectedObjectId ? graph.getCells().find(
-      (cell) => cellData(cell)?.objectId === layout.selectedObjectId
-    ) : void 0;
-    if (matchingCell) selection.select(matchingCell);
+    const matchingCells = layout.selectedObjectId ? graph.getCells().filter(
+      (cell) => cellData(cell)?.objectId === layout.selectedObjectId && cellData(cell)?.junction !== true
+    ) : [];
+    if (matchingCells.length > 0) selection.select(matchingCells);
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
   function renderSchematic(model, layout) {
@@ -46451,13 +45668,13 @@
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.clearCells();
-    const renderedNodes = /* @__PURE__ */ new Map();
-    const pinSides = (0, import_schematic_core2.resolvePinSides)(model);
+    const renderModel = (0, import_schematic_core.layoutSchematic)(model, void 0, measureNodeText);
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
-        renderedNodes.set(node.id, createRenderedNode(node, layout, pinSides));
+        const rendered = renderModel.nodes.get(node.id);
+        if (rendered) createRenderedNode(node, rendered);
       }
-      renderNetworks(model, layout, renderedNodes);
+      renderNetworks(model, renderModel);
     });
     applyViewport(layout);
     restoreSelection(layout);
@@ -46472,12 +45689,16 @@
   }
   function resetSearchStyles() {
     for (const cell of graph.getCells()) {
-      if (cell.isNode()) {
+      const data2 = cellData(cell);
+      if (data2?.junction) {
+        cell.attr("body/fill", "var(--vscode-editor-foreground, #505050)");
+        cell.attr("body/stroke", "var(--vscode-editor-foreground, #505050)");
+        cell.attr("body/strokeWidth", 1);
+      } else if (cell.isNode()) {
         cell.attr("body/stroke", "var(--vscode-editorWidget-border, #8c8c8c)");
         cell.attr("body/strokeWidth", 1);
       } else {
         cell.attr("line/stroke", "var(--vscode-editor-foreground, #505050)");
-        const data2 = cellData(cell);
         cell.attr("line/strokeWidth", data2?.network ? networkStrokeWidth(data2.network) : 1);
       }
     }
@@ -46492,7 +45713,7 @@
       ].join("\n");
     }
     return [
-      data2.network?.name ?? "",
+      data2.networkRoute?.displayName ?? data2.network?.name ?? "",
       data2.network?.adapterLabel ?? "",
       "network"
     ].join("\n");
@@ -46529,14 +45750,11 @@
     resetSearchStyles();
     searchMatches = collectSearchMatches(query);
     for (const match of searchMatches) {
-      if (match.cell.isNode()) {
-        match.cell.attr("body/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
-        match.cell.attr("body/strokeWidth", 2);
-      } else {
-        match.cell.attr("line/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
-        match.cell.attr("line/strokeWidth", 2);
-      }
+      if (cellData(match.cell)?.objectType === "network") continue;
+      match.cell.attr("body/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
+      match.cell.attr("body/strokeWidth", 2);
     }
+    refreshNetworkSelectionStyles(selection.getSelectedCells());
     if (notifyHost) post({ type: "search", query });
     showSearchMatch(0);
   }
@@ -46738,7 +45956,15 @@
     if (command) post(command);
   });
   selection.on("selection:changed", ({ selected }) => {
-    if (!applyingLayout) updateSelectionStatus(selected);
+    if (applyingLayout || expandingNetworkSelection) return;
+    const expanded = expandNetworkSelection(selected);
+    if (!sameCellSelection(selected, expanded)) {
+      expandingNetworkSelection = true;
+      selection.reset(expanded);
+      expandingNetworkSelection = false;
+    }
+    refreshNetworkSelectionStyles(expanded);
+    updateSelectionStatus(expanded);
   });
   var resizeObserver = new ResizeObserver(() => {
     graph.resize(dom.canvas.clientWidth, dom.canvas.clientHeight);

@@ -332,6 +332,19 @@ test('uses realized node bodies and anchors while fitting labels with actual met
     }
 });
 
+test('preserves adapter display text without changing network selection identity', () => {
+    const graph = complexGraph();
+    graph.networks[0].adapterLabel = '[7:0]';
+
+    const result = layoutSchematic(graph, undefined, text => text.length * 2);
+    const route = result.networks[0];
+
+    assert.equal(route.name, 'clk_distribution');
+    assert.equal(route.displayName, 'clk_distribution [7:0]');
+    assert.equal(route.selectionDescription, 'clk_distribution');
+    assert.equal(route.label?.text, 'clk_distribution [7:0]');
+});
+
 test('includes nodes wires labels and junction dots in the public bounds', () => {
     const result = layoutSchematic(complexGraph(), undefined, text => text.length * 7);
     const containsRectangle = (candidate: Readonly<Rectangle>): boolean =>

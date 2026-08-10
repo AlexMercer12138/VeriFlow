@@ -502,13 +502,13 @@ function measuredLabelWidth(
 }
 
 function labelForNetwork(
-    network: Readonly<{ name: string }>,
+    displayName: string,
     segments: readonly Readonly<RouteSegment>[],
     measureText: TextMeasurer,
     obstacles: RectangleIndex,
     occupiedLabels: Rectangle[]
 ): NetworkRouteLabel | undefined {
-    const width = measuredLabelWidth(measureText, network.name);
+    const width = measuredLabelWidth(measureText, displayName);
     if (width === undefined) return undefined;
     const layout = SCHEMATIC_NETWORK_LABEL_LAYOUT;
     const candidates = segments.flatMap((segment, sourceIndex) =>
@@ -532,7 +532,7 @@ function labelForNetwork(
                 continue;
             }
             occupiedLabels.push(bounds);
-            return Object.freeze({ text: network.name, bounds: freezeRectangle(bounds) });
+            return Object.freeze({ text: displayName, bounds: freezeRectangle(bounds) });
         }
     }
     return undefined;
@@ -706,8 +706,11 @@ export function layoutSchematic(
     const networks: NetworkRoute[] = graph.networks.map(network => {
         const route: RoutedNetwork = routedById.get(network.id)!;
         const segments = Object.freeze(route.segments.map(freezeSegment));
+        const displayName = network.adapterLabel
+            ? `${network.name} ${network.adapterLabel}`
+            : network.name;
         const label = labelForNetwork(
-            network,
+            displayName,
             segments,
             measureText,
             labelObstacleIndex,
@@ -725,6 +728,7 @@ export function layoutSchematic(
         return Object.freeze({
             id: network.id,
             name: network.name,
+            displayName,
             selectionDescription: network.name,
             feedback: route.feedback,
             terminals,

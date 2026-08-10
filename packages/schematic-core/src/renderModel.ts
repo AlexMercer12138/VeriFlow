@@ -57,6 +57,7 @@ export type NetworkRouteLabel = Readonly<{
 export type NetworkRoute = Readonly<{
     id: string;
     name: string;
+    displayName: string;
     selectionDescription: string;
     feedback: boolean;
     terminals: readonly NetworkTerminalGeometry[];
