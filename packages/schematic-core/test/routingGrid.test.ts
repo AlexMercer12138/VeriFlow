@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    MAX_ROUTING_TRACKS,
     ROUTING_GRID_DEFAULTS,
     allocateChannelTrack,
     allocateCorridorTrack,
     createRoutingGrid,
     planCorridors,
     realizeRoutingGrid,
+    type CorridorCandidate,
     type RoutingGridNodeInput,
 } from '../src';
 
@@ -75,6 +77,59 @@ test('creates exactly one compact vertical channel between adjacent columns', ()
             ROUTING_GRID_DEFAULTS.minimumChannelWidth,
         ]
     );
+});
+
+test('keeps empty and single-column grids free of invented adjacent channels', () => {
+    const empty = createRoutingGrid([]);
+    assert.equal(empty.columns.length, 0);
+    assert.equal(empty.channels.length, 0);
+    assert.equal(empty.rowGaps.length, 0);
+    assert.throws(() => planCorridors(empty, 0, 0), RangeError);
+    assert.deepEqual(realizeRoutingGrid(empty), {
+        metrics: ROUTING_GRID_DEFAULTS,
+        width: 0,
+        height: 2 * ROUTING_GRID_DEFAULTS.minimumOuterMargin,
+        columns: [],
+        channels: [],
+        rowGaps: [],
+        outer: {
+            top: {
+                y: 0,
+                height: ROUTING_GRID_DEFAULTS.minimumOuterMargin,
+                trackY: [],
+            },
+            bottom: {
+                y: ROUTING_GRID_DEFAULTS.minimumOuterMargin,
+                height: ROUTING_GRID_DEFAULTS.minimumOuterMargin,
+                trackY: [],
+            },
+        },
+        nodes: [],
+    });
+
+    const emptyColumn = createRoutingGrid([], { columnCount: 1 });
+    assert.equal(emptyColumn.channels.length, 0);
+    assert.deepEqual(planCorridors(emptyColumn, 0, 0), [
+        { kind: 'outer-top', lane: 0, span: [0, 0] },
+        { kind: 'outer-bottom', lane: 0, span: [0, 0] },
+    ]);
+
+    const single = createRoutingGrid([
+        routingNode('only', 0, 0, 100, 40),
+    ], { columnCount: 1 });
+    assert.equal(single.channels.length, 0);
+    assert.equal(single.rowGaps.length, 0);
+    assert.deepEqual(planCorridors(single, 0, 0), [
+        { kind: 'outer-top', lane: 0, span: [0, 0] },
+        { kind: 'outer-bottom', lane: 0, span: [0, 0] },
+    ]);
+    const top = planCorridors(single, 0, 0)
+        .find(candidate => candidate.kind === 'outer-top');
+    assert.ok(top);
+    allocateCorridorTrack(single, top);
+    const realized = realizeRoutingGrid(single);
+    assert.equal(realized.channels.length, 0);
+    assert.equal(realized.outer.top.trackY.length, 1);
 });
 
 test('returns only internal corridors clear across the complete requested span', () => {
@@ -159,6 +214,75 @@ test('blocks a nominal row gap when an offset moves a module across it', () => {
     ]);
 });
 
+test('rejects direct allocation of a blocked internal corridor atomically', () => {
+    const grid = createRoutingGrid([
+        routingNode('shifted-upper', 0, 0, 100, 40, 10),
+        routingNode('lower', 0, 1, 100, 40),
+        routingNode('peer-upper', 1, 0, 100, 40),
+        routingNode('peer-lower', 1, 1, 100, 40),
+    ], { columnCount: 2 });
+    const before = {
+        channels: grid.channels.map(channel => channel.tracks.trackCount),
+        rowGaps: grid.rowGaps.map(gap => gap.tracks.trackCount),
+        top: grid.outer.top.trackCount,
+        bottom: grid.outer.bottom.trackCount,
+    };
+
+    assert.deepEqual(planCorridors(grid, 0, 1), [
+        { kind: 'outer-top', lane: 0, span: [0, 1] },
+        { kind: 'outer-bottom', lane: 0, span: [0, 1] },
+    ]);
+    assert.throws(() => allocateCorridorTrack(grid, {
+        kind: 'internal',
+        rowGap: 0,
+        span: [0, 1],
+    }), {
+        name: 'RangeError',
+        message: /blocked.*complete column span/i,
+    });
+    assert.deepEqual({
+        channels: grid.channels.map(channel => channel.tracks.trackCount),
+        rowGaps: grid.rowGaps.map(gap => gap.tracks.trackCount),
+        top: grid.outer.top.trackCount,
+        bottom: grid.outer.bottom.trackCount,
+    }, before);
+});
+
+test('rejects unknown and malformed corridor candidates atomically at runtime', () => {
+    const grid = createRoutingGrid(unequalLayout(), { columnCount: 4 });
+    const before = {
+        channels: grid.channels.map(channel => channel.tracks.trackCount),
+        rowGaps: grid.rowGaps.map(gap => gap.tracks.trackCount),
+        top: grid.outer.top.trackCount,
+        bottom: grid.outer.bottom.trackCount,
+    };
+    const invalidCandidates = [
+        { kind: 'not-a-corridor', lane: 1, span: [0, 1] },
+        { kind: 'outer-top', lane: 0 },
+        { kind: 'internal', rowGap: 0, span: '0,1' },
+        null,
+    ];
+
+    for (const candidate of invalidCandidates) {
+        assert.throws(
+            () => allocateCorridorTrack(
+                grid,
+                candidate as unknown as CorridorCandidate
+            ),
+            {
+                name: 'RangeError',
+                message: /corridor candidate/i,
+            }
+        );
+        assert.deepEqual({
+            channels: grid.channels.map(channel => channel.tracks.trackCount),
+            rowGaps: grid.rowGaps.map(gap => gap.tracks.trackCount),
+            top: grid.outer.top.trackCount,
+            bottom: grid.outer.bottom.trackCount,
+        }, before);
+    }
+});
+
 test('track demand enlarges only its affected horizontal and vertical gaps', () => {
     const nodes = [
         ...unequalLayout(),
@@ -190,6 +314,166 @@ test('track demand enlarges only its affected horizontal and vertical gaps', () 
     assert.equal(
         realized.outer.bottom.height,
         ROUTING_GRID_DEFAULTS.minimumOuterMargin
+    );
+});
+
+test('realizes multiple tracks in stable exact-pitch order for every pool kind', () => {
+    const grid = createRoutingGrid([
+        routingNode('left-upper', 0, 0, 100, 40),
+        routingNode('left-lower', 0, 1, 100, 40),
+        routingNode('middle-upper', 1, 0, 120, 40),
+        routingNode('middle-lower', 1, 1, 120, 40),
+        routingNode('right-upper', 2, 0, 100, 40),
+        routingNode('right-lower', 2, 1, 100, 40),
+    ], { columnCount: 3 });
+    const channelHandles = Array.from(
+        { length: 3 },
+        () => allocateChannelTrack(grid, 0)
+    );
+    const internal = planCorridors(grid, 0, 2, 0)
+        .find(candidate => candidate.kind === 'internal');
+    assert.ok(internal);
+    const internalHandles = Array.from(
+        { length: 3 },
+        () => allocateCorridorTrack(grid, internal)
+    );
+    const topHandles = Array.from({ length: 3 }, () => {
+        const candidate = planCorridors(grid, 0, 2, 0)
+            .find(corridor => corridor.kind === 'outer-top');
+        assert.ok(candidate);
+        const handle = allocateCorridorTrack(grid, candidate);
+        if (handle.kind === 'internal') assert.fail('expected an outer track');
+        return handle;
+    });
+    const bottomHandles = Array.from({ length: 2 }, () => {
+        const candidate = planCorridors(grid, 0, 2, 0)
+            .find(corridor => corridor.kind === 'outer-bottom');
+        assert.ok(candidate);
+        const handle = allocateCorridorTrack(grid, candidate);
+        if (handle.kind === 'internal') assert.fail('expected an outer track');
+        return handle;
+    });
+
+    assert.deepEqual(channelHandles.map(handle => handle.track), [0, 1, 2]);
+    assert.deepEqual(internalHandles.map(handle => handle.track), [0, 1, 2]);
+    assert.deepEqual(topHandles.map(handle => handle.lane), [0, 1, 2]);
+    assert.deepEqual(bottomHandles.map(handle => handle.lane), [0, 1]);
+
+    const realized = realizeRoutingGrid(grid);
+    assert.equal(
+        realized.channels[0].width,
+        ROUTING_GRID_DEFAULTS.minimumChannelWidth
+            + 3 * ROUTING_GRID_DEFAULTS.trackPitch
+    );
+    assert.equal(
+        realized.rowGaps[0].height,
+        ROUTING_GRID_DEFAULTS.minimumRowGap
+            + 3 * ROUTING_GRID_DEFAULTS.trackPitch
+    );
+    assert.equal(
+        realized.outer.top.height,
+        ROUTING_GRID_DEFAULTS.minimumOuterMargin
+            + 3 * ROUTING_GRID_DEFAULTS.trackPitch
+    );
+    assert.equal(
+        realized.outer.bottom.height,
+        ROUTING_GRID_DEFAULTS.minimumOuterMargin
+            + 2 * ROUTING_GRID_DEFAULTS.trackPitch
+    );
+    assert.deepEqual(
+        realized.channels[0].trackX.slice(1).map((value, index) =>
+            value - realized.channels[0].trackX[index]
+        ),
+        [ROUTING_GRID_DEFAULTS.trackPitch, ROUTING_GRID_DEFAULTS.trackPitch]
+    );
+    assert.deepEqual(
+        realized.rowGaps[0].trackY.slice(1).map((value, index) =>
+            value - realized.rowGaps[0].trackY[index]
+        ),
+        [ROUTING_GRID_DEFAULTS.trackPitch, ROUTING_GRID_DEFAULTS.trackPitch]
+    );
+    assert.deepEqual(
+        realized.outer.top.trackY.slice(1).map((value, index) =>
+            value - realized.outer.top.trackY[index]
+        ),
+        [-ROUTING_GRID_DEFAULTS.trackPitch, -ROUTING_GRID_DEFAULTS.trackPitch]
+    );
+    assert.deepEqual(
+        realized.outer.bottom.trackY.slice(1).map((value, index) =>
+            value - realized.outer.bottom.trackY[index]
+        ),
+        [ROUTING_GRID_DEFAULTS.trackPitch]
+    );
+});
+
+function realizedDemandVariant(
+    addMiddleChannelTrack: boolean,
+    addLowerRowGapTrack: boolean
+) {
+    const nodes = Array.from({ length: 4 }, (_, column) =>
+        Array.from({ length: 3 }, (_, row) =>
+            routingNode(
+                `node-${column}-${row}`,
+                column,
+                row,
+                100 + column * 20 + row * 2,
+                40 + row * 10
+            )
+        )
+    ).flat();
+    const grid = createRoutingGrid(nodes, { columnCount: 4 });
+    allocateChannelTrack(grid, 0);
+    allocateChannelTrack(grid, 2);
+    const upperGap = planCorridors(grid, 0, 3, 0)
+        .find(candidate => candidate.kind === 'internal'
+            && candidate.rowGap === 0);
+    assert.ok(upperGap);
+    allocateCorridorTrack(grid, upperGap);
+    if (addMiddleChannelTrack) allocateChannelTrack(grid, 1);
+    if (addLowerRowGapTrack) {
+        const lowerGap = planCorridors(grid, 0, 3, 1)
+            .find(candidate => candidate.kind === 'internal'
+                && candidate.rowGap === 1);
+        assert.ok(lowerGap);
+        allocateCorridorTrack(grid, lowerGap);
+    }
+    return realizeRoutingGrid(grid);
+}
+
+test('moves nothing left of an affected channel or above an affected row gap', () => {
+    const baseline = realizedDemandVariant(false, false);
+    const widerMiddleChannel = realizedDemandVariant(true, false);
+    const tallerLowerGap = realizedDemandVariant(false, true);
+
+    assert.deepEqual(
+        widerMiddleChannel.columns.slice(0, 2),
+        baseline.columns.slice(0, 2)
+    );
+    assert.deepEqual(widerMiddleChannel.channels[0], baseline.channels[0]);
+    assert.deepEqual(
+        widerMiddleChannel.nodes.filter(node => node.column <= 1),
+        baseline.nodes.filter(node => node.column <= 1)
+    );
+    assert.deepEqual(
+        widerMiddleChannel.channels.map(channel => channel.width),
+        [
+            baseline.channels[0].width,
+            baseline.channels[1].width + ROUTING_GRID_DEFAULTS.trackPitch,
+            baseline.channels[2].width,
+        ]
+    );
+
+    assert.deepEqual(tallerLowerGap.rowGaps[0], baseline.rowGaps[0]);
+    assert.deepEqual(
+        tallerLowerGap.nodes.filter(node => node.row <= 1),
+        baseline.nodes.filter(node => node.row <= 1)
+    );
+    assert.deepEqual(
+        tallerLowerGap.rowGaps.map(gap => gap.height),
+        [
+            baseline.rowGaps[0].height,
+            baseline.rowGaps[1].height + ROUTING_GRID_DEFAULTS.trackPitch,
+        ]
     );
 });
 
@@ -253,6 +537,55 @@ test('realizes unequal nodes pin anchors and tracks once on an integer grid', ()
         assert.equal(Number.isSafeInteger(value), true);
         assert.equal(value % ROUTING_GRID_DEFAULTS.gridStep, 0);
     }
+});
+
+test('deep-freezes realized geometry and abstract handles without cache mutation', () => {
+    const grid = createRoutingGrid(unequalLayout(), { columnCount: 4 });
+    const channelHandle = allocateChannelTrack(grid, 0);
+    const internal = planCorridors(grid, 0, 3, 0)
+        .find(candidate => candidate.kind === 'internal');
+    assert.ok(internal);
+    const corridorHandle = allocateCorridorTrack(grid, internal);
+    const realized = realizeRoutingGrid(grid);
+    const snapshot = structuredClone(realized);
+
+    for (const value of [
+        realized,
+        realized.metrics,
+        realized.columns,
+        realized.columns[0],
+        realized.channels,
+        realized.channels[0],
+        realized.channels[0].trackX,
+        realized.rowGaps,
+        realized.rowGaps[0],
+        realized.rowGaps[0].trackY,
+        realized.outer,
+        realized.outer.top,
+        realized.outer.top.trackY,
+        realized.nodes,
+        realized.nodes[0],
+        realized.nodes[0].bounds,
+        realized.nodes[0].pinAnchors,
+        realized.nodes[0].pinAnchors[0],
+        realized.nodes[0].pinAnchors[0].point,
+        channelHandle,
+        corridorHandle,
+        corridorHandle.span,
+    ]) {
+        assert.equal(Object.isFrozen(value), true);
+    }
+    assert.throws(() => {
+        (realized.nodes[0].bounds as { x: number }).x = 999;
+    }, TypeError);
+    assert.throws(() => {
+        (realized.channels[0].trackX as number[]).push(999);
+    }, TypeError);
+    assert.throws(() => {
+        (corridorHandle.span as [number, number])[0] = 999;
+    }, TypeError);
+    assert.strictEqual(realizeRoutingGrid(grid), realized);
+    assert.deepEqual(realized, snapshot);
 });
 
 test('keeps sparse and empty columns compact and deterministic', () => {
@@ -319,6 +652,161 @@ test('snaps finite measured geometry and offsets onto the routing grid', () => {
     ]);
 });
 
+test('supports track pitch whose half remains aligned to a custom grid step', () => {
+    const grid = createRoutingGrid([
+        routingNode('left', 0, 0, 100, 40),
+        routingNode('right', 1, 0, 100, 40),
+    ], {
+        columnCount: 2,
+        gridStep: 4,
+        trackPitch: 8,
+        pinEscape: 12,
+        safetyMargin: 4,
+        minimumChannelWidth: 32,
+        minimumRowGap: 32,
+        minimumOuterMargin: 16,
+    });
+    allocateChannelTrack(grid, 0);
+
+    const realized = realizeRoutingGrid(grid);
+    for (const value of [
+        realized.width,
+        realized.height,
+        ...realized.channels.flatMap(channel => [
+            channel.x,
+            channel.width,
+            ...channel.trackX,
+        ]),
+        ...realized.nodes.flatMap(node => [
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        ]),
+    ]) {
+        assert.equal(value % 4, 0);
+    }
+});
+
+test('preflights near-safe cumulative track demand atomically for every pool', () => {
+    const nearSafePitch = Math.floor(
+        (Number.MAX_SAFE_INTEGER - 1_024) / 4
+    ) * 4;
+    const options = { trackPitch: nearSafePitch };
+
+    const channelGrid = createRoutingGrid([
+        routingNode('left', 0, 0, 100, 40),
+        routingNode('right', 1, 0, 100, 40),
+    ], { ...options, columnCount: 2 });
+    allocateChannelTrack(channelGrid, 0);
+    assert.throws(() => allocateChannelTrack(channelGrid, 0), {
+        name: 'RangeError',
+        message: /finite integer routing grid/i,
+    });
+    assert.equal(channelGrid.channels[0].tracks.trackCount, 1);
+    const channelRealized = realizeRoutingGrid(channelGrid);
+    assert.equal(Number.isSafeInteger(channelRealized.width), true);
+    assert.equal(channelRealized.width % ROUTING_GRID_DEFAULTS.gridStep, 0);
+    assert.equal(
+        channelRealized.channels[0].width,
+        ROUTING_GRID_DEFAULTS.minimumChannelWidth + nearSafePitch
+    );
+
+    const rowGrid = createRoutingGrid([
+        routingNode('upper', 0, 0, 100, 40),
+        routingNode('lower', 0, 1, 100, 40),
+    ], { ...options, columnCount: 1 });
+    const internal = planCorridors(rowGrid, 0, 0, 0)
+        .find(candidate => candidate.kind === 'internal');
+    assert.ok(internal);
+    allocateCorridorTrack(rowGrid, internal);
+    assert.throws(() => allocateCorridorTrack(rowGrid, internal), RangeError);
+    assert.equal(rowGrid.rowGaps[0].tracks.trackCount, 1);
+
+    const outerGrid = createRoutingGrid([
+        routingNode('only', 0, 0, 100, 40),
+    ], { ...options, columnCount: 1 });
+    const firstTop = planCorridors(outerGrid, 0, 0)
+        .find(candidate => candidate.kind === 'outer-top');
+    assert.ok(firstTop);
+    allocateCorridorTrack(outerGrid, firstTop);
+    const overflowingTop = planCorridors(outerGrid, 0, 0)
+        .find(candidate => candidate.kind === 'outer-top');
+    assert.ok(overflowingTop);
+    assert.throws(
+        () => allocateCorridorTrack(outerGrid, overflowingTop),
+        RangeError
+    );
+    assert.equal(outerGrid.outer.top.trackCount, 1);
+    assert.equal(outerGrid.outer.bottom.trackCount, 0);
+});
+
+test('handles maximum track index without allocating intermediate handles', () => {
+    const grid = createRoutingGrid([
+        routingNode('left', 0, 0, 100, 40),
+        routingNode('right', 1, 0, 100, 40),
+    ], { columnCount: 2 });
+
+    const handle = allocateChannelTrack(grid, 0, MAX_ROUTING_TRACKS - 1);
+    assert.equal(handle.track, MAX_ROUTING_TRACKS - 1);
+    assert.equal(grid.channels[0].tracks.trackCount, MAX_ROUTING_TRACKS);
+    assert.throws(() => allocateChannelTrack(grid, 0), RangeError);
+    assert.equal(grid.channels[0].tracks.trackCount, MAX_ROUTING_TRACKS);
+});
+
+test('keeps representable near-safe node geometry aligned and rejects overflow', () => {
+    const nearSafeEven = Math.floor(
+        (Number.MAX_SAFE_INTEGER - 1_024) / 2
+    ) * 2;
+    const wide = createRoutingGrid([{
+        ...routingNode('wide', 0, 0, 100, 40),
+        size: { width: nearSafeEven, height: 40 },
+        pinAnchors: [],
+    }]);
+    const wideRealized = realizeRoutingGrid(wide);
+    assert.equal(wideRealized.width, nearSafeEven);
+    assert.equal(Number.isSafeInteger(wideRealized.width), true);
+    assert.equal(wideRealized.width % ROUTING_GRID_DEFAULTS.gridStep, 0);
+
+    const low = createRoutingGrid([
+        routingNode('low', 0, 0, 100, 40, nearSafeEven),
+    ]);
+    const lowRealized = realizeRoutingGrid(low);
+    assert.equal(Number.isSafeInteger(lowRealized.height), true);
+    assert.equal(lowRealized.height % ROUTING_GRID_DEFAULTS.gridStep, 0);
+
+    const halfWidth = Math.floor(Number.MAX_SAFE_INTEGER / 4) * 2;
+    const overflowingWidth = createRoutingGrid([
+        routingNode('left-wide', 0, 0, halfWidth, 40),
+        routingNode('right-wide', 1, 0, halfWidth, 40),
+    ], { columnCount: 2 });
+    const before = overflowingWidth.channels.map(
+        channel => channel.tracks.trackCount
+    );
+    assert.throws(() => realizeRoutingGrid(overflowingWidth), RangeError);
+    assert.deepEqual(
+        overflowingWidth.channels.map(channel => channel.tracks.trackCount),
+        before
+    );
+
+    const overflowingOffsetInput = [
+        routingNode(
+            'too-low',
+            0,
+            0,
+            100,
+            40,
+            Number.MAX_SAFE_INTEGER - 1
+        ),
+    ];
+    const original = structuredClone(overflowingOffsetInput);
+    assert.throws(
+        () => createRoutingGrid(overflowingOffsetInput),
+        RangeError
+    );
+    assert.deepEqual(overflowingOffsetInput, original);
+});
+
 test('rejects unsafe abstract grid track and span inputs without partial mutation', () => {
     for (const build of [
         () => createRoutingGrid([
@@ -347,9 +835,6 @@ test('rejects unsafe abstract grid track and span inputs without partial mutatio
             minimumChannelWidth: 32,
             minimumRowGap: 32,
             minimumOuterMargin: 16,
-        }),
-        () => createRoutingGrid([], {
-            trackPitch: Number.MAX_SAFE_INTEGER - 3,
         }),
     ]) {
         assert.throws(build, RangeError);

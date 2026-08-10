@@ -280,26 +280,6 @@ function resolvedMetrics(options: RoutingGridCreateOptions): RoutingGridMetrics 
     if ((metrics.trackPitch / 2) % metrics.gridStep !== 0) {
         throw new RangeError('half the trackPitch must remain grid aligned');
     }
-    const maximumTrackDemand = safeMultiply(
-        MAX_ROUTING_TRACKS,
-        metrics.trackPitch,
-        'maximum routing track demand'
-    );
-    safeAdd(
-        metrics.minimumChannelWidth,
-        maximumTrackDemand,
-        'maximum routing channel width'
-    );
-    safeAdd(
-        metrics.minimumRowGap,
-        maximumTrackDemand,
-        'maximum routing row gap height'
-    );
-    safeAdd(
-        metrics.minimumOuterMargin,
-        maximumTrackDemand,
-        'maximum outer routing margin'
-    );
     const inflation = safeAdd(
         metrics.pinEscape,
         metrics.safetyMargin,
@@ -713,20 +693,86 @@ export function allocateChannelTrack(
     return Object.freeze({
         kind: 'channel',
         channel,
-        track: state.channelPools[channel].request(track),
+        track: requestTrack(
+            state.channelPools[channel],
+            track,
+            state.metrics.minimumChannelWidth,
+            state.metrics,
+            'routing channel width'
+        ),
     });
 }
 
-function validateCandidate(grid: RoutingGrid, candidate: CorridorCandidate): void {
-    validateSpan(grid, candidate.span[0], candidate.span[1]);
-    if (candidate.kind === 'internal') {
-        assertSafeNonNegativeInteger(candidate.rowGap, 'corridor row gap');
-        if (candidate.rowGap >= grid.rowGaps.length) {
-            throw new RangeError('corridor row gap is outside the grid');
-        }
-        return;
+function requestTrack(
+    controller: RoutingTrackPoolController,
+    track: number | undefined,
+    minimumSize: number,
+    metrics: RoutingGridMetrics,
+    label: string
+): number {
+    const selected = track ?? controller.pool.trackCount;
+    assertSafeNonNegativeInteger(selected, 'routing track');
+    if (selected >= MAX_ROUTING_TRACKS) {
+        throw new RangeError(
+            `routing track must be below ${MAX_ROUTING_TRACKS}`
+        );
     }
-    assertSafeNonNegativeInteger(candidate.lane, 'outer corridor lane');
+    const nextCount = Math.max(controller.pool.trackCount, selected + 1);
+    demandedSize(minimumSize, nextCount, metrics.trackPitch, label);
+    return controller.request(selected);
+}
+
+function invalidCandidate(message: string): never {
+    throw new RangeError(`invalid corridor candidate: ${message}`);
+}
+
+function validateCandidate(
+    grid: RoutingGrid,
+    state: GridState,
+    candidate: unknown
+): asserts candidate is CorridorCandidate {
+    if (typeof candidate !== 'object' || candidate === null
+        || Array.isArray(candidate)) {
+        invalidCandidate('expected an object');
+    }
+    const record = candidate as Record<string, unknown>;
+    const span = record.span;
+    if (!Array.isArray(span) || span.length !== 2
+        || typeof span[0] !== 'number' || typeof span[1] !== 'number') {
+        invalidCandidate('span must be a two-column tuple');
+    }
+    validateSpan(grid, span[0], span[1]);
+
+    switch (record.kind) {
+        case 'internal': {
+            if (typeof record.rowGap !== 'number') {
+                invalidCandidate('internal row gap must be a number');
+            }
+            assertSafeNonNegativeInteger(record.rowGap, 'corridor row gap');
+            if (record.rowGap >= grid.rowGaps.length) {
+                throw new RangeError('corridor row gap is outside the grid');
+            }
+            if (!gapIsClear(
+                state.blockedColumnsByRowGap[record.rowGap],
+                span[0],
+                span[1]
+            )) {
+                throw new RangeError(
+                    'blocked internal corridor does not clear the complete column span'
+                );
+            }
+            return;
+        }
+        case 'outer-top':
+        case 'outer-bottom':
+            if (typeof record.lane !== 'number') {
+                invalidCandidate('outer lane must be a number');
+            }
+            assertSafeNonNegativeInteger(record.lane, 'outer corridor lane');
+            return;
+        default:
+            invalidCandidate('unknown kind');
+    }
 }
 
 export function allocateCorridorTrack(
@@ -749,20 +795,32 @@ export function allocateCorridorTrack(
     track?: number
 ): CorridorTrackHandle {
     const state = stateFor(grid);
-    validateCandidate(grid, candidate);
+    validateCandidate(grid, state, candidate);
     const span = immutableSpan(candidate.span[0], candidate.span[1]);
     if (candidate.kind === 'internal') {
         return Object.freeze({
             kind: candidate.kind,
             rowGap: candidate.rowGap,
-            track: state.rowGapPools[candidate.rowGap].request(track),
+            track: requestTrack(
+                state.rowGapPools[candidate.rowGap],
+                track,
+                state.metrics.minimumRowGap,
+                state.metrics,
+                'routing row gap height'
+            ),
             span,
         });
     }
     const controller = candidate.kind === 'outer-top'
         ? state.topPool
         : state.bottomPool;
-    const lane = controller.request(candidate.lane);
+    const lane = requestTrack(
+        controller,
+        candidate.lane,
+        state.metrics.minimumOuterMargin,
+        state.metrics,
+        'outer routing margin'
+    );
     return Object.freeze({ kind: candidate.kind, lane, span });
 }
 
