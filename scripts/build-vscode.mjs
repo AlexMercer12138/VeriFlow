@@ -31,7 +31,7 @@ export async function syncVscodeWebAssets(repositoryRoot = root) {
 export async function buildVscode() {
     runNpm(['run', 'build:shared'], root);
     runNpm(['run', 'compile:ts'], extensionRoot);
-    await buildWeb({ buildSchematicCore: false });
+    await buildWeb({ buildDependencies: false });
     execFileSync(process.execPath, [path.join(extensionRoot, 'scripts/build.mjs')], {
         cwd: extensionRoot,
         stdio: 'inherit',

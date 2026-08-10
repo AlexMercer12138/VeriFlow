@@ -1,12 +1,16 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+
+import {
+    assertRepositoryPathsUnchanged,
+    createIsolatedRepository,
+    snapshotRepositoryPaths,
+} from './helpers/isolatedRepository';
 
 const extensionRoot = path.resolve(__dirname, '..', '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
-const mediaRoot = path.resolve(extensionRoot, 'media');
 
 const expectedRuntimeEntries = [
     'extension/dist/extension.js',
@@ -23,49 +27,6 @@ const expectedRuntimeEntries = [
     'extension/media/waveform/viewer-core.js',
     'extension/media/waveform/viewer-transport.js',
 ];
-
-function exactBuildPath(parent: string, name: string): string {
-    const resolvedParent = path.resolve(parent);
-    const candidate = path.resolve(resolvedParent, name);
-    const relative = path.relative(resolvedParent, candidate);
-    assert.strictEqual(path.dirname(candidate), resolvedParent);
-    assert.strictEqual(path.basename(candidate), name);
-    assert.ok(relative && !path.isAbsolute(relative));
-    assert.ok(relative !== '..' && !relative.startsWith(`..${path.sep}`));
-    return candidate;
-}
-
-const buildTargets = [
-    exactBuildPath(path.join(repositoryRoot, 'packages', 'schematic-core'), 'dist'),
-    exactBuildPath(extensionRoot, 'dist'),
-    exactBuildPath(repositoryRoot, 'web-dist'),
-    exactBuildPath(mediaRoot, 'waveform'),
-    exactBuildPath(mediaRoot, 'schematic'),
-];
-
-type SavedBuildTarget = {
-    target: string;
-    backup: string;
-    existed: boolean;
-};
-
-function saveBuildTargets(temporaryRoot: string): SavedBuildTarget[] {
-    const backupRoot = path.join(temporaryRoot, 'saved-build-state');
-    fs.mkdirSync(backupRoot, { recursive: true });
-    return buildTargets.map((target, index) => {
-        const backup = path.join(backupRoot, String(index));
-        const existed = fs.existsSync(target);
-        if (existed) fs.cpSync(target, backup, { recursive: true });
-        return { target, backup, existed };
-    });
-}
-
-function restoreBuildTargets(savedTargets: SavedBuildTarget[]): void {
-    for (const { target, backup, existed } of savedTargets) {
-        fs.rmSync(target, { recursive: true, force: true });
-        if (existed) fs.cpSync(backup, target, { recursive: true });
-    }
-}
 
 function zipCentralDirectoryEntries(archive: Buffer): string[] {
     const endOfCentralDirectorySignature = 0x06054b50;
@@ -141,13 +102,34 @@ function run(): void {
     assert.ok(npmExecPath, 'npm_execpath is required to invoke the active npm CLI');
     assert.ok(path.isAbsolute(npmExecPath), `npm_execpath must be absolute: ${npmExecPath}`);
 
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-vsix-packaging-'));
-    const vsixPath = path.join(temporaryRoot, 'veriflow-clean-checkout.vsix');
-    let savedTargets: SavedBuildTarget[] | undefined;
+    const protectedPaths = [
+        ...['flow-core', 'hdl-core', 'schematic-core', 'hdl-runtime', 'waveform-runtime']
+            .map(workspace => path.join(repositoryRoot, 'packages', workspace, 'dist')),
+        path.join(extensionRoot, 'out'),
+        path.join(extensionRoot, 'dist'),
+        path.join(repositoryRoot, 'web-dist'),
+        path.join(extensionRoot, 'media', 'parsers'),
+        path.join(extensionRoot, 'media', 'waveform'),
+        path.join(extensionRoot, 'media', 'schematic'),
+    ];
+    const protectedSnapshots = snapshotRepositoryPaths(protectedPaths);
+    let isolated: ReturnType<typeof createIsolatedRepository> | undefined;
     try {
-        savedTargets = saveBuildTargets(temporaryRoot);
-        for (const target of buildTargets) {
-            fs.rmSync(target, { recursive: true, force: true });
+        isolated = createIsolatedRepository(repositoryRoot, 'veriflow-vsix-packaging');
+        const fixtureRoot = isolated.repositoryRoot;
+        const fixtureExtensionRoot = path.join(fixtureRoot, 'veriflow-vscode');
+        const vsixPath = path.join(isolated.temporaryRoot, 'veriflow-clean-checkout.vsix');
+        const cleanBuildTargets = [
+            path.join(fixtureRoot, 'packages', 'hdl-core', 'dist'),
+            path.join(fixtureRoot, 'packages', 'schematic-core', 'dist'),
+            path.join(fixtureExtensionRoot, 'out'),
+            path.join(fixtureExtensionRoot, 'dist'),
+            path.join(fixtureRoot, 'web-dist'),
+            path.join(fixtureExtensionRoot, 'media', 'waveform'),
+            path.join(fixtureExtensionRoot, 'media', 'schematic'),
+        ];
+        for (const target of cleanBuildTargets) {
+            assert.strictEqual(fs.existsSync(target), false, `${target} must start clean`);
         }
 
         const result = spawnSync(process.execPath, [
@@ -160,12 +142,15 @@ function run(): void {
             '--out',
             vsixPath,
         ], {
-            cwd: repositoryRoot,
+            cwd: fixtureRoot,
             encoding: 'utf8',
             timeout: 180_000,
         });
         assert.strictEqual(result.status, 0, packageFailure(result));
         assert.ok(fs.existsSync(vsixPath), `${vsixPath} was not created`);
+        for (const target of cleanBuildTargets) {
+            assert.ok(fs.existsSync(target), `${target} was not generated in the fixture`);
+        }
 
         const entries = zipCentralDirectoryEntries(fs.readFileSync(vsixPath));
         assert.ok(
@@ -214,8 +199,11 @@ function run(): void {
             'VSIX must not contain schematic-core source or test build output'
         );
     } finally {
-        if (savedTargets) restoreBuildTargets(savedTargets);
-        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+        try {
+            isolated?.dispose();
+        } finally {
+            assertRepositoryPathsUnchanged(protectedSnapshots);
+        }
     }
 }
 

@@ -43,26 +43,28 @@ async function buildApplication(application) {
     }
 }
 
-function buildSchematicCore() {
+function buildWebDependencies() {
     const npmExecPath = process.env.npm_execpath;
     const command = npmExecPath
         ? process.execPath
         : process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const prefix = npmExecPath ? [npmExecPath] : [];
-    execFileSync(command, [
-        ...prefix,
-        'run',
-        'build',
-        '--workspace',
-        '@veriflow/schematic-core',
-    ], {
-        cwd: root,
-        stdio: 'inherit',
-    });
+    for (const workspace of ['@veriflow/hdl-core', '@veriflow/schematic-core']) {
+        execFileSync(command, [
+            ...prefix,
+            'run',
+            'build',
+            '--workspace',
+            workspace,
+        ], {
+            cwd: root,
+            stdio: 'inherit',
+        });
+    }
 }
 
 export async function buildWeb(options = {}) {
-    if (options.buildSchematicCore !== false) buildSchematicCore();
+    if (options.buildDependencies !== false) buildWebDependencies();
     await recreate(webDistRoot);
     for (const application of webApplications) {
         await buildApplication(application);

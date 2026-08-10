@@ -1,30 +1,13 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
-type SavedBuildTarget = {
-    target: string;
-    backup: string;
-    existed: boolean;
-};
-
-function saveBuildTargets(temporaryRoot: string, targets: readonly string[]): SavedBuildTarget[] {
-    return targets.map((target, index) => {
-        const backup = path.join(temporaryRoot, String(index));
-        const existed = fs.existsSync(target);
-        if (existed) fs.cpSync(target, backup, { recursive: true });
-        return { target, backup, existed };
-    });
-}
-
-function restoreBuildTargets(savedTargets: readonly SavedBuildTarget[]): void {
-    for (const { target, backup, existed } of savedTargets) {
-        fs.rmSync(target, { recursive: true, force: true });
-        if (existed) fs.cpSync(backup, target, { recursive: true });
-    }
-}
+import {
+    assertRepositoryPathsUnchanged,
+    createIsolatedRepository,
+    snapshotRepositoryPaths,
+} from './helpers/isolatedRepository';
 
 function assertHostNeutralSchematicCore(root: string): void {
     const sourceRoot = path.join(root, 'packages', 'schematic-core', 'src');
@@ -50,31 +33,40 @@ function assertHostNeutralSchematicCore(root: string): void {
 function assertStandaloneWebBuildFromCleanCore(root: string): void {
     const npmExecPath = process.env.npm_execpath;
     assert.ok(npmExecPath && path.isAbsolute(npmExecPath));
-    const targets = [
+    const protectedTargets = [
+        path.join(root, 'packages', 'hdl-core', 'dist'),
         path.join(root, 'packages', 'schematic-core', 'dist'),
         path.join(root, 'web-dist'),
     ];
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-web-build-'));
-    const savedTargets = saveBuildTargets(temporaryRoot, targets);
+    const protectedSnapshots = snapshotRepositoryPaths(protectedTargets);
+    let isolated: ReturnType<typeof createIsolatedRepository> | undefined;
     try {
-        for (const target of targets) fs.rmSync(target, { recursive: true, force: true });
+        isolated = createIsolatedRepository(root, 'veriflow-web-build');
+        const fixtureRoot = isolated.repositoryRoot;
+        const hdlCoreDist = path.join(fixtureRoot, 'packages', 'hdl-core', 'dist');
+        const schematicCoreDist = path.join(fixtureRoot, 'packages', 'schematic-core', 'dist');
+        const webDist = path.join(fixtureRoot, 'web-dist');
+        assert.strictEqual(fs.existsSync(hdlCoreDist), false);
+        assert.strictEqual(fs.existsSync(schematicCoreDist), false);
+        assert.strictEqual(fs.existsSync(webDist), false);
         const result = spawnSync(process.execPath, [npmExecPath, 'run', 'build:web'], {
-            cwd: root,
+            cwd: fixtureRoot,
             encoding: 'utf8',
             timeout: 120_000,
         });
         assert.strictEqual(result.status, 0, [
-            'standalone build:web must build @veriflow/schematic-core from a clean state',
+            'standalone build:web must build HDL and schematic dependencies from a clean state',
             `stdout:\n${String(result.stdout ?? '')}`,
             `stderr:\n${String(result.stderr ?? '')}`,
         ].join('\n'));
-        assert.ok(fs.existsSync(path.join(targets[0], 'index.js')));
-        assert.ok(fs.existsSync(path.join(targets[1], 'schematic', 'index.js')));
-        const rootBundle = fs.readFileSync(path.join(targets[1], 'schematic', 'index.js'));
+        assert.ok(fs.existsSync(path.join(hdlCoreDist, 'index.js')));
+        assert.ok(fs.existsSync(path.join(schematicCoreDist, 'index.js')));
+        assert.ok(fs.existsSync(path.join(webDist, 'schematic', 'index.js')));
+        const rootBundle = fs.readFileSync(path.join(webDist, 'schematic', 'index.js'));
         const extensionCwdResult = spawnSync(process.execPath, [
-            path.join(root, 'scripts', 'build-web.mjs'),
+            path.join(fixtureRoot, 'scripts', 'build-web.mjs'),
         ], {
-            cwd: path.join(root, 'veriflow-vscode'),
+            cwd: path.join(fixtureRoot, 'veriflow-vscode'),
             encoding: 'utf8',
             timeout: 120_000,
         });
@@ -84,15 +76,18 @@ function assertStandaloneWebBuildFromCleanCore(root: string): void {
             `stderr:\n${String(extensionCwdResult.stderr ?? '')}`,
         ].join('\n'));
         const extensionCwdBundle = fs.readFileSync(
-            path.join(targets[1], 'schematic', 'index.js')
+            path.join(webDist, 'schematic', 'index.js')
         );
         assert.ok(
             rootBundle.equals(extensionCwdBundle),
             'schematic web bundle must not depend on the invoking working directory'
         );
     } finally {
-        restoreBuildTargets(savedTargets);
-        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+        try {
+            isolated?.dispose();
+        } finally {
+            assertRepositoryPathsUnchanged(protectedSnapshots);
+        }
     }
 }
 

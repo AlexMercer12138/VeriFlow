@@ -10,6 +10,7 @@ const childExitTimeoutMs = 5_000;
 const sourceDirectories = [
     'packages/waveform-webview/src',
     'packages/schematic-webview/src',
+    'packages/schematic-core/src',
 ];
 
 function createSignalStop() {

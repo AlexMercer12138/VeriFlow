@@ -79,6 +79,13 @@ async function run(): Promise<void> {
         'src',
         'marker.txt'
     );
+    const schematicCoreSource = path.join(
+        fixtureRoot,
+        'packages',
+        'schematic-core',
+        'src',
+        'marker.txt'
+    );
     const waveformMedia = path.join(
         fixtureRoot,
         'veriflow-vscode',
@@ -104,8 +111,10 @@ async function run(): Promise<void> {
     try {
         fs.mkdirSync(path.dirname(waveformSource), { recursive: true });
         fs.mkdirSync(path.dirname(schematicSource), { recursive: true });
+        fs.mkdirSync(path.dirname(schematicCoreSource), { recursive: true });
         fs.writeFileSync(waveformSource, 'initial-waveform\n');
         fs.writeFileSync(schematicSource, 'initial-schematic\n');
+        fs.writeFileSync(schematicCoreSource, 'initial-schematic-core\n');
         fs.writeFileSync(childScript, [
             "import { writeFileSync } from 'node:fs';",
             'writeFileSync(process.argv[2], String(process.pid));',
@@ -118,6 +127,10 @@ async function run(): Promise<void> {
             buildCount += 1;
             const waveformMarker = fs.readFileSync(waveformSource, 'utf8').trim();
             const schematicMarker = fs.readFileSync(schematicSource, 'utf8').trim();
+            const schematicCoreMarker = fs.readFileSync(
+                schematicCoreSource,
+                'utf8'
+            ).trim();
             const webDist = path.join(fixtureRoot, 'web-dist');
             fs.rmSync(webDist, { recursive: true, force: true });
             for (const [application, marker, files] of [
@@ -128,7 +141,11 @@ async function run(): Promise<void> {
                     'viewer-core.js',
                     'viewer-transport.js',
                 ]],
-                ['schematic', schematicMarker, ['index.css', 'index.html', 'index.js']],
+                ['schematic', `${schematicMarker}:${schematicCoreMarker}`, [
+                    'index.css',
+                    'index.html',
+                    'index.js',
+                ]],
             ] as const) {
                 const destination = path.join(webDist, application);
                 fs.mkdirSync(destination, { recursive: true });
@@ -156,6 +173,7 @@ async function run(): Promise<void> {
         }, 'clean media build and extension watcher startup');
         assert.match(fs.readFileSync(waveformMedia, 'utf8'), /initial-waveform/);
         assert.match(fs.readFileSync(schematicMedia, 'utf8'), /initial-schematic/);
+        assert.match(fs.readFileSync(schematicMedia, 'utf8'), /initial-schematic-core/);
         childPid = Number(fs.readFileSync(childPidFile, 'utf8'));
         assert.ok(Number.isInteger(childPid) && processExists(childPid));
 
@@ -167,6 +185,15 @@ async function run(): Promise<void> {
                 && fs.existsSync(waveformMedia)
                 && fs.readFileSync(waveformMedia, 'utf8').includes('updated-waveform');
         }, 'waveform source change propagation');
+
+        const countBeforeSchematicCoreChange = buildCount;
+        fs.writeFileSync(schematicCoreSource, 'updated-schematic-core\n');
+        await waitUntil(() => {
+            if (watchError) throw watchError;
+            return buildCount > countBeforeSchematicCoreChange
+                && fs.existsSync(schematicMedia)
+                && fs.readFileSync(schematicMedia, 'utf8').includes('updated-schematic-core');
+        }, 'schematic core source change propagation', 5_000);
 
         process.emit('SIGINT');
         await running;
