@@ -10,8 +10,29 @@ import {
     planCorridors,
     realizeRoutingGrid,
     type CorridorCandidate,
+    type RealizedRoutingGrid,
+    type RoutingGrid,
     type RoutingGridNodeInput,
 } from '../src';
+
+if (false) {
+    const realized = null as unknown as RealizedRoutingGrid;
+    // @ts-expect-error realized module bounds are deeply readonly
+    realized.nodes[0].bounds.x = 1;
+    // @ts-expect-error realized pin points are deeply readonly
+    realized.nodes[0].pinAnchors[0].point.y = 1;
+    // @ts-expect-error realized arrays are readonly
+    realized.nodes.push(realized.nodes[0]);
+
+    const grid = null as unknown as RoutingGrid;
+    const outer = {
+        kind: 'outer-top',
+        lane: 0,
+        span: [0, 0] as const,
+    } as const;
+    // @ts-expect-error explicit track indices apply only to internal corridors
+    allocateCorridorTrack(grid, outer, 0);
+}
 
 function routingNode(
     id: string,
@@ -43,6 +64,17 @@ function unequalLayout(): RoutingGridNodeInput[] {
         routingNode('lower', 2, 1, 200, 76),
         routingNode('output', 3, 0, 96, 40),
     ];
+}
+
+function countedGetter<T>(
+    reads: Record<string, number>,
+    key: string,
+    value: T
+): () => T {
+    return () => {
+        reads[key] = (reads[key] ?? 0) + 1;
+        return value;
+    };
 }
 
 test('creates exactly one compact vertical channel between adjacent columns', () => {
@@ -281,6 +313,164 @@ test('rejects unknown and malformed corridor candidates atomically at runtime', 
             bottom: grid.outer.bottom.trackCount,
         }, before);
     }
+});
+
+test('allocates from one snapshot of a time-varying internal candidate', () => {
+    const grid = createRoutingGrid([
+        routingNode('c0-upper', 0, 0, 100, 40),
+        routingNode('c0-middle', 0, 1, 100, 40),
+        routingNode('c0-lower', 0, 2, 100, 40),
+        routingNode('blocking-upper', 1, 0, 100, 40, 2),
+        routingNode('c1-middle', 1, 1, 100, 40),
+        routingNode('c1-lower', 1, 2, 100, 40),
+    ], { columnCount: 2 });
+    assert.deepEqual(planCorridors(grid, 0, 1), [
+        { kind: 'internal', rowGap: 1, span: [0, 1] },
+        { kind: 'outer-top', lane: 0, span: [0, 1] },
+        { kind: 'outer-bottom', lane: 0, span: [0, 1] },
+    ]);
+    let kindReads = 0;
+    let rowGapReads = 0;
+    let spanReads = 0;
+    const candidate = {
+        get kind(): 'internal' {
+            kindReads += 1;
+            return 'internal';
+        },
+        get rowGap(): number {
+            rowGapReads += 1;
+            return rowGapReads <= 4 ? 1 : 0;
+        },
+        get span(): readonly [number, number] {
+            spanReads += 1;
+            return [0, 1];
+        },
+    };
+
+    const handle = allocateCorridorTrack(
+        grid,
+        candidate as unknown as CorridorCandidate
+    );
+
+    assert.deepEqual(handle, {
+        kind: 'internal',
+        rowGap: 1,
+        track: 0,
+        span: [0, 1],
+    });
+    assert.equal(kindReads, 1);
+    assert.equal(rowGapReads, 1);
+    assert.equal(spanReads, 1);
+    assert.deepEqual(
+        grid.rowGaps.map(gap => gap.tracks.trackCount),
+        [0, 1]
+    );
+});
+
+test('allocates outer tracks from one kind lane and span snapshot', () => {
+    const grid = createRoutingGrid([
+        routingNode('left', 0, 0, 100, 40),
+        routingNode('right', 1, 0, 100, 40),
+        routingNode('far-right', 2, 0, 100, 40),
+    ], { columnCount: 3 });
+    const reads: Record<string, number> = {};
+    const span = [0, 1];
+    Object.defineProperties(span, {
+        0: {
+            configurable: true,
+            enumerable: true,
+            get(): number {
+                reads['span.0'] = (reads['span.0'] ?? 0) + 1;
+                return reads['span.0'] === 1 ? 0 : 1;
+            },
+        },
+        1: {
+            configurable: true,
+            enumerable: true,
+            get(): number {
+                reads['span.1'] = (reads['span.1'] ?? 0) + 1;
+                return reads['span.1'] === 1 ? 1 : 2;
+            },
+        },
+    });
+    const candidate = {
+        get kind(): 'outer-top' | 'outer-bottom' {
+            reads.kind = (reads.kind ?? 0) + 1;
+            return reads.kind === 1 ? 'outer-top' : 'outer-bottom';
+        },
+        get lane(): number {
+            reads.lane = (reads.lane ?? 0) + 1;
+            return reads.lane === 1 ? 0 : 1;
+        },
+        get span(): number[] {
+            reads.span = (reads.span ?? 0) + 1;
+            return span;
+        },
+    };
+
+    const handle = allocateCorridorTrack(
+        grid,
+        candidate as unknown as CorridorCandidate
+    );
+
+    assert.deepEqual(handle, {
+        kind: 'outer-top',
+        lane: 0,
+        span: [0, 1],
+    });
+    assert.deepEqual(reads, {
+        kind: 1,
+        lane: 1,
+        span: 1,
+        'span.0': 1,
+        'span.1': 1,
+    });
+    assert.equal(grid.outer.top.trackCount, 1);
+    assert.equal(grid.outer.bottom.trackCount, 0);
+});
+
+test('rejects throwing candidate getters and outer track arguments atomically', () => {
+    const grid = createRoutingGrid([
+        routingNode('only', 0, 0, 100, 40),
+    ], { columnCount: 1 });
+    const before = {
+        top: grid.outer.top.trackCount,
+        bottom: grid.outer.bottom.trackCount,
+    };
+    const thrown = new Error('candidate getter failed');
+    const throwingCandidate = Object.defineProperties({}, {
+        kind: {
+            get(): never {
+                throw thrown;
+            },
+        },
+        span: { value: [0, 0] },
+    });
+    assert.throws(
+        () => allocateCorridorTrack(
+            grid,
+            throwingCandidate as unknown as CorridorCandidate
+        ),
+        error => error === thrown
+    );
+    const outer = planCorridors(grid, 0, 0)
+        .find(candidate => candidate.kind === 'outer-top');
+    assert.ok(outer);
+    assert.throws(
+        () => (allocateCorridorTrack as unknown as (
+            target: RoutingGrid,
+            candidate: CorridorCandidate,
+            track: number
+        ) => unknown)(grid, outer, 0),
+        {
+            name: 'RangeError',
+            message: /outer.*explicit track/i,
+        }
+    );
+    assert.deepEqual({
+        top: grid.outer.top.trackCount,
+        bottom: grid.outer.bottom.trackCount,
+    }, before);
 });
 
 test('track demand enlarges only its affected horizontal and vertical gaps', () => {
@@ -650,6 +840,222 @@ test('snaps finite measured geometry and offsets onto the routing grid', () => {
             },
         },
     ]);
+});
+
+test('reads every external create-grid field once before normalization', () => {
+    const reads: Record<string, number> = {};
+    const pin = Object.defineProperties({}, {
+        id: { enumerable: true, get: countedGetter(reads, 'pin.id', 'pin') },
+        x: { enumerable: true, get: countedGetter(reads, 'pin.x', 100) },
+        y: { enumerable: true, get: countedGetter(reads, 'pin.y', 20) },
+    });
+    const pins = [pin];
+    let pinElementReads = 0;
+    Object.defineProperty(pins, '0', {
+        configurable: true,
+        enumerable: true,
+        get(): object {
+            pinElementReads += 1;
+            return pin;
+        },
+    });
+    const size = Object.defineProperties({}, {
+        width: { enumerable: true, get: countedGetter(reads, 'size.width', 100) },
+        height: { enumerable: true, get: countedGetter(reads, 'size.height', 40) },
+    });
+    const node = Object.defineProperties({}, {
+        id: { enumerable: true, get: countedGetter(reads, 'node.id', 'node') },
+        column: { enumerable: true, get: countedGetter(reads, 'node.column', 0) },
+        order: { enumerable: true, get: countedGetter(reads, 'node.order', 0) },
+        yOffset: { enumerable: true, get: countedGetter(reads, 'node.yOffset', 0) },
+        size: { enumerable: true, get: countedGetter(reads, 'node.size', size) },
+        pinAnchors: {
+            enumerable: true,
+            get: countedGetter(reads, 'node.pinAnchors', pins),
+        },
+    });
+    const nodes = [node];
+    let nodeElementReads = 0;
+    Object.defineProperty(nodes, '0', {
+        configurable: true,
+        enumerable: true,
+        get(): object {
+            nodeElementReads += 1;
+            return node;
+        },
+    });
+    const options = Object.defineProperties({}, {
+        columnCount: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.columnCount', 1),
+        },
+        gridStep: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.gridStep', 2),
+        },
+        pinEscape: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.pinEscape', 12),
+        },
+        safetyMargin: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.safetyMargin', 4),
+        },
+        trackPitch: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.trackPitch', 12),
+        },
+        minimumChannelWidth: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.minimumChannelWidth', 32),
+        },
+        minimumRowGap: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.minimumRowGap', 32),
+        },
+        minimumOuterMargin: {
+            enumerable: true,
+            get: countedGetter(reads, 'options.minimumOuterMargin', 16),
+        },
+    });
+
+    const grid = createRoutingGrid(
+        nodes as unknown as RoutingGridNodeInput[],
+        options
+    );
+    const realized = realizeRoutingGrid(grid);
+
+    assert.equal(realized.nodes[0].bounds.width, 100);
+    assert.equal(realized.nodes[0].pinAnchors[0].point.x, 100);
+    assert.deepEqual(reads, {
+        'options.columnCount': 1,
+        'options.gridStep': 1,
+        'options.pinEscape': 1,
+        'options.safetyMargin': 1,
+        'options.trackPitch': 1,
+        'options.minimumChannelWidth': 1,
+        'options.minimumRowGap': 1,
+        'options.minimumOuterMargin': 1,
+        'node.id': 1,
+        'node.column': 1,
+        'node.order': 1,
+        'node.yOffset': 1,
+        'node.size': 1,
+        'node.pinAnchors': 1,
+        'size.width': 1,
+        'size.height': 1,
+        'pin.id': 1,
+        'pin.x': 1,
+        'pin.y': 1,
+    });
+    assert.equal(nodeElementReads, 1);
+    assert.equal(pinElementReads, 1);
+});
+
+test('rejects time-varying size getters from one consistent snapshot', () => {
+    for (const changing of ['width', 'height'] as const) {
+        let reads = 0;
+        const size = {
+            get width(): number {
+                if (changing !== 'width') return 100;
+                reads += 1;
+                return reads === 1 ? 100 : 200;
+            },
+            get height(): number {
+                if (changing !== 'height') return 40;
+                reads += 1;
+                return reads === 1 ? 40 : 100;
+            },
+        };
+        const pin = changing === 'width'
+            ? { id: 'outside', x: 150, y: 20 }
+            : { id: 'outside', x: 50, y: 80 };
+
+        assert.throws(() => createRoutingGrid([{
+            id: changing,
+            column: 0,
+            order: 0,
+            yOffset: 0,
+            size,
+            pinAnchors: [pin],
+        }]), RangeError);
+        assert.equal(reads, 1);
+    }
+});
+
+test('normalizes time-varying pin getters from their first values', () => {
+    let xReads = 0;
+    let yReads = 0;
+    const pin = {
+        id: 'pin',
+        get x(): number {
+            xReads += 1;
+            return xReads === 1 ? 50 : 150;
+        },
+        get y(): number {
+            yReads += 1;
+            return yReads === 1 ? 20 : 80;
+        },
+    };
+    const grid = createRoutingGrid([{
+        id: 'node',
+        column: 0,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 40 },
+        pinAnchors: [pin],
+    }]);
+
+    const realized = realizeRoutingGrid(grid);
+    assert.equal(xReads, 1);
+    assert.equal(yReads, 1);
+    assert.deepEqual(realized.nodes[0].pinAnchors[0].point, {
+        x: 50,
+        y: ROUTING_GRID_DEFAULTS.minimumOuterMargin + 20,
+    });
+});
+
+test('isolates the routing grid from mutations after input snapshotting', () => {
+    const pin = { id: 'right', x: 100, y: 20 };
+    const size = { width: 100, height: 40 };
+    const node: RoutingGridNodeInput = {
+        id: 'original',
+        column: 0,
+        order: 0,
+        yOffset: 0,
+        size,
+        pinAnchors: [pin],
+    };
+    const nodes = [node];
+    const options = { columnCount: 1 };
+    const grid = createRoutingGrid(nodes, options);
+
+    (node as { id: string }).id = 'mutated';
+    size.width = 200;
+    pin.x = 200;
+    nodes.push(routingNode('late', 0, 1, 100, 40));
+    options.columnCount = 2;
+
+    const realized = realizeRoutingGrid(grid);
+    assert.equal(grid.columns.length, 1);
+    assert.deepEqual(realized.nodes, [{
+        id: 'original',
+        column: 0,
+        row: 0,
+        bounds: {
+            x: 0,
+            y: ROUTING_GRID_DEFAULTS.minimumOuterMargin,
+            width: 100,
+            height: 40,
+        },
+        pinAnchors: [{
+            id: 'right',
+            point: {
+                x: 100,
+                y: ROUTING_GRID_DEFAULTS.minimumOuterMargin + 20,
+            },
+        }],
+    }]);
 });
 
 test('supports track pitch whose half remains aligned to a custom grid step', () => {

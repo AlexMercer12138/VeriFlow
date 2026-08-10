@@ -119,14 +119,14 @@ export type CorridorTrackHandle =
 
 export type RealizedRoutingPin = Readonly<{
     id: string;
-    point: Point;
+    point: Readonly<Point>;
 }>;
 
 export type RealizedRoutingNode = Readonly<{
     id: string;
     column: number;
     row: number;
-    bounds: Rectangle;
+    bounds: Readonly<Rectangle>;
     pinAnchors: readonly RealizedRoutingPin[];
 }>;
 
@@ -294,6 +294,93 @@ function resolvedMetrics(options: RoutingGridCreateOptions): RoutingGridMetrics 
         );
     }
     return metrics;
+}
+
+function snapshotOptions(options: RoutingGridCreateOptions): RoutingGridCreateOptions {
+    if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+        throw new RangeError('routing grid options must be an object');
+    }
+    const record = options as Record<string, unknown>;
+    return Object.freeze({
+        columnCount: record.columnCount as number | undefined,
+        gridStep: record.gridStep as number | undefined,
+        pinEscape: record.pinEscape as number | undefined,
+        safetyMargin: record.safetyMargin as number | undefined,
+        trackPitch: record.trackPitch as number | undefined,
+        minimumChannelWidth: record.minimumChannelWidth as number | undefined,
+        minimumRowGap: record.minimumRowGap as number | undefined,
+        minimumOuterMargin: record.minimumOuterMargin as number | undefined,
+    });
+}
+
+function snapshotArray(value: unknown, label: string): unknown[] {
+    if (!Array.isArray(value)) {
+        throw new RangeError(`${label} must be an array`);
+    }
+    const length = value.length;
+    const snapshot = new Array<unknown>(length);
+    for (let index = 0; index < length; index += 1) {
+        snapshot[index] = value[index];
+    }
+    return snapshot;
+}
+
+function snapshotPin(value: unknown, nodeIndex: number, pinIndex: number): RoutingGridPinInput {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new RangeError(
+            `routing node ${nodeIndex} pin ${pinIndex} must be an object`
+        );
+    }
+    const record = value as Record<string, unknown>;
+    const id = record.id;
+    const x = record.x;
+    const y = record.y;
+    return Object.freeze({
+        id: id as string,
+        x: x as number,
+        y: y as number,
+    });
+}
+
+function snapshotNode(value: unknown, nodeIndex: number): RoutingGridNodeInput {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new RangeError(`routing node ${nodeIndex} must be an object`);
+    }
+    const record = value as Record<string, unknown>;
+    const id = record.id;
+    const column = record.column;
+    const order = record.order;
+    const yOffset = record.yOffset;
+    const sizeValue = record.size;
+    const pinAnchorsValue = record.pinAnchors;
+    if (typeof sizeValue !== 'object' || sizeValue === null
+        || Array.isArray(sizeValue)) {
+        throw new RangeError(`routing node ${nodeIndex} size must be an object`);
+    }
+    const sizeRecord = sizeValue as Record<string, unknown>;
+    const width = sizeRecord.width;
+    const height = sizeRecord.height;
+    const pins = pinAnchorsValue === undefined
+        ? []
+        : snapshotArray(pinAnchorsValue, `routing node ${nodeIndex} pinAnchors`);
+    const pinAnchors = pins.map((pin, pinIndex) =>
+        snapshotPin(pin, nodeIndex, pinIndex)
+    );
+    return Object.freeze({
+        id: id as string,
+        column: column as number,
+        order: order as number,
+        yOffset: yOffset as number,
+        size: Object.freeze({
+            width: width as number,
+            height: height as number,
+        }),
+        pinAnchors: Object.freeze(pinAnchors),
+    });
+}
+
+function snapshotNodes(inputNodes: readonly RoutingGridNodeInput[]): RoutingGridNodeInput[] {
+    return snapshotArray(inputNodes, 'routing nodes').map(snapshotNode);
 }
 
 function upperBound(values: readonly number[], target: number): number {
@@ -488,16 +575,18 @@ export function createRoutingGrid(
     inputNodes: readonly RoutingGridNodeInput[],
     options: RoutingGridCreateOptions = {}
 ): RoutingGrid {
-    const metrics = resolvedMetrics(options);
+    const optionSnapshot = snapshotOptions(options);
+    const nodeSnapshots = snapshotNodes(inputNodes);
+    const metrics = resolvedMetrics(optionSnapshot);
     const seenNodeIds = new Set<string>();
-    const provisional = inputNodes.map((node, index) =>
+    const provisional = nodeSnapshots.map((node, index) =>
         normalizeNode(node, index, metrics, seenNodeIds)
     );
     const requiredColumnCount = provisional.reduce(
         (maximum, node) => Math.max(maximum, node.column + 1),
         0
     );
-    const columnCount = normalizedColumnCount(options, requiredColumnCount);
+    const columnCount = normalizedColumnCount(optionSnapshot, requiredColumnCount);
     const nodesByColumn = Array.from(
         { length: columnCount },
         () => [] as Array<Omit<NormalizedNode, 'row'>>
@@ -726,34 +815,49 @@ function invalidCandidate(message: string): never {
     throw new RangeError(`invalid corridor candidate: ${message}`);
 }
 
-function validateCandidate(
+function snapshotCandidateSpan(value: unknown): ColumnSpan {
+    if (!Array.isArray(value)) {
+        invalidCandidate('span must be a two-column tuple');
+    }
+    const length = value.length;
+    if (length !== 2) {
+        invalidCandidate('span must be a two-column tuple');
+    }
+    const startColumn = value[0];
+    const endColumn = value[1];
+    if (typeof startColumn !== 'number' || typeof endColumn !== 'number') {
+        invalidCandidate('span must be a two-column tuple');
+    }
+    return immutableSpan(startColumn, endColumn);
+}
+
+function normalizeCandidate(
     grid: RoutingGrid,
     state: GridState,
     candidate: unknown
-): asserts candidate is CorridorCandidate {
+): CorridorCandidate {
     if (typeof candidate !== 'object' || candidate === null
         || Array.isArray(candidate)) {
         invalidCandidate('expected an object');
     }
     const record = candidate as Record<string, unknown>;
-    const span = record.span;
-    if (!Array.isArray(span) || span.length !== 2
-        || typeof span[0] !== 'number' || typeof span[1] !== 'number') {
-        invalidCandidate('span must be a two-column tuple');
-    }
+    const kind = record.kind;
+    const spanValue = record.span;
+    const span = snapshotCandidateSpan(spanValue);
     validateSpan(grid, span[0], span[1]);
 
-    switch (record.kind) {
+    switch (kind) {
         case 'internal': {
-            if (typeof record.rowGap !== 'number') {
+            const rowGap = record.rowGap;
+            if (typeof rowGap !== 'number') {
                 invalidCandidate('internal row gap must be a number');
             }
-            assertSafeNonNegativeInteger(record.rowGap, 'corridor row gap');
-            if (record.rowGap >= grid.rowGaps.length) {
+            assertSafeNonNegativeInteger(rowGap, 'corridor row gap');
+            if (rowGap >= grid.rowGaps.length) {
                 throw new RangeError('corridor row gap is outside the grid');
             }
             if (!gapIsClear(
-                state.blockedColumnsByRowGap[record.rowGap],
+                state.blockedColumnsByRowGap[rowGap],
                 span[0],
                 span[1]
             )) {
@@ -761,15 +865,17 @@ function validateCandidate(
                     'blocked internal corridor does not clear the complete column span'
                 );
             }
-            return;
+            return Object.freeze({ kind, rowGap, span });
         }
         case 'outer-top':
-        case 'outer-bottom':
-            if (typeof record.lane !== 'number') {
+        case 'outer-bottom': {
+            const lane = record.lane;
+            if (typeof lane !== 'number') {
                 invalidCandidate('outer lane must be a number');
             }
-            assertSafeNonNegativeInteger(record.lane, 'outer corridor lane');
-            return;
+            assertSafeNonNegativeInteger(lane, 'outer corridor lane');
+            return Object.freeze({ kind, lane, span });
+        }
         default:
             invalidCandidate('unknown kind');
     }
@@ -787,7 +893,6 @@ export function allocateCorridorTrack(
 export function allocateCorridorTrack(
     grid: RoutingGrid,
     candidate: CorridorCandidate,
-    track?: number
 ): CorridorTrackHandle;
 export function allocateCorridorTrack(
     grid: RoutingGrid,
@@ -795,33 +900,39 @@ export function allocateCorridorTrack(
     track?: number
 ): CorridorTrackHandle {
     const state = stateFor(grid);
-    validateCandidate(grid, state, candidate);
-    const span = immutableSpan(candidate.span[0], candidate.span[1]);
-    if (candidate.kind === 'internal') {
+    const normalized = normalizeCandidate(grid, state, candidate);
+    if (normalized.kind === 'internal') {
         return Object.freeze({
-            kind: candidate.kind,
-            rowGap: candidate.rowGap,
+            kind: normalized.kind,
+            rowGap: normalized.rowGap,
             track: requestTrack(
-                state.rowGapPools[candidate.rowGap],
+                state.rowGapPools[normalized.rowGap],
                 track,
                 state.metrics.minimumRowGap,
                 state.metrics,
                 'routing row gap height'
             ),
-            span,
+            span: normalized.span,
         });
     }
-    const controller = candidate.kind === 'outer-top'
+    if (track !== undefined) {
+        throw new RangeError('outer corridor does not accept an explicit track');
+    }
+    const controller = normalized.kind === 'outer-top'
         ? state.topPool
         : state.bottomPool;
     const lane = requestTrack(
         controller,
-        candidate.lane,
+        normalized.lane,
         state.metrics.minimumOuterMargin,
         state.metrics,
         'outer routing margin'
     );
-    return Object.freeze({ kind: candidate.kind, lane, span });
+    return Object.freeze({
+        kind: normalized.kind,
+        lane,
+        span: normalized.span,
+    });
 }
 
 function demandedSize(
@@ -859,7 +970,7 @@ function trackCoordinates(
     ));
 }
 
-function freezeRectangle(rectangle: Rectangle): Rectangle {
+function freezeRectangle(rectangle: Rectangle): Readonly<Rectangle> {
     return Object.freeze(rectangle);
 }
 
