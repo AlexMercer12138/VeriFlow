@@ -226,3 +226,121 @@ test('exports explicit ordered instances, parameters, and effective defaults', (
         '',
     ].join('\n'));
 });
+
+test('exports scalar tri-state control and inout readback assignments', () => {
+    const io: ArchDesignModuleDefinition = {
+        key: 'rtl/io.v#io_core',
+        name: 'io_core',
+        parameters: [],
+        ports: [
+            { name: 'gpio_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'gpio_t', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'gpio_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+        ],
+    };
+    const design = designOf({
+        ports: [{ name: 'gpio', direction: 'inout', width: 8 }],
+        instances: [{ name: 'u_io', module: 'io_core' }],
+        connections: [{
+            name: 'gpio_o',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_o' },
+                { kind: 'port', port: 'gpio', signal: 'o' },
+            ],
+        }, {
+            name: 'gpio_t',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_t' },
+                { kind: 'port', port: 'gpio', signal: 't' },
+            ],
+        }, {
+            name: 'gpio_i',
+            endpoints: [
+                { kind: 'port', port: 'gpio', signal: 'i' },
+                { kind: 'instance', instance: 'u_io', port: 'gpio_i' },
+            ],
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [io]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /assign __vf_net_gpio_i = gpio;/);
+    assert.match(
+        result.text,
+        /assign gpio = __vf_net_gpio_t \? \{8\{1'bz\}\} : __vf_net_gpio_o;/
+    );
+});
+
+test('uses the implicit high-impedance default for an unconnected scalar inout t', () => {
+    const io: ArchDesignModuleDefinition = {
+        key: 'rtl/bit_io.v#bit_io',
+        name: 'bit_io',
+        parameters: [],
+        ports: [{ name: 'pin_o', direction: 'output', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        ports: [{ name: 'pin', direction: 'inout' }],
+        instances: [{ name: 'u_io', module: 'bit_io' }],
+        connections: [{
+            name: 'pin_o',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'pin_o' },
+                { kind: 'port', port: 'pin', signal: 'o' },
+            ],
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [io]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /assign pin = 1'b1 \? 1'bz : __vf_net_pin_o;/);
+});
+
+test('exports per-bit inout control with collision-safe Verilog generate identifiers', () => {
+    const io: ArchDesignModuleDefinition = {
+        key: 'rtl/vector_io.v#vector_io',
+        name: 'vector_io',
+        parameters: [],
+        ports: [
+            { name: 'gpio_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'gpio_t', direction: 'output', width: { kind: 'known', bits: 8 } },
+        ],
+    };
+    const design = designOf({
+        ports: [
+            { name: '__vf_gpio_index', direction: 'input' },
+            { name: '__vf_gpio_tristate', direction: 'input' },
+            { name: 'gpio', direction: 'inout', width: 8 },
+        ],
+        instances: [{ name: 'u_io', module: 'vector_io' }],
+        connections: [{
+            name: 'gpio_o',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_o' },
+                { kind: 'port', port: 'gpio', signal: 'o' },
+            ],
+        }, {
+            name: 'gpio_t',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_t' },
+                { kind: 'port', port: 'gpio', signal: 't' },
+            ],
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [io]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /genvar __vf_gpio_index_2;/);
+    assert.ok(result.text.includes([
+        'generate',
+        '    for (__vf_gpio_index_2 = 0; __vf_gpio_index_2 < 8; __vf_gpio_index_2 = __vf_gpio_index_2 + 1) begin : __vf_gpio_tristate_2',
+        "        assign gpio[__vf_gpio_index_2] = __vf_net_gpio_t[__vf_gpio_index_2] ? 1'bz : __vf_net_gpio_o[__vf_gpio_index_2];",
+        '    end',
+        'endgenerate',
+    ].join('\n')));
+});

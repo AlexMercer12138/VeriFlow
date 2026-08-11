@@ -94,6 +94,7 @@ function connectionWidth(connection: ResolvedArchDesignConnection): WidthValue {
 type RtlBindings = Readonly<{
     netByConnection: ReadonlyMap<number, string>;
     netByEndpoint: ReadonlyMap<string, string>;
+    usedIdentifiers: Set<string>;
 }>;
 
 function createBindings(resolution: ArchDesignResolution): RtlBindings {
@@ -107,7 +108,7 @@ function createBindings(resolution: ArchDesignResolution): RtlBindings {
         netByConnection.set(connection.index, net);
         for (const endpoint of connection.endpoints) netByEndpoint.set(endpoint.identity, net);
     }
-    return { netByConnection, netByEndpoint };
+    return { netByConnection, netByEndpoint, usedIdentifiers: used };
 }
 
 function targetsByNode(
@@ -162,8 +163,100 @@ function renderInstance(
     ];
 }
 
+function archWidthValue(width: ArchDesignWidth | undefined): WidthValue {
+    if (width === undefined) return { kind: 'known', bits: 1 };
+    return typeof width === 'number'
+        ? { kind: 'known', bits: width }
+        : { kind: 'symbolic', expression: width.expression };
+}
+
+function widthExpression(width: WidthValue): string {
+    if (width.kind === 'known') return String(width.bits);
+    if (width.kind === 'symbolic') return `(${width.expression})`;
+    return '1';
+}
+
+function highImpedanceExpression(width: WidthValue): string {
+    if (width.kind === 'known' && width.bits === 1) return "1'bz";
+    return `{${widthExpression(width)}{1'bz}}`;
+}
+
+function isPerBitInoutControl(
+    resolution: ArchDesignResolution,
+    target: ResolvedArchDesignEndpointTarget,
+    portWidth: WidthValue
+): boolean {
+    if (portWidth.kind === 'known' && portWidth.bits === 1) return false;
+    const connection = resolution.connections.find(item =>
+        item.endpoints.some(endpoint => endpoint.identity === target.identity));
+    if (!connection) return false;
+    const peers = connection.endpoints.filter(endpoint => endpoint.identity !== target.identity);
+    const peer = peers.find(endpoint =>
+        endpoint.role === 'driver' || endpoint.role === 'bidirectional') ?? peers[0];
+    if (!peer) return false;
+    if (portWidth.kind === 'known') {
+        return peer.width.kind === 'known' && peer.width.bits === portWidth.bits;
+    }
+    return portWidth.kind === 'symbolic'
+        && peer.width.kind === 'symbolic'
+        && peer.width.expression === portWidth.expression;
+}
+
+function renderInoutLogic(
+    resolution: ArchDesignResolution,
+    item: ArchDesignResolution['ports'][number],
+    targets: readonly ResolvedArchDesignEndpointTarget[],
+    bindings: RtlBindings,
+    defaultByEndpoint: ReadonlyMap<string, string>
+): Readonly<{ assignments: readonly string[]; generate: readonly string[] }> {
+    const bySignal = new Map(targets.map(target => [target.signal, target]));
+    const input = bySignal.get('i');
+    const output = bySignal.get('o');
+    const control = bySignal.get('t');
+    const outputBinding = output
+        ? bindings.netByEndpoint.get(output.identity) ?? defaultByEndpoint.get(output.identity)
+        : undefined;
+    const controlBinding = control
+        ? bindings.netByEndpoint.get(control.identity) ?? defaultByEndpoint.get(control.identity)
+        : undefined;
+    if (!outputBinding || !controlBinding || !control) {
+        return { assignments: [], generate: [] };
+    }
+    const assignments: string[] = [];
+    const inputNet = input ? bindings.netByEndpoint.get(input.identity) : undefined;
+    if (inputNet) assignments.push(`assign ${inputNet} = ${item.port.name};`);
+    const portWidth = archWidthValue(item.port.width);
+    if (!isPerBitInoutControl(resolution, control, portWidth)) {
+        assignments.push(
+            `assign ${item.port.name} = ${controlBinding} ? ${highImpedanceExpression(portWidth)} : ${outputBinding};`
+        );
+        return { assignments, generate: [] };
+    }
+    const index = allocateIdentifier(
+        `__vf_${item.port.name}_index`,
+        bindings.usedIdentifiers
+    );
+    const block = allocateIdentifier(
+        `__vf_${item.port.name}_tristate`,
+        bindings.usedIdentifiers
+    );
+    const limit = widthExpression(portWidth);
+    return {
+        assignments,
+        generate: [
+            `genvar ${index};`,
+            'generate',
+            `    for (${index} = 0; ${index} < ${limit}; ${index} = ${index} + 1) begin : ${block}`,
+            `        assign ${item.port.name}[${index}] = ${controlBinding}[${index}] ? 1'bz : ${outputBinding}[${index}];`,
+            '    end',
+            'endgenerate',
+        ],
+    };
+}
+
 function renderModule(resolution: ArchDesignResolution): string {
-    const { netByConnection, netByEndpoint } = createBindings(resolution);
+    const bindings = createBindings(resolution);
+    const { netByConnection, netByEndpoint } = bindings;
     const defaultByEndpoint = new Map(
         resolution.effectiveDefaults.map(item => [item.identity, item.expression])
     );
@@ -179,8 +272,23 @@ function renderModule(resolution: ArchDesignResolution): string {
         `wire ${resolvedPackedRange(connectionWidth(connection))}${netByConnection.get(connection.index)};`);
     const targets = targetsByNode(resolution);
     const assignments: string[] = [];
+    const generateBlocks: string[] = [];
     for (const item of resolution.ports) {
-        if (item.port.direction === 'inout') continue;
+        if (item.port.direction === 'inout') {
+            const logic = renderInoutLogic(
+                resolution,
+                item,
+                targets.get(item.nodeId) ?? [],
+                bindings,
+                defaultByEndpoint
+            );
+            assignments.push(...logic.assignments);
+            if (generateBlocks.length > 0 && logic.generate.length > 0) {
+                generateBlocks.push('');
+            }
+            generateBlocks.push(...logic.generate);
+            continue;
+        }
         const target = targets.get(item.nodeId)?.[0];
         const net = target ? netByEndpoint.get(target.identity) : undefined;
         if (item.port.direction === 'input') {
@@ -206,7 +314,7 @@ function renderModule(resolution: ArchDesignResolution): string {
         if (instances.length > 0) instances.push('');
         instances.push(...block);
     }
-    const sections = [header, declarations, assignments, instances]
+    const sections = [header, declarations, assignments, generateBlocks, instances]
         .filter(section => section.length > 0);
     return [
         ...sections.flatMap((section, index) => index === 0 ? section : ['', ...section]),
