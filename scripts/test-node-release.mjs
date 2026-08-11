@@ -184,6 +184,12 @@ try {
         'cli'
     ));
     assert.equal(installedPackage.startsWith(realpathSync(installRoot)), true);
+    const installedCliManifest = readJson(path.join(installedPackage, 'package.json'));
+    assert.equal(
+        installedCliManifest.dependencies?.['@veriflow/schematic-core'],
+        rootVersion,
+        'installed CLI must depend on the published schematic-core version'
+    );
     const help = invokeCli(['--help'], installRoot, environment);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /VeriFlow - Lightweight Verilog Simulation Manager/);
@@ -205,6 +211,18 @@ try {
         project_root: 'rtl',
         top_module: 'top',
     }, null, 2), 'utf8');
+    writeFileSync(path.join(projectRoot, 'soc.ad'), `${JSON.stringify({
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'soc',
+        ports: [],
+        instances: [{ name: 'u_child', module: 'child' }],
+        connections: [],
+        interfaceConnections: [],
+        defaults: {},
+        export: {},
+        presentation: {},
+    }, null, 2)}\n`, 'utf8');
     const analyze = invokeCli(
         ['analyze', '--project', 'project.json'],
         projectRoot,
@@ -213,6 +231,14 @@ try {
     assert.equal(analyze.status, 0, analyze.stderr);
     assert.match(analyze.stdout, /child\.sv/);
     assert.match(analyze.stdout, /top\.sv/);
+    const validateAd = invokeCli(['ad', 'validate', 'soc.ad'], projectRoot, environment);
+    assert.equal(validateAd.status, 0, validateAd.stderr);
+    const exportAd = invokeCli(['ad', 'export', 'soc.ad'], projectRoot, environment);
+    assert.equal(exportAd.status, 0, exportAd.stderr);
+    assert.match(
+        readFileSync(path.join(projectRoot, 'soc.v'), 'utf8'),
+        /^\/\/ vik-veriflow:generated arch-design /
+    );
 } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
 }

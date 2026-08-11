@@ -8,6 +8,7 @@ Vik-VeriFlow 是面向 Verilog/SystemVerilog 工程的一键分析、仿真与�
 - 使用 Icarus Verilog、VCS、XSim 或自定义命令完成一键仿真
 - 内置 VCD 波形窗口，也可调用 Surfer、GTKWave 或自定义查看器
 - 浏览 Verilog/SystemVerilog 原理图并编辑布局
+- 校验 Arch Design 架构设计并导出 Verilog/SystemVerilog 顶层
 - 在 VS Code 中选择顶层、例化模块、生成 Testbench
 
 原理图会自动将输入放在左侧、输出放在右侧，模块输入引脚位于左边、输出引脚位于右边。模块按列排列，网络使用正交折线和独立通道，反馈连接走上下外轨；拖动模块会吸附到合法列，工具栏中的 **Relayout schematic** 可恢复自动布局。
@@ -50,6 +51,16 @@ veriflow lib list
 veriflow top set --project project.json --top top_tb
 veriflow top get --project project.json
 ```
+
+校验并导出架构设计：
+
+```bash
+veriflow ad validate design/soc.ad
+veriflow ad export design/soc.ad
+veriflow ad export design/soc.ad --language systemverilog -o generated/soc.sv
+```
+
+`.ad` 是架构设计源文件。默认导出同目录、同名的 `.v` 文件；指定 SystemVerilog 时输出 `.sv`。为保护手写 RTL，导出只会覆盖带有 VeriFlow 生成标记的文件。
 
 每个命令都支持 `--help`，例如 `veriflow sim --help`。
 
