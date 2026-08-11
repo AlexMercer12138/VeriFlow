@@ -45447,7 +45447,6 @@
           },
           label: { text: "" }
         },
-        interacting: false,
         zIndex: 1
       });
     });
@@ -45492,7 +45491,7 @@
       modifiers: null
     },
     interacting: {
-      nodeMovable: true,
+      nodeMovable: (view) => cellData(view.cell)?.junction !== true,
       edgeMovable: false,
       edgeLabelMovable: false,
       arrowheadMovable: false,

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { _electron as electron, type Page } from 'playwright';
+import { _electron as electron, type Locator, type Page } from 'playwright';
 
 const repositoryRoot = path.resolve(__dirname, '../../../..');
 const schematicHtml = process.env.VERIFLOW_SCHEMATIC_HTML
@@ -77,14 +77,16 @@ async function capturedSaves(page: Page): Promise<CapturedSaveMessage[]> {
 
 async function dragElement(
     page: Page,
-    selector: string,
+    targetOrSelector: Locator | string,
     deltaX: number,
     deltaY: number
 ): Promise<void> {
-    const target = page.locator(selector);
+    const target = typeof targetOrSelector === 'string'
+        ? page.locator(targetOrSelector)
+        : targetOrSelector;
     await target.waitFor();
     const bounds = await target.boundingBox();
-    assert.ok(bounds, `missing drag bounds for ${selector}`);
+    assert.ok(bounds, `missing drag bounds for ${String(targetOrSelector)}`);
     const startX = bounds.x + bounds.width / 2;
     const startY = bounds.y + bounds.height / 2;
     await page.mouse.move(startX, startY);
@@ -1679,6 +1681,19 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         const ordinaryFanoutStroke = await fanoutSegments.first().locator(
             ':scope > path:nth-child(2)'
         ).evaluate(element => getComputedStyle(element).stroke);
+        const fanoutJunction = page.locator(
+            '#canvas .x6-node[data-cell-id^="network:visual-fanout:junction:"] > circle'
+        ).first();
+        const junctionBeforeDrag = await fanoutJunction.boundingBox();
+        assert.ok(junctionBeforeDrag);
+        await dragElement(page, fanoutJunction, 32, 24);
+        const junctionAfterDrag = await fanoutJunction.boundingBox();
+        assert.ok(junctionAfterDrag);
+        assert.ok(
+            Math.abs(junctionAfterDrag.x - junctionBeforeDrag.x) < 0.5
+                && Math.abs(junctionAfterDrag.y - junctionBeforeDrag.y) < 0.5,
+            JSON.stringify({ junctionBeforeDrag, junctionAfterDrag })
+        );
         await fanoutSegments.first().locator(
             ':scope > path[stroke="transparent"][cursor="pointer"]'
         ).evaluate(element => {

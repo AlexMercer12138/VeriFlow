@@ -162,7 +162,7 @@ function assertRendererCellContracts(source: string): void {
         junctionLoop,
         /data: \{\s*objectId: network\.id,\s*objectType: 'network',\s*network,\s*networkRoute,\s*junction: true,\s*} satisfies CellData/
     );
-    assert.match(junctionLoop, /interacting: false,\s*zIndex: 1,/);
+    assert.doesNotMatch(junctionLoop, /interacting:/);
     assert.match(
         junctionLoop,
         /tabindex: 0,[^]*role: 'link',[^]*'aria-label': `network junction: \$\{network\.name\}`/
@@ -178,6 +178,10 @@ function assertRendererCellContracts(source: string): void {
     assert.match(
         selectionOptions,
         /filter: cell => cellData\(cell\)\?\.objectType === 'node'[^]*cellData\(cell\)\?\.junction !== true,/
+    );
+    assert.match(
+        source,
+        /nodeMovable: view => cellData\(view\.cell\)\?\.junction !== true,/
     );
 }
 
