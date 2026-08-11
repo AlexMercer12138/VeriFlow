@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -613,6 +614,59 @@ test('repeated export ignores the target when it defines the dependency module n
         assert.deepEqual(second, {
             exitCode: 0,
             stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        const repeated = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(repeated), undefined);
+        assert.equal(repeated, original);
+    });
+});
+
+test('repeated export resolves an aliased design directory to the output entry', async t => {
+    await withTemporaryDirectory(async cwd => {
+        const realDirectory = path.join(cwd, 'real');
+        const aliasDirectory = path.join(cwd, 'alias');
+        writeFixture(cwd, 'real/soc.ad', `${JSON.stringify(
+            archDesign({ module: 'leaf' }),
+            null,
+            2
+        )}\n`);
+        writeFixture(cwd, 'deps/leaf.v', 'module leaf; endmodule\n');
+        try {
+            symlinkSync(
+                realDirectory,
+                aliasDirectory,
+                process.platform === 'win32' ? 'junction' : 'dir'
+            );
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (
+                ['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '')
+            ) {
+                t.skip(`directory links are unavailable (${code})`);
+                return;
+            }
+            throw error;
+        }
+        const outputPath = path.join(realDirectory, 'soc.v');
+        const argv = [
+            'ad', 'export', 'alias/soc.ad', '-o', 'real/soc.v', '-L', 'deps,real',
+        ];
+
+        const first = await invoke(argv, cwd);
+        assert.deepEqual(first, {
+            exitCode: 0,
+            stdout: 'RTL exported: real/soc.v\n',
+            stderr: '',
+        });
+        const original = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(original), undefined);
+
+        const second = await invoke(argv, cwd);
+
+        assert.deepEqual(second, {
+            exitCode: 0,
+            stdout: 'RTL exported: real/soc.v\n',
             stderr: '',
         });
         const repeated = readFileSync(outputPath, 'utf8');

@@ -1,7 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { GlobalConfigStore, ProjectStore } from '@veriflow/flow-core';
 import { canonicalizeSourceUri } from '@veriflow/hdl-core/preprocessor';
@@ -26,6 +26,21 @@ type LoadedArchDesign = {
 
 function normalizePathSeparators(filepath: string): string {
     return filepath.replace(/\\/g, '/');
+}
+
+function canonicalFileUri(filepath: string): string {
+    return canonicalizeSourceUri(pathToFileURL(filepath).toString());
+}
+
+async function canonicalPhysicalEntryUri(filepath: string): Promise<string | undefined> {
+    let realParent: string;
+    try {
+        realParent = await realpath(path.dirname(filepath));
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw error;
+    }
+    return canonicalFileUri(path.join(realParent, path.basename(filepath)));
 }
 
 function displayPath(filepath: string, cwd: string): string {
@@ -221,8 +236,17 @@ export async function adExport(
     const definitions = await scanModuleDefinitions(
         moduleCatalogRoots(loaded, options, environment)
     );
-    const outputUri = canonicalizeSourceUri(pathToFileURL(outputPath).toString());
-    const exportDefinitions = definitions.filter(definition => definition.uri !== outputUri);
+    const outputUri = canonicalFileUri(outputPath);
+    let exportDefinitions = definitions.filter(definition => definition.uri !== outputUri);
+    const physicalOutputUri = await canonicalPhysicalEntryUri(outputPath);
+    if (physicalOutputUri !== undefined) {
+        const physicalDefinitionUris = await Promise.all(exportDefinitions.map(definition => (
+            canonicalPhysicalEntryUri(fileURLToPath(definition.uri))
+        )));
+        exportDefinitions = exportDefinitions.filter(
+            (_definition, index) => physicalDefinitionUris[index] !== physicalOutputUri
+        );
+    }
     const generated = exportArchDesignRtl(loaded.design, exportDefinitions, {
         language,
         sourcePath: portableSourcePath(loaded.filepath, outputPath),
