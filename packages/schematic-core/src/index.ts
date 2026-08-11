@@ -1,3 +1,4 @@
+export * from './archDesign';
 export * from './columns';
 export * from './layout';
 export * from './model';
