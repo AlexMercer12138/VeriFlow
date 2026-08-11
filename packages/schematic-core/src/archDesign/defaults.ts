@@ -4,7 +4,6 @@ const SAFE_SYSTEM_FUNCTIONS = new Set([
     '$clog2',
     '$dimensions',
     '$high',
-    '$increment',
     '$left',
     '$low',
     '$right',
@@ -13,6 +12,52 @@ const SAFE_SYSTEM_FUNCTIONS = new Set([
     '$unpacked_dimensions',
     '$unsigned',
 ]);
+
+const SAFE_OPERATORS = [
+    '===',
+    '!==',
+    '==?',
+    '!=?',
+    '<<<',
+    '>>>',
+    '<<',
+    '>>',
+    '<=',
+    '>=',
+    '==',
+    '!=',
+    '&&',
+    '||',
+    '**',
+    '~&',
+    '~|',
+    '~^',
+    '^~',
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '&',
+    '|',
+    '^',
+    '~',
+    '!',
+    '<',
+    '>',
+    '?',
+    ':',
+    ',',
+    '.',
+] as const;
+
+type TokenKind =
+    | 'identifier'
+    | 'system-function'
+    | 'value'
+    | 'opening'
+    | 'closing'
+    | 'operator';
 
 function isIdentifierStart(character: string): boolean {
     return /[A-Za-z_]/.test(character);
@@ -69,6 +114,7 @@ export function isSafeDefaultExpression(expression: string): boolean {
     const closing = new Map<string, string>([[')', '('], [']', '['], ['}', '{']]);
     const stack: string[] = [];
     let index = 0;
+    let previousToken: TokenKind | undefined;
     while (index < expression.length) {
         const character = expression[index];
         if (character === ' ' || character === '\t') {
@@ -81,11 +127,13 @@ export function isSafeDefaultExpression(expression: string): boolean {
             if (!isIdentifierStart(expression[index] ?? '')) return false;
             while (isIdentifierPart(expression[index] ?? '')) index += 1;
             if (!SAFE_SYSTEM_FUNCTIONS.has(expression.slice(start, index))) return false;
+            previousToken = 'system-function';
             continue;
         }
         if (isIdentifierStart(character)) {
             index += 1;
             while (isIdentifierPart(expression[index] ?? '')) index += 1;
+            previousToken = 'identifier';
             continue;
         }
         if (/[0-9]/.test(character)) {
@@ -96,6 +144,7 @@ export function isSafeDefaultExpression(expression: string): boolean {
                 if (end === undefined) return false;
                 index = end;
             }
+            previousToken = 'value';
             continue;
         }
         if (character === "'") {
@@ -104,26 +153,46 @@ export function isSafeDefaultExpression(expression: string): boolean {
             if (/[01xXzZ]/.test(unbased ?? '')) {
                 if (isIdentifierPart(expression[index + 2] ?? '')) return false;
                 index += 2;
+                previousToken = 'value';
                 continue;
             }
             const end = basedLiteralEnd(expression, index);
             if (end === undefined) return false;
             index = end;
+            previousToken = 'value';
             continue;
         }
         if (character === '(' || character === '[' || character === '{') {
+            if (
+                character === '('
+                && previousToken !== undefined
+                && previousToken !== 'system-function'
+                && previousToken !== 'opening'
+                && previousToken !== 'operator'
+            ) {
+                return false;
+            }
             stack.push(character);
             index += 1;
+            previousToken = 'opening';
             continue;
         }
         const expectedOpening = closing.get(character);
         if (expectedOpening !== undefined) {
             if (stack.pop() !== expectedOpening) return false;
             index += 1;
+            previousToken = 'closing';
             continue;
         }
-        if ('+-*/%&|^~!<>=?:,.'.includes(character)) {
-            index += 1;
+        if (expression.startsWith('++', index) || expression.startsWith('--', index)) {
+            return false;
+        }
+        const operator = SAFE_OPERATORS.find(candidate =>
+            expression.startsWith(candidate, index)
+        );
+        if (operator !== undefined) {
+            index += operator.length;
+            previousToken = 'operator';
             continue;
         }
         return false;

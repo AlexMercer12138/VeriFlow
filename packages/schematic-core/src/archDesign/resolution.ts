@@ -114,6 +114,7 @@ type DefaultSelection = Readonly<{
 type ConnectionIndex = Readonly<{
     declaredEndpointIdentities: ReadonlySet<string>;
     definiteDriverCount: number;
+    hasSource: boolean;
 }>;
 
 function snapshotArray<T>(source: readonly T[]): T[] {
@@ -571,6 +572,7 @@ export function resolveArchDesign(
         const inoutTEndpoints: ResolvedArchDesignEndpoint[] = [];
         const endpoints: ResolvedArchDesignEndpoint[] = [];
         let definiteDriverCount = 0;
+        let hasSource = false;
         let knownEndpointCount = 0;
         let knownNetworkWidth: number | undefined;
         for (let endpointIndex = 0;
@@ -601,6 +603,9 @@ export function resolveArchDesign(
             endpointDeclarationOrder += 1;
             endpoints.push(result);
             connectedEndpoints.set(result.identity, result);
+            if (result.role === 'driver' || result.role === 'bidirectional') {
+                hasSource = true;
+            }
             if (result.role === 'driver') {
                 if (definiteDriverCount > 0) {
                     diagnostics.push(diagnostic(
@@ -652,6 +657,7 @@ export function resolveArchDesign(
         connectionIndexes.push(Object.freeze({
             declaredEndpointIdentities,
             definiteDriverCount,
+            hasSource,
         }));
     }
 
@@ -703,7 +709,7 @@ export function resolveArchDesign(
         const connected = connectedEndpoints.get(endpoint.identity);
         if (
             connected
-            && connectionIndexes[connected.connectionIndex].definiteDriverCount > 0
+            && connectionIndexes[connected.connectionIndex].hasSource
         ) continue;
 
         const connectionSelection = connected
@@ -752,7 +758,7 @@ export function resolveArchDesign(
     const defaultsByIdentity = new Map(effectiveDefaults.map(item => [item.identity, item]));
     const connectionDefaultSources: ResolvedArchDesignConnectionDefaultSource[] = [];
     for (const connection of resolvedConnections) {
-        if (connectionIndexes[connection.index].definiteDriverCount > 0) continue;
+        if (connectionIndexes[connection.index].hasSource) continue;
         const candidates = connection.endpoints.flatMap(endpoint => {
             const candidate = defaultsByIdentity.get(endpoint.identity);
             return candidate ? [candidate] : [];

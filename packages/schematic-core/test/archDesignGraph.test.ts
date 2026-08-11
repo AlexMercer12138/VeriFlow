@@ -320,6 +320,81 @@ test('projects one coherent source for identical defaults on a driverless networ
     assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 1);
 });
 
+test('treats a bidirectional endpoint as a source without projecting a receiver default', () => {
+    const bidirectionalDefinition: ArchDesignModuleDefinition = {
+        key: 'rtl/pad.sv#pad',
+        name: 'pad',
+        parameters: [],
+        ports: [{
+            name: 'io',
+            direction: 'inout',
+            width: { kind: 'known', bits: 1 },
+        }],
+    };
+    const withoutDefault = designOf({
+        ports: [{ name: 'sink', direction: 'output' }],
+        instances: [{ name: 'u_pad', module: 'pad' }],
+        connections: [{
+            name: 'pad_value',
+            endpoints: [
+                { kind: 'instance', instance: 'u_pad', port: 'io' },
+                { kind: 'port', port: 'sink' },
+            ],
+        }],
+    });
+
+    const unconfigured = projectArchDesignGraph(withoutDefault, [bidirectionalDefinition], {
+        fileUri: 'file:///workspace/bidirectional-source.ad',
+    });
+
+    assert.deepEqual(unconfigured.validation.diagnostics, []);
+    assert.deepEqual(unconfigured.validation.effectiveDefaults, []);
+    assert.deepEqual(unconfigured.graph.nodes.map(node => node.id), [
+        'instance:u_pad',
+        'port:sink',
+    ]);
+
+    const withDefault = {
+        ...withoutDefault,
+        defaults: { 'sink.value': "1'b0" },
+    } as ArchDesign;
+    const projection = projectArchDesignGraph(withDefault, [bidirectionalDefinition], {
+        fileUri: 'file:///workspace/bidirectional-default.ad',
+    });
+
+    assert.deepEqual(projection.validation.diagnostics, []);
+    assert.deepEqual(projection.validation.effectiveDefaults, []);
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'instance:u_pad',
+        'port:sink',
+    ]);
+    assert.deepEqual(projection.graph.networks, [{
+        id: 'network:pad_value',
+        name: 'pad_value',
+        width: { kind: 'known', bits: 1 },
+        endpoints: [{
+            nodeId: 'instance:u_pad',
+            pinId: 'instance:u_pad:io',
+            role: 'bidirectional',
+        }, {
+            nodeId: 'port:sink',
+            pinId: 'port:sink:value',
+            role: 'load',
+        }],
+    }]);
+
+    const unsafeDefault = {
+        ...withoutDefault,
+        defaults: { 'sink.value': 'side_effect()' },
+    } as ArchDesign;
+    assert.deepEqual(
+        validateArchDesign(unsafeDefault, [bidirectionalDefinition]).diagnostics.map(
+            item => [item.path, item.code]
+        ),
+        [['$.defaults.sink.value', 'AD_DEFAULT_EXPRESSION']]
+    );
+});
+
 test('uses one receiver default to drive every load on its driverless network', () => {
     const design = designOf({
         ports: [
