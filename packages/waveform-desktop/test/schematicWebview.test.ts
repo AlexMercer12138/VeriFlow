@@ -496,9 +496,17 @@ async function renderedGeometry(page: Page): Promise<{
                 ?.getBoundingClientRect();
             if (!body) return [`${cell.dataset.cellId}:missing-body`];
             return [...cell.querySelectorAll<SVGSVGElement>('.veriflow-text-clip')]
-                .flatMap(clip => contains(body, svgViewportBounds(clip))
-                    ? []
-                    : [`${cell.dataset.cellId}:${clip.className.baseVal}`]);
+                .flatMap(clip => {
+                    const title = clip.classList.contains('veriflow-title-clip')
+                        ? clip.querySelector<SVGTextElement>('text')
+                        : undefined;
+                    const contained = contains(body, svgViewportBounds(clip))
+                        && (title === undefined
+                            || (title !== null && contains(body, title.getBoundingClientRect())));
+                    return contained
+                        ? []
+                        : [`${cell.dataset.cellId}:${clip.className.baseVal}`];
+                });
         });
         const pinOverflow = nodeCells.flatMap(cell => {
             const body = cell.querySelector<SVGRectElement>(':scope > rect')
@@ -531,8 +539,10 @@ async function renderedGeometry(page: Page): Promise<{
             const body = cell.querySelector<SVGRectElement>(':scope > rect')
                 ?.getBoundingClientRect();
             const clip = cell.querySelector<SVGSVGElement>('.veriflow-title-clip');
-            if (!body || !clip) return [`${cell.dataset.cellId}:missing-title`];
+            const title = clip?.querySelector<SVGTextElement>('text');
+            if (!body || !clip || !title) return [`${cell.dataset.cellId}:missing-title`];
             return contains(body, svgViewportBounds(clip))
+                && contains(body, title.getBoundingClientRect())
                 ? []
                 : [`${cell.dataset.cellId}:title-overflow`];
         });

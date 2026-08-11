@@ -45369,6 +45369,8 @@
             stroke: "none"
           },
           label: {
+            refX: 0,
+            refY: 0,
             x: 0,
             y: import_schematic_core.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
             fill: "var(--schematic-text)",
