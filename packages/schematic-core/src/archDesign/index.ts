@@ -1,5 +1,6 @@
 export * from './definitions';
 export * from './defaults';
+export * from './edit';
 export * from './fingerprint';
 export * from './graph';
 export * from './model';
