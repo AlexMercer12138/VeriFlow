@@ -100,7 +100,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 export function createEmptyArchDesign(module: string): ArchDesign {
-    if (!PLAIN_IDENTIFIER.test(module)) {
+    if (typeof module !== 'string' || !PLAIN_IDENTIFIER.test(module)) {
         throw new TypeError('Arch Design module must be a valid Verilog identifier');
     }
     return deepFreeze({

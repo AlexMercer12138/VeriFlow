@@ -10,13 +10,14 @@ import type {
     ArchDesignPresentation,
     ArchDesignWidth,
 } from './model';
+import { compareCodeUnits } from './ordering';
 
 function sortedRecord<T>(
     value: Readonly<Record<string, T>>,
     transform: (item: T) => unknown = item => item
 ): Record<string, unknown> {
     const result: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value).sort((left, right) => left.localeCompare(right))) {
+    for (const key of Object.keys(value).sort(compareCodeUnits)) {
         result[key] = transform(value[key]);
     }
     return result;

@@ -14,6 +14,7 @@ import {
     type ArchDesignViewport,
     type ArchDesignWidth,
 } from './model';
+import { compareCodeUnits } from './ordering';
 
 export type ArchDesignDiagnostic = Readonly<{
     path: string;
@@ -72,7 +73,7 @@ function diagnostic(
 
 function invalidResult(diagnostics: ArchDesignDiagnostic[]): ArchDesignReadResult {
     diagnostics.sort((left, right) =>
-        left.path.localeCompare(right.path) || left.code.localeCompare(right.code));
+        compareCodeUnits(left.path, right.path) || compareCodeUnits(left.code, right.code));
     return deepFreeze({ status: 'invalid' as const, diagnostics });
 }
 
@@ -128,6 +129,16 @@ function arrayValue(
         return [];
     }
     return value;
+}
+
+function visitArray(
+    source: readonly unknown[],
+    visit: (item: unknown, index: number) => void
+): void {
+    const length = source.length;
+    for (let index = 0; index < length; index += 1) {
+        visit(source[index], index);
+    }
 }
 
 function normalizeWidth(
@@ -214,7 +225,7 @@ function normalizePorts(
     const source = arrayValue(value, '$.ports', diagnostics);
     const result: ArchDesignPort[] = [];
     const names = new Set<string>();
-    source.forEach((item, index) => {
+    visitArray(source, (item, index) => {
         const path = `$.ports[${index}]`;
         const record = recordValue(item, path, diagnostics);
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
@@ -248,7 +259,7 @@ function normalizeInstances(
     const source = arrayValue(value, '$.instances', diagnostics);
     const result: ArchDesignInstance[] = [];
     const names = new Set<string>();
-    source.forEach((item, index) => {
+    visitArray(source, (item, index) => {
         const path = `$.instances[${index}]`;
         const record = recordValue(item, path, diagnostics);
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
@@ -315,22 +326,24 @@ function normalizeConnections(
     const source = arrayValue(value, '$.connections', diagnostics);
     const result: ArchDesignConnection[] = [];
     const names = new Set<string>();
-    source.forEach((item, index) => {
+    visitArray(source, (item, index) => {
         const path = `$.connections[${index}]`;
         const record = recordValue(item, path, diagnostics);
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
         duplicateName(name, `${path}.name`, names, diagnostics);
-        const endpoints = arrayValue(
+        const endpointValues = arrayValue(
             ownValue(record, 'endpoints'),
             `${path}.endpoints`,
             diagnostics
-        ).flatMap((endpoint, endpointIndex) => {
+        );
+        const endpoints: ArchDesignEndpoint[] = [];
+        visitArray(endpointValues, (endpoint, endpointIndex) => {
             const normalized = normalizeEndpoint(
                 endpoint,
                 `${path}.endpoints[${endpointIndex}]`,
                 diagnostics
             );
-            return normalized ? [normalized] : [];
+            if (normalized) endpoints.push(normalized);
         });
         const defaultsValue = ownValue(record, 'defaults');
         const defaults = defaultsValue === undefined
@@ -367,7 +380,7 @@ function normalizeInterfaceConnections(
     const source = arrayValue(value, '$.interfaceConnections', diagnostics);
     const result: ArchDesignInterfaceConnection[] = [];
     const names = new Set<string>();
-    source.forEach((item, index) => {
+    visitArray(source, (item, index) => {
         const path = `$.interfaceConnections[${index}]`;
         const record = recordValue(item, path, diagnostics);
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
@@ -571,7 +584,12 @@ function cloneUnknownJson(value: unknown, visiting = new WeakSet<object>()): unk
     visiting.add(value);
     try {
         if (Array.isArray(value)) {
-            return value.map(item => cloneUnknownJson(item, visiting));
+            const result: unknown[] = [];
+            const length = value.length;
+            for (let index = 0; index < length; index += 1) {
+                result.push(cloneUnknownJson(value[index], visiting));
+            }
+            return result;
         }
         const result: Record<string, unknown> = {};
         for (const key of Object.keys(value)) {

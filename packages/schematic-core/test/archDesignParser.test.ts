@@ -218,6 +218,20 @@ test('rejects duplicate named semantic objects at the duplicate declaration', ()
     ]);
 });
 
+test('orders diagnostics independently of the host locale', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        defaults: {
+            a_target: false,
+            Z_target: false,
+        },
+    }));
+
+    assert.deepEqual(invalidDiagnostics(result).map(item => item.path), [
+        '$.defaults.Z_target',
+        '$.defaults.a_target',
+    ]);
+});
+
 test('uses own properties and prototype-free dictionaries in normalized output', () => {
     const inherited = Object.create({ module: 'inherited_top' }) as Record<string, unknown>;
     Object.assign(inherited, minimalDesign());
@@ -249,4 +263,61 @@ test('detaches normalized data from a caller-owned input object', () => {
     (value.ports as unknown[]).push({ name: 'rst_n', direction: 'input' });
 
     assert.deepEqual(result.design.ports, [{ name: 'clk', direction: 'input' }]);
+});
+
+test('does not invoke caller-controlled array iteration methods', () => {
+    const port = { name: 'clk', direction: 'input' };
+    const ports = [port];
+    const endpoint = { kind: 'port', port: 'clk' };
+    const injected = { kind: 'instance', instance: 'injected', port: 'data' };
+    const endpoints = [endpoint];
+    let methodCalls = 0;
+    Object.defineProperty(ports, 'forEach', {
+        value: () => {
+            methodCalls += 1;
+        },
+    });
+    Object.defineProperty(endpoints, 'flatMap', {
+        value: () => {
+            methodCalls += 1;
+            return [injected];
+        },
+    });
+
+    const result = parseArchDesignValue(minimalDesign({
+        ports,
+        connections: [{ name: 'clock', endpoints }],
+    }));
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.equal(methodCalls, 0);
+    assert.deepEqual(result.design.ports, [{ name: 'clk', direction: 'input' }]);
+    assert.deepEqual(result.design.connections[0].endpoints, [{ kind: 'port', port: 'clk' }]);
+    assert.equal(Object.isFrozen(port), false);
+    assert.equal(Object.isFrozen(endpoint), false);
+    assert.equal(Object.isFrozen(injected), false);
+});
+
+test('clones unknown-version arrays without invoking their map property', () => {
+    const futureItem = { enabled: true };
+    const futureArray = [futureItem];
+    let methodCalls = 0;
+    Object.defineProperty(futureArray, 'map', {
+        value: () => {
+            methodCalls += 1;
+            return [{ injected: true }];
+        },
+    });
+
+    const result = parseArchDesignValue(minimalDesign({
+        schemaVersion: 2,
+        futureArray,
+    }));
+
+    assert.equal(result.status, 'unsupported');
+    if (result.status !== 'unsupported') return;
+    assert.equal(methodCalls, 0);
+    assert.deepEqual(result.value.futureArray, [{ enabled: true }]);
+    assert.equal(Object.isFrozen(futureItem), false);
 });

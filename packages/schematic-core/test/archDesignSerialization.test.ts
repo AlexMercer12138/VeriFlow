@@ -135,6 +135,18 @@ test('canonicalizes dictionary insertion order without reordering declarations',
     ]);
 });
 
+test('sorts dictionary keys by stable code units instead of the host locale', () => {
+    const design = editable(sourceDesign({
+        defaults: {
+            a_target: "1'b0",
+            Z_target: "1'b1",
+        },
+    }));
+    const source = serializeArchDesign(design);
+
+    assert.ok(source.indexOf('"Z_target"') < source.indexOf('"a_target"'));
+});
+
 test('ignores presentation and output path when computing semantic fingerprints', () => {
     const original = editable(sourceDesign());
     const moved = editable(sourceDesign({

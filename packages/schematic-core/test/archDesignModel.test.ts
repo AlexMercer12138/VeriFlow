@@ -117,9 +117,18 @@ test('models the complete schema-v1 document surface', () => {
 });
 
 test('rejects an empty or non-plain module identifier', () => {
-    for (const invalid of ['', '1soc', 'soc-top', 'soc top', '\\escaped ']) {
+    for (const invalid of [
+        '',
+        '1soc',
+        'soc-top',
+        'soc top',
+        '\\escaped ',
+        null,
+        true,
+        ['soc_top'],
+    ]) {
         assert.throws(
-            () => createEmptyArchDesign(invalid),
+            () => createEmptyArchDesign(invalid as string),
             /valid Verilog identifier/
         );
     }
