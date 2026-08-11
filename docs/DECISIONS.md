@@ -131,3 +131,32 @@ shared theme tokens for modules, ports, pins, and wires.
 **Tags:** #architecture #schematic #frontend #arch-design
 
 ---
+
+## 2026-08-11: Add Arch Design CLI export through a thin host adapter
+
+**Context:** The host-neutral Arch Design parser, semantic resolver, and RTL
+exporter are complete, but users cannot yet validate or safely publish generated
+RTL from the maintained Node CLI.
+
+**Decision:** Add explicit `veriflow ad validate` and `veriflow ad export`
+commands as a thin Node adapter over the shared core and HDL workspace index.
+Use the design directory as the standalone module root, allow an optional
+project catalog, require output extensions to match the effective language,
+and atomically replace only files with a valid VeriFlow generation marker.
+
+**Why not:**
+- Add build and simulation auto-export now: it expands the regression surface
+  before the explicit file workflow is proven.
+- Build a generic injected filesystem service: VS Code URI requirements are not
+  implemented yet, so the abstraction would be speculative.
+- Permit `--force`: hand-written RTL must remain protected even when a caller
+  supplies the wrong output path.
+- Require a project for every command: standalone `.ad` validation and export
+  should work with modules beside the design.
+
+**Affects:** `packages/cli/`, `packages/schematic-core/src/archDesign/`, `README.md`,
+`docs/plans/2026-08-11-arch-design-cli-export-design.md`
+
+**Tags:** #architecture #cli #arch-design #code-generation #filesystem
+
+---
