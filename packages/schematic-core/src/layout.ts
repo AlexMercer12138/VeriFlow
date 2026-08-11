@@ -21,10 +21,8 @@ import {
     readonlyMap,
     readonlySet,
     SCHEMATIC_NETWORK_LABEL_LAYOUT,
-    SCHEMATIC_NETWORK_LABEL_STYLE,
     type LayoutColumn,
     type NetworkRoute,
-    type NetworkRouteLabel,
     type RenderedJunction,
     type RenderedNodeGeometry,
     type RenderedPinGeometry,
@@ -445,107 +443,13 @@ function freezeSegment(segment: RoutedRouteSegment): Readonly<RouteSegment> {
     return Object.freeze({ ...segment });
 }
 
-function rectanglesOverlap(
-    left: Readonly<Rectangle>,
-    right: Readonly<Rectangle>
-): boolean {
-    return Math.max(left.x, right.x) < Math.min(
-        left.x + left.width,
-        right.x + right.width
-    ) && Math.max(left.y, right.y) < Math.min(
-        left.y + left.height,
-        right.y + right.height
-    );
-}
-
-class RectangleIndex {
-    readonly #entries: readonly Readonly<Rectangle>[];
-    readonly #maximumRight: readonly number[];
-
-    constructor(rectangles: readonly Readonly<Rectangle>[]) {
-        this.#entries = [...rectangles].sort((left, right) =>
-            left.x - right.x || left.y - right.y
-        );
-        let maximumRight = Number.NEGATIVE_INFINITY;
-        this.#maximumRight = this.#entries.map(entry => {
-            maximumRight = Math.max(maximumRight, entry.x + entry.width);
-            return maximumRight;
-        });
-    }
-
-    intersects(candidate: Readonly<Rectangle>): boolean {
-        const right = candidate.x + candidate.width;
-        let low = 0;
-        let high = this.#maximumRight.length;
-        while (low < high) {
-            const middle = low + Math.floor((high - low) / 2);
-            if (this.#maximumRight[middle] <= candidate.x) low = middle + 1;
-            else high = middle;
-        }
-        for (let index = low; index < this.#entries.length; index += 1) {
-            const entry = this.#entries[index];
-            if (entry.x >= right) return false;
-            if (entry.x + entry.width <= candidate.x) continue;
-            if (rectanglesOverlap(candidate, entry)) return true;
-        }
-        return false;
-    }
-}
-
-function measuredLabelWidth(
-    measureText: TextMeasurer,
-    text: string
-): number | undefined {
-    if (text.length === 0) return undefined;
-    const width = measureText(text, SCHEMATIC_NETWORK_LABEL_STYLE);
-    return Number.isFinite(width) && width >= 0 ? width : undefined;
-}
-
-function labelForNetwork(
-    displayName: string,
-    segments: readonly Readonly<RouteSegment>[],
-    measureText: TextMeasurer,
-    obstacles: RectangleIndex,
-    occupiedLabels: Rectangle[]
-): NetworkRouteLabel | undefined {
-    const width = measuredLabelWidth(measureText, displayName);
-    if (width === undefined) return undefined;
-    const layout = SCHEMATIC_NETWORK_LABEL_LAYOUT;
-    const candidates = segments.flatMap((segment, sourceIndex) =>
-        segment.orientation === 'horizontal'
-            ? [{ segment, sourceIndex, length: segment.x2 - segment.x1 }]
-            : []
-    ).sort((left, right) =>
-        right.length - left.length || left.sourceIndex - right.sourceIndex
-    );
-    for (const { segment, length } of candidates) {
-        if (width + 2 * layout.endpointPadding > length) continue;
-        const x = segment.x1 + (length - width) / 2;
-        const yCandidates = [
-            segment.y - layout.wireGap - layout.height,
-            segment.y + layout.wireGap,
-        ];
-        for (const y of yCandidates) {
-            const bounds = { x, y, width, height: layout.height };
-            if (obstacles.intersects(bounds)
-                || occupiedLabels.some(label => rectanglesOverlap(bounds, label))) {
-                continue;
-            }
-            occupiedLabels.push(bounds);
-            return Object.freeze({ text: displayName, bounds: freezeRectangle(bounds) });
-        }
-    }
-    return undefined;
-}
-
 function calculateBounds(
     gridBounds: Readonly<Rectangle>,
     segments: readonly Readonly<RouteSegment>[],
-    labels: readonly NetworkRouteLabel[],
     junctions: readonly RenderedJunction[],
     empty: boolean
 ): Readonly<Rectangle> {
-    if (empty && labels.length === 0 && junctions.length === 0) {
+    if (empty && junctions.length === 0) {
         return freezeRectangle({ x: 0, y: 0, width: 0, height: 0 });
     }
     let minimumX = gridBounds.x;
@@ -564,12 +468,6 @@ function calculateBounds(
             maximumX = Math.max(maximumX, segment.x);
             maximumY = Math.max(maximumY, segment.y2);
         }
-    }
-    for (const label of labels) {
-        minimumX = Math.min(minimumX, label.bounds.x);
-        minimumY = Math.min(minimumY, label.bounds.y);
-        maximumX = Math.max(maximumX, label.bounds.x + label.bounds.width);
-        maximumY = Math.max(maximumY, label.bounds.y + label.bounds.height);
     }
     for (const junction of junctions) {
         minimumX = Math.min(
@@ -693,29 +591,12 @@ export function layoutSchematic(
                 junction.directions.has(direction)
             )),
         }));
-    const labelObstacleIndex = new RectangleIndex([
-        ...renderedNodes.map(([, node]) => node.bounds),
-        ...junctions.map(junction => ({
-            x: junction.point.x - SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            y: junction.point.y - SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            width: 2 * SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            height: 2 * SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-        })),
-    ]);
-    const occupiedLabels: Rectangle[] = [];
     const networks: NetworkRoute[] = graph.networks.map(network => {
         const route: RoutedNetwork = routedById.get(network.id)!;
         const segments = Object.freeze(route.segments.map(freezeSegment));
         const displayName = network.adapterLabel
             ? `${network.name} ${network.adapterLabel}`
             : network.name;
-        const label = labelForNetwork(
-            displayName,
-            segments,
-            measureText,
-            labelObstacleIndex,
-            occupiedLabels
-        );
         const terminals = Object.freeze(network.endpoints.map(endpoint => {
             const point = realizedById.get(endpoint.nodeId)!.pinAnchors.find(
                 pin => pin.id === endpoint.pinId
@@ -733,7 +614,6 @@ export function layoutSchematic(
             feedback: route.feedback,
             terminals,
             segments,
-            label,
         });
     });
     const columns: LayoutColumn[] = routed.grid.columns.map(column => Object.freeze({
@@ -754,7 +634,6 @@ export function layoutSchematic(
     const bounds = calculateBounds(
         gridBounds,
         allSegments,
-        networks.flatMap(network => network.label ? [network.label] : []),
         junctions,
         graph.nodes.length === 0 && allSegments.length === 0
     );

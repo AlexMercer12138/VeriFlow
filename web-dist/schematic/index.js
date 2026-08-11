@@ -4751,19 +4751,6 @@
   var require_layout = __commonJS({
     "packages/schematic-core/dist/layout.js"(exports2) {
       "use strict";
-      var __classPrivateFieldSet = exports2 && exports2.__classPrivateFieldSet || function(receiver, state, value, kind, f) {
-        if (kind === "m") throw new TypeError("Private method is not writable");
-        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
-        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
-        return kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value), value;
-      };
-      var __classPrivateFieldGet = exports2 && exports2.__classPrivateFieldGet || function(receiver, state, kind, f) {
-        if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
-        if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
-        return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
-      };
-      var _RectangleIndex_entries;
-      var _RectangleIndex_maximumRight;
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.layoutSchematic = layoutSchematic2;
       var columns_1 = require_columns();
@@ -5097,77 +5084,8 @@
       function freezeSegment(segment) {
         return Object.freeze({ ...segment });
       }
-      function rectanglesOverlap(left4, right4) {
-        return Math.max(left4.x, right4.x) < Math.min(left4.x + left4.width, right4.x + right4.width) && Math.max(left4.y, right4.y) < Math.min(left4.y + left4.height, right4.y + right4.height);
-      }
-      var RectangleIndex = class {
-        constructor(rectangles) {
-          _RectangleIndex_entries.set(this, void 0);
-          _RectangleIndex_maximumRight.set(this, void 0);
-          __classPrivateFieldSet(this, _RectangleIndex_entries, [...rectangles].sort((left4, right4) => left4.x - right4.x || left4.y - right4.y), "f");
-          let maximumRight = Number.NEGATIVE_INFINITY;
-          __classPrivateFieldSet(this, _RectangleIndex_maximumRight, __classPrivateFieldGet(this, _RectangleIndex_entries, "f").map((entry) => {
-            maximumRight = Math.max(maximumRight, entry.x + entry.width);
-            return maximumRight;
-          }), "f");
-        }
-        intersects(candidate) {
-          const right4 = candidate.x + candidate.width;
-          let low = 0;
-          let high = __classPrivateFieldGet(this, _RectangleIndex_maximumRight, "f").length;
-          while (low < high) {
-            const middle = low + Math.floor((high - low) / 2);
-            if (__classPrivateFieldGet(this, _RectangleIndex_maximumRight, "f")[middle] <= candidate.x)
-              low = middle + 1;
-            else
-              high = middle;
-          }
-          for (let index2 = low; index2 < __classPrivateFieldGet(this, _RectangleIndex_entries, "f").length; index2 += 1) {
-            const entry = __classPrivateFieldGet(this, _RectangleIndex_entries, "f")[index2];
-            if (entry.x >= right4)
-              return false;
-            if (entry.x + entry.width <= candidate.x)
-              continue;
-            if (rectanglesOverlap(candidate, entry))
-              return true;
-          }
-          return false;
-        }
-      };
-      _RectangleIndex_entries = /* @__PURE__ */ new WeakMap(), _RectangleIndex_maximumRight = /* @__PURE__ */ new WeakMap();
-      function measuredLabelWidth(measureText2, text3) {
-        if (text3.length === 0)
-          return void 0;
-        const width2 = measureText2(text3, renderModel_1.SCHEMATIC_NETWORK_LABEL_STYLE);
-        return Number.isFinite(width2) && width2 >= 0 ? width2 : void 0;
-      }
-      function labelForNetwork(displayName, segments, measureText2, obstacles, occupiedLabels) {
-        const width2 = measuredLabelWidth(measureText2, displayName);
-        if (width2 === void 0)
-          return void 0;
-        const layout = renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT;
-        const candidates = segments.flatMap((segment, sourceIndex) => segment.orientation === "horizontal" ? [{ segment, sourceIndex, length: segment.x2 - segment.x1 }] : []).sort((left4, right4) => right4.length - left4.length || left4.sourceIndex - right4.sourceIndex);
-        for (const { segment, length: length2 } of candidates) {
-          if (width2 + 2 * layout.endpointPadding > length2)
-            continue;
-          const x = segment.x1 + (length2 - width2) / 2;
-          const yCandidates = [
-            segment.y - layout.wireGap - layout.height,
-            segment.y + layout.wireGap
-          ];
-          for (const y of yCandidates) {
-            const bounds = { x, y, width: width2, height: layout.height };
-            if (obstacles.intersects(bounds) || occupiedLabels.some((label) => rectanglesOverlap(bounds, label))) {
-              continue;
-            }
-            occupiedLabels.push(bounds);
-            return Object.freeze({ text: displayName, bounds: freezeRectangle(bounds) });
-          }
-        }
-        return void 0;
-      }
-      function calculateBounds(gridBounds, segments, labels, junctions, empty2) {
-        if (empty2 && labels.length === 0 && junctions.length === 0) {
+      function calculateBounds(gridBounds, segments, junctions, empty2) {
+        if (empty2 && junctions.length === 0) {
           return freezeRectangle({ x: 0, y: 0, width: 0, height: 0 });
         }
         let minimumX = gridBounds.x;
@@ -5186,12 +5104,6 @@
             maximumX = Math.max(maximumX, segment.x);
             maximumY = Math.max(maximumY, segment.y2);
           }
-        }
-        for (const label of labels) {
-          minimumX = Math.min(minimumX, label.bounds.x);
-          minimumY = Math.min(minimumY, label.bounds.y);
-          maximumX = Math.max(maximumX, label.bounds.x + label.bounds.width);
-          maximumY = Math.max(maximumY, label.bounds.y + label.bounds.height);
         }
         for (const junction of junctions) {
           minimumX = Math.min(minimumX, junction.point.x - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius);
@@ -5274,21 +5186,10 @@
           point: freezePoint(junction.point),
           directions: (0, renderModel_1.readonlySet)(DIRECTION_ORDER.filter((direction) => junction.directions.has(direction)))
         }));
-        const labelObstacleIndex = new RectangleIndex([
-          ...renderedNodes.map(([, node]) => node.bounds),
-          ...junctions.map((junction) => ({
-            x: junction.point.x - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            y: junction.point.y - renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            width: 2 * renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius,
-            height: 2 * renderModel_1.SCHEMATIC_NETWORK_LABEL_LAYOUT.junctionRadius
-          }))
-        ]);
-        const occupiedLabels = [];
         const networks = graph2.networks.map((network) => {
           const route = routedById.get(network.id);
           const segments = Object.freeze(route.segments.map(freezeSegment));
           const displayName = network.adapterLabel ? `${network.name} ${network.adapterLabel}` : network.name;
-          const label = labelForNetwork(displayName, segments, measureText2, labelObstacleIndex, occupiedLabels);
           const terminals = Object.freeze(network.endpoints.map((endpoint) => {
             const point = realizedById.get(endpoint.nodeId).pinAnchors.find((pin2) => pin2.id === endpoint.pinId).point;
             return Object.freeze({
@@ -5303,8 +5204,7 @@
             selectionDescription: network.name,
             feedback: route.feedback,
             terminals,
-            segments,
-            label
+            segments
           });
         });
         const columns = routed.grid.columns.map((column) => Object.freeze({
@@ -5319,7 +5219,7 @@
           width: routed.grid.width,
           height: routed.grid.height
         };
-        const bounds = calculateBounds(gridBounds, allSegments, networks.flatMap((network) => network.label ? [network.label] : []), junctions, graph2.nodes.length === 0 && allSegments.length === 0);
+        const bounds = calculateBounds(gridBounds, allSegments, junctions, graph2.nodes.length === 0 && allSegments.length === 0);
         return Object.freeze({
           columns: Object.freeze(columns),
           nodes,
@@ -45473,44 +45373,6 @@
       (terminal) => terminal.role === "load" && samePoint(terminal.point, point)
     );
   }
-  function labelForSegment(route, segment) {
-    const label = route.label;
-    if (!label || segment.orientation !== "horizontal") return [];
-    const labelCenterX = label.bounds.x + label.bounds.width / 2;
-    const expectedAbove = segment.y - import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap - import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.height;
-    const expectedBelow = segment.y + import_schematic_core.SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap;
-    if (labelCenterX < segment.x1 || labelCenterX > segment.x2 || label.bounds.y !== expectedAbove && label.bounds.y !== expectedBelow) {
-      return [];
-    }
-    const distance = (labelCenterX - segment.x1) / (segment.x2 - segment.x1);
-    const centerY = label.bounds.y + label.bounds.height / 2;
-    return [{
-      attrs: {
-        text: {
-          text: label.text,
-          fill: "var(--vscode-editor-foreground, #202124)",
-          fontFamily: "var(--vscode-font-family, sans-serif)",
-          fontSize: import_schematic_core.SCHEMATIC_NETWORK_LABEL_STYLE.fontSize,
-          fontWeight: import_schematic_core.SCHEMATIC_NETWORK_LABEL_STYLE.fontWeight
-        },
-        rect: {
-          x: -label.bounds.width / 2,
-          y: -label.bounds.height / 2,
-          width: label.bounds.width,
-          height: label.bounds.height,
-          fill: "var(--vscode-editor-background, #ffffff)",
-          stroke: "var(--vscode-panel-border, #c7c7c7)",
-          strokeWidth: 1,
-          rx: 2,
-          ry: 2
-        }
-      },
-      position: {
-        distance,
-        offset: { x: 0, y: centerY - segment.y }
-      }
-    }];
-  }
   function networkStrokeWidth(network) {
     return network.width.kind === "known" && network.width.bits > 1 ? 2 : 1;
   }
@@ -45546,7 +45408,6 @@
               targetMarker: terminatesAtLoad(networkRoute, target) ? { name: "block", width: 6, height: 6 } : null
             }
           },
-          labels: labelForSegment(networkRoute, segment),
           zIndex: 0
         });
       });

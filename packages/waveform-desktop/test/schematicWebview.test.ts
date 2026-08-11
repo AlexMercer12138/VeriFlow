@@ -1626,7 +1626,7 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             const geometry = await renderedGeometry(page);
             assert.equal(geometry.nodeCount, 13);
             assert.ok(geometry.edgeCount > fixture.graph.networks.length);
-            assert.ok(geometry.labelCount > 0);
+            assert.equal(geometry.labelCount, 0);
             assert.equal(geometry.pinCount, 26);
             assert.deepEqual(geometry.textOverflow, []);
             assert.deepEqual(geometry.pinOverflow, []);

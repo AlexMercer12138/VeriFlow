@@ -20,7 +20,6 @@ import {
     layoutSchematic,
     snapNodesToPlacement,
     SCHEMATIC_NETWORK_LABEL_LAYOUT,
-    SCHEMATIC_NETWORK_LABEL_STYLE,
     SCHEMATIC_NODE_LAYOUT,
     SCHEMATIC_TEXT_STYLES,
     type GraphNode,
@@ -434,51 +433,6 @@ function terminatesAtLoad(
     );
 }
 
-function labelForSegment(
-    route: NetworkRoute,
-    segment: Readonly<RouteSegment>
-): object[] {
-    const label = route.label;
-    if (!label || segment.orientation !== 'horizontal') return [];
-    const labelCenterX = label.bounds.x + label.bounds.width / 2;
-    const expectedAbove = segment.y
-        - SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap
-        - SCHEMATIC_NETWORK_LABEL_LAYOUT.height;
-    const expectedBelow = segment.y + SCHEMATIC_NETWORK_LABEL_LAYOUT.wireGap;
-    if (labelCenterX < segment.x1 || labelCenterX > segment.x2
-        || (label.bounds.y !== expectedAbove && label.bounds.y !== expectedBelow)) {
-        return [];
-    }
-    const distance = (labelCenterX - segment.x1) / (segment.x2 - segment.x1);
-    const centerY = label.bounds.y + label.bounds.height / 2;
-    return [{
-        attrs: {
-            text: {
-                text: label.text,
-                fill: 'var(--vscode-editor-foreground, #202124)',
-                fontFamily: 'var(--vscode-font-family, sans-serif)',
-                fontSize: SCHEMATIC_NETWORK_LABEL_STYLE.fontSize,
-                fontWeight: SCHEMATIC_NETWORK_LABEL_STYLE.fontWeight,
-            },
-            rect: {
-                x: -label.bounds.width / 2,
-                y: -label.bounds.height / 2,
-                width: label.bounds.width,
-                height: label.bounds.height,
-                fill: 'var(--vscode-editor-background, #ffffff)',
-                stroke: 'var(--vscode-panel-border, #c7c7c7)',
-                strokeWidth: 1,
-                rx: 2,
-                ry: 2,
-            },
-        },
-        position: {
-            distance,
-            offset: { x: 0, y: centerY - segment.y },
-        },
-    }];
-}
-
 function networkStrokeWidth(network: SchematicNetwork): number {
     return network.width.kind === 'known' && network.width.bits > 1 ? 2 : 1;
 }
@@ -522,7 +476,6 @@ function renderNetworks(
                             : null,
                     },
                 },
-                labels: labelForSegment(networkRoute, segment),
                 zIndex: 0,
             });
         });

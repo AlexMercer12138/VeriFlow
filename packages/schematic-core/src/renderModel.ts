@@ -62,6 +62,7 @@ export type NetworkRoute = Readonly<{
     feedback: boolean;
     terminals: readonly NetworkTerminalGeometry[];
     segments: readonly Readonly<RouteSegment>[];
+    /** @deprecated Network names are shown in the Inspector, not on canvas. */
     label?: NetworkRouteLabel;
 }>;
 

@@ -125,7 +125,7 @@ Run:
 
 ```bash
 npm run vscode:prepublish --workspace veriflow
-node veriflow-vscode/dist/test/schematicAssets.test.js
+node veriflow-vscode/out/test/schematicAssets.test.js
 ```
 
 Expected: FAIL because the renderer still passes X6 label cells.
@@ -145,8 +145,8 @@ Run:
 ```bash
 npm test --workspace @veriflow/schematic-core
 npm run vscode:prepublish --workspace veriflow
-node veriflow-vscode/dist/test/schematicWebviewSupport.test.js
-node veriflow-vscode/dist/test/schematicAssets.test.js
+node veriflow-vscode/out/test/schematicWebviewSupport.test.js
+node veriflow-vscode/out/test/schematicAssets.test.js
 ```
 
 Expected: PASS.
@@ -391,7 +391,7 @@ Run:
 
 ```bash
 npm run vscode:prepublish --workspace veriflow
-node veriflow-vscode/dist/test/schematicAssets.test.js
+node veriflow-vscode/out/test/schematicAssets.test.js
 npm run build --workspace @veriflow/waveform-desktop
 npx tsc -p packages/waveform-desktop/tsconfig.test.json
 xvfb-run -a node --test --test-name-pattern="obstacle-free geometry|selection boxes" \
@@ -447,7 +447,7 @@ Run:
 
 ```bash
 npm run vscode:prepublish --workspace veriflow
-node veriflow-vscode/dist/test/schematicWebviewSupport.test.js
+node veriflow-vscode/out/test/schematicWebviewSupport.test.js
 ```
 
 Expected: FAIL because no Inspector projection exists.
@@ -491,8 +491,8 @@ Run:
 
 ```bash
 npm run vscode:prepublish --workspace veriflow
-node veriflow-vscode/dist/test/schematicWebviewSupport.test.js
-node veriflow-vscode/dist/test/schematicAssets.test.js
+node veriflow-vscode/out/test/schematicWebviewSupport.test.js
+node veriflow-vscode/out/test/schematicAssets.test.js
 npm run build --workspace @veriflow/waveform-desktop
 npx tsc -p packages/waveform-desktop/tsconfig.test.json
 xvfb-run -a node --test --test-name-pattern="obstacle-free geometry" \

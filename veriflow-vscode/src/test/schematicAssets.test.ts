@@ -123,6 +123,8 @@ function assertCanonicalSegmentRendering(source: string): void {
         'canonical segments must render with point source and target endpoints'
     );
     assert.doesNotMatch(segmentLoop, /\bvertices:\s*|\brouter:\s*/);
+    assert.doesNotMatch(segmentLoop, /\blabels:\s*/);
+    assert.doesNotMatch(source, /function labelForSegment\(/);
 }
 
 function assertRendererCellContracts(source: string): void {

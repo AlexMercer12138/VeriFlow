@@ -315,37 +315,29 @@ test('uses realized node bodies and anchors while fitting labels with actual met
 
     for (const route of result.networks) {
         assert.equal(route.selectionDescription, route.name);
-        if (!route.label) continue;
-        assert.equal(route.label.bounds.width, measure(route.name));
-        for (const rendered of result.nodes.values()) {
-            assert.equal(rectanglesOverlap(route.label.bounds, rendered.bounds), false);
-        }
-        for (const junction of result.junctions) {
-            const dot = {
-                x: junction.point.x - 3,
-                y: junction.point.y - 3,
-                width: 6,
-                height: 6,
-            };
-            assert.equal(rectanglesOverlap(route.label.bounds, dot), false);
-        }
+        assert.equal(route.label, undefined);
     }
 });
 
-test('preserves adapter display text without changing network selection identity', () => {
+test('keeps network names semantic without producing canvas labels', () => {
     const graph = complexGraph();
     graph.networks[0].adapterLabel = '[7:0]';
 
-    const result = layoutSchematic(graph, undefined, text => text.length * 2);
+    const measured: string[] = [];
+    const result = layoutSchematic(graph, undefined, text => {
+        measured.push(text);
+        return text.length * 2;
+    });
     const route = result.networks[0];
 
     assert.equal(route.name, 'clk_distribution');
     assert.equal(route.displayName, 'clk_distribution [7:0]');
     assert.equal(route.selectionDescription, 'clk_distribution');
-    assert.equal(route.label?.text, 'clk_distribution [7:0]');
+    assert.equal(route.label, undefined);
+    assert.equal(measured.includes(route.displayName), false);
 });
 
-test('includes nodes wires labels and junction dots in the public bounds', () => {
+test('includes nodes wires and junction dots in the public bounds', () => {
     const result = layoutSchematic(complexGraph(), undefined, text => text.length * 7);
     const containsRectangle = (candidate: Readonly<Rectangle>): boolean =>
         candidate.x >= result.bounds.x
@@ -366,8 +358,6 @@ test('includes nodes wires labels and junction dots in the public bounds', () =>
             : containsPoint({ x: segment.x, y: segment.y1 })
                 && containsPoint({ x: segment.x, y: segment.y2 })
     )));
-    assert.ok(result.networks.every(route => !route.label
-        || containsRectangle(route.label.bounds)));
     assert.ok(result.junctions.every(junction => containsRectangle({
         x: junction.point.x - 3,
         y: junction.point.y - 3,
@@ -652,7 +642,7 @@ test('uses a safe width fallback for non-finite metrics and propagates measurer 
     }), /font backend unavailable/);
 });
 
-test('labels the longest clear horizontal segment or omits an unfit full name', () => {
+test('never measures or places a network name on clear horizontal routes', () => {
     const input = node('port:label-input', 'port', 'input', [['value', 'driver']]);
     const output = node('port:label-output', 'port', 'output', [['value', 'load']]);
     const graph: SchematicGraph = {
@@ -667,21 +657,15 @@ test('labels the longest clear horizontal segment or omits an unfit full name', 
         diagnostics: [],
     };
 
-    const labeled = layoutSchematic(graph, undefined, text => text.length * 2);
-    const route = labeled.networks[0];
-    assert.ok(route.label);
-    const longest = route.segments.filter(segment =>
-        segment.orientation === 'horizontal'
-    ).sort((left, right) => {
-        const leftLength = left.orientation === 'horizontal' ? left.x2 - left.x1 : 0;
-        const rightLength = right.orientation === 'horizontal' ? right.x2 - right.x1 : 0;
-        return rightLength - leftLength;
-    })[0];
-    assert.ok(longest?.orientation === 'horizontal');
-    assert.ok(route.label.bounds.x >= longest.x1);
-    assert.ok(route.label.bounds.x + route.label.bounds.width <= longest.x2);
+    const measured: string[] = [];
+    const rendered = layoutSchematic(graph, undefined, text => {
+        measured.push(text);
+        return text.length * 2;
+    });
+    const route = rendered.networks[0];
 
-    const omitted = layoutSchematic(graph, undefined, text => text.length * 10_000);
-    assert.equal(omitted.networks[0].label, undefined);
-    assert.equal(omitted.networks[0].selectionDescription, 'short_name');
+    assert.ok(route.segments.some(segment => segment.orientation === 'horizontal'));
+    assert.equal(route.label, undefined);
+    assert.equal(route.selectionDescription, 'short_name');
+    assert.equal(measured.includes('short_name'), false);
 });

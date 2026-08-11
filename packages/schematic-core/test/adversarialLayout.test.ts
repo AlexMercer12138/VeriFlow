@@ -65,11 +65,12 @@ test('keeps long node text and many pin labels inside their module body', () => 
     }
 });
 
-test('preserves a long network name when its visible label cannot fit', () => {
+test('preserves a long network name without canvas label geometry', () => {
     const result = rendered();
     const route = result.networks.find(candidate => candidate.id === 'network:lane-a')!;
     assert.equal(route.selectionDescription, 'lane_a_with_an_intentionally_long_network_label');
-    assert.ok(route.label === undefined || route.label.text === route.selectionDescription);
+    assert.equal(route.displayName, route.selectionDescription);
+    assert.equal(route.label, undefined);
 });
 
 test('separates unequal-width nodes in adjacent columns', () => {
@@ -157,13 +158,6 @@ test('keeps every node label and route segment within public bounds', () => {
         ));
     }
     for (const route of result.networks) {
-        if (route.label) {
-            assert.ok(containsPoint(route.label.bounds.x, route.label.bounds.y));
-            assert.ok(containsPoint(
-                route.label.bounds.x + route.label.bounds.width,
-                route.label.bounds.y + route.label.bounds.height
-            ));
-        }
         for (const segment of route.segments) {
             assert.ok(segment.orientation === 'horizontal'
                 ? containsPoint(segment.x1, segment.y) && containsPoint(segment.x2, segment.y)
@@ -172,25 +166,9 @@ test('keeps every node label and route segment within public bounds', () => {
     }
 });
 
-test('keeps placed network labels clear of nodes junctions and other labels', () => {
+test('never materializes network labels in adversarial layouts', () => {
     const result = rendered();
-    const labels = result.networks.flatMap(route => route.label ? [route.label.bounds] : []);
-    for (let index = 0; index < labels.length; index += 1) {
-        for (const node of result.nodes.values()) {
-            assert.equal(rectanglesOverlap(labels[index], node.bounds), false);
-        }
-        for (const junction of result.junctions) {
-            assert.equal(rectanglesOverlap(labels[index], {
-                x: junction.point.x - 3,
-                y: junction.point.y - 3,
-                width: 6,
-                height: 6,
-            }), false);
-        }
-        for (let other = index + 1; other < labels.length; other += 1) {
-            assert.equal(rectanglesOverlap(labels[index], labels[other]), false);
-        }
-    }
+    assert.ok(result.networks.every(route => route.label === undefined));
 });
 
 test('keeps adversarial routes orthogonal obstacle-free and distinct', () => {
