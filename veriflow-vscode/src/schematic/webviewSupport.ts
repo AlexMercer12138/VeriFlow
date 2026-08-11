@@ -1,4 +1,11 @@
 import type { HdlDiagnostic, SourceSpan } from '../core/hdl/model';
+import type {
+    GraphNode,
+    GraphPin,
+    PinDirection,
+    SchematicGraph,
+    SchematicNetwork,
+} from '@veriflow/schematic-core';
 import type { SchematicLayout } from './layoutStore';
 import type { WebviewCommand } from './protocol';
 
@@ -78,6 +85,177 @@ export type SchematicSelectionSummary = {
     selectedObjectId?: string;
     statusText: string;
 };
+
+export type SchematicInspectorModel = Readonly<{
+    kind: 'empty' | 'network' | 'instance' | 'port' | 'node' | 'multiple';
+    title: string;
+    readOnly: true;
+    rows: readonly Readonly<{ label: string; value: string }>[];
+}>;
+
+function formatWidth(width: GraphPin['width']): string {
+    if (width.kind === 'known') {
+        return `${width.bits} bit${width.bits === 1 ? '' : 's'}`;
+    }
+    return width.kind === 'symbolic' ? width.expression : 'Unknown';
+}
+
+function formatHdlDirection(
+    direction: PinDirection,
+    boundaryPort: boolean
+): string {
+    if (direction === 'bidirectional') return 'Inout';
+    if (boundaryPort) return direction === 'driver' ? 'Input' : 'Output';
+    return direction === 'load' ? 'input' : 'output';
+}
+
+function endpointName(
+    graph: SchematicGraph,
+    endpoint: SchematicNetwork['endpoints'][number]
+): string | undefined {
+    const node = graph.nodes.find(candidate => candidate.id === endpoint.nodeId);
+    const pin = node?.pins.find(candidate => candidate.id === endpoint.pinId);
+    if (!node || !pin) return undefined;
+    return node.kind === 'port' ? node.label : `${node.label}.${pin.name}`;
+}
+
+function formattedEndpoints(
+    graph: SchematicGraph,
+    network: SchematicNetwork,
+    role: PinDirection
+): string {
+    const names = network.endpoints.filter(endpoint => endpoint.role === role)
+        .flatMap(endpoint => endpointName(graph, endpoint) ?? []);
+    return names.length > 0 ? names.join(', ') : 'None';
+}
+
+function projectNetworkInspector(
+    graph: SchematicGraph,
+    network: SchematicNetwork
+): SchematicInspectorModel {
+    return {
+        kind: 'network',
+        title: network.name,
+        readOnly: true,
+        rows: [
+            { label: 'Name', value: network.name },
+            { label: 'Adapter', value: network.adapterLabel ?? 'None' },
+            { label: 'Width', value: formatWidth(network.width) },
+            { label: 'Drivers', value: formattedEndpoints(graph, network, 'driver') },
+            { label: 'Loads', value: formattedEndpoints(graph, network, 'load') },
+            {
+                label: 'Bidirectional',
+                value: formattedEndpoints(graph, network, 'bidirectional'),
+            },
+        ],
+    };
+}
+
+function formatPins(node: GraphNode): string {
+    if (node.pins.length === 0) return 'None';
+    return node.pins.map(pin => `${pin.name} (${formatHdlDirection(
+        pin.direction,
+        false
+    )}, ${formatWidth(pin.width)})`).join(', ');
+}
+
+function projectNodeInspector(
+    graph: SchematicGraph,
+    node: GraphNode
+): SchematicInspectorModel {
+    if (node.kind === 'instance') {
+        return {
+            kind: 'instance',
+            title: node.label,
+            readOnly: true,
+            rows: [
+                { label: 'Name', value: node.label },
+                { label: 'Module', value: node.subtitle ?? 'Unknown' },
+                { label: 'Pins', value: formatPins(node) },
+                {
+                    label: 'Definition',
+                    value: node.definitionKey ? 'Available' : 'Unavailable',
+                },
+                { label: 'Read-only', value: node.readOnly ? 'Yes' : 'No' },
+            ],
+        };
+    }
+    if (node.kind === 'port') {
+        const pin = node.pins[0];
+        const networks = graph.networks.filter(network => network.endpoints.some(
+            endpoint => endpoint.nodeId === node.id
+                && (pin === undefined || endpoint.pinId === pin.id)
+        ));
+        return {
+            kind: 'port',
+            title: node.label,
+            readOnly: true,
+            rows: [
+                { label: 'Name', value: node.label },
+                {
+                    label: 'Direction',
+                    value: pin ? formatHdlDirection(pin.direction, true) : 'Unknown',
+                },
+                { label: 'Width', value: pin ? formatWidth(pin.width) : 'Unknown' },
+                {
+                    label: 'Network',
+                    value: networks.length > 0
+                        ? networks.map(network => network.name).join(', ')
+                        : 'Unconnected',
+                },
+            ],
+        };
+    }
+    return {
+        kind: 'node',
+        title: node.label,
+        readOnly: true,
+        rows: [
+            { label: 'Name', value: node.label },
+            { label: 'Type', value: node.kind },
+            { label: 'Pins', value: formatPins(node) },
+            { label: 'Read-only', value: node.readOnly ? 'Yes' : 'No' },
+        ],
+    };
+}
+
+export function projectSchematicInspector(
+    graph: SchematicGraph,
+    selectedNodeIds: readonly string[],
+    selectedNetworkId: string | undefined
+): SchematicInspectorModel {
+    const network = selectedNetworkId === undefined
+        ? undefined
+        : graph.networks.find(candidate => candidate.id === selectedNetworkId);
+    if (network) return projectNetworkInspector(graph, network);
+
+    const wantedNodeIds = new Set(selectedNodeIds);
+    const nodes = graph.nodes.filter(node => wantedNodeIds.has(node.id));
+    if (nodes.length === 1) return projectNodeInspector(graph, nodes[0]);
+    if (nodes.length > 1) {
+        const readOnlyValues = new Set(nodes.map(node => node.readOnly));
+        return {
+            kind: 'multiple',
+            title: `${nodes.length} objects selected`,
+            readOnly: true,
+            rows: [
+                { label: 'Count', value: String(nodes.length) },
+                {
+                    label: 'Read-only',
+                    value: readOnlyValues.size > 1
+                        ? 'Mixed'
+                        : nodes[0].readOnly ? 'Yes' : 'No',
+                },
+            ],
+        };
+    }
+    return {
+        kind: 'empty',
+        title: 'No selection',
+        readOnly: true,
+        rows: [],
+    };
+}
 
 export function formatSchematicDiagnosticDetails(
     diagnostics: readonly HdlDiagnostic[]

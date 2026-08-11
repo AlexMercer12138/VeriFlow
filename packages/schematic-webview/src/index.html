@@ -24,19 +24,29 @@
                     <button id="search-next-button" class="icon-button" type="button" title="Next result" aria-label="Next search result" disabled><span data-icon-slot></span></button>
                 </div>
                 <button id="minimap-button" class="icon-button" type="button" title="Toggle minimap" aria-label="Toggle minimap" aria-pressed="false" disabled><span data-icon-slot></span></button>
+                <button id="inspector-toggle-button" class="icon-button" type="button" title="Hide properties" aria-label="Hide properties" aria-controls="inspector" aria-expanded="true"><span data-icon-slot></span></button>
             </div>
             <div class="diagnostic-counts" aria-label="Validation counts">
                 <span id="error-count">E 0</span>
                 <span id="warning-count">W 0</span>
             </div>
         </div>
-        <section id="canvas-region" aria-label="Schematic canvas">
-            <div id="canvas" data-testid="schematic-canvas"></div>
-            <div id="minimap" data-testid="schematic-minimap" hidden></div>
-            <div id="canvas-state" class="canvas-state" role="status" aria-live="polite">
-                <span id="canvas-state-message">Loading schematic</span>
-            </div>
-        </section>
+        <div id="content-row">
+            <section id="canvas-region" aria-label="Schematic canvas">
+                <div id="canvas" data-testid="schematic-canvas"></div>
+                <div id="minimap" data-testid="schematic-minimap" hidden></div>
+                <div id="canvas-state" class="canvas-state" role="status" aria-live="polite">
+                    <span id="canvas-state-message">Loading schematic</span>
+                </div>
+            </section>
+            <aside id="inspector" aria-label="Properties">
+                <header class="inspector-header">
+                    <h2 id="inspector-title">No selection</h2>
+                    <span class="inspector-mode">Read only</span>
+                </header>
+                <dl id="inspector-properties"></dl>
+            </aside>
+        </div>
         <footer id="status-strip" role="status" aria-live="polite">
             <span id="selection-status">No selection</span>
             <span id="diagnostic-status">0 errors, 0 warnings</span>

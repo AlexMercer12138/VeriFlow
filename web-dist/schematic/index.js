@@ -44955,6 +44955,20 @@
     ["path", { d: "M9 21H3v-6" }]
   ];
 
+  // node_modules/lucide/dist/esm/icons/panel-right-close.mjs
+  var PanelRightClose = [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M15 3v18" }],
+    ["path", { d: "m8 9 3 3-3 3" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/panel-right-open.mjs
+  var PanelRightOpen = [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M15 3v18" }],
+    ["path", { d: "m10 15-3-3 3-3" }]
+  ];
+
   // node_modules/lucide/dist/esm/icons/scan.mjs
   var Scan = [
     ["path", { d: "M3 7V5a2 2 0 0 1 2-2h2" }],
@@ -44980,6 +44994,133 @@
   var import_schematic_core = __toESM(require_dist());
 
   // veriflow-vscode/src/schematic/webviewSupport.ts
+  function formatWidth(width2) {
+    if (width2.kind === "known") {
+      return `${width2.bits} bit${width2.bits === 1 ? "" : "s"}`;
+    }
+    return width2.kind === "symbolic" ? width2.expression : "Unknown";
+  }
+  function formatHdlDirection(direction, boundaryPort) {
+    if (direction === "bidirectional") return "Inout";
+    if (boundaryPort) return direction === "driver" ? "Input" : "Output";
+    return direction === "load" ? "input" : "output";
+  }
+  function endpointName(graph2, endpoint) {
+    const node = graph2.nodes.find((candidate) => candidate.id === endpoint.nodeId);
+    const pin2 = node?.pins.find((candidate) => candidate.id === endpoint.pinId);
+    if (!node || !pin2) return void 0;
+    return node.kind === "port" ? node.label : `${node.label}.${pin2.name}`;
+  }
+  function formattedEndpoints(graph2, network, role) {
+    const names = network.endpoints.filter((endpoint) => endpoint.role === role).flatMap((endpoint) => endpointName(graph2, endpoint) ?? []);
+    return names.length > 0 ? names.join(", ") : "None";
+  }
+  function projectNetworkInspector(graph2, network) {
+    return {
+      kind: "network",
+      title: network.name,
+      readOnly: true,
+      rows: [
+        { label: "Name", value: network.name },
+        { label: "Adapter", value: network.adapterLabel ?? "None" },
+        { label: "Width", value: formatWidth(network.width) },
+        { label: "Drivers", value: formattedEndpoints(graph2, network, "driver") },
+        { label: "Loads", value: formattedEndpoints(graph2, network, "load") },
+        {
+          label: "Bidirectional",
+          value: formattedEndpoints(graph2, network, "bidirectional")
+        }
+      ]
+    };
+  }
+  function formatPins(node) {
+    if (node.pins.length === 0) return "None";
+    return node.pins.map((pin2) => `${pin2.name} (${formatHdlDirection(
+      pin2.direction,
+      false
+    )}, ${formatWidth(pin2.width)})`).join(", ");
+  }
+  function projectNodeInspector(graph2, node) {
+    if (node.kind === "instance") {
+      return {
+        kind: "instance",
+        title: node.label,
+        readOnly: true,
+        rows: [
+          { label: "Name", value: node.label },
+          { label: "Module", value: node.subtitle ?? "Unknown" },
+          { label: "Pins", value: formatPins(node) },
+          {
+            label: "Definition",
+            value: node.definitionKey ? "Available" : "Unavailable"
+          },
+          { label: "Read-only", value: node.readOnly ? "Yes" : "No" }
+        ]
+      };
+    }
+    if (node.kind === "port") {
+      const pin2 = node.pins[0];
+      const networks = graph2.networks.filter((network) => network.endpoints.some(
+        (endpoint) => endpoint.nodeId === node.id && (pin2 === void 0 || endpoint.pinId === pin2.id)
+      ));
+      return {
+        kind: "port",
+        title: node.label,
+        readOnly: true,
+        rows: [
+          { label: "Name", value: node.label },
+          {
+            label: "Direction",
+            value: pin2 ? formatHdlDirection(pin2.direction, true) : "Unknown"
+          },
+          { label: "Width", value: pin2 ? formatWidth(pin2.width) : "Unknown" },
+          {
+            label: "Network",
+            value: networks.length > 0 ? networks.map((network) => network.name).join(", ") : "Unconnected"
+          }
+        ]
+      };
+    }
+    return {
+      kind: "node",
+      title: node.label,
+      readOnly: true,
+      rows: [
+        { label: "Name", value: node.label },
+        { label: "Type", value: node.kind },
+        { label: "Pins", value: formatPins(node) },
+        { label: "Read-only", value: node.readOnly ? "Yes" : "No" }
+      ]
+    };
+  }
+  function projectSchematicInspector(graph2, selectedNodeIds2, selectedNetworkId2) {
+    const network = selectedNetworkId2 === void 0 ? void 0 : graph2.networks.find((candidate) => candidate.id === selectedNetworkId2);
+    if (network) return projectNetworkInspector(graph2, network);
+    const wantedNodeIds = new Set(selectedNodeIds2);
+    const nodes = graph2.nodes.filter((node) => wantedNodeIds.has(node.id));
+    if (nodes.length === 1) return projectNodeInspector(graph2, nodes[0]);
+    if (nodes.length > 1) {
+      const readOnlyValues = new Set(nodes.map((node) => node.readOnly));
+      return {
+        kind: "multiple",
+        title: `${nodes.length} objects selected`,
+        readOnly: true,
+        rows: [
+          { label: "Count", value: String(nodes.length) },
+          {
+            label: "Read-only",
+            value: readOnlyValues.size > 1 ? "Mixed" : nodes[0].readOnly ? "Yes" : "No"
+          }
+        ]
+      };
+    }
+    return {
+      kind: "empty",
+      title: "No selection",
+      readOnly: true,
+      rows: []
+    };
+  }
   function formatSchematicDiagnosticDetails(diagnostics) {
     return diagnostics.map(
       (diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`
@@ -45099,6 +45240,10 @@
     searchNextButton: requiredElement("search-next-button"),
     minimapButton: requiredElement("minimap-button"),
     minimap: requiredElement("minimap"),
+    inspectorToggleButton: requiredElement("inspector-toggle-button"),
+    inspector: requiredElement("inspector"),
+    inspectorTitle: requiredElement("inspector-title"),
+    inspectorProperties: requiredElement("inspector-properties"),
     errorCount: requiredElement("error-count"),
     warningCount: requiredElement("warning-count"),
     selectionStatus: requiredElement("selection-status"),
@@ -45512,6 +45657,7 @@
   var applyingLayout = false;
   var syncingSelection = false;
   var selectedNetworkId;
+  var inspectorExpanded = true;
   var minimapPlugin;
   var minimapAvailable = false;
   var searchMatches = [];
@@ -45641,7 +45787,44 @@
       currentLayout.selectedObjectId = summary.selectedObjectId;
     }
     dom.selectionStatus.textContent = summary.statusText;
+    renderCurrentInspector(cells);
     if (persist) scheduleLayoutSave();
+  }
+  function renderInspector(model) {
+    dom.inspector.dataset.kind = model.kind;
+    dom.inspector.dataset.readOnly = String(model.readOnly);
+    dom.inspectorTitle.textContent = model.title;
+    const rows = document.createDocumentFragment();
+    for (const row of model.rows) {
+      const term = document.createElement("dt");
+      term.textContent = row.label;
+      const description = document.createElement("dd");
+      description.textContent = row.value;
+      rows.append(term, description);
+    }
+    dom.inspectorProperties.replaceChildren(rows);
+  }
+  function selectedNodeIds(cells) {
+    return [...new Set(cells.flatMap((cell) => {
+      const data2 = cellData(cell);
+      return data2?.objectType === "node" && !data2.junction ? [data2.objectId] : [];
+    }))];
+  }
+  function renderCurrentInspector(cells = selection.getSelectedCells()) {
+    if (!currentGraph) {
+      renderInspector({
+        kind: "empty",
+        title: "No selection",
+        readOnly: true,
+        rows: []
+      });
+      return;
+    }
+    renderInspector(projectSchematicInspector(
+      currentGraph,
+      selectedNodeIds(cells),
+      selectedNetworkId
+    ));
   }
   function selectNetwork(networkId, persist = true) {
     const matchingCell = networkId === void 0 ? void 0 : graph.getCells().find((cell) => {
@@ -45948,6 +46131,7 @@
     dom.searchPreviousButton.disabled = true;
     dom.searchNextButton.disabled = true;
     dom.selectionStatus.textContent = "No selection";
+    renderCurrentInspector();
     minimapAvailable = false;
     if (minimapPlugin) {
       graph.disposePlugins("minimap");
@@ -46003,6 +46187,27 @@
         return;
     }
   }
+  function installIcon(button, icon) {
+    const slot = button.querySelector("[data-icon-slot]");
+    if (!slot) return;
+    slot.replaceChildren(createElement2(icon, {
+      width: 16,
+      height: 16,
+      "stroke-width": 1.75,
+      "aria-hidden": "true"
+    }));
+  }
+  function updateInspectorToggle() {
+    dom.inspector.hidden = !inspectorExpanded;
+    dom.inspectorToggleButton.setAttribute("aria-expanded", String(inspectorExpanded));
+    const label = inspectorExpanded ? "Hide properties" : "Show properties";
+    dom.inspectorToggleButton.title = label;
+    dom.inspectorToggleButton.setAttribute("aria-label", label);
+    installIcon(
+      dom.inspectorToggleButton,
+      inspectorExpanded ? PanelRightClose : PanelRightOpen
+    );
+  }
   function installIcons() {
     const icons = [
       [dom.fitButton, Maximize2],
@@ -46014,17 +46219,12 @@
       [dom.searchNextButton, ChevronDown]
     ];
     for (const [button, icon] of icons) {
-      const slot = button.querySelector("[data-icon-slot]");
-      if (!slot) continue;
-      slot.replaceChildren(createElement2(icon, {
-        width: 16,
-        height: 16,
-        "stroke-width": 1.75,
-        "aria-hidden": "true"
-      }));
+      installIcon(button, icon);
     }
+    updateInspectorToggle();
   }
   installIcons();
+  renderCurrentInspector();
   dom.moduleSelector.addEventListener("change", () => {
     if (currentGraph) {
       layoutSaveScheduler.flushModule(currentGraph.moduleKey);
@@ -46085,6 +46285,10 @@
     currentLayout.minimap = !currentLayout.minimap;
     setMinimapVisibility();
     scheduleLayoutSave();
+  });
+  dom.inspectorToggleButton.addEventListener("click", () => {
+    inspectorExpanded = !inspectorExpanded;
+    updateInspectorToggle();
   });
   dom.canvas.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.target instanceof Element)) return;

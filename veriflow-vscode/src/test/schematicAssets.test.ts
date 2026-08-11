@@ -371,13 +371,21 @@ async function testSchematicAssets(): Promise<void> {
     for (const expected of [
         'id="toolbar"',
         'id="module-selector"',
+        'id="content-row"',
         'id="canvas"',
+        'id="inspector"',
+        'id="inspector-title"',
+        'id="inspector-properties"',
+        'id="inspector-toggle-button"',
         'id="status-strip"',
         'aria-label="Fit schematic"',
         'aria-label="Reset zoom to 100%"',
         'aria-label="Relayout schematic"',
         'aria-label="Search schematic"',
         'aria-label="Toggle minimap"',
+        'aria-label="Properties"',
+        'aria-controls="inspector"',
+        'aria-expanded="true"',
         'aria-label="Previous search result"',
         'aria-label="Next search result"',
         'data-testid="schematic-shell"',
@@ -388,6 +396,9 @@ async function testSchematicAssets(): Promise<void> {
 
     const css = fs.readFileSync(path.join(webDistRoot, 'index.css'), 'utf8');
     assert.match(css, /grid-template-rows:\s*36px\s+minmax\(0,\s*1fr\)\s+24px/);
+    assert.match(css, /#content-row\s*{[^}]*display:\s*flex/s);
+    assert.match(css, /#inspector\s*{[^}]*flex:\s*0\s+0\s+280px/s);
+    assert.match(css, /#inspector\[hidden\]\s*{[^}]*display:\s*none/s);
     assert.match(css, /--vscode-editor-background/);
     assert.match(css, /--vscode-editor-foreground/);
     assert.match(css, /font-size:\s*12px/);
@@ -428,6 +439,10 @@ async function testSchematicAssets(): Promise<void> {
     assertNetworkSelectionContracts(webviewSource);
     assertAdapterSearchContract(webviewSource);
     assertNetworkNavigationContract(webviewSource);
+    assert.match(webviewSource, /\bprojectSchematicInspector\(/);
+    assert.match(webviewSource, /function renderInspector\(/);
+    assert.match(webviewSource, /function renderCurrentInspector\(/);
+    assert.match(webviewSource, /dom\.inspectorToggleButton\.addEventListener\('click'/);
     for (const token of semanticColorTokens.slice(1).filter(
         token => token !== '--schematic-wire-selected'
     )) {

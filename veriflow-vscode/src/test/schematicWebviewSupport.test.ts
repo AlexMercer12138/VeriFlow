@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 
+import type { SchematicGraph } from '@veriflow/schematic-core';
 import type { SchematicLayout } from '../schematic/layoutStore';
 import {
     buildSchematicWebviewHtml,
@@ -7,9 +8,183 @@ import {
     formatSchematicDiagnosticDetails,
     mergeSchematicWebviewLayouts,
     navigationCommandForCell,
+    projectSchematicInspector,
     summarizeSchematicSelection,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
+
+function inspectorGraph(): SchematicGraph {
+    return {
+        fileUri: 'file:///inspector.sv',
+        moduleKey: 'module:inspector:0',
+        moduleName: 'inspector_top',
+        nodes: [{
+            id: 'port:clk',
+            kind: 'port',
+            label: 'clk',
+            pins: [{
+                id: 'port:clk:clk',
+                name: 'clk',
+                direction: 'driver',
+                width: { kind: 'known', bits: 1 },
+                readOnly: true,
+            }],
+            readOnly: true,
+        }, {
+            id: 'port:shared',
+            kind: 'port',
+            label: 'shared',
+            pins: [{
+                id: 'port:shared:shared',
+                name: 'shared',
+                direction: 'bidirectional',
+                width: { kind: 'known', bits: 8 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }, {
+            id: 'instance:u_core',
+            kind: 'instance',
+            label: 'u_core',
+            subtitle: 'core',
+            definitionKey: 'module:file:///core.sv:0',
+            pins: [{
+                id: 'instance:u_core:clk',
+                name: 'clk',
+                direction: 'load',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }, {
+                id: 'instance:u_core:data',
+                name: 'data',
+                direction: 'driver',
+                width: { kind: 'known', bits: 8 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }, {
+            id: 'instance:u_sink',
+            kind: 'instance',
+            label: 'u_sink',
+            subtitle: 'sink',
+            pins: [{
+                id: 'instance:u_sink:data',
+                name: 'data',
+                direction: 'load',
+                width: { kind: 'known', bits: 8 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }],
+        networks: [{
+            id: 'network:clk',
+            name: 'clk',
+            width: { kind: 'known', bits: 1 },
+            endpoints: [{
+                nodeId: 'port:clk',
+                pinId: 'port:clk:clk',
+                role: 'driver',
+            }, {
+                nodeId: 'instance:u_core',
+                pinId: 'instance:u_core:clk',
+                role: 'load',
+            }],
+        }, {
+            id: 'network:data',
+            name: 'bus_data',
+            adapterLabel: '[7:0]',
+            width: { kind: 'known', bits: 8 },
+            endpoints: [{
+                nodeId: 'instance:u_core',
+                pinId: 'instance:u_core:data',
+                role: 'driver',
+            }, {
+                nodeId: 'instance:u_sink',
+                pinId: 'instance:u_sink:data',
+                role: 'load',
+            }, {
+                nodeId: 'port:shared',
+                pinId: 'port:shared:shared',
+                role: 'bidirectional',
+            }],
+        }],
+        diagnostics: [],
+    };
+}
+
+function testSchematicInspectorProjection(): void {
+    const graph = inspectorGraph();
+    assert.deepStrictEqual(
+        projectSchematicInspector(graph, [], 'network:data'),
+        {
+            kind: 'network',
+            title: 'bus_data',
+            readOnly: true,
+            rows: [
+                { label: 'Name', value: 'bus_data' },
+                { label: 'Adapter', value: '[7:0]' },
+                { label: 'Width', value: '8 bits' },
+                { label: 'Drivers', value: 'u_core.data' },
+                { label: 'Loads', value: 'u_sink.data' },
+                { label: 'Bidirectional', value: 'shared' },
+            ],
+        }
+    );
+    assert.deepStrictEqual(
+        projectSchematicInspector(graph, ['instance:u_core'], undefined),
+        {
+            kind: 'instance',
+            title: 'u_core',
+            readOnly: true,
+            rows: [
+                { label: 'Name', value: 'u_core' },
+                { label: 'Module', value: 'core' },
+                { label: 'Pins', value: 'clk (input, 1 bit), data (output, 8 bits)' },
+                { label: 'Definition', value: 'Available' },
+                { label: 'Read-only', value: 'No' },
+            ],
+        }
+    );
+    assert.deepStrictEqual(
+        projectSchematicInspector(graph, ['port:clk'], undefined),
+        {
+            kind: 'port',
+            title: 'clk',
+            readOnly: true,
+            rows: [
+                { label: 'Name', value: 'clk' },
+                { label: 'Direction', value: 'Input' },
+                { label: 'Width', value: '1 bit' },
+                { label: 'Network', value: 'clk' },
+            ],
+        }
+    );
+    assert.deepStrictEqual(
+        projectSchematicInspector(
+            graph,
+            ['port:clk', 'instance:u_core'],
+            undefined
+        ),
+        {
+            kind: 'multiple',
+            title: '2 objects selected',
+            readOnly: true,
+            rows: [
+                { label: 'Count', value: '2' },
+                { label: 'Read-only', value: 'Mixed' },
+            ],
+        }
+    );
+    assert.deepStrictEqual(
+        projectSchematicInspector(graph, ['node:stale'], 'network:stale'),
+        {
+            kind: 'empty',
+            title: 'No selection',
+            readOnly: true,
+            rows: [],
+        }
+    );
+}
 
 function testDiagnosticDetailFormatting(): void {
     assert.strictEqual(formatSchematicDiagnosticDetails([]), '');
@@ -254,6 +429,7 @@ function testSelectionStatusSummary(): void {
 void Promise.resolve()
     .then(testSecureSchematicWebviewHtml)
     .then(testDiagnosticDetailFormatting)
+    .then(testSchematicInspectorProjection)
     .then(testSynchronousWebviewLayoutSnapshot)
     .then(testSelectionStatusSummary)
     .then(testExactCellNavigationCommands)

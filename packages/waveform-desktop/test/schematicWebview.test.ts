@@ -75,6 +75,15 @@ async function capturedSaves(page: Page): Promise<CapturedSaveMessage[]> {
     });
 }
 
+async function inspectorRows(page: Page): Promise<Record<string, string>> {
+    return page.locator('#inspector-properties').evaluate(properties =>
+        Object.fromEntries([...properties.querySelectorAll('dt')].map(term => [
+            term.textContent ?? '',
+            term.nextElementSibling?.textContent ?? '',
+        ]))
+    );
+}
+
 async function dragElement(
     page: Page,
     targetOrSelector: Locator | string,
@@ -1673,6 +1682,16 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             'No selection',
             { exact: true }
         ).waitFor();
+        await page.locator('#inspector-title').getByText(
+            'No selection',
+            { exact: true }
+        ).waitFor();
+        const desktopInspectorBounds = await page.locator('#inspector').boundingBox();
+        assert.ok(desktopInspectorBounds);
+        assert.ok(
+            desktopInspectorBounds.width >= 270 && desktopInspectorBounds.width <= 290,
+            JSON.stringify(desktopInspectorBounds)
+        );
         const fanoutSegments = page.locator(
             '#canvas .x6-edge[data-cell-id^="network:visual-fanout:segment:"]'
         );
@@ -1763,6 +1782,14 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             return saves[saves.length - 1]?.layout?.selectedObjectId === selectedObjectId;
         }, 'network:visual-fanout');
         assert.equal(await page.locator('#selection-status').textContent(), 'network: fanout');
+        await page.locator('#inspector-title').getByText(
+            'fanout',
+            { exact: true }
+        ).waitFor();
+        const networkInspector = await inspectorRows(page);
+        assert.equal(networkInspector.Name, 'fanout');
+        assert.match(networkInspector.Drivers, /wide_source/);
+        assert.match(networkInspector.Loads, /top_stage/);
 
         const inspectViewport = async (
             name: 'desktop' | 'narrow'
@@ -1811,9 +1838,42 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         });
         await page.waitForFunction(() => window.innerWidth <= 440 && window.innerHeight <= 640);
         await inspectViewport('narrow');
-        await page.locator(
+        const narrowCanvasBounds = await page.locator('#canvas-region').boundingBox();
+        const narrowInspectorBounds = await page.locator('#inspector').boundingBox();
+        assert.ok(narrowCanvasBounds && narrowInspectorBounds);
+        assert.ok(
+            narrowCanvasBounds.x + narrowCanvasBounds.width
+                <= narrowInspectorBounds.x + 0.5,
+            JSON.stringify({ narrowCanvasBounds, narrowInspectorBounds })
+        );
+        const narrowInspectorValueBounds = await page.locator(
+            '#inspector-properties dd'
+        ).first().boundingBox();
+        assert.ok(narrowInspectorValueBounds);
+        assert.ok(
+            narrowInspectorValueBounds.width >= narrowInspectorBounds.width * 0.85,
+            JSON.stringify({ narrowInspectorBounds, narrowInspectorValueBounds })
+        );
+        const wideModuleBody = page.locator(
             '#canvas .x6-node[data-cell-id="instance:visual-wide"] > rect:first-child'
-        ).click({ force: true });
+        );
+        const wideModuleBounds = await wideModuleBody.boundingBox();
+        assert.ok(wideModuleBounds);
+        const visibleLeft = Math.max(wideModuleBounds.x, narrowCanvasBounds.x);
+        const visibleRight = Math.min(
+            wideModuleBounds.x + wideModuleBounds.width,
+            narrowCanvasBounds.x + narrowCanvasBounds.width
+        );
+        const visibleTop = Math.max(wideModuleBounds.y, narrowCanvasBounds.y);
+        const visibleBottom = Math.min(
+            wideModuleBounds.y + wideModuleBounds.height,
+            narrowCanvasBounds.y + narrowCanvasBounds.height
+        );
+        assert.ok(visibleRight > visibleLeft && visibleBottom > visibleTop);
+        await page.mouse.click(
+            (visibleLeft + visibleRight) / 2,
+            (visibleTop + visibleBottom) / 2
+        );
         await page.locator('#selection-status').getByText(
             'instance: wide_source_with_a_title_that_must_stay_inside_the_module',
             { exact: true }
@@ -1825,6 +1885,38 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             ':scope > path:nth-child(2)'
         ).evaluate(element => getComputedStyle(element).stroke);
         assert.equal(restoredFanoutStroke, ordinaryFanoutStroke);
+        await page.locator('#inspector-title').getByText(
+            'wide_source_with_a_title_that_must_stay_inside_the_module',
+            { exact: true }
+        ).waitFor();
+        const instanceInspector = await inspectorRows(page);
+        assert.equal(
+            instanceInspector.Name,
+            'wide_source_with_a_title_that_must_stay_inside_the_module'
+        );
+        assert.equal(
+            instanceInspector.Module,
+            'wide_source_subtitle_that_is_intentionally_long'
+        );
+        assert.equal(instanceInspector.Definition, 'Unavailable');
+        const canvasBeforeCollapse = await page.locator('#canvas-region').boundingBox();
+        assert.ok(canvasBeforeCollapse);
+        await page.locator('#inspector-toggle-button').click({ force: true });
+        await page.locator('#inspector').waitFor({ state: 'hidden' });
+        assert.equal(
+            await page.locator('#inspector-toggle-button').getAttribute('aria-expanded'),
+            'false'
+        );
+        const canvasAfterCollapse = await page.locator('#canvas-region').boundingBox();
+        assert.ok(canvasAfterCollapse);
+        assert.ok(
+            canvasAfterCollapse.width > canvasBeforeCollapse.width,
+            JSON.stringify({ canvasBeforeCollapse, canvasAfterCollapse })
+        );
+        assert.ok(
+            canvasAfterCollapse.x + canvasAfterCollapse.width <= 440.5,
+            JSON.stringify(canvasAfterCollapse)
+        );
         assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();

@@ -11,9 +11,12 @@ import {
     createElement,
     Map as MapIcon,
     Maximize2,
+    PanelRightClose,
+    PanelRightOpen,
     Scan,
     Search as SearchIcon,
     Workflow,
+    type IconNode,
 } from 'lucide';
 
 import {
@@ -40,7 +43,9 @@ import {
     formatSchematicDiagnosticDetails,
     mergeSchematicWebviewLayouts,
     navigationCommandForCell,
+    projectSchematicInspector,
     summarizeSchematicSelection,
+    type SchematicInspectorModel,
 } from '../../../veriflow-vscode/src/schematic/webviewSupport';
 
 type PersistedWebviewState = { layouts?: Record<string, SchematicLayout> };
@@ -105,6 +110,10 @@ const dom = {
     searchNextButton: requiredElement<HTMLButtonElement>('search-next-button'),
     minimapButton: requiredElement<HTMLButtonElement>('minimap-button'),
     minimap: requiredElement<HTMLDivElement>('minimap'),
+    inspectorToggleButton: requiredElement<HTMLButtonElement>('inspector-toggle-button'),
+    inspector: requiredElement<HTMLElement>('inspector'),
+    inspectorTitle: requiredElement<HTMLHeadingElement>('inspector-title'),
+    inspectorProperties: requiredElement<HTMLDListElement>('inspector-properties'),
     errorCount: requiredElement<HTMLSpanElement>('error-count'),
     warningCount: requiredElement<HTMLSpanElement>('warning-count'),
     selectionStatus: requiredElement<HTMLSpanElement>('selection-status'),
@@ -585,6 +594,7 @@ let selectedModuleKey = '';
 let applyingLayout = false;
 let syncingSelection = false;
 let selectedNetworkId: string | undefined;
+let inspectorExpanded = true;
 let minimapPlugin: MiniMap | undefined;
 let minimapAvailable = false;
 let searchMatches: SearchMatch[] = [];
@@ -737,7 +747,49 @@ function updateSelectionStatus(cells: Cell[], persist = true): void {
         currentLayout.selectedObjectId = summary.selectedObjectId;
     }
     dom.selectionStatus.textContent = summary.statusText;
+    renderCurrentInspector(cells);
     if (persist) scheduleLayoutSave();
+}
+
+function renderInspector(model: SchematicInspectorModel): void {
+    dom.inspector.dataset.kind = model.kind;
+    dom.inspector.dataset.readOnly = String(model.readOnly);
+    dom.inspectorTitle.textContent = model.title;
+    const rows = document.createDocumentFragment();
+    for (const row of model.rows) {
+        const term = document.createElement('dt');
+        term.textContent = row.label;
+        const description = document.createElement('dd');
+        description.textContent = row.value;
+        rows.append(term, description);
+    }
+    dom.inspectorProperties.replaceChildren(rows);
+}
+
+function selectedNodeIds(cells: readonly Cell[]): string[] {
+    return [...new Set(cells.flatMap(cell => {
+        const data = cellData(cell);
+        return data?.objectType === 'node' && !data.junction
+            ? [data.objectId]
+            : [];
+    }))];
+}
+
+function renderCurrentInspector(cells = selection.getSelectedCells()): void {
+    if (!currentGraph) {
+        renderInspector({
+            kind: 'empty',
+            title: 'No selection',
+            readOnly: true,
+            rows: [],
+        });
+        return;
+    }
+    renderInspector(projectSchematicInspector(
+        currentGraph,
+        selectedNodeIds(cells),
+        selectedNetworkId
+    ));
 }
 
 function selectNetwork(networkId: string | undefined, persist = true): void {
@@ -1102,6 +1154,7 @@ function clearSchematicState(): void {
     dom.searchPreviousButton.disabled = true;
     dom.searchNextButton.disabled = true;
     dom.selectionStatus.textContent = 'No selection';
+    renderCurrentInspector();
     minimapAvailable = false;
     if (minimapPlugin) {
         graph.disposePlugins('minimap');
@@ -1160,6 +1213,29 @@ function handleHostEvent(event: HostEvent): void {
     }
 }
 
+function installIcon(button: HTMLButtonElement, icon: IconNode): void {
+    const slot = button.querySelector('[data-icon-slot]');
+    if (!slot) return;
+    slot.replaceChildren(createElement(icon, {
+        width: 16,
+        height: 16,
+        'stroke-width': 1.75,
+        'aria-hidden': 'true',
+    }));
+}
+
+function updateInspectorToggle(): void {
+    dom.inspector.hidden = !inspectorExpanded;
+    dom.inspectorToggleButton.setAttribute('aria-expanded', String(inspectorExpanded));
+    const label = inspectorExpanded ? 'Hide properties' : 'Show properties';
+    dom.inspectorToggleButton.title = label;
+    dom.inspectorToggleButton.setAttribute('aria-label', label);
+    installIcon(
+        dom.inspectorToggleButton,
+        inspectorExpanded ? PanelRightClose : PanelRightOpen
+    );
+}
+
 function installIcons(): void {
     const icons = [
         [dom.fitButton, Maximize2],
@@ -1171,18 +1247,13 @@ function installIcons(): void {
         [dom.searchNextButton, ChevronDown],
     ] as const;
     for (const [button, icon] of icons) {
-        const slot = button.querySelector('[data-icon-slot]');
-        if (!slot) continue;
-        slot.replaceChildren(createElement(icon, {
-            width: 16,
-            height: 16,
-            'stroke-width': 1.75,
-            'aria-hidden': 'true',
-        }));
+        installIcon(button, icon);
     }
+    updateInspectorToggle();
 }
 
 installIcons();
+renderCurrentInspector();
 
 dom.moduleSelector.addEventListener('change', () => {
     if (currentGraph) {
@@ -1253,6 +1324,11 @@ dom.minimapButton.addEventListener('click', () => {
     currentLayout.minimap = !currentLayout.minimap;
     setMinimapVisibility();
     scheduleLayoutSave();
+});
+
+dom.inspectorToggleButton.addEventListener('click', () => {
+    inspectorExpanded = !inspectorExpanded;
+    updateInspectorToggle();
 });
 
 dom.canvas.addEventListener('keydown', event => {

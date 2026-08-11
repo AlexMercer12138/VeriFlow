@@ -173,8 +173,16 @@ select {
     color: var(--schematic-warning);
 }
 
+#content-row {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
 #canvas-region {
     position: relative;
+    flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -215,6 +223,72 @@ select {
     background: var(--schematic-canvas);
     border: 1px solid var(--schematic-border);
     border-radius: 2px;
+}
+
+#inspector {
+    flex: 0 0 280px;
+    width: 280px;
+    max-width: 45vw;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    color: var(--schematic-text);
+    background: var(--schematic-node-fill);
+    border-left: 1px solid var(--schematic-node-border);
+}
+
+#inspector[hidden] {
+    display: none;
+}
+
+.inspector-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 9px 10px 8px;
+    background: var(--schematic-node-fill);
+    border-bottom: 1px solid var(--schematic-border);
+}
+
+#inspector-title {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+}
+
+.inspector-mode {
+    display: block;
+    margin-top: 2px;
+    color: var(--schematic-muted-text);
+    font-size: 11px;
+    line-height: 16px;
+}
+
+#inspector-properties {
+    display: grid;
+    grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+    margin: 0;
+}
+
+#inspector-properties dt,
+#inspector-properties dd {
+    min-width: 0;
+    margin: 0;
+    padding: 7px 10px;
+    overflow-wrap: anywhere;
+    border-bottom: 1px solid var(--schematic-border);
+}
+
+#inspector-properties dt {
+    color: var(--schematic-muted-text);
+    font-weight: 600;
+}
+
+#inspector-properties dd {
+    color: var(--schematic-text);
+    user-select: text;
 }
 
 #minimap[hidden] {
@@ -346,13 +420,27 @@ select {
     .diagnostic-counts {
         margin-left: 2px;
     }
+
+    #inspector-properties {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    #inspector-properties dt {
+        padding-bottom: 2px;
+        border-bottom: 0;
+    }
+
+    #inspector-properties dd {
+        padding-top: 0;
+    }
 }
 
 @media (forced-colors: active) {
     .icon-button,
     #module-selector,
     #search-input,
-    #minimap {
+    #minimap,
+    #inspector {
         border-color: CanvasText;
     }
 
