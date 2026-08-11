@@ -5,5 +5,6 @@ export * from './graph';
 export * from './model';
 export * from './parser';
 export * from './presentation';
+export * from './rtl';
 export * from './serializer';
 export * from './validation';
