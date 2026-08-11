@@ -1627,6 +1627,17 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             if (message.type() === 'error') rendererErrors.push(message.text());
         });
         await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as {
+                __veriflowMessages: CapturedSaveMessage[];
+            };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push(
+                    (event as CustomEvent<CapturedSaveMessage>).detail
+                );
+            });
+        });
         const fixture = visualSchematicFixture();
         await page.evaluate(({ graph, layout }) => {
             const root = document.documentElement.style;
@@ -1665,6 +1676,9 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         );
         const fanoutSegmentCount = await fanoutSegments.count();
         assert.ok(fanoutSegmentCount >= 3);
+        const ordinaryFanoutStroke = await fanoutSegments.first().locator(
+            ':scope > path:nth-child(2)'
+        ).evaluate(element => getComputedStyle(element).stroke);
         await fanoutSegments.first().locator(
             ':scope > path[stroke="transparent"][cursor="pointer"]'
         ).evaluate(element => {
@@ -1688,9 +1702,51 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             dispatch('mouseup', 0);
             dispatch('click', 0);
         });
-        await page.waitForFunction(expectedCount => document.querySelectorAll(
-            '.x6-widget-selection-box[data-cell-id^="network:visual-fanout:segment:"]'
-        ).length === expectedCount, fanoutSegmentCount);
+        await page.locator('#selection-status').getByText(
+            'network: fanout',
+            { exact: true }
+        ).waitFor();
+        const selectedNetwork = await page.evaluate(({ ordinaryStroke }) => {
+            const segmentCells = [...document.querySelectorAll<SVGGElement>(
+                '#canvas .x6-edge[data-cell-id^="network:visual-fanout:segment:"]'
+            )];
+            const selectedStrokes = segmentCells.map(cell => getComputedStyle(
+                cell.querySelector<SVGPathElement>(':scope > path:nth-child(2)')!
+            ).stroke);
+            const selectedStroke = selectedStrokes[0] ?? '';
+            const selectedJunctions = [...document.querySelectorAll<SVGGElement>(
+                '#canvas .x6-node[data-cell-id^="network:visual-fanout:junction:"]'
+            )].filter(cell => getComputedStyle(
+                cell.querySelector<SVGCircleElement>(':scope > circle')!
+            ).stroke === selectedStroke);
+            return {
+                ordinaryStroke,
+                selectedStrokes,
+                highlightedSegments: selectedStrokes.filter(stroke =>
+                    stroke === selectedStroke && stroke !== ordinaryStroke
+                ).length,
+                highlightedJunctions: selectedJunctions.length,
+                selectionBoxes: document.querySelectorAll(
+                    '.x6-widget-selection-box[data-cell-id^="network:visual-fanout:"]'
+                ).length,
+            };
+        }, { ordinaryStroke: ordinaryFanoutStroke });
+        assert.equal(
+            selectedNetwork.highlightedSegments,
+            fanoutSegmentCount,
+            JSON.stringify(selectedNetwork)
+        );
+        assert.ok(selectedNetwork.highlightedJunctions > 0);
+        assert.equal(selectedNetwork.selectionBoxes, 0);
+        await page.waitForFunction(selectedObjectId => {
+            const state = window as unknown as {
+                __veriflowMessages: CapturedSaveMessage[];
+            };
+            const saves = state.__veriflowMessages.filter(message =>
+                message.type === 'saveLayout'
+            );
+            return saves[saves.length - 1]?.layout?.selectedObjectId === selectedObjectId;
+        }, 'network:visual-fanout');
         assert.equal(await page.locator('#selection-status').textContent(), 'network: fanout');
 
         const inspectViewport = async (
@@ -1740,6 +1796,20 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         });
         await page.waitForFunction(() => window.innerWidth <= 440 && window.innerHeight <= 640);
         await inspectViewport('narrow');
+        await page.locator(
+            '#canvas .x6-node[data-cell-id="instance:visual-wide"] > rect:first-child'
+        ).click({ force: true });
+        await page.locator('#selection-status').getByText(
+            'instance: wide_source_with_a_title_that_must_stay_inside_the_module',
+            { exact: true }
+        ).waitFor();
+        assert.equal(await page.locator(
+            '.x6-widget-selection-box[data-cell-id="instance:visual-wide"]'
+        ).count(), 1);
+        const restoredFanoutStroke = await fanoutSegments.first().locator(
+            ':scope > path:nth-child(2)'
+        ).evaluate(element => getComputedStyle(element).stroke);
+        assert.equal(restoredFanoutStroke, ordinaryFanoutStroke);
         assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();

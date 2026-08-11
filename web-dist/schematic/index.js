@@ -45433,16 +45433,17 @@
         },
         attrs: {
           root: {
-            tabindex: -1,
-            "aria-hidden": "true",
-            pointerEvents: "none"
+            tabindex: 0,
+            role: "link",
+            "aria-label": `network junction: ${network.name}`,
+            pointerEvents: "auto"
           },
           body: {
             class: "veriflow-junction-dot",
             fill: "var(--schematic-junction)",
             stroke: "var(--schematic-junction)",
             strokeWidth: 1,
-            pointerEvents: "none"
+            pointerEvents: "auto"
           },
           label: { text: "" }
         },
@@ -45458,10 +45459,10 @@
     movable: true,
     strict: false,
     showNodeSelectionBox: true,
-    showEdgeSelectionBox: true,
+    showEdgeSelectionBox: false,
     pointerEvents: "auto",
     eventTypes: ["leftMouseDown"],
-    filter: (cell) => cellData(cell)?.junction !== true
+    filter: (cell) => cellData(cell)?.objectType === "node" && cellData(cell)?.junction !== true
   });
   var graph = new Graph({
     container: dom.canvas,
@@ -45510,7 +45511,8 @@
   var currentRevision = "";
   var selectedModuleKey = "";
   var applyingLayout = false;
-  var expandingNetworkSelection = false;
+  var syncingSelection = false;
+  var selectedNetworkId;
   var minimapPlugin;
   var minimapAvailable = false;
   var searchMatches = [];
@@ -45584,49 +45586,20 @@
     const candidate = data2;
     return typeof candidate.objectId === "string" && (candidate.objectType === "node" || candidate.objectType === "network") ? candidate : void 0;
   }
-  function selectedNetworkIds(cells) {
-    return new Set(cells.flatMap((cell) => {
-      const data2 = cellData(cell);
-      return data2?.objectType === "network" ? [data2.objectId] : [];
-    }));
-  }
-  function expandNetworkSelection(cells) {
-    const networkIds = selectedNetworkIds(cells);
-    if (networkIds.size === 0) return [...cells];
-    const expanded = new Map(cells.flatMap((cell) => {
-      const data2 = cellData(cell);
-      return data2?.junction ? [] : [[cell.id, cell]];
-    }));
-    for (const cell of graph.getCells()) {
-      const data2 = cellData(cell);
-      if (data2?.objectType === "network" && !data2.junction && networkIds.has(data2.objectId)) {
-        expanded.set(cell.id, cell);
-      }
-    }
-    return [...expanded.values()];
-  }
-  function sameCellSelection(left4, right4) {
-    if (left4.length !== right4.length) return false;
-    const rightIds = new Set(right4.map((cell) => cell.id));
-    return left4.every((cell) => rightIds.has(cell.id));
-  }
-  function refreshNetworkSelectionStyles(cells) {
-    const selectedIds = selectedNetworkIds(cells);
+  function refreshNetworkSelectionStyles() {
     const searchedIds = new Set(searchMatches.map((match) => match.objectId));
     for (const cell of graph.getCells()) {
       const data2 = cellData(cell);
       if (data2?.objectType !== "network") continue;
-      const selected = selectedIds.has(data2.objectId);
+      const selected = data2.objectId === selectedNetworkId;
       const searched = searchedIds.has(data2.objectId);
-      const stroke3 = selected ? "var(--schematic-wire-selected)" : searched ? "var(--vscode-editor-findMatchBorder, #f0a000)" : "var(--schematic-wire)";
-      if (data2.junction) {
-        cell.attr("body/fill", stroke3);
-        cell.attr("body/stroke", stroke3);
-        cell.attr("body/strokeWidth", selected || searched ? 2 : 1);
-      } else {
-        cell.attr("line/stroke", stroke3);
-        cell.attr("line/strokeWidth", selected || searched ? Math.max(2, networkStrokeWidth(data2.network)) : networkStrokeWidth(data2.network));
-      }
+      const view = graph.findViewByCell(cell);
+      view?.removeClass([
+        "veriflow-network-selected",
+        "veriflow-network-search-match"
+      ]);
+      if (selected) view?.addClass("veriflow-network-selected");
+      if (searched) view?.addClass("veriflow-network-search-match");
     }
   }
   function descriptionFor(data2) {
@@ -45640,6 +45613,19 @@
   function updateSelectionStatus(cells, persist = true) {
     if (!currentLayout) return;
     const itemsByObjectId = /* @__PURE__ */ new Map();
+    if (selectedNetworkId !== void 0) {
+      const selectedNetworkCell = graph.getCells().find((cell) => {
+        const data3 = cellData(cell);
+        return data3?.objectType === "network" && data3.objectId === selectedNetworkId;
+      });
+      const data2 = selectedNetworkCell && cellData(selectedNetworkCell);
+      if (data2) {
+        itemsByObjectId.set(data2.objectId, {
+          objectId: data2.objectId,
+          description: descriptionFor(data2)
+        });
+      }
+    }
     for (const cell of cells) {
       const data2 = cellData(cell);
       if (data2 && !itemsByObjectId.has(data2.objectId)) {
@@ -45657,6 +45643,18 @@
     }
     dom.selectionStatus.textContent = summary.statusText;
     if (persist) scheduleLayoutSave();
+  }
+  function selectNetwork(networkId, persist = true) {
+    const matchingCell = networkId === void 0 ? void 0 : graph.getCells().find((cell) => {
+      const data2 = cellData(cell);
+      return data2?.objectType === "network" && data2.objectId === networkId;
+    });
+    selectedNetworkId = matchingCell ? networkId : void 0;
+    syncingSelection = true;
+    selection.clean();
+    syncingSelection = false;
+    refreshNetworkSelectionStyles();
+    updateSelectionStatus([], persist);
   }
   function navigationTargetForCell(cell) {
     const data2 = cellData(cell);
@@ -45711,20 +45709,32 @@
     graph.translate(layout.viewport.x, layout.viewport.y);
   }
   function selectedObjectIds(cells) {
+    if (selectedNetworkId !== void 0) return [selectedNetworkId];
     return [...new Set(cells.flatMap((cell) => {
       const data2 = cellData(cell);
       return data2 && !data2.junction ? [data2.objectId] : [];
     }))];
   }
   function restoreSelection(layout, preservedObjectIds) {
+    selectedNetworkId = void 0;
+    syncingSelection = true;
     selection.clean();
     const wantedObjectIds = preservedObjectIds === void 0 ? new Set(layout.selectedObjectId ? [layout.selectedObjectId] : []) : new Set(preservedObjectIds);
-    const matchingCells = graph.getCells().filter((cell) => {
+    const matchingNodeCells = graph.getCells().filter((cell) => {
       const data2 = cellData(cell);
-      return data2 !== void 0 && !data2.junction && wantedObjectIds.has(data2.objectId);
+      return data2?.objectType === "node" && wantedObjectIds.has(data2.objectId);
     });
-    if (matchingCells.length > 0) selection.select(matchingCells);
-    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    if (matchingNodeCells.length > 0) {
+      selection.select(matchingNodeCells);
+    } else {
+      const matchingNetwork = graph.getCells().find((cell) => {
+        const data2 = cellData(cell);
+        return data2?.objectType === "network" && wantedObjectIds.has(data2.objectId);
+      });
+      selectedNetworkId = matchingNetwork ? cellData(matchingNetwork)?.objectId : void 0;
+    }
+    syncingSelection = false;
+    refreshNetworkSelectionStyles();
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
   function renderSchematic(model, layout, preservedSelection) {
@@ -45825,16 +45835,9 @@
   function resetSearchStyles() {
     for (const cell of graph.getCells()) {
       const data2 = cellData(cell);
-      if (data2?.junction) {
-        cell.attr("body/fill", "var(--schematic-junction)");
-        cell.attr("body/stroke", "var(--schematic-junction)");
-        cell.attr("body/strokeWidth", 1);
-      } else if (cell.isNode()) {
+      if (cell.isNode() && !data2?.junction) {
         cell.attr("body/stroke", "var(--schematic-node-border)");
         cell.attr("body/strokeWidth", 1.5);
-      } else {
-        cell.attr("line/stroke", "var(--schematic-wire)");
-        cell.attr("line/strokeWidth", data2?.network ? networkStrokeWidth(data2.network) : 1);
       }
     }
   }
@@ -45894,7 +45897,7 @@
       match.cell.attr("body/stroke", "var(--vscode-editor-findMatchBorder, #f0a000)");
       match.cell.attr("body/strokeWidth", 2);
     }
-    refreshNetworkSelectionStyles(selection.getSelectedCells());
+    refreshNetworkSelectionStyles();
     updateSearchButtons();
     if (preserveActiveMatch) updateActiveSearchStatus();
   }
@@ -45907,7 +45910,13 @@
     searchIndex = (index2 + searchMatches.length) % searchMatches.length;
     const match = searchMatches[searchIndex];
     graph.centerCell(match.cell);
-    selection.reset(match.cell);
+    if (cellData(match.cell)?.objectType === "network") {
+      selectNetwork(match.objectId);
+    } else {
+      selectedNetworkId = void 0;
+      refreshNetworkSelectionStyles();
+      selection.reset(match.cell);
+    }
     dom.selectionStatus.textContent = `${match.description} (${searchIndex + 1}/${searchMatches.length})`;
     updateSearchButtons();
   }
@@ -45921,6 +45930,7 @@
     layoutSaveScheduler.dispose();
     clearPendingNodeMoves();
     applyingLayout = true;
+    selectedNetworkId = void 0;
     selection.clean();
     graph.resetCells([]);
     graph.zoomTo(1);
@@ -46104,16 +46114,22 @@
     const command = navigationCommandForCell(navigationTargetForCell(cell), true);
     if (command) post(command);
   });
+  graph.on("edge:click", ({ edge }) => {
+    const data2 = cellData(edge);
+    if (data2?.objectType === "network") selectNetwork(data2.objectId);
+  });
+  graph.on("node:click", ({ node }) => {
+    const data2 = cellData(node);
+    if (data2?.junction) selectNetwork(data2.objectId);
+  });
+  graph.on("blank:click", () => {
+    selectNetwork(void 0);
+  });
   selection.on("selection:changed", ({ selected }) => {
-    if (applyingLayout || expandingNetworkSelection) return;
-    const expanded = expandNetworkSelection(selected);
-    if (!sameCellSelection(selected, expanded)) {
-      expandingNetworkSelection = true;
-      selection.reset(expanded);
-      expandingNetworkSelection = false;
-    }
-    refreshNetworkSelectionStyles(expanded);
-    updateSelectionStatus(expanded);
+    if (applyingLayout || syncingSelection) return;
+    selectedNetworkId = void 0;
+    refreshNetworkSelectionStyles();
+    updateSelectionStatus(selected);
   });
   selection.on("box:mousedown", ({ nodes }) => {
     selectionBoxOrigins = applyingLayout ? /* @__PURE__ */ new Map() : new Map(nodes.map((node) => [node.id, nodePosition(node)]));

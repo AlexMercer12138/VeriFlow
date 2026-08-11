@@ -257,8 +257,31 @@ select {
 }
 
 .veriflow-junction-dot {
-    pointer-events: none;
+    pointer-events: auto;
+    cursor: pointer;
     vector-effect: non-scaling-stroke;
+}
+
+.x6-edge.veriflow-network-search-match > path:nth-child(2) {
+    stroke: var(--vscode-editor-findMatchBorder, #f0a000) !important;
+    stroke-width: 2px !important;
+}
+
+.x6-node.veriflow-network-search-match .veriflow-junction-dot {
+    fill: var(--vscode-editor-findMatchBorder, #f0a000) !important;
+    stroke: var(--vscode-editor-findMatchBorder, #f0a000) !important;
+    stroke-width: 2px !important;
+}
+
+.x6-edge.veriflow-network-selected > path:nth-child(2) {
+    stroke: var(--schematic-wire-selected) !important;
+    stroke-width: 2.5px !important;
+}
+
+.x6-node.veriflow-network-selected .veriflow-junction-dot {
+    fill: var(--schematic-wire-selected) !important;
+    stroke: var(--schematic-wire-selected) !important;
+    stroke-width: 2px !important;
 }
 
 .x6-node:focus-visible,

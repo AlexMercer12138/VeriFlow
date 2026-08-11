@@ -163,32 +163,28 @@ function assertRendererCellContracts(source: string): void {
         /data: \{\s*objectId: network\.id,\s*objectType: 'network',\s*network,\s*networkRoute,\s*junction: true,\s*} satisfies CellData/
     );
     assert.match(junctionLoop, /interacting: false,\s*zIndex: 1,/);
-    assert.ok(
-        (junctionLoop.match(/pointerEvents: 'none'/g)?.length ?? 0) >= 2,
-        'junction root and body must both ignore pointer events'
+    assert.match(
+        junctionLoop,
+        /tabindex: 0,[^]*role: 'link',[^]*'aria-label': `network junction: \$\{network\.name\}`/
     );
+    assert.doesNotMatch(junctionLoop, /aria-hidden: 'true'|pointerEvents: 'none'/);
     const selectionOptions = sourceSection(
         source,
         'const selection = new Selection({',
         '\n});\n\nconst graph =',
         'selection options'
     );
-    assert.match(selectionOptions, /filter: cell => cellData\(cell\)\?\.junction !== true,/);
+    assert.match(selectionOptions, /showEdgeSelectionBox: false,/);
+    assert.match(
+        selectionOptions,
+        /filter: cell => cellData\(cell\)\?\.objectType === 'node'[^]*cellData\(cell\)\?\.junction !== true,/
+    );
 }
 
 function assertNetworkSelectionContracts(source: string): void {
-    const expansion = sourceSection(
-        source,
-        'function expandNetworkSelection(',
-        '\nfunction sameCellSelection(',
-        'network selection expansion'
-    );
-    assert.match(expansion, /const networkIds = selectedNetworkIds\(cells\);/);
-    assert.match(
-        expansion,
-        /data\?\.objectType === 'network' && !data\.junction\s*&& networkIds\.has\(data\.objectId\)/
-    );
-    assert.match(expansion, /expanded\.set\(cell\.id, cell\);/);
+    assert.doesNotMatch(source, /function expandNetworkSelection\(/);
+    assert.match(source, /let selectedNetworkId: string \| undefined;/);
+    assert.match(source, /function selectNetwork\(/);
 
     const styling = sourceSection(
         source,
@@ -196,10 +192,10 @@ function assertNetworkSelectionContracts(source: string): void {
         '\nfunction descriptionFor(',
         'network selection styling'
     );
-    assert.match(styling, /const selectedIds = selectedNetworkIds\(cells\);/);
-    assert.match(styling, /const selected = selectedIds\.has\(data\.objectId\);/);
-    assert.match(styling, /const stroke = selected\s*\?/);
-    assert.match(styling, /if \(data\.junction\) \{[^]*body\/fill[^]*body\/stroke/);
+    assert.match(styling, /const selected = data\.objectId === selectedNetworkId;/);
+    assert.match(styling, /graph\.findViewByCell\(cell\)/);
+    assert.match(styling, /veriflow-network-selected/);
+    assert.match(styling, /veriflow-network-search-match/);
 
     const status = sourceSection(
         source,
@@ -207,10 +203,12 @@ function assertNetworkSelectionContracts(source: string): void {
         '\nfunction navigationTargetForCell(',
         'selection status update'
     );
+    assert.match(status, /selectedNetworkId/);
     assert.match(status, /const itemsByObjectId = new Map<string,/);
-    assert.match(status, /!itemsByObjectId\.has\(data\.objectId\)/);
-    assert.match(status, /itemsByObjectId\.set\(data\.objectId,/);
     assert.match(status, /summarizeSchematicSelection\(\[\.\.\.itemsByObjectId\.values\(\)]\)/);
+    assert.match(source, /graph\.on\('edge:click'/);
+    assert.match(source, /graph\.on\('node:click'/);
+    assert.match(source, /graph\.on\('blank:click'/);
 }
 
 function assertAdapterSearchContract(source: string): void {
@@ -410,6 +408,7 @@ async function testSchematicAssets(): Promise<void> {
     for (const token of semanticColorTokens) {
         assert.ok(css.includes(`${token}:`), `CSS is missing ${token}`);
     }
+    assert.match(css, /\.x6-edge\.veriflow-network-selected\s*>\s*path:nth-child\(2\)/);
     assert.doesNotMatch(
         css,
         /\.x6-widget-minimap\s+\.x6-graph\s*{[^}]*\b(?:width|height):\s*100%\s*!important/s,
@@ -425,7 +424,9 @@ async function testSchematicAssets(): Promise<void> {
     assertNetworkSelectionContracts(webviewSource);
     assertAdapterSearchContract(webviewSource);
     assertNetworkNavigationContract(webviewSource);
-    for (const token of semanticColorTokens.slice(1)) {
+    for (const token of semanticColorTokens.slice(1).filter(
+        token => token !== '--schematic-wire-selected'
+    )) {
         assert.ok(webviewSource.includes(`var(${token})`), `renderer is missing ${token}`);
     }
     const temporaryImportOwners = typeScriptFiles(
@@ -461,7 +462,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /networkRoute\.segments/);
     assert.match(webviewSource, /renderModel\.junctions/);
     assert.match(webviewSource, /graph\.addNode\(\{[^}]*shape:\s*'circle'/s);
-    assert.match(webviewSource, /function expandNetworkSelection\(/);
+    assert.doesNotMatch(webviewSource, /function expandNetworkSelection\(/);
     assert.match(
         webviewSource,
         /function refreshNetworkSelectionStyles\([^]*searchMatches\.map\(/
