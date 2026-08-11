@@ -338,7 +338,8 @@ export function canonicalizeSourceUri(
         const protocol = parsed.protocol.toLowerCase();
         const host = parsed.host.toLowerCase();
         let pathname = path.posix.normalize(parsed.pathname.split('\\').join('/'));
-        if (protocol === 'file:' && platform === 'win32') {
+        const isWslUnc = host === 'wsl.localhost' || host === 'wsl$';
+        if (protocol === 'file:' && platform === 'win32' && !isWslUnc) {
             pathname = pathname.toLowerCase();
         }
         pathname = normalizePercentEncoding(pathname);

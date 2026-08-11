@@ -191,6 +191,22 @@ function testCanonicalSourceUrisRespectPlatformCaseSemantics(): void {
     );
 }
 
+function testCanonicalSourceUrisPreserveWslUncPathCaseOnWindows(): void {
+    for (const host of ['WSL.LOCALHOST', 'WSL$']) {
+        assert.strictEqual(
+            canonicalizeSourceUri(
+                `FILE://${host}/Ubuntu/home/Alex/VeriFlow/rtl/Top.sv`,
+                'win32'
+            ),
+            `file://${host.toLowerCase()}/Ubuntu/home/Alex/VeriFlow/rtl/Top.sv`
+        );
+    }
+    assert.strictEqual(
+        canonicalizeSourceUri('file://SERVER/Share/RTL/Top.sv', 'win32'),
+        'file://server/share/rtl/top.sv'
+    );
+}
+
 function testSourceUriContainmentRespectsPlatformCaseSemantics(): void {
     const fileRoot = 'file:///D:/Software/VeriFlow';
     const mixedCaseFile = 'file:///d:/software/veriflow/rtl/alu.sv';
@@ -803,6 +819,7 @@ async function main(): Promise<void> {
     testInactiveCommentsDoNotHideConditionalDirectives();
     testCompositeSourceMapBoundariesAndValidation();
     testCanonicalSourceUrisRespectPlatformCaseSemantics();
+    testCanonicalSourceUrisPreserveWslUncPathCaseOnWindows();
     testSourceUriContainmentRespectsPlatformCaseSemantics();
     testPreprocessorDiagnosticsAndRecursionGuards();
     testUnterminatedConditionalAndUnexpandedMacroWarnings();
