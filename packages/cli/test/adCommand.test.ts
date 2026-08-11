@@ -593,6 +593,62 @@ test('replaces a valid prior generated target', async () => {
     });
 });
 
+test('repeated export ignores the target when it defines the dependency module name', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({ module: 'leaf' }));
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const outputPath = path.join(cwd, 'design/soc.v');
+
+        const first = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+        assert.deepEqual(first, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        const original = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(original), undefined);
+
+        const second = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        assert.deepEqual(second, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        const repeated = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(repeated), undefined);
+        assert.equal(repeated, original);
+    });
+});
+
+test('does not resolve a new dependency from the prior generated target', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({ module: 'old_top' }));
+        const leafPath = path.join(cwd, 'design/leaf.v');
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const outputPath = path.join(cwd, 'design/soc.v');
+        const first = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+        assert.equal(first.exitCode, 0);
+        const original = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(original), undefined);
+        rmSync(leafPath);
+        writeDesign(cwd, archDesign({
+            module: 'new_top',
+            instances: [{ name: 'u_old', module: 'old_top' }],
+        }));
+
+        const second = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        assert.deepEqual(second, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'design/soc.ad:$.instances[0].module [AD_MODULE_UNRESOLVED] '
+                + 'No module definition is named old_top\n',
+        });
+        assert.equal(readFileSync(outputPath, 'utf8'), original);
+    });
+});
+
 test('refuses handwritten, malformed-marker, and non-leading-marker targets', async () => {
     await withTemporaryDirectory(async cwd => {
         writeDesign(cwd);

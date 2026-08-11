@@ -1,8 +1,10 @@
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { GlobalConfigStore, ProjectStore } from '@veriflow/flow-core';
+import { canonicalizeSourceUri } from '@veriflow/hdl-core/preprocessor';
 import {
     exportArchDesignRtl,
     parseArchDesignText,
@@ -219,7 +221,9 @@ export async function adExport(
     const definitions = await scanModuleDefinitions(
         moduleCatalogRoots(loaded, options, environment)
     );
-    const generated = exportArchDesignRtl(loaded.design, definitions, {
+    const outputUri = canonicalizeSourceUri(pathToFileURL(outputPath).toString());
+    const exportDefinitions = definitions.filter(definition => definition.uri !== outputUri);
+    const generated = exportArchDesignRtl(loaded.design, exportDefinitions, {
         language,
         sourcePath: portableSourcePath(loaded.filepath, outputPath),
     });
