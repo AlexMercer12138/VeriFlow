@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assignColumns, resolvePinSides } from '../src';
+import { assignColumns, layoutSchematic, resolvePinSides } from '../src';
 import {
     createEmptyArchDesign,
     parseArchDesignValue,
@@ -271,6 +271,190 @@ test('maps colliding public default keys by canonical receiver identity', () => 
         node.id === 'default:instance:node:t'), false);
 });
 
+test('projects one coherent source for identical defaults on a driverless network', () => {
+    const design = designOf({
+        ports: [
+            { name: 'first', direction: 'output' },
+            { name: 'second', direction: 'output' },
+        ],
+        connections: [{
+            name: 'shared',
+            endpoints: [
+                { kind: 'port', port: 'first' },
+                { kind: 'port', port: 'second' },
+            ],
+            defaults: {
+                'first.value': "1'b0",
+                'second.value': "1'b0",
+            },
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/identical-defaults.ad',
+    });
+    const network = projection.graph.networks[0];
+
+    assert.equal(projection.validation.valid, true);
+    assert.deepEqual(projection.validation.effectiveDefaults, [{
+        endpoint: 'first.value',
+        expression: "1'b0",
+        origin: 'connection',
+        connection: 'shared',
+    }, {
+        endpoint: 'second.value',
+        expression: "1'b0",
+        origin: 'connection',
+        connection: 'shared',
+    }]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'port:first',
+        'port:second',
+        'default:port:first:value',
+    ]);
+    assert.deepEqual(network.endpoints.map(endpoint => endpoint.role), [
+        'load',
+        'load',
+        'driver',
+    ]);
+    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 1);
+});
+
+test('uses one receiver default to drive every load on its driverless network', () => {
+    const design = designOf({
+        ports: [
+            { name: 'defaulted', direction: 'output' },
+            { name: 'peer', direction: 'output' },
+        ],
+        connections: [{
+            name: 'shared',
+            endpoints: [
+                { kind: 'port', port: 'defaulted' },
+                { kind: 'port', port: 'peer' },
+            ],
+            defaults: { 'defaulted.value': "1'b1" },
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/partial-default.ad',
+    });
+
+    assert.equal(projection.validation.valid, true);
+    assert.deepEqual(projection.validation.diagnostics, []);
+    assert.deepEqual(projection.validation.effectiveDefaults, [{
+        endpoint: 'defaulted.value',
+        expression: "1'b1",
+        origin: 'connection',
+        connection: 'shared',
+    }]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'port:defaulted',
+        'port:peer',
+        'default:port:defaulted:value',
+    ]);
+    assert.deepEqual(projection.graph.networks[0].endpoints.map(endpoint => endpoint.role), [
+        'load',
+        'load',
+        'driver',
+    ]);
+});
+
+test('rejects conflicting defaults without projecting a driver or undriven cascades', () => {
+    const design = designOf({
+        ports: [
+            { name: 'first', direction: 'output' },
+            { name: 'second', direction: 'output' },
+        ],
+        connections: [{
+            name: 'shared',
+            endpoints: [
+                { kind: 'port', port: 'first' },
+                { kind: 'port', port: 'second' },
+            ],
+            defaults: {
+                'first.value': "1'b0",
+                'second.value': "1'b1",
+            },
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/conflicting-defaults.ad',
+    });
+
+    assert.equal(projection.validation.valid, false);
+    assert.deepEqual(projection.validation.diagnostics.map(item => [item.path, item.code]), [
+        ['$.connections[0].defaults.second.value', 'AD_DEFAULT_CONFLICT'],
+    ]);
+    assert.deepEqual(projection.validation.effectiveDefaults, [{
+        endpoint: 'first.value',
+        expression: "1'b0",
+        origin: 'connection',
+        connection: 'shared',
+    }, {
+        endpoint: 'second.value',
+        expression: "1'b1",
+        origin: 'connection',
+        connection: 'shared',
+    }]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'port:first',
+        'port:second',
+    ]);
+    assert.deepEqual(projection.graph.networks[0].endpoints.map(endpoint => endpoint.role), [
+        'load',
+        'load',
+    ]);
+    assert.equal(projection.graph.diagnostics[0].code, 'AD_DEFAULT_CONFLICT');
+});
+
+test('keeps defaulted fanout structurally linear through column assignment', () => {
+    const portNames = Array.from({ length: 600 }, (_, index) => `sink_${index}`);
+    const consumer: ArchDesignModuleDefinition = {
+        key: 'rtl/wide_consumer.sv#wide_consumer',
+        name: 'wide_consumer',
+        parameters: [],
+        ports: portNames.map(name => ({
+            name,
+            direction: 'input' as const,
+            width: { kind: 'known' as const, bits: 1 },
+        })),
+    };
+    const design = designOf({
+        instances: [{ name: 'u_consumer', module: 'wide_consumer' }],
+        connections: [{
+            name: 'wide_default',
+            endpoints: portNames.map(port => ({
+                kind: 'instance' as const,
+                instance: 'u_consumer',
+                port,
+            })),
+            defaults: Object.fromEntries(portNames.map(name => [
+                `u_consumer.${name}`,
+                "1'b0",
+            ])),
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [consumer], {
+        fileUri: 'file:///workspace/wide-default.ad',
+    });
+    const network = projection.graph.networks[0];
+    const assignment = assignColumns(projection.graph);
+
+    assert.equal(projection.validation.valid, true);
+    assert.equal(projection.validation.effectiveDefaults.length, portNames.length);
+    assert.equal(projection.graph.nodes.filter(node => node.kind === 'constant').length, 1);
+    assert.equal(network.endpoints.length, portNames.length + 1);
+    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 1);
+    assert.deepEqual(assignment.columns, [
+        ['default:instance:u_consumer:sink_0'],
+        ['instance:u_consumer'],
+    ]);
+    assert.deepEqual([...assignment.feedbackNetworkIds], []);
+});
+
 test('projects network widths without hiding mismatches or ambiguous symbols', () => {
     const widthModule: ArchDesignModuleDefinition = {
         key: 'rtl/widths.sv#widths',
@@ -285,6 +469,10 @@ test('projects network widths without hiding mismatches or ambiguous symbols', (
             { name: 'symbol_b', direction: 'input', width: { kind: 'symbolic', expression: 'W' } },
             { name: 'symbol_c_source', direction: 'output', width: { kind: 'symbolic', expression: 'W' } },
             { name: 'symbol_c', direction: 'input', width: { kind: 'symbolic', expression: 'V' } },
+            { name: 'mixed_known_source', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'mixed_symbolic_sink', direction: 'input', width: { kind: 'symbolic', expression: 'W' } },
+            { name: 'known_unknown_source', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'unknown_sink', direction: 'input', width: { kind: 'unknown' } },
         ],
     };
     const design = designOf({
@@ -318,6 +506,20 @@ test('projects network widths without hiding mismatches or ambiguous symbols', (
                     { kind: 'instance', instance: 'u_widths', port: 'symbol_c' },
                 ],
             },
+            {
+                name: 'known_symbolic',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'mixed_known_source' },
+                    { kind: 'instance', instance: 'u_widths', port: 'mixed_symbolic_sink' },
+                ],
+            },
+            {
+                name: 'known_unknown',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'known_unknown_source' },
+                    { kind: 'instance', instance: 'u_widths', port: 'unknown_sink' },
+                ],
+            },
         ],
     });
 
@@ -333,6 +535,8 @@ test('projects network widths without hiding mismatches or ambiguous symbols', (
         ['network:mismatch', { kind: 'unknown' }],
         ['network:symbolic', { kind: 'symbolic', expression: 'W' }],
         ['network:ambiguous_symbolic', { kind: 'unknown' }],
+        ['network:known_symbolic', { kind: 'unknown' }],
+        ['network:known_unknown', { kind: 'unknown' }],
     ]);
     assert.equal(projection.validation.valid, false);
     assert.equal(projection.validation.diagnostics.some(diagnostic =>
@@ -390,4 +594,82 @@ test('keeps invalid intermediate graphs visible and maps path-aware diagnostics'
         role: 'driver',
     }]);
     assert.equal(partial.graph.diagnostics[0].code, 'AD_ENDPOINT_UNKNOWN');
+});
+
+test('retains the first hostile catalog port declaration and remains layoutable', () => {
+    const reads = new Map<string, number>();
+    const once = <T>(key: string, value: T): T => {
+        reads.set(key, (reads.get(key) ?? 0) + 1);
+        return value;
+    };
+    const firstWidth = {
+        get kind() { return once('first.width.kind', 'known' as const); },
+        get bits() { return once('first.width.bits', 1); },
+    };
+    const secondWidth = {
+        get kind() { return once('second.width.kind', 'known' as const); },
+        get bits() { return once('second.width.bits', 8); },
+    };
+    const firstPort = {
+        get name() { return once('first.name', 'data'); },
+        get direction() { return once('first.direction', 'input' as const); },
+        get width() { return once('first.width', firstWidth); },
+    };
+    const secondPort = {
+        get name() { return once('second.name', 'data'); },
+        get direction() { return once('second.direction', 'output' as const); },
+        get width() { return once('second.width', secondWidth); },
+    };
+    const definition = {
+        get key() { return once('definition.key', 'rtl/duplicate.sv#duplicate'); },
+        get name() { return once('definition.name', 'duplicate'); },
+        get parameters() { return once('definition.parameters', []); },
+        get ports() { return once('definition.ports', [firstPort, secondPort]); },
+    } as ArchDesignModuleDefinition;
+    const design = designOf({
+        instances: [{ name: 'u_duplicate', module: 'duplicate' }],
+        defaults: { 'u_duplicate.data': "1'b0" },
+    });
+
+    const projection = projectArchDesignGraph(design, [definition], {
+        fileUri: 'file:///workspace/duplicate-port.ad',
+    });
+    const instance = projection.graph.nodes.find(node =>
+        node.id === 'instance:u_duplicate'
+    );
+
+    assert.equal(projection.validation.valid, false);
+    assert.deepEqual(projection.validation.diagnostics.map(item => [item.path, item.code]), [
+        ['$.instances[0].module', 'AD_DEFINITION_PORT_DUPLICATE'],
+    ]);
+    assert.ok(instance);
+    assert.deepEqual(instance.pins.map(pin => [pin.id, pin.name, pin.direction, pin.width]), [[
+        'instance:u_duplicate:data',
+        'data',
+        'load',
+        { kind: 'known', bits: 1 },
+    ]]);
+    assert.equal(new Set(instance.pins.map(pin => pin.id)).size, instance.pins.length);
+    assert.equal(projection.graph.diagnostics[0].code, 'AD_DEFINITION_PORT_DUPLICATE');
+    assert.doesNotThrow(() => layoutSchematic(
+        projection.graph,
+        undefined,
+        text => text.length * 7
+    ));
+    assert.deepEqual(Object.fromEntries(reads), {
+        'definition.key': 1,
+        'definition.name': 1,
+        'definition.parameters': 1,
+        'definition.ports': 1,
+        'first.name': 1,
+        'first.direction': 1,
+        'first.width': 1,
+        'first.width.kind': 1,
+        'first.width.bits': 1,
+        'second.name': 1,
+        'second.direction': 1,
+        'second.width': 1,
+        'second.width.kind': 1,
+        'second.width.bits': 1,
+    });
 });

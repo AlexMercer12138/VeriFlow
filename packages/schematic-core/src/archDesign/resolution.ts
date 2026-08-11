@@ -90,6 +90,11 @@ export type ResolvedArchDesignDefault = Readonly<{
     connection?: string;
 }>;
 
+export type ResolvedArchDesignConnectionDefaultSource = Readonly<{
+    connectionIndex: number;
+    default: ResolvedArchDesignDefault;
+}>;
+
 export type ArchDesignResolution = Readonly<{
     moduleName: string;
     instances: readonly ResolvedArchDesignInstance[];
@@ -97,6 +102,7 @@ export type ArchDesignResolution = Readonly<{
     connections: readonly ResolvedArchDesignConnection[];
     diagnostics: readonly ArchDesignDiagnostic[];
     effectiveDefaults: readonly ResolvedArchDesignDefault[];
+    connectionDefaultSources: readonly ResolvedArchDesignConnectionDefaultSource[];
 }>;
 
 type DefaultSelection = Readonly<{
@@ -307,7 +313,10 @@ function addInstanceTargets(
     byDefaultKey: Map<string, ResolvedArchDesignEndpointTarget[]>
 ): void {
     if (!instance.definition) return;
+    const seenPorts = new Set<string>();
     for (const port of instance.definition.ports) {
+        if (seenPorts.has(port.name)) continue;
+        seenPorts.add(port.name);
         addTarget(targets, byIdentity, byDefaultKey, {
             identity: `instance:${instance.instance.name}:${port.name}`,
             defaultKey: `${instance.instance.name}.${port.name}`,
@@ -446,6 +455,18 @@ export function resolveArchDesign(
 
         const definition = matches[0];
         resolvedInstances.push(Object.freeze({ index, instance, definition }));
+        const seenDefinitionPorts = new Set<string>();
+        for (const port of definition.ports) {
+            if (!seenDefinitionPorts.has(port.name)) {
+                seenDefinitionPorts.add(port.name);
+                continue;
+            }
+            diagnostics.push(diagnostic(
+                modulePath,
+                'AD_DEFINITION_PORT_DUPLICATE',
+                `Module ${instance.module} repeats port ${port.name}`
+            ));
+        }
         const parameters = instance.parameters;
         if (!parameters) continue;
         for (const key of Object.keys(parameters).sort(compareCodeUnits)) {
@@ -720,11 +741,51 @@ export function resolveArchDesign(
             }));
             continue;
         }
+        if (connected) continue;
         diagnostics.push(diagnostic(
-            connected?.path ?? endpoint.declarationPath,
+            endpoint.declarationPath,
             'AD_UNDRIVEN_INPUT',
             `Receiver ${endpoint.defaultKey} has no definite driver or default`
         ));
+    }
+
+    const defaultsByIdentity = new Map(effectiveDefaults.map(item => [item.identity, item]));
+    const connectionDefaultSources: ResolvedArchDesignConnectionDefaultSource[] = [];
+    for (const connection of resolvedConnections) {
+        if (connectionIndexes[connection.index].definiteDriverCount > 0) continue;
+        const candidates = connection.endpoints.flatMap(endpoint => {
+            const candidate = defaultsByIdentity.get(endpoint.identity);
+            return candidate ? [candidate] : [];
+        }).sort((left, right) => left.declarationOrder - right.declarationOrder);
+        if (candidates.length === 0) {
+            for (const endpoint of connection.endpoints) {
+                if (endpoint.role !== 'load') continue;
+                diagnostics.push(diagnostic(
+                    endpoint.path,
+                    'AD_UNDRIVEN_INPUT',
+                    `Receiver ${endpoint.defaultKey} has no definite driver or default`
+                ));
+            }
+            continue;
+        }
+        const expression = candidates[0].expression;
+        const conflicting = candidates.filter((candidate, index) =>
+            index > 0 && candidate.expression !== expression
+        );
+        if (conflicting.length > 0) {
+            for (const candidate of conflicting) {
+                diagnostics.push(diagnostic(
+                    candidate.sourcePath,
+                    'AD_DEFAULT_CONFLICT',
+                    `Defaults on connection ${connection.connection.name} must use one expression`
+                ));
+            }
+            continue;
+        }
+        connectionDefaultSources.push(Object.freeze({
+            connectionIndex: connection.index,
+            default: candidates[0],
+        }));
     }
 
     diagnostics.sort((left, right) =>
@@ -736,5 +797,6 @@ export function resolveArchDesign(
         connections: Object.freeze(resolvedConnections),
         diagnostics: Object.freeze(diagnostics),
         effectiveDefaults: Object.freeze(effectiveDefaults),
+        connectionDefaultSources: Object.freeze(connectionDefaultSources),
     });
 }

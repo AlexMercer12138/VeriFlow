@@ -151,16 +151,16 @@ function constantNode(
 }
 
 function selectNetworkWidth(widths: readonly WidthValue[]): WidthValue {
-    const known = new Set<number>();
-    const symbolic = new Set<string>();
-    for (const width of widths) {
-        if (width.kind === 'known') known.add(width.bits);
-        else if (width.kind === 'symbolic') symbolic.add(width.expression);
+    const first = widths[0];
+    if (first?.kind === 'known' && widths.every(width =>
+        width.kind === 'known' && width.bits === first.bits
+    )) {
+        return { kind: 'known', bits: first.bits };
     }
-    if (known.size === 1) return { kind: 'known', bits: known.values().next().value! };
-    if (known.size > 1) return { kind: 'unknown' };
-    if (symbolic.size === 1) {
-        return { kind: 'symbolic', expression: symbolic.values().next().value! };
+    if (first?.kind === 'symbolic' && widths.every(width =>
+        width.kind === 'symbolic' && width.expression === first.expression
+    )) {
+        return { kind: 'symbolic', expression: first.expression };
     }
     return { kind: 'unknown' };
 }
@@ -223,7 +223,17 @@ export function projectArchDesignGraph(
         addNode(node, identities);
     }
 
-    for (const item of resolution.effectiveDefaults) {
+    const connectedDefaultIdentities = new Set(
+        resolution.connectionDefaultSources.map(source => source.default.identity)
+    );
+    const connectedEndpointIdentities = new Set(resolution.connections.flatMap(connection =>
+        connection.endpoints.map(endpoint => endpoint.identity)
+    ));
+    const projectedDefaults = resolution.effectiveDefaults.filter(item =>
+        connectedDefaultIdentities.has(item.identity)
+        || !connectedEndpointIdentities.has(item.identity)
+    );
+    for (const item of projectedDefaults) {
         const target = targetByIdentity.get(item.identity);
         if (!target) continue;
         const node = constantNode(item, target);
@@ -234,24 +244,13 @@ export function projectArchDesignGraph(
         });
     }
 
-    const connectedConnection = new Map<string, number>();
-    for (const connection of resolution.connections) {
-        for (const item of connection.endpoints) {
-            connectedConnection.set(item.identity, connection.index);
-        }
+    const defaultByConnection = new Map<number, ResolvedArchDesignDefault>();
+    for (const source of resolution.connectionDefaultSources) {
+        defaultByConnection.set(source.connectionIndex, source.default);
     }
-    const defaultsByConnection = new Map<number, ResolvedArchDesignDefault[]>();
-    const defaultOnly: ResolvedArchDesignDefault[] = [];
-    for (const item of resolution.effectiveDefaults) {
-        const connectionIndex = connectedConnection.get(item.identity);
-        if (connectionIndex === undefined) {
-            defaultOnly.push(item);
-            continue;
-        }
-        const items = defaultsByConnection.get(connectionIndex);
-        if (items) items.push(item);
-        else defaultsByConnection.set(connectionIndex, [item]);
-    }
+    const defaultOnly = projectedDefaults.filter(item =>
+        !connectedEndpointIdentities.has(item.identity)
+    );
 
     const networks: SchematicNetwork[] = [];
     for (const connection of resolution.connections) {
@@ -260,7 +259,8 @@ export function projectArchDesignGraph(
             const location = locations.get(item.identity);
             if (location) endpoints.push(endpoint(location, item.role));
         }
-        for (const item of defaultsByConnection.get(connection.index) ?? []) {
+        const item = defaultByConnection.get(connection.index);
+        if (item) {
             const location = locations.get(`default:${item.identity}`);
             if (location) endpoints.push(endpoint(location, 'driver'));
         }
