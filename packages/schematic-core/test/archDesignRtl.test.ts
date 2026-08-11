@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -343,4 +347,165 @@ test('exports per-bit inout control with collision-safe Verilog generate identif
         '    end',
         'endgenerate',
     ].join('\n')));
+});
+
+test('blocks unsupported interface connections with frozen diagnostics only', () => {
+    const design = designOf({
+        interfaceConnections: [{
+            name: 'axi',
+            master: { instance: 'u_master', interface: 'm_axi' },
+            slave: { instance: 'u_slave', interface: 's_axi' },
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, []);
+
+    assert.equal(result.status, 'invalid');
+    if (result.status !== 'invalid') return;
+    assert.deepEqual(result.diagnostics.map(item => [item.path, item.code]), [
+        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+    ]);
+    assert.equal(Object.isFrozen(result), true);
+    assert.equal(Object.isFrozen(result.diagnostics), true);
+    assert.equal(Object.isFrozen(result.diagnostics[0]), true);
+    assert.equal('text' in result, false);
+});
+
+test('keeps output deterministic across presentation and output-path changes', () => {
+    const original = designOf({
+        export: { output: 'generated/first.v' },
+        presentation: { viewport: { x: 1, y: 2, zoom: 1 } },
+    });
+    const moved = designOf({
+        export: { output: 'elsewhere/second.v' },
+        presentation: { viewport: { x: 900, y: -300, zoom: 2 } },
+    });
+
+    const first = exportArchDesignRtl(original, [], { sourcePath: 'soc_top.ad' });
+    const repeated = exportArchDesignRtl(original, [], { sourcePath: 'soc_top.ad' });
+    const afterMove = exportArchDesignRtl(moved, [], { sourcePath: 'soc_top.ad' });
+
+    assert.equal(first.status, 'generated');
+    assert.equal(repeated.status, 'generated');
+    assert.equal(afterMove.status, 'generated');
+    if (first.status !== 'generated'
+        || repeated.status !== 'generated'
+        || afterMove.status !== 'generated') return;
+    assert.equal(repeated.text, first.text);
+    assert.equal(afterMove.text, first.text);
+    assert.equal(afterMove.fingerprint, first.fingerprint);
+    assert.equal(Object.isFrozen(first), true);
+});
+
+test('snapshots getter-backed declarations once before validation and fingerprinting', () => {
+    let nameReads = 0;
+    let directionReads = 0;
+    let widthReads = 0;
+    const port = {} as ArchDesign['ports'][number];
+    Object.defineProperties(port, {
+        name: {
+            enumerable: true,
+            get: () => {
+                nameReads += 1;
+                return 'clk';
+            },
+        },
+        direction: {
+            enumerable: true,
+            get: () => {
+                directionReads += 1;
+                return 'input';
+            },
+        },
+        width: {
+            enumerable: true,
+            get: () => {
+                widthReads += 1;
+                return undefined;
+            },
+        },
+    });
+    const design = {
+        ...createEmptyArchDesign('getter_top'),
+        ports: [port],
+    } as ArchDesign;
+
+    const result = exportArchDesignRtl(design, []);
+
+    assert.equal(result.status, 'generated');
+    assert.deepEqual({ nameReads, directionReads, widthReads }, {
+        nameReads: 1,
+        directionReads: 1,
+        widthReads: 1,
+    });
+    assert.equal(result.status === 'generated' && result.text.includes('input wire clk'), true);
+});
+
+test('generated Verilog and SystemVerilog compile with Icarus when available', t => {
+    const probe = spawnSync('iverilog', ['-V'], { encoding: 'utf8' });
+    if (probe.error && (probe.error as NodeJS.ErrnoException).code === 'ENOENT') {
+        t.skip('iverilog is not installed');
+        return;
+    }
+    assert.equal(probe.status, 0, probe.stdout + probe.stderr);
+
+    const io: ArchDesignModuleDefinition = {
+        key: 'rtl/vector_io.v#vector_io',
+        name: 'vector_io',
+        parameters: [],
+        ports: [
+            { name: 'gpio_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'gpio_t', direction: 'output', width: { kind: 'known', bits: 8 } },
+        ],
+    };
+    const design = designOf({
+        ports: [{ name: 'gpio', direction: 'inout', width: 8 }],
+        instances: [{ name: 'u_io', module: 'vector_io' }],
+        connections: [{
+            name: 'gpio_o',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_o' },
+                { kind: 'port', port: 'gpio', signal: 'o' },
+            ],
+        }, {
+            name: 'gpio_t',
+            endpoints: [
+                { kind: 'instance', instance: 'u_io', port: 'gpio_t' },
+                { kind: 'port', port: 'gpio', signal: 't' },
+            ],
+        }],
+    });
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-ad-rtl-'));
+    try {
+        const childPath = path.join(root, 'vector_io.v');
+        writeFileSync(childPath, [
+            'module vector_io(output wire [7:0] gpio_o, output wire [7:0] gpio_t);',
+            "assign gpio_o = 8'h00;",
+            "assign gpio_t = 8'hff;",
+            'endmodule',
+            '',
+        ].join('\n'));
+        for (const [language, generation] of [
+            ['verilog', '2001'],
+            ['systemverilog', '2012'],
+        ] as const) {
+            const exported = exportArchDesignRtl(design, [io], { language });
+            assert.equal(exported.status, 'generated');
+            if (exported.status !== 'generated') continue;
+            const generatedPath = path.join(root, `soc_top${exported.extension}`);
+            writeFileSync(generatedPath, exported.text);
+            const compiled = spawnSync('iverilog', [
+                `-g${generation}`,
+                '-s',
+                'soc_top',
+                '-o',
+                path.join(root, `soc_top-${language}.out`),
+                childPath,
+                generatedPath,
+            ], { encoding: 'utf8' });
+            assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });

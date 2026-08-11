@@ -9,7 +9,10 @@ import {
     type ArchDesignPort,
     type ArchDesignWidth,
 } from './model';
-import type { ArchDesignDiagnostic } from './parser';
+import {
+    parseArchDesignValue,
+    type ArchDesignDiagnostic,
+} from './parser';
 import {
     resolveArchDesign,
     type ArchDesignResolution,
@@ -52,6 +55,19 @@ export function parseArchDesignRtlMarker(text: string): ArchDesignRtlMarker | un
         schemaVersion: Number(match[1]),
         fingerprint: match[2],
         language: match[3] as ArchDesignLanguage,
+    });
+}
+
+function invalidExport(
+    diagnostics: readonly ArchDesignDiagnostic[]
+): ArchDesignRtlExportResult {
+    return Object.freeze({
+        status: 'invalid',
+        diagnostics: Object.freeze(diagnostics.map(item => Object.freeze({
+            path: item.path,
+            code: item.code,
+            message: item.message,
+        }))),
     });
 }
 
@@ -329,17 +345,24 @@ export function exportArchDesignRtl(
     definitions: readonly ArchDesignModuleDefinition[],
     options: ArchDesignRtlExportOptions = {}
 ): ArchDesignRtlExportResult {
-    const resolution = resolveArchDesign(design, definitions);
-    if (resolution.diagnostics.length > 0) {
-        return Object.freeze({
-            status: 'invalid',
-            diagnostics: resolution.diagnostics,
-        });
+    const parsed = parseArchDesignValue(design);
+    if (parsed.status === 'invalid') return invalidExport(parsed.diagnostics);
+    if (parsed.status === 'unsupported') {
+        return invalidExport([Object.freeze({
+            path: '$.schemaVersion',
+            code: 'AD_SCHEMA_UNSUPPORTED',
+            message: `Arch Design schema version ${parsed.schemaVersion} is not supported for RTL export`,
+        })]);
     }
-    const language = options.language ?? design.export.language ?? 'verilog';
+    const snapshot = parsed.design;
+    const resolution = resolveArchDesign(snapshot, definitions);
+    if (resolution.diagnostics.length > 0) {
+        return invalidExport(resolution.diagnostics);
+    }
+    const language = options.language ?? snapshot.export.language ?? 'verilog';
     const fingerprint = semanticArchDesignFingerprint({
-        ...design,
-        export: { ...design.export, language },
+        ...snapshot,
+        export: { ...snapshot.export, language },
     });
     const marker = [
         '// vik-veriflow:generated arch-design',
