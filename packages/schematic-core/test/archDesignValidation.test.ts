@@ -700,6 +700,7 @@ test('accepts common safe Verilog constant-expression forms', () => {
         '$bits(configuration.bus)',
         '$dimensions(configuration.bus)',
         '$high(configuration.bus)',
+        '$increment(cfg.bus)',
         '$left(configuration.bus)',
         '$low(configuration.bus)',
         '$right(configuration.bus)',

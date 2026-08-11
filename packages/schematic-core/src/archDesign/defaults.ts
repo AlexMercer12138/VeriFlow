@@ -4,6 +4,7 @@ const SAFE_SYSTEM_FUNCTIONS = new Set([
     '$clog2',
     '$dimensions',
     '$high',
+    '$increment',
     '$left',
     '$low',
     '$right',
