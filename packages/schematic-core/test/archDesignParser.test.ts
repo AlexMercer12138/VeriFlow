@@ -321,3 +321,52 @@ test('clones unknown-version arrays without invoking their map property', () => 
     assert.deepEqual(result.value.futureArray, [{ enabled: true }]);
     assert.equal(Object.isFrozen(futureItem), false);
 });
+
+test('rejects sparse arrays instead of reading inherited index values', () => {
+    const inheritedPort = { name: 'polluted', direction: 'input' };
+    const ports: unknown[] = [];
+    ports.length = 1;
+    Object.setPrototypeOf(ports, { 0: inheritedPort });
+
+    const current = parseArchDesignValue(minimalDesign({ ports }));
+    assert.deepEqual(invalidDiagnostics(current).map(item => [item.path, item.code]), [
+        ['$.ports', 'AD_VALUE'],
+    ]);
+    assert.equal(Object.isFrozen(inheritedPort), false);
+
+    const futureArray: unknown[] = [];
+    futureArray.length = 1;
+    Object.setPrototypeOf(futureArray, { 0: inheritedPort });
+    const future = parseArchDesignValue(minimalDesign({
+        schemaVersion: 2,
+        futureArray,
+    }));
+    assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [
+        ['$', 'AD_VALUE'],
+    ]);
+    assert.equal(Object.isFrozen(inheritedPort), false);
+});
+
+test('snapshots unknown-version header getters exactly once', () => {
+    const value = minimalDesign({ schemaVersion: 2 });
+    let formatReads = 0;
+    let versionReads = 0;
+    Object.defineProperty(value, 'format', {
+        enumerable: true,
+        get: () => ++formatReads === 1 ? 'vik-veriflow.arch-design' : 'changed-format',
+    });
+    Object.defineProperty(value, 'schemaVersion', {
+        enumerable: true,
+        get: () => ++versionReads === 1 ? 2 : 3,
+    });
+
+    const result = parseArchDesignValue(value);
+
+    assert.equal(result.status, 'unsupported');
+    if (result.status !== 'unsupported') return;
+    assert.equal(formatReads, 1);
+    assert.equal(versionReads, 1);
+    assert.equal(result.schemaVersion, 2);
+    assert.equal(result.value.format, 'vik-veriflow.arch-design');
+    assert.equal(result.value.schemaVersion, 2);
+});

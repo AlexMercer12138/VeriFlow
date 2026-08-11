@@ -53,16 +53,21 @@ test('shared package public imports compile for a host consumer', () => {
                     manifest.exports['./arch-design'].types,
                     './dist/archDesign/index.d.ts'
                 );
+                assert.deepEqual(manifest.typesVersions['*']['arch-design'], [
+                    'dist/archDesign/index.d.ts',
+                ]);
             }
         }
         writeFileSync(path.join(consumerRoot, 'consumer.ts'), [
             ...sharedPackages.map(packageName => `import '${packageName}';`),
             "import * as archDesign from '@veriflow/schematic-core/arch-design';",
+            "import * as schematicCore from '@veriflow/schematic-core';",
             "import * as schematicModel from '@veriflow/schematic-core/model';",
             "export type ArchDesign = import('@veriflow/schematic-core/arch-design').ArchDesign;",
             "export type SchematicGraph = import('@veriflow/schematic-core/model').SchematicGraph;",
             'export const archDesignRuntime = archDesign;',
             'export const schematicModelRuntime = schematicModel;',
+            "if ('parseArchDesignText' in schematicCore) throw new Error('AD leaked into root');",
             '',
         ].join('\n'));
         writeFileSync(path.join(consumerRoot, 'tsconfig.json'), JSON.stringify({

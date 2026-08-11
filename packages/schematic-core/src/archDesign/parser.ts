@@ -53,6 +53,19 @@ function dictionary<T>(): Record<string, T> {
     return Object.create(null) as Record<string, T>;
 }
 
+function snapshotOwnRecord(value: MutableRecord): MutableRecord {
+    const result: MutableRecord = {};
+    for (const key of Object.keys(value)) {
+        Object.defineProperty(result, key, {
+            value: value[key],
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return result;
+}
+
 function deepFreeze<T>(value: T, visited = new WeakSet<object>()): T {
     if (value === null || typeof value !== 'object' || visited.has(value)) return value;
     visited.add(value);
@@ -128,7 +141,28 @@ function arrayValue(
         diagnostic(diagnostics, path, 'AD_TYPE', 'Expected an array');
         return [];
     }
+    if (!hasDenseOwnItems(value)) {
+        diagnostic(diagnostics, path, 'AD_VALUE', 'Expected a dense JSON array');
+        return [];
+    }
     return value;
+}
+
+function hasDenseOwnItems(source: readonly unknown[]): boolean {
+    const length = source.length;
+    let ownItemCount = 0;
+    for (const key of Object.keys(source)) {
+        const index = Number(key);
+        if (
+            Number.isInteger(index)
+            && index >= 0
+            && index < length
+            && String(index) === key
+        ) {
+            ownItemCount += 1;
+        }
+    }
+    return ownItemCount === length;
 }
 
 function visitArray(
@@ -584,6 +618,7 @@ function cloneUnknownJson(value: unknown, visiting = new WeakSet<object>()): unk
     visiting.add(value);
     try {
         if (Array.isArray(value)) {
+            if (!hasDenseOwnItems(value)) throw new TypeError('Sparse array');
             const result: unknown[] = [];
             const length = value.length;
             for (let index = 0; index < length; index += 1) {
@@ -606,14 +641,15 @@ function cloneUnknownJson(value: unknown, visiting = new WeakSet<object>()): unk
     }
 }
 
-function parseValue(value: unknown): ArchDesignReadResult {
-    if (!isRecord(value)) {
+function parseValue(input: unknown): ArchDesignReadResult {
+    if (!isRecord(input)) {
         return invalidResult([{
             path: '$',
             code: 'AD_DOCUMENT',
             message: 'Arch Design root must be an object',
         }]);
     }
+    const value = snapshotOwnRecord(input);
     const headerDiagnostics: ArchDesignDiagnostic[] = [];
     const format = ownValue(value, 'format');
     if (format !== ARCH_DESIGN_FORMAT) {
