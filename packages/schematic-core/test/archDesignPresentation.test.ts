@@ -91,6 +91,23 @@ function structuralDesign(
     return { ...design, presentation } as ArchDesign;
 }
 
+function isolatedGraph(nodeIds: readonly string[]): SchematicGraph {
+    return {
+        fileUri: 'file:///workspace/isolated.ad',
+        moduleKey: 'arch-design:isolated',
+        moduleName: 'isolated',
+        nodes: nodeIds.map(id => ({
+            id,
+            kind: 'instance',
+            label: id,
+            pins: [],
+            readOnly: false,
+        })),
+        networks: [],
+        diagnostics: [],
+    };
+}
+
 test('projects empty presentation as automatic placement for every graph node', () => {
     const { design, graph } = fixture();
 
@@ -293,6 +310,96 @@ test('uses only own presentation dictionary entries without prototype pollution'
         assert.equal(Object.prototype.hasOwnProperty.call(placement.nodes, key), false);
     }
     assert.equal(Object.prototype.hasOwnProperty.call({}, 'polluted'), false);
+});
+
+test('preserves exact special graph node IDs as own placement entries', () => {
+    const { design: parsedDesign } = fixture();
+    const nodeIds = ['__proto__', 'constructor', 'prototype', 'nul\0node'];
+    const graph = isolatedGraph(nodeIds);
+    const nodes = Object.create(null) as Record<string, unknown>;
+    nodeIds.forEach((id, index) => {
+        Object.defineProperty(nodes, id, {
+            value: {
+                column: 0,
+                order: index,
+                offset: 10 + index,
+                userPositioned: true,
+                polluted: true,
+            },
+            enumerable: true,
+        });
+    });
+    const design = structuralDesign(parsedDesign, { nodes });
+
+    const placement = projectArchDesignPlacement(design, graph);
+
+    assert.equal(Object.getPrototypeOf(placement.nodes), Object.prototype);
+    assert.deepEqual(Object.keys(placement.nodes), nodeIds);
+    nodeIds.forEach((id, index) => {
+        assert.equal(Object.prototype.hasOwnProperty.call(placement.nodes, id), true);
+        assert.deepEqual(placement.nodes[id], {
+            column: 0,
+            order: index,
+            yOffset: 10 + index,
+            fixed: true,
+        });
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call({}, 'polluted'), false);
+});
+
+test('reads only matching values once from a substantially larger dictionary', () => {
+    const { design: parsedDesign } = fixture();
+    const graphNodeCount = 128;
+    const dictionaryEntryCount = 2_048;
+    const nodeIds = Array.from(
+        { length: graphNodeCount },
+        (_, index) => `node:${index}`
+    );
+    const graph = isolatedGraph(nodeIds);
+    const matchingReads = new Array<number>(graphNodeCount).fill(0);
+    let staleReads = 0;
+    const nodes = Object.create(null) as Record<string, unknown>;
+    nodeIds.forEach((id, index) => {
+        Object.defineProperty(nodes, id, {
+            enumerable: true,
+            get() {
+                matchingReads[index] += 1;
+                return {
+                    column: 0,
+                    order: index,
+                    offset: index,
+                    userPositioned: true,
+                };
+            },
+        });
+    });
+    for (let index = graphNodeCount; index < dictionaryEntryCount; index += 1) {
+        Object.defineProperty(nodes, `stale:${index}`, {
+            enumerable: true,
+            get() {
+                staleReads += 1;
+                return {
+                    column: 0,
+                    order: index,
+                    offset: index,
+                    userPositioned: true,
+                };
+            },
+        });
+    }
+    const design = structuralDesign(parsedDesign, { nodes });
+
+    const placement = projectArchDesignPlacement(design, graph);
+
+    assert.equal(Object.keys(nodes).length, dictionaryEntryCount);
+    assert.equal(matchingReads.every(reads => reads === 1), true);
+    assert.equal(
+        matchingReads.reduce((total, reads) => total + reads, 0),
+        graphNodeCount
+    );
+    assert.equal(staleReads, 0);
+    assert.equal(Object.keys(placement.nodes).length, graphNodeCount);
+    assert.equal(placement.nodes[`node:${graphNodeCount - 1}`].yOffset, 127);
 });
 
 test('ignores array-shaped presentation node dictionaries', () => {
