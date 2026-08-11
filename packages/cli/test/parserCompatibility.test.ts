@@ -190,7 +190,7 @@ options:
     });
 });
 
-const placeholderHandlerError = 'Error: Arch Design command is not implemented\n';
+const missingArchDesignError = 'Error: Arch Design file not found: soc.ad\n';
 
 for (const { name, argv } of [
     {
@@ -221,7 +221,7 @@ for (const { name, argv } of [
 
             assert.equal(result.exitCode, 1);
             assert.equal(result.stdout, '');
-            assert.equal(result.stderr, placeholderHandlerError);
+            assert.equal(result.stderr, missingArchDesignError);
         });
     });
 }
@@ -235,7 +235,7 @@ test('accepts Arch Design export short aliases and attached values', async () =>
 
         assert.equal(result.exitCode, 1);
         assert.equal(result.stdout, '');
-        assert.equal(result.stderr, placeholderHandlerError);
+        assert.equal(result.stderr, missingArchDesignError);
     });
 });
 

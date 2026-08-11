@@ -4,13 +4,16 @@ import path from 'node:path';
 
 import { GlobalConfigStore, ProjectStore } from '@veriflow/flow-core';
 import {
+    exportArchDesignRtl,
     parseArchDesignText,
     validateArchDesign,
     type ArchDesign,
     type ArchDesignDiagnostic,
+    type ArchDesignLanguage,
 } from '@veriflow/schematic-core/arch-design';
 
 import type { CommandEnvironment, CommandOptions } from './project';
+import { publishGeneratedFileAtomic } from '../runtime/atomicGeneratedFile';
 import { NodeWorkspaceHost } from '../runtime/nodeWorkspaceHost';
 
 type LoadedArchDesign = {
@@ -149,6 +152,40 @@ async function scanModuleDefinitions(roots: string[]) {
     }
 }
 
+function outputPathFor(
+    loaded: LoadedArchDesign,
+    options: CommandOptions,
+    environment: CommandEnvironment,
+    language: ArchDesignLanguage
+): string {
+    const expectedExtension = language === 'verilog' ? '.v' : '.sv';
+    let outputPath: string;
+    if (options.output !== undefined) {
+        outputPath = path.resolve(environment.cwd, options.output);
+    } else if (loaded.design.export.output !== undefined) {
+        outputPath = path.resolve(
+            path.dirname(loaded.filepath),
+            loaded.design.export.output
+        );
+    } else {
+        const basename = path.basename(loaded.filepath, path.extname(loaded.filepath));
+        outputPath = path.join(path.dirname(loaded.filepath), `${basename}${expectedExtension}`);
+    }
+
+    if (path.extname(outputPath).toLowerCase() !== expectedExtension) {
+        throw new Error(
+            `Output file extension must be ${expectedExtension} for ${language}: `
+            + displayPath(outputPath, environment.cwd)
+        );
+    }
+    return outputPath;
+}
+
+function portableSourcePath(designPath: string, outputPath: string): string {
+    const relative = path.relative(path.dirname(outputPath), designPath);
+    return normalizePathSeparators(path.isAbsolute(relative) ? designPath : relative);
+}
+
 export async function adValidate(
     options: CommandOptions,
     environment: CommandEnvironment
@@ -168,9 +205,30 @@ export async function adValidate(
     return 0;
 }
 
-export function adExport(
-    _options: CommandOptions,
-    _environment: CommandEnvironment
-): never {
-    throw new Error('Arch Design command is not implemented');
+export async function adExport(
+    options: CommandOptions,
+    environment: CommandEnvironment
+): Promise<number> {
+    const loaded = await loadArchDesign(options, environment);
+    if (!loaded) return 1;
+
+    const language = options.language as ArchDesignLanguage | undefined
+        ?? loaded.design.export.language
+        ?? 'verilog';
+    const outputPath = outputPathFor(loaded, options, environment, language);
+    const definitions = await scanModuleDefinitions(
+        moduleCatalogRoots(loaded, options, environment)
+    );
+    const generated = exportArchDesignRtl(loaded.design, definitions, {
+        language,
+        sourcePath: portableSourcePath(loaded.filepath, outputPath),
+    });
+    if (generated.status === 'invalid') {
+        printDiagnostics(environment, loaded.displayPath, generated.diagnostics);
+        return 1;
+    }
+
+    await publishGeneratedFileAtomic(outputPath, generated.text);
+    environment.stdout(`RTL exported: ${displayPath(outputPath, environment.cwd)}\n`);
+    return 0;
 }

@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+
+import { parseArchDesignRtlMarker } from '@veriflow/schematic-core/arch-design';
 
 import { type CliEnvironment, runCli } from '../src/main';
 
@@ -366,5 +375,330 @@ test('reports semantic instance-port errors from the shared resolver', async () 
             stderr: 'design/soc.ad:$.connections[0].endpoints[0].port [AD_ENDPOINT_UNKNOWN] '
                 + 'Module leaf has no port named missing\n',
         });
+    });
+});
+
+test('exports Verilog beside the Arch Design by default', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const designPath = path.join(cwd, 'design/soc.ad');
+        const originalDesign = readFileSync(designPath, 'utf8');
+
+        const result = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        const outputPath = path.join(cwd, 'design/soc.v');
+        const rtl = readFileSync(outputPath, 'utf8');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        assert.equal(parseArchDesignRtlMarker(rtl)?.language, 'verilog');
+        assert.equal(readFileSync(designPath, 'utf8'), originalDesign);
+    });
+});
+
+test('resolves design export.output relative to the Arch Design directory', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({ export: { output: 'rtl/by-design.v' } }));
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+
+        const result = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        const outputPath = path.join(cwd, 'design/rtl/by-design.v');
+        const rtl = readFileSync(outputPath, 'utf8');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/rtl/by-design.v\n',
+            stderr: '',
+        });
+        assert.equal(parseArchDesignRtlMarker(rtl)?.language, 'verilog');
+        assert.ok(rtl.includes('// vik-veriflow:source "../soc.ad"'));
+        assert.equal(existsSync(path.join(cwd, 'design/soc.v')), false);
+    });
+});
+
+test('resolves CLI output relative to cwd and prefers it over design output', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({ export: { output: 'ignored/by-design.v' } }));
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+
+        const result = await invoke([
+            'ad', 'export', 'design/soc.ad', '--output', 'generated/by-cli.v',
+        ], cwd);
+
+        const outputPath = path.join(cwd, 'generated/by-cli.v');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: generated/by-cli.v\n',
+            stderr: '',
+        });
+        assert.notEqual(parseArchDesignRtlMarker(readFileSync(outputPath, 'utf8')), undefined);
+        assert.equal(existsSync(path.join(cwd, 'design/ignored/by-design.v')), false);
+    });
+});
+
+test('exports SystemVerilog to a sibling .sv file when requested', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.sv', 'module leaf; endmodule\n');
+
+        const result = await invoke([
+            'ad', 'export', 'design/soc.ad', '--language', 'systemverilog',
+        ], cwd);
+
+        const outputPath = path.join(cwd, 'design/soc.sv');
+        const rtl = readFileSync(outputPath, 'utf8');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.sv\n',
+            stderr: '',
+        });
+        assert.equal(parseArchDesignRtlMarker(rtl)?.language, 'systemverilog');
+        assert.equal(existsSync(path.join(cwd, 'design/soc.v')), false);
+    });
+});
+
+test('prefers CLI language over design export.language', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({
+            export: { language: 'systemverilog', output: 'cli-language-wins.v' },
+        }));
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+
+        const result = await invoke([
+            'ad', 'export', 'design/soc.ad', '--language', 'verilog',
+        ], cwd);
+
+        const outputPath = path.join(cwd, 'design/cli-language-wins.v');
+        const rtl = readFileSync(outputPath, 'utf8');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/cli-language-wins.v\n',
+            stderr: '',
+        });
+        assert.equal(parseArchDesignRtlMarker(rtl)?.language, 'verilog');
+    });
+});
+
+test('matches Verilog and SystemVerilog output extensions case-insensitively', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const cases = [
+            { language: 'verilog', output: 'generated/verilog.V' },
+            { language: 'systemverilog', output: 'generated/systemverilog.SV' },
+        ] as const;
+
+        for (const item of cases) {
+            const result = await invoke([
+                'ad', 'export', 'design/soc.ad',
+                '--language', item.language,
+                '-o', item.output,
+            ], cwd);
+            const rtl = readFileSync(path.join(cwd, item.output), 'utf8');
+
+            assert.deepEqual(result, {
+                exitCode: 0,
+                stdout: `RTL exported: ${item.output}\n`,
+                stderr: '',
+            });
+            assert.equal(parseArchDesignRtlMarker(rtl)?.language, item.language);
+        }
+    });
+});
+
+test('rejects mismatched and missing extensions before creating output directories', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        const cases = [
+            {
+                output: 'mismatched/output.sv',
+                stderr: 'Error: Output file extension must be .v for verilog: '
+                    + 'mismatched/output.sv\n',
+            },
+            {
+                output: 'missing-extension/output',
+                stderr: 'Error: Output file extension must be .v for verilog: '
+                    + 'missing-extension/output\n',
+            },
+        ];
+
+        for (const item of cases) {
+            const result = await invoke([
+                'ad', 'export', 'design/soc.ad', '-o', item.output,
+            ], cwd);
+
+            assert.deepEqual(result, {
+                exitCode: 1,
+                stdout: '',
+                stderr: item.stderr,
+            });
+            assert.equal(existsSync(path.dirname(path.join(cwd, item.output))), false);
+        }
+    });
+});
+
+test('preserves an existing generated target when export semantics are invalid', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const first = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+        assert.equal(first.exitCode, 0);
+        const outputPath = path.join(cwd, 'design/soc.v');
+        const original = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(original), undefined);
+        writeDesign(cwd, archDesign({
+            instances: [{ name: 'u_missing', module: 'missing_leaf' }],
+        }));
+
+        const result = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'design/soc.ad:$.instances[0].module [AD_MODULE_UNRESOLVED] '
+                + 'No module definition is named missing_leaf\n',
+        });
+        assert.equal(readFileSync(outputPath, 'utf8'), original);
+    });
+});
+
+test('replaces a valid prior generated target', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const outputPath = path.join(cwd, 'design/soc.v');
+        const first = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+        assert.equal(first.exitCode, 0);
+        const original = readFileSync(outputPath, 'utf8');
+        const originalMarker = parseArchDesignRtlMarker(original);
+        assert.notEqual(originalMarker, undefined);
+        writeDesign(cwd, archDesign({ module: 'updated_top' }));
+
+        const result = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+        const replacement = readFileSync(outputPath, 'utf8');
+        const replacementMarker = parseArchDesignRtlMarker(replacement);
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        assert.notEqual(replacement, original);
+        assert.notEqual(replacementMarker, undefined);
+        assert.notEqual(replacementMarker?.fingerprint, originalMarker?.fingerprint);
+        assert.ok(replacement.includes('module updated_top;'));
+    });
+});
+
+test('refuses handwritten, malformed-marker, and non-leading-marker targets', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const outputPath = path.join(cwd, 'design/soc.v');
+        const initial = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+        assert.equal(initial.exitCode, 0);
+        const generated = readFileSync(outputPath, 'utf8');
+        assert.notEqual(parseArchDesignRtlMarker(generated), undefined);
+        const fixtures = [
+            'module handwritten;\nendmodule\n',
+            generated.replace('schema=1', 'schema=invalid'),
+            `\n${generated}`,
+        ];
+        assert.deepEqual(fixtures.map(parseArchDesignRtlMarker), [
+            undefined, undefined, undefined,
+        ]);
+
+        for (const fixture of fixtures) {
+            writeFileSync(outputPath, fixture, 'utf8');
+
+            const result = await invoke(['ad', 'export', 'design/soc.ad'], cwd);
+
+            assert.deepEqual(result, {
+                exitCode: 1,
+                stdout: '',
+                stderr: `Error: Generated file conflict: ${outputPath}\n`,
+            });
+            assert.equal(readFileSync(outputPath, 'utf8'), fixture);
+        }
+    });
+});
+
+test('creates a missing explicit output parent after successful generation', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+        const output = 'generated/nested/soc.v';
+        const outputDirectory = path.join(cwd, 'generated/nested');
+        assert.equal(existsSync(outputDirectory), false);
+
+        const result = await invoke([
+            'ad', 'export', 'design/soc.ad', '--output', output,
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: `RTL exported: ${output}\n`,
+            stderr: '',
+        });
+        assert.notEqual(
+            parseArchDesignRtlMarker(readFileSync(path.join(cwd, output), 'utf8')),
+            undefined
+        );
+    });
+});
+
+test('exports scanned module ports with a portable source comment and named mappings', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({
+            ports: [
+                { name: 'request', direction: 'input' },
+                { name: 'response', direction: 'output' },
+            ],
+            connections: [{
+                name: 'request',
+                endpoints: [
+                    { kind: 'port', port: 'request' },
+                    { kind: 'instance', instance: 'u_leaf', port: 'data_i' },
+                ],
+            }, {
+                name: 'response',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_leaf', port: 'data_o' },
+                    { kind: 'port', port: 'response' },
+                ],
+            }],
+        }));
+        writeFixture(cwd, 'design/leaf.v', [
+            'module leaf(',
+            '    input wire data_i,',
+            '    output wire data_o',
+            ');',
+            'endmodule',
+            '',
+        ].join('\n'));
+        const output = 'generated/rtl/soc.v';
+
+        const result = await invoke([
+            'ad', 'export', 'design/soc.ad', '-o', output,
+        ], cwd);
+
+        const rtl = readFileSync(path.join(cwd, output), 'utf8');
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: `RTL exported: ${output}\n`,
+            stderr: '',
+        });
+        assert.notEqual(parseArchDesignRtlMarker(rtl), undefined);
+        assert.equal(rtl.startsWith('// vik-veriflow:generated arch-design '), true);
+        assert.ok(rtl.includes('// vik-veriflow:source "../../design/soc.ad"'));
+        assert.ok(rtl.includes([
+            'leaf u_leaf (',
+            '    .data_i(__vf_net_request),',
+            '    .data_o(__vf_net_response)',
+            ');',
+        ].join('\n')));
     });
 });
