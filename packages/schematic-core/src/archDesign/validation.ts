@@ -2,24 +2,21 @@ import type { ArchDesignModuleDefinition } from './definitions';
 import type { ArchDesign } from './model';
 import { compareCodeUnits } from './ordering';
 import type { ArchDesignDiagnostic } from './parser';
-import { resolveArchDesign } from './resolution';
+import {
+    resolveArchDesign,
+    type ArchDesignEffectiveDefault,
+} from './resolution';
 
-export type ArchDesignDefaultOrigin = 'connection' | 'design' | 'implicit-inout-t';
-
-export type ArchDesignEffectiveDefault = Readonly<{
-    endpoint: string;
-    expression: string;
-    origin: ArchDesignDefaultOrigin;
-    connection?: string;
-}>;
+export type {
+    ArchDesignDefaultOrigin,
+    ArchDesignEffectiveDefault,
+} from './resolution';
 
 export type ArchDesignValidationResult = Readonly<{
     valid: boolean;
     diagnostics: readonly ArchDesignDiagnostic[];
     effectiveDefaults: readonly ArchDesignEffectiveDefault[];
 }>;
-
-const EMPTY_EFFECTIVE_DEFAULTS: readonly ArchDesignEffectiveDefault[] = Object.freeze([]);
 
 export function validateArchDesign(
     design: ArchDesign,
@@ -34,9 +31,17 @@ export function validateArchDesign(
         }))
         .sort((left, right) =>
             compareCodeUnits(left.path, right.path) || compareCodeUnits(left.code, right.code));
+    const effectiveDefaults: ArchDesignEffectiveDefault[] = resolution.effectiveDefaults.map(
+        item => Object.freeze({
+            endpoint: item.endpoint,
+            expression: item.expression,
+            origin: item.origin,
+            ...(item.connection === undefined ? {} : { connection: item.connection }),
+        })
+    );
     return Object.freeze({
         valid: diagnostics.length === 0,
         diagnostics: Object.freeze(diagnostics),
-        effectiveDefaults: EMPTY_EFFECTIVE_DEFAULTS,
+        effectiveDefaults: Object.freeze(effectiveDefaults),
     });
 }

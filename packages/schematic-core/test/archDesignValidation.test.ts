@@ -8,6 +8,7 @@ import {
     type ArchDesign,
     type ArchDesignModuleDefinition,
 } from '../src/archDesign';
+import { resolveArchDesign } from '../src/archDesign/resolution';
 
 function designOf(overrides: Partial<ArchDesign>): ArchDesign {
     const result = parseArchDesignValue({
@@ -26,7 +27,7 @@ const coreDefinition: ArchDesignModuleDefinition = {
         { name: 'ENABLED' },
     ],
     ports: [
-        { name: 'clk', direction: 'input', width: { kind: 'known', bits: 1 } },
+        { name: 'clk', direction: 'output', width: { kind: 'known', bits: 1 } },
         { name: 'result', direction: 'output', width: { kind: 'symbolic', expression: 'WIDTH' } },
     ],
 };
@@ -159,4 +160,643 @@ test('orders semantic diagnostics deterministically by path and code', () => {
         ['$.instances[10].module', 'AD_MODULE_AMBIGUOUS'],
         ['$.instances[2].module', 'AD_MODULE_UNRESOLVED'],
     ]);
+});
+
+test('reports unknown top-level, instance, and instance-port endpoints', () => {
+    const definition: ArchDesignModuleDefinition = {
+        key: 'rtl/source.sv#source',
+        name: 'source',
+        parameters: [],
+        ports: [{ name: 'data_o', direction: 'output', width: { kind: 'known', bits: 8 } }],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_source', module: 'source' }],
+        connections: [{
+            name: 'unknown_top',
+            endpoints: [{ kind: 'port', port: 'missing' }],
+        }, {
+            name: 'unknown_instance',
+            endpoints: [{ kind: 'instance', instance: 'u_missing', port: 'data_o' }],
+        }, {
+            name: 'unknown_instance_port',
+            endpoints: [{ kind: 'instance', instance: 'u_source', port: 'missing' }],
+        }],
+    });
+
+    const result = validateArchDesign(design, [definition]);
+
+    assert.deepEqual(pathCodes(result), [
+        ['$.connections[0].endpoints[0].port', 'AD_ENDPOINT_UNKNOWN'],
+        ['$.connections[1].endpoints[0].instance', 'AD_ENDPOINT_UNKNOWN'],
+        ['$.connections[2].endpoints[0].port', 'AD_ENDPOINT_UNKNOWN'],
+    ]);
+});
+
+test('enforces scalar signal selectors on top-level ports', () => {
+    const design = designOf({
+        ports: [
+            { name: 'source', direction: 'input' },
+            { name: 'sink', direction: 'output' },
+            { name: 'bus', direction: 'inout', width: 8 },
+        ],
+        connections: [{
+            name: 'input_i',
+            endpoints: [{ kind: 'port', port: 'source', signal: 'i' }],
+        }, {
+            name: 'output_o',
+            endpoints: [{ kind: 'port', port: 'sink', signal: 'o' }],
+        }, {
+            name: 'inout_implicit',
+            endpoints: [{ kind: 'port', port: 'bus' }],
+        }, {
+            name: 'inout_value',
+            endpoints: [{ kind: 'port', port: 'bus', signal: 'value' }],
+        }],
+        defaults: {
+            'sink.value': "1'b0",
+            'bus.o': "1'b0",
+        },
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(pathCodes(result), [
+        ['$.connections[0].endpoints[0].signal', 'AD_PORT_SIGNAL'],
+        ['$.connections[1].endpoints[0].signal', 'AD_PORT_SIGNAL'],
+        ['$.connections[2].endpoints[0].signal', 'AD_PORT_SIGNAL'],
+        ['$.connections[3].endpoints[0].signal', 'AD_PORT_SIGNAL'],
+    ]);
+});
+
+test('reports duplicate scalar endpoints at their later declarations', () => {
+    const design = designOf({
+        ports: [
+            { name: 'source', direction: 'input' },
+            { name: 'sink', direction: 'output' },
+        ],
+        connections: [{
+            name: 'first',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'port', port: 'sink' },
+                { kind: 'port', port: 'sink', signal: 'value' },
+            ],
+        }, {
+            name: 'second',
+            endpoints: [{ kind: 'port', port: 'source', signal: 'value' }],
+        }],
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(pathCodes(result), [
+        ['$.connections[0].endpoints[2]', 'AD_ENDPOINT_DUPLICATE'],
+        ['$.connections[1].endpoints[0]', 'AD_ENDPOINT_DUPLICATE'],
+    ]);
+});
+
+test('does not cascade connection-default membership errors from a duplicate endpoint', () => {
+    const design = designOf({
+        ports: [
+            { name: 'source', direction: 'input' },
+            { name: 'sink', direction: 'output' },
+        ],
+        connections: [{
+            name: 'first',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'port', port: 'sink' },
+            ],
+        }, {
+            name: 'duplicate',
+            endpoints: [{ kind: 'port', port: 'sink' }],
+            defaults: { 'sink.value': "1'b0" },
+        }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [])), [
+        ['$.connections[1].endpoints[0]', 'AD_ENDPOINT_DUPLICATE'],
+    ]);
+});
+
+test('reports each definite scalar driver after the first', () => {
+    const design = designOf({
+        ports: [
+            { name: 'first', direction: 'input' },
+            { name: 'second', direction: 'input' },
+            { name: 'sink', direction: 'output' },
+        ],
+        connections: [{
+            name: 'contended',
+            endpoints: [
+                { kind: 'port', port: 'first' },
+                { kind: 'port', port: 'second' },
+                { kind: 'port', port: 'sink' },
+            ],
+        }],
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(pathCodes(result), [
+        ['$.connections[0].endpoints[1]', 'AD_MULTIPLE_DRIVERS'],
+    ]);
+});
+
+test('compares only known scalar endpoint widths', () => {
+    const unknownSource: ArchDesignModuleDefinition = {
+        key: 'rtl/unknown_source.sv#unknown_source',
+        name: 'unknown_source',
+        parameters: [],
+        ports: [{ name: 'data_o', direction: 'output', width: { kind: 'unknown' } }],
+    };
+    const design = designOf({
+        ports: [
+            { name: 'wide', direction: 'input', width: 8 },
+            { name: 'narrow', direction: 'output', width: 4 },
+            { name: 'symbolic', direction: 'input', width: { expression: 'WIDTH' } },
+            { name: 'known', direction: 'output', width: 3 },
+            { name: 'unknown_sink', direction: 'output', width: 7 },
+        ],
+        instances: [{ name: 'u_unknown', module: 'unknown_source' }],
+        connections: [{
+            name: 'mismatch',
+            endpoints: [
+                { kind: 'port', port: 'wide' },
+                { kind: 'port', port: 'narrow' },
+            ],
+        }, {
+            name: 'symbolic_width',
+            endpoints: [
+                { kind: 'port', port: 'symbolic' },
+                { kind: 'port', port: 'known' },
+            ],
+        }, {
+            name: 'unknown_width',
+            endpoints: [
+                { kind: 'instance', instance: 'u_unknown', port: 'data_o' },
+                { kind: 'port', port: 'unknown_sink' },
+            ],
+        }],
+    });
+
+    const result = validateArchDesign(design, [unknownSource]);
+
+    assert.deepEqual(pathCodes(result), [
+        ['$.connections[0].endpoints[1]', 'AD_WIDTH_MISMATCH'],
+    ]);
+});
+
+test('allows only scalar or full-port widths on an inout t endpoint', () => {
+    for (const width of [1, 8]) {
+        const design = designOf({
+            ports: [
+                { name: 'control', direction: 'input', width },
+                { name: 'bus', direction: 'inout', width: 8 },
+            ],
+            connections: [{
+                name: 'control',
+                endpoints: [
+                    { kind: 'port', port: 'control' },
+                    { kind: 'port', port: 'bus', signal: 't' },
+                ],
+            }],
+            defaults: { 'bus.o': "8'b0" },
+        });
+        assert.deepEqual(validateArchDesign(design, []).diagnostics, []);
+    }
+
+    const invalid = designOf({
+        ports: [
+            { name: 'control', direction: 'input', width: 2 },
+            { name: 'bus', direction: 'inout', width: 8 },
+        ],
+        connections: [{
+            name: 'control',
+            endpoints: [
+                { kind: 'port', port: 'control' },
+                { kind: 'port', port: 'bus', signal: 't' },
+            ],
+        }],
+        defaults: { 'bus.o': "8'b0" },
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(invalid, [])), [
+        ['$.connections[0].endpoints[1]', 'AD_INOUT_T_WIDTH'],
+    ]);
+});
+
+test('reports a required connected load with no definite driver or default', () => {
+    const design = designOf({
+        ports: [{ name: 'sink', direction: 'output', width: 8 }],
+        connections: [{
+            name: 'driverless',
+            endpoints: [{ kind: 'port', port: 'sink' }],
+        }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [])), [
+        ['$.connections[0].endpoints[0]', 'AD_UNDRIVEN_INPUT'],
+    ]);
+});
+
+test('reports each interface connection as unsupported without protocol inspection', () => {
+    const emptyModule: ArchDesignModuleDefinition = {
+        key: 'rtl/empty.sv#empty',
+        name: 'empty',
+        parameters: [],
+        ports: [],
+    };
+    const design = designOf({
+        instances: [
+            { name: 'left', module: 'empty' },
+            { name: 'right', module: 'empty' },
+        ],
+        interfaceConnections: [{
+            name: 'first',
+            master: { instance: 'left', interface: 'bus' },
+            slave: { instance: 'right', interface: 'bus' },
+        }, {
+            name: 'second',
+            master: { instance: 'right', interface: 'missing' },
+            slave: { instance: 'left', interface: 'also_missing' },
+        }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [emptyModule])), [
+        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+        ['$.interfaceConnections[1]', 'AD_INTERFACE_UNSUPPORTED'],
+    ]);
+});
+
+test('uses connection defaults before design defaults for an undriven load', () => {
+    const design = designOf({
+        ports: [{ name: 'sink', direction: 'output' }],
+        connections: [{
+            name: 'data',
+            endpoints: [{ kind: 'port', port: 'sink' }],
+            defaults: { 'sink.value': "1'b1" },
+        }],
+        defaults: { 'sink.value': "1'b0" },
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.effectiveDefaults, [{
+        endpoint: 'sink.value',
+        expression: "1'b1",
+        origin: 'connection',
+        connection: 'data',
+    }]);
+    assert.ok(Object.isFrozen(result.effectiveDefaults[0]));
+});
+
+test('uses design defaults for connected and completely unconnected loads', () => {
+    const design = designOf({
+        ports: [
+            { name: 'connected', direction: 'output', width: 8 },
+            { name: 'unconnected', direction: 'output', width: 8 },
+        ],
+        connections: [{
+            name: 'driverless',
+            endpoints: [{ kind: 'port', port: 'connected' }],
+        }],
+        defaults: {
+            'connected.value': "8'h55",
+            'unconnected.value': "8'haa",
+        },
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.effectiveDefaults, [{
+        endpoint: 'connected.value',
+        expression: "8'h55",
+        origin: 'design',
+    }, {
+        endpoint: 'unconnected.value',
+        expression: "8'haa",
+        origin: 'design',
+    }]);
+});
+
+test('uses implicit inout t defaults unless explicitly overridden', () => {
+    const implicit = designOf({
+        ports: [{ name: 'bus', direction: 'inout', width: 8 }],
+        defaults: { 'bus.o': "8'b0" },
+    });
+    assert.deepEqual(
+        validateArchDesign(implicit, []).effectiveDefaults.find(item => item.endpoint === 'bus.t'),
+        { endpoint: 'bus.t', expression: "1'b1", origin: 'implicit-inout-t' }
+    );
+
+    const designOverride = designOf({
+        ports: [{ name: 'bus', direction: 'inout', width: 8 }],
+        defaults: { 'bus.o': "8'b0", 'bus.t': "1'b0" },
+    });
+    assert.deepEqual(
+        validateArchDesign(designOverride, []).effectiveDefaults.find(
+            item => item.endpoint === 'bus.t'
+        ),
+        { endpoint: 'bus.t', expression: "1'b0", origin: 'design' }
+    );
+
+    const connectionOverride = designOf({
+        ports: [{ name: 'bus', direction: 'inout', width: 8 }],
+        connections: [{
+            name: 'control',
+            endpoints: [{ kind: 'port', port: 'bus', signal: 't' }],
+            defaults: { 'bus.t': "1'b0" },
+        }],
+        defaults: { 'bus.o': "8'b0", 'bus.t': "1'b1" },
+    });
+    assert.deepEqual(
+        validateArchDesign(connectionOverride, []).effectiveDefaults.find(
+            item => item.endpoint === 'bus.t'
+        ),
+        {
+            endpoint: 'bus.t',
+            expression: "1'b0",
+            origin: 'connection',
+            connection: 'control',
+        }
+    );
+});
+
+test('rejects defaults on driver and bidirectional endpoints', () => {
+    const moduleDefinition: ArchDesignModuleDefinition = {
+        key: 'rtl/bidir.sv#bidir',
+        name: 'bidir',
+        parameters: [],
+        ports: [{ name: 'io', direction: 'inout', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        ports: [{ name: 'source', direction: 'input' }],
+        instances: [{ name: 'u_bidir', module: 'bidir' }],
+        defaults: {
+            'source.value': "1'b0",
+            'u_bidir.io': "1'b0",
+        },
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [moduleDefinition])), [
+        ['$.defaults.source.value', 'AD_DEFAULT_RECEIVER'],
+        ['$.defaults.u_bidir.io', 'AD_DEFAULT_RECEIVER'],
+    ]);
+});
+
+test('rejects unknown and cross-namespace ambiguous default keys', () => {
+    const moduleDefinition: ArchDesignModuleDefinition = {
+        key: 'rtl/consumer.sv#consumer',
+        name: 'consumer',
+        parameters: [],
+        ports: [{ name: 'value', direction: 'input', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        ports: [
+            { name: 'node', direction: 'output' },
+            { name: 'top_source', direction: 'input' },
+            { name: 'instance_source', direction: 'input' },
+        ],
+        instances: [{ name: 'node', module: 'consumer' }],
+        connections: [{
+            name: 'top',
+            endpoints: [
+                { kind: 'port', port: 'top_source' },
+                { kind: 'port', port: 'node' },
+            ],
+        }, {
+            name: 'instance',
+            endpoints: [
+                { kind: 'port', port: 'instance_source' },
+                { kind: 'instance', instance: 'node', port: 'value' },
+            ],
+        }],
+        defaults: {
+            'missing.value': "1'b0",
+            'node.value': "1'b0",
+        },
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [moduleDefinition])), [
+        ['$.defaults.missing.value', 'AD_DEFAULT_ENDPOINT'],
+        ['$.defaults.node.value', 'AD_DEFAULT_ENDPOINT'],
+    ]);
+});
+
+test('requires a connection default endpoint to belong to that connection', () => {
+    const design = designOf({
+        ports: [
+            { name: 'left_source', direction: 'input' },
+            { name: 'left', direction: 'output' },
+            { name: 'right_source', direction: 'input' },
+            { name: 'right', direction: 'output' },
+        ],
+        connections: [{
+            name: 'left_net',
+            endpoints: [
+                { kind: 'port', port: 'left_source' },
+                { kind: 'port', port: 'left' },
+            ],
+            defaults: { 'right.value': "1'b0" },
+        }, {
+            name: 'right_net',
+            endpoints: [
+                { kind: 'port', port: 'right_source' },
+                { kind: 'port', port: 'right' },
+            ],
+        }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [])), [
+        ['$.connections[0].defaults.right.value', 'AD_DEFAULT_CONNECTION'],
+    ]);
+});
+
+test('rejects unsafe default expressions even when the endpoint is driven', () => {
+    const invalidExpressions = [
+        '',
+        '`MACRO',
+        'a // comment',
+        'a /* comment',
+        'a;b',
+        'a\nb',
+        'a\u0001b',
+        '"quoted"',
+        "foo'bar",
+        '$system(COMMAND)',
+        '$fopen(PATH)',
+        '$fatal()',
+        '$display(VALUE)',
+        '(a]',
+        '{a',
+        'a'.repeat(4097),
+    ];
+    for (const expression of invalidExpressions) {
+        const parsed = designOf({
+            ports: [
+                { name: 'source', direction: 'input' },
+                { name: 'sink', direction: 'output' },
+            ],
+            connections: [{
+                name: 'driven',
+                endpoints: [
+                    { kind: 'port', port: 'source' },
+                    { kind: 'port', port: 'sink' },
+                ],
+            }],
+        });
+        const design = {
+            ...parsed,
+            defaults: { 'sink.value': expression },
+        } as ArchDesign;
+
+        assert.deepEqual(
+            pathCodes(validateArchDesign(design, [])),
+            [['$.defaults.sink.value', 'AD_DEFAULT_EXPRESSION']],
+            JSON.stringify(expression)
+        );
+    }
+});
+
+test('accepts common safe Verilog constant-expression forms', () => {
+    const expressions = [
+        "1'b0",
+        "8'hff",
+        "'1",
+        'WIDTH',
+        'bus[7:0]',
+        '~a & b',
+        'select ? left : right',
+        '{left, right}',
+        '{4{data[1:0]}}',
+        '$clog2(WIDTH)',
+    ];
+    for (const expression of expressions) {
+        const design = designOf({
+            ports: [
+                { name: 'source', direction: 'input', width: 8 },
+                { name: 'sink', direction: 'output', width: 8 },
+            ],
+            connections: [{
+                name: 'driven',
+                endpoints: [
+                    { kind: 'port', port: 'source' },
+                    { kind: 'port', port: 'sink' },
+                ],
+            }],
+            defaults: { 'sink.value': expression },
+        });
+        assert.deepEqual(validateArchDesign(design, []).diagnostics, [], expression);
+    }
+});
+
+test('snapshots hostile catalog getters once during validation', () => {
+    const reads = new Map<string, number>();
+    const once = <T>(key: string, value: T): T => {
+        reads.set(key, (reads.get(key) ?? 0) + 1);
+        return value;
+    };
+    const parameter = {
+        get name() { return once('parameter.name', 'Z_LAST'); },
+        get defaultExpression() { return once('parameter.defaultExpression', '1'); },
+    };
+    const width = {
+        get kind() { return once('width.kind', 'known' as const); },
+        get bits() { return once('width.bits', 1); },
+    };
+    const port = {
+        get name() { return once('port.name', 'source'); },
+        get direction() { return once('port.direction', 'output' as const); },
+        get width() { return once('port.width', width); },
+    };
+    const parameterArray = new Proxy([parameter], {
+        get(target, property, receiver) {
+            if (property === 'length' || property === '0') {
+                once(`parameters.${String(property)}`, undefined);
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const portArray = new Proxy([port], {
+        get(target, property, receiver) {
+            if (property === 'length' || property === '0') {
+                once(`ports.${String(property)}`, undefined);
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const definition = {
+        get key() { return once('definition.key', 'rtl/observed.sv#observed'); },
+        get name() { return once('definition.name', 'observed'); },
+        get parameters() { return once('definition.parameters', parameterArray); },
+        get ports() { return once('definition.ports', portArray); },
+    } as ArchDesignModuleDefinition;
+    const catalog = new Proxy([definition], {
+        get(target, property, receiver) {
+            if (property === 'length' || property === '0') {
+                once(`catalog.${String(property)}`, undefined);
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const design = designOf({
+        instances: [{ name: 'u_observed', module: 'observed' }],
+    });
+
+    const result = validateArchDesign(design, catalog);
+
+    assert.equal(result.valid, true);
+    assert.deepEqual(Object.fromEntries(reads), {
+        'catalog.length': 1,
+        'catalog.0': 1,
+        'definition.key': 1,
+        'definition.name': 1,
+        'definition.parameters': 1,
+        'definition.ports': 1,
+        'parameters.length': 1,
+        'parameters.0': 1,
+        'parameter.name': 1,
+        'parameter.defaultExpression': 1,
+        'ports.length': 1,
+        'ports.0': 1,
+        'port.name': 1,
+        'port.direction': 1,
+        'port.width': 1,
+        'width.kind': 1,
+        'width.bits': 1,
+    });
+});
+
+test('retains catalog declaration order and owns the resolved snapshot', () => {
+    const parameters = [
+        { name: 'Z_LAST', defaultExpression: '2' },
+        { name: 'A_FIRST', defaultExpression: '1' },
+    ];
+    const ports = [
+        { name: 'z_port', direction: 'output' as const, width: { kind: 'known' as const, bits: 2 } },
+        { name: 'a_port', direction: 'output' as const, width: { kind: 'known' as const, bits: 1 } },
+    ];
+    const definition: ArchDesignModuleDefinition = {
+        key: 'rtl/ordered.sv#ordered',
+        name: 'ordered',
+        parameters,
+        ports,
+    };
+    const design = designOf({ instances: [{ name: 'u_ordered', module: 'ordered' }] });
+
+    const resolution = resolveArchDesign(design, [definition]);
+    parameters[0].name = 'mutated';
+    ports[0].name = 'mutated';
+    ports[0].width.bits = 99;
+
+    const snapshot = resolution.instances[0].definition!;
+    assert.deepEqual(snapshot.parameters.map(item => item.name), ['Z_LAST', 'A_FIRST']);
+    assert.deepEqual(snapshot.ports.map(item => item.name), ['z_port', 'a_port']);
+    assert.deepEqual(snapshot.ports[0].width, { kind: 'known', bits: 2 });
+    assert.ok(Object.isFrozen(snapshot.parameters));
+    assert.ok(Object.isFrozen(snapshot.ports));
+    assert.ok(Object.isFrozen(snapshot.ports[0].width));
 });
