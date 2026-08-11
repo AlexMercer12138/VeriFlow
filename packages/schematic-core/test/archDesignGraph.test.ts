@@ -6,6 +6,7 @@ import {
     createEmptyArchDesign,
     parseArchDesignValue,
     projectArchDesignGraph,
+    projectArchDesignPlacement,
     validateArchDesign,
     type ArchDesign,
     type ArchDesignModuleDefinition,
@@ -19,6 +20,35 @@ function designOf(overrides: Partial<ArchDesign>): ArchDesign {
     });
     if (result.status !== 'editable') throw new Error('expected editable design');
     return result.design;
+}
+
+function assertUniqueAndLayoutable(design: ArchDesign, graph: ReturnType<
+    typeof projectArchDesignGraph
+>['graph']): void {
+    const nodeIds = graph.nodes.map(node => node.id);
+    const pinIds = graph.nodes.flatMap(node => node.pins.map(pin => pin.id));
+    const networkIds = graph.networks.map(network => network.id);
+    assert.equal(new Set(nodeIds).size, nodeIds.length);
+    assert.equal(new Set(pinIds).size, pinIds.length);
+    assert.equal(new Set(networkIds).size, networkIds.length);
+
+    let columns: ReturnType<typeof assignColumns> | undefined;
+    assert.doesNotThrow(() => {
+        columns = assignColumns(graph);
+    });
+    assert.ok(columns);
+    assert.equal(columns.nodeColumn.size, graph.nodes.length);
+    assert.doesNotThrow(() => layoutSchematic(
+        graph,
+        undefined,
+        text => text.length * 7
+    ));
+    let placement: ReturnType<typeof projectArchDesignPlacement> | undefined;
+    assert.doesNotThrow(() => {
+        placement = projectArchDesignPlacement(design, graph);
+    });
+    assert.ok(placement);
+    assert.equal(Object.keys(placement.nodes).length, graph.nodes.length);
 }
 
 const coreDefinition: ArchDesignModuleDefinition = {
@@ -747,4 +777,120 @@ test('retains the first hostile catalog port declaration and remains layoutable'
         'second.width.kind': 1,
         'second.width.bits': 1,
     });
+});
+
+test('keeps duplicate top port declarations localized, unique, and layoutable', () => {
+    const design = {
+        ...createEmptyArchDesign('duplicate_ports'),
+        ports: [
+            { name: 'shared', direction: 'input' as const },
+            { name: 'shared', direction: 'input' as const },
+        ],
+        connections: [{
+            name: 'ambiguous_use',
+            endpoints: [{ kind: 'port' as const, port: 'shared' }],
+        }],
+    } as ArchDesign;
+
+    assert.deepEqual(validateArchDesign(design, []).diagnostics.map(item => [
+        item.path,
+        item.code,
+    ]), [
+        ['$.connections[0].endpoints[0].port', 'AD_ENDPOINT_AMBIGUOUS'],
+        ['$.ports[1].name', 'AD_DUPLICATE_NAME'],
+    ]);
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/duplicate-ports.ad',
+    });
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'port:shared',
+        'port:shared:declaration:1',
+    ]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.pins.map(pin => pin.id)), [
+        ['port:shared:value'],
+        ['port:shared:declaration:1:value'],
+    ]);
+    assert.deepEqual(projection.graph.networks[0].endpoints, []);
+    assertUniqueAndLayoutable(design, projection.graph);
+});
+
+test('keeps duplicate instance declarations localized, unique, and layoutable', () => {
+    const producer: ArchDesignModuleDefinition = {
+        key: 'rtl/producer.sv#producer',
+        name: 'producer',
+        parameters: [],
+        ports: [{
+            name: 'data',
+            direction: 'output',
+            width: { kind: 'known', bits: 1 },
+        }],
+    };
+    const design = {
+        ...createEmptyArchDesign('duplicate_instances'),
+        instances: [
+            { name: 'u_shared', module: 'producer' },
+            { name: 'u_shared', module: 'producer' },
+        ],
+        connections: [{
+            name: 'ambiguous_use',
+            endpoints: [{
+                kind: 'instance' as const,
+                instance: 'u_shared',
+                port: 'data',
+            }],
+        }],
+    } as ArchDesign;
+
+    assert.deepEqual(validateArchDesign(design, [producer]).diagnostics.map(item => [
+        item.path,
+        item.code,
+    ]), [
+        ['$.connections[0].endpoints[0].instance', 'AD_ENDPOINT_AMBIGUOUS'],
+        ['$.instances[1].name', 'AD_DUPLICATE_NAME'],
+    ]);
+
+    const projection = projectArchDesignGraph(design, [producer], {
+        fileUri: 'file:///workspace/duplicate-instances.ad',
+    });
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), [
+        'instance:u_shared',
+        'instance:u_shared:declaration:1',
+    ]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.pins.map(pin => pin.id)), [
+        ['instance:u_shared:data'],
+        ['instance:u_shared:declaration:1:data'],
+    ]);
+    assert.deepEqual(projection.graph.networks[0].endpoints, []);
+    assertUniqueAndLayoutable(design, projection.graph);
+});
+
+test('keeps duplicate connection declarations localized, unique, and layoutable', () => {
+    const design = {
+        ...createEmptyArchDesign('duplicate_connections'),
+        ports: [{ name: 'source', direction: 'input' as const }],
+        connections: [{
+            name: 'shared_network',
+            endpoints: [],
+        }, {
+            name: 'shared_network',
+            endpoints: [],
+        }],
+    } as ArchDesign;
+
+    assert.deepEqual(validateArchDesign(design, []).diagnostics.map(item => [
+        item.path,
+        item.code,
+    ]), [
+        ['$.connections[1].name', 'AD_DUPLICATE_NAME'],
+    ]);
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/duplicate-connections.ad',
+    });
+    assert.deepEqual(projection.graph.networks.map(network => network.id), [
+        'network:shared_network',
+        'network:shared_network:declaration:1',
+    ]);
+    assertUniqueAndLayoutable(design, projection.graph);
 });

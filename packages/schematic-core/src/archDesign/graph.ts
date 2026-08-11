@@ -29,6 +29,7 @@ type PinLocation = Readonly<{
 
 type TopPortTargets = {
     port: string;
+    nodeId: string;
     targets: ResolvedArchDesignEndpointTarget[];
 };
 
@@ -75,20 +76,18 @@ function graphPin(
 function collectTopPorts(
     resolution: ArchDesignResolution
 ): TopPortTargets[] {
-    const groups: TopPortTargets[] = [];
-    const byPort = new Map<string, TopPortTargets>();
+    const byNodeId = new Map<string, ResolvedArchDesignEndpointTarget[]>();
     for (const target of resolution.endpointTargets) {
         if (target.kind !== 'port') continue;
-        const existing = byPort.get(target.port);
-        if (existing) {
-            existing.targets.push(target);
-            continue;
-        }
-        const group = { port: target.port, targets: [target] };
-        byPort.set(target.port, group);
-        groups.push(group);
+        const existing = byNodeId.get(target.nodeId);
+        if (existing) existing.push(target);
+        else byNodeId.set(target.nodeId, [target]);
     }
-    return groups;
+    return resolution.ports.map(item => ({
+        port: item.port.name,
+        nodeId: item.nodeId,
+        targets: byNodeId.get(item.nodeId) ?? [],
+    }));
 }
 
 function isInputPort(group: TopPortTargets): boolean {
@@ -96,7 +95,7 @@ function isInputPort(group: TopPortTargets): boolean {
 }
 
 function topPortNode(group: TopPortTargets): GraphNode {
-    const nodeId = `port:${group.port}`;
+    const nodeId = group.nodeId;
     const signalOrder = new Map([['o', 0], ['t', 1], ['i', 2]]);
     const targets = group.targets.length === 1
         ? group.targets
@@ -122,10 +121,10 @@ function instanceTargets(
 ): ReadonlyMap<string, readonly ResolvedArchDesignEndpointTarget[]> {
     const mutable = new Map<string, ResolvedArchDesignEndpointTarget[]>();
     for (const target of resolution.endpointTargets) {
-        if (target.kind !== 'instance' || target.instance === undefined) continue;
-        const targets = mutable.get(target.instance);
+        if (target.kind !== 'instance') continue;
+        const targets = mutable.get(target.nodeId);
         if (targets) targets.push(target);
-        else mutable.set(target.instance, [target]);
+        else mutable.set(target.nodeId, [target]);
     }
     return mutable;
 }
@@ -202,8 +201,8 @@ export function projectArchDesignGraph(
 
     const targetsByInstance = instanceTargets(resolution);
     for (const item of resolution.instances) {
-        const nodeId = `instance:${item.instance.name}`;
-        const targets = targetsByInstance.get(item.instance.name) ?? [];
+        const nodeId = item.nodeId;
+        const targets = targetsByInstance.get(nodeId) ?? [];
         addNode({
             id: nodeId,
             kind: 'instance',
@@ -265,7 +264,7 @@ export function projectArchDesignGraph(
             if (location) endpoints.push(endpoint(location, 'driver'));
         }
         networks.push({
-            id: `network:${connection.connection.name}`,
+            id: connection.networkId,
             name: connection.connection.name,
             width: selectNetworkWidth(connection.endpoints.map(item => item.width)),
             endpoints,

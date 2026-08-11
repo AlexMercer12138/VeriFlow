@@ -13,6 +13,7 @@ import type {
     ArchDesignInstance,
     ArchDesignParameterValue,
     ArchDesignPort,
+    ArchDesignWidth,
 } from './model';
 import { compareCodeUnits } from './ordering';
 import type { ArchDesignDiagnostic } from './parser';
@@ -26,14 +27,22 @@ export type ResolvedArchDesignModuleDefinition = Readonly<{
 
 export type ResolvedArchDesignInstance = Readonly<{
     index: number;
+    nodeId: string;
     instance: ArchDesignInstance;
     definition?: ResolvedArchDesignModuleDefinition;
+}>;
+
+export type ResolvedArchDesignPort = Readonly<{
+    index: number;
+    nodeId: string;
+    port: ArchDesignPort;
 }>;
 
 export type ArchDesignEndpointRole = 'driver' | 'load' | 'bidirectional';
 
 export type ResolvedArchDesignEndpointTarget = Readonly<{
     identity: string;
+    nodeId: string;
     defaultKey: string;
     role: ArchDesignEndpointRole;
     width: WidthValue;
@@ -67,6 +76,7 @@ export type ResolvedArchDesignEndpoint = Readonly<{
 
 export type ResolvedArchDesignConnection = Readonly<{
     index: number;
+    networkId: string;
     connection: ArchDesignConnection;
     endpoints: readonly ResolvedArchDesignEndpoint[];
 }>;
@@ -97,6 +107,7 @@ export type ResolvedArchDesignConnectionDefaultSource = Readonly<{
 
 export type ArchDesignResolution = Readonly<{
     moduleName: string;
+    ports: readonly ResolvedArchDesignPort[];
     instances: readonly ResolvedArchDesignInstance[];
     endpointTargets: readonly ResolvedArchDesignEndpointTarget[];
     connections: readonly ResolvedArchDesignConnection[];
@@ -117,6 +128,24 @@ type ConnectionIndex = Readonly<{
     hasSource: boolean;
 }>;
 
+type DesignSnapshot = Readonly<{
+    moduleName: string;
+    ports: readonly ArchDesignPort[];
+    instances: readonly ArchDesignInstance[];
+    connections: readonly ArchDesignConnection[];
+    interfaceConnectionCount: number;
+    defaults: Readonly<Record<string, string>>;
+}>;
+
+type DesignSnapshotContext = Readonly<{
+    widths: WeakMap<object, ArchDesignWidth>;
+    ports: WeakMap<object, ArchDesignPort>;
+    instances: WeakMap<object, ArchDesignInstance>;
+    endpoints: WeakMap<object, ArchDesignEndpoint>;
+    connections: WeakMap<object, ArchDesignConnection>;
+    records: WeakMap<object, Readonly<Record<string, unknown>>>;
+}>;
+
 function snapshotArray<T>(source: readonly T[]): T[] {
     const length = source.length;
     const result: T[] = [];
@@ -124,7 +153,12 @@ function snapshotArray<T>(source: readonly T[]): T[] {
     return result;
 }
 
-function snapshotRecord<T>(source: Readonly<Record<string, T>>): Readonly<Record<string, T>> {
+function snapshotRecord<T>(
+    source: Readonly<Record<string, T>>,
+    context?: DesignSnapshotContext
+): Readonly<Record<string, T>> {
+    const cached = context?.records.get(source);
+    if (cached) return cached as Readonly<Record<string, T>>;
     const result: Record<string, T> = {};
     for (const key of Object.keys(source).sort(compareCodeUnits)) {
         Object.defineProperty(result, key, {
@@ -134,47 +168,153 @@ function snapshotRecord<T>(source: Readonly<Record<string, T>>): Readonly<Record
             writable: false,
         });
     }
-    return Object.freeze(result);
+    const snapshot = Object.freeze(result);
+    context?.records.set(source, snapshot);
+    return snapshot;
 }
 
-function snapshotDesignInstance(source: ArchDesignInstance): ArchDesignInstance {
+function snapshotDesignWidth(
+    source: ArchDesignWidth,
+    context: DesignSnapshotContext
+): ArchDesignWidth {
+    if (typeof source === 'number') return source;
+    const cached = context.widths.get(source);
+    if (cached) return cached;
+    const expression = source.expression;
+    const snapshot = Object.freeze({ expression });
+    context.widths.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotDesignPort(
+    source: ArchDesignPort,
+    context: DesignSnapshotContext
+): ArchDesignPort {
+    const cached = context.ports.get(source);
+    if (cached) return cached;
+    const name = source.name;
+    const direction = source.direction;
+    const sourceWidth = source.width;
+    const width = sourceWidth === undefined
+        ? undefined
+        : snapshotDesignWidth(sourceWidth, context);
+    const snapshot = Object.freeze({
+        name,
+        direction,
+        ...(width === undefined ? {} : { width }),
+    });
+    context.ports.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotDesignInstance(
+    source: ArchDesignInstance,
+    context: DesignSnapshotContext
+): ArchDesignInstance {
+    const cached = context.instances.get(source);
+    if (cached) return cached;
     const name = source.name;
     const module = source.module;
     const parameters = source.parameters;
-    return Object.freeze({
+    const snapshot = Object.freeze({
         name,
         module,
         ...(parameters === undefined
             ? {}
-            : { parameters: snapshotRecord<ArchDesignParameterValue>(parameters) }),
+            : {
+                parameters: snapshotRecord<ArchDesignParameterValue>(parameters, context),
+            }),
     });
+    context.instances.set(source, snapshot);
+    return snapshot;
 }
 
-function snapshotDesignEndpoint(source: ArchDesignEndpoint): ArchDesignEndpoint {
+function snapshotDesignEndpoint(
+    source: ArchDesignEndpoint,
+    context: DesignSnapshotContext
+): ArchDesignEndpoint {
+    const cached = context.endpoints.get(source);
+    if (cached) return cached;
     const kind = source.kind;
     if (kind === 'port') {
         const port = source.port;
         const signal = source.signal;
-        return Object.freeze({
+        const snapshot = Object.freeze({
             kind,
             port,
             ...(signal === undefined ? {} : { signal }),
         });
+        context.endpoints.set(source, snapshot);
+        return snapshot;
     }
     const instance = source.instance;
     const port = source.port;
-    return Object.freeze({ kind, instance, port });
+    const snapshot = Object.freeze({ kind, instance, port });
+    context.endpoints.set(source, snapshot);
+    return snapshot;
 }
 
-function snapshotDesignConnection(source: ArchDesignConnection): ArchDesignConnection {
+function snapshotDesignConnection(
+    source: ArchDesignConnection,
+    context: DesignSnapshotContext
+): ArchDesignConnection {
+    const cached = context.connections.get(source);
+    if (cached) return cached;
     const name = source.name;
     const endpointSources = source.endpoints;
-    const defaults = source.defaults;
-    const endpoints = Object.freeze(snapshotArray(endpointSources).map(snapshotDesignEndpoint));
-    return Object.freeze({
+    const defaultSources = source.defaults;
+    const endpointItems = snapshotArray(endpointSources);
+    const defaults = defaultSources === undefined
+        ? undefined
+        : snapshotRecord(defaultSources, context);
+    const endpoints = Object.freeze(endpointItems.map(endpoint =>
+        snapshotDesignEndpoint(endpoint, context)
+    ));
+    const snapshot = Object.freeze({
         name,
         endpoints,
-        ...(defaults === undefined ? {} : { defaults: snapshotRecord(defaults) }),
+        ...(defaults === undefined ? {} : { defaults }),
+    });
+    context.connections.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotDesign(source: ArchDesign): DesignSnapshot {
+    const moduleName = source.module;
+    const portSources = source.ports;
+    const instanceSources = source.instances;
+    const connectionSources = source.connections;
+    const interfaceConnectionSources = source.interfaceConnections;
+    const defaultSources = source.defaults;
+    const portItems = snapshotArray(portSources);
+    const instanceItems = snapshotArray(instanceSources);
+    const connectionItems = snapshotArray(connectionSources);
+    const interfaceConnectionItems = snapshotArray(interfaceConnectionSources);
+    const context: DesignSnapshotContext = {
+        widths: new WeakMap(),
+        ports: new WeakMap(),
+        instances: new WeakMap(),
+        endpoints: new WeakMap(),
+        connections: new WeakMap(),
+        records: new WeakMap(),
+    };
+    const defaults = snapshotRecord(defaultSources, context);
+    const ports = portItems.map(port =>
+        snapshotDesignPort(port, context)
+    );
+    const instances = instanceItems.map(instance =>
+        snapshotDesignInstance(instance, context)
+    );
+    const connections = connectionItems.map(connection =>
+        snapshotDesignConnection(connection, context)
+    );
+    return Object.freeze({
+        moduleName,
+        ports: Object.freeze(ports),
+        instances: Object.freeze(instances),
+        connections: Object.freeze(connections),
+        interfaceConnectionCount: interfaceConnectionItems.length,
+        defaults,
     });
 }
 
@@ -280,18 +420,18 @@ function addTarget(
 }
 
 function addTopPortTargets(
-    port: ArchDesignPort,
-    index: number,
+    declaration: ResolvedArchDesignPort,
     targets: ResolvedArchDesignEndpointTarget[],
     byIdentity: Map<string, ResolvedArchDesignEndpointTarget>,
-    byDefaultKey: Map<string, ResolvedArchDesignEndpointTarget[]>,
-    byPort: Map<string, ResolvedArchDesignEndpointTarget[]>
+    byDefaultKey: Map<string, ResolvedArchDesignEndpointTarget[]>
 ): void {
+    const { port, index, nodeId } = declaration;
     const width = topWidth(port);
     const path = `$.ports[${index}]`;
     const add = (signal: 'value' | 'i' | 'o' | 't', role: ArchDesignEndpointRole) =>
         addTarget(targets, byIdentity, byDefaultKey, {
-            identity: `port:${port.name}:${signal}`,
+            identity: `${nodeId}:${signal}`,
+            nodeId,
             defaultKey: `${port.name}.${signal}`,
             role,
             width,
@@ -301,10 +441,13 @@ function addTopPortTargets(
             declarationPath: path,
             ...(signal === 't' ? { inoutPortWidth: width } : {}),
         });
-    const portTargets = port.direction === 'inout'
-        ? [add('i', 'driver'), add('o', 'load'), add('t', 'load')]
-        : [add('value', port.direction === 'input' ? 'driver' : 'load')];
-    byPort.set(port.name, portTargets);
+    if (port.direction === 'inout') {
+        add('i', 'driver');
+        add('o', 'load');
+        add('t', 'load');
+    } else {
+        add('value', port.direction === 'input' ? 'driver' : 'load');
+    }
 }
 
 function addInstanceTargets(
@@ -319,7 +462,8 @@ function addInstanceTargets(
         if (seenPorts.has(port.name)) continue;
         seenPorts.add(port.name);
         addTarget(targets, byIdentity, byDefaultKey, {
-            identity: `instance:${instance.instance.name}:${port.name}`,
+            identity: `${instance.nodeId}:${port.name}`,
+            nodeId: instance.nodeId,
             defaultKey: `${instance.instance.name}.${port.name}`,
             role: port.direction === 'input'
                 ? 'load'
@@ -415,24 +559,78 @@ function defaultEntries(value: Readonly<Record<string, string>>): readonly strin
     return Object.freeze(Object.keys(value).sort(compareCodeUnits));
 }
 
+function appendNamed<T>(target: Map<string, T[]>, name: string, item: T): void {
+    const existing = target.get(name);
+    if (existing) existing.push(item);
+    else target.set(name, [item]);
+}
+
+function declarationId(
+    kind: 'port' | 'instance' | 'network',
+    name: string,
+    index: number,
+    seen: Set<string>,
+    path: string,
+    diagnostics: ArchDesignDiagnostic[]
+): string {
+    const base = `${kind}:${name}`;
+    if (!seen.has(name)) {
+        seen.add(name);
+        return base;
+    }
+    diagnostics.push(diagnostic(
+        path,
+        'AD_DUPLICATE_NAME',
+        `Duplicate name: ${name}`
+    ));
+    return `${base}:declaration:${index}`;
+}
+
 export function resolveArchDesign(
     design: ArchDesign,
     definitionSources: readonly ArchDesignModuleDefinition[]
 ): ArchDesignResolution {
-    const moduleName = design.module;
+    const designSnapshot = snapshotDesign(design);
+    const moduleName = designSnapshot.moduleName;
     const definitions = snapshotDefinitions(definitionSources);
     const catalog = definitionsByName(definitions);
     const parameterNamesByDefinition = new Map(definitions.map(definition => [
         definition,
         new Set(definition.parameters.map(parameter => parameter.name)),
     ]));
-    const designInstances = snapshotArray(design.instances).map(snapshotDesignInstance);
-    const designConnections = snapshotArray(design.connections).map(snapshotDesignConnection);
-    const resolvedInstances: ResolvedArchDesignInstance[] = [];
     const diagnostics: ArchDesignDiagnostic[] = [];
+    const resolvedPorts: ResolvedArchDesignPort[] = [];
+    const portsByName = new Map<string, ResolvedArchDesignPort[]>();
+    const seenPortNames = new Set<string>();
+    for (let index = 0; index < designSnapshot.ports.length; index += 1) {
+        const port = designSnapshot.ports[index];
+        const nodeId = declarationId(
+            'port',
+            port.name,
+            index,
+            seenPortNames,
+            `$.ports[${index}].name`,
+            diagnostics
+        );
+        const resolved = Object.freeze({ index, nodeId, port });
+        resolvedPorts.push(resolved);
+        appendNamed(portsByName, port.name, resolved);
+    }
 
-    for (let index = 0; index < designInstances.length; index += 1) {
-        const instance = designInstances[index];
+    const resolvedInstances: ResolvedArchDesignInstance[] = [];
+    const instancesByName = new Map<string, ResolvedArchDesignInstance[]>();
+    const seenInstanceNames = new Set<string>();
+
+    for (let index = 0; index < designSnapshot.instances.length; index += 1) {
+        const instance = designSnapshot.instances[index];
+        const nodeId = declarationId(
+            'instance',
+            instance.name,
+            index,
+            seenInstanceNames,
+            `$.instances[${index}].name`,
+            diagnostics
+        );
         const matches = catalog.get(instance.module) ?? [];
         const modulePath = `$.instances[${index}].module`;
         if (matches.length === 0) {
@@ -441,7 +639,9 @@ export function resolveArchDesign(
                 'AD_MODULE_UNRESOLVED',
                 `No module definition is named ${instance.module}`
             ));
-            resolvedInstances.push(Object.freeze({ index, instance }));
+            const resolved = Object.freeze({ index, nodeId, instance });
+            resolvedInstances.push(resolved);
+            appendNamed(instancesByName, instance.name, resolved);
             continue;
         }
         if (matches.length > 1) {
@@ -450,12 +650,16 @@ export function resolveArchDesign(
                 'AD_MODULE_AMBIGUOUS',
                 `More than one module definition is named ${instance.module}`
             ));
-            resolvedInstances.push(Object.freeze({ index, instance }));
+            const resolved = Object.freeze({ index, nodeId, instance });
+            resolvedInstances.push(resolved);
+            appendNamed(instancesByName, instance.name, resolved);
             continue;
         }
 
         const definition = matches[0];
-        resolvedInstances.push(Object.freeze({ index, instance, definition }));
+        const resolved = Object.freeze({ index, nodeId, instance, definition });
+        resolvedInstances.push(resolved);
+        appendNamed(instancesByName, instance.name, resolved);
         const seenDefinitionPorts = new Set<string>();
         for (const port of definition.ports) {
             if (!seenDefinitionPorts.has(port.name)) {
@@ -483,26 +687,25 @@ export function resolveArchDesign(
     const targets: ResolvedArchDesignEndpointTarget[] = [];
     const targetsByIdentity = new Map<string, ResolvedArchDesignEndpointTarget>();
     const targetsByDefaultKey = new Map<string, ResolvedArchDesignEndpointTarget[]>();
-    const topTargetsByPort = new Map<string, ResolvedArchDesignEndpointTarget[]>();
-    for (let index = 0; index < design.ports.length; index += 1) {
+    for (const port of resolvedPorts) {
         addTopPortTargets(
-            design.ports[index],
-            index,
+            port,
             targets,
             targetsByIdentity,
-            targetsByDefaultKey,
-            topTargetsByPort
+            targetsByDefaultKey
         );
     }
     for (const instance of resolvedInstances) {
         addInstanceTargets(instance, targets, targetsByIdentity, targetsByDefaultKey);
     }
 
-    const instancesByName = new Map(resolvedInstances.map(item => [item.instance.name, item]));
+    const targetsByNodeId = new Map<string, ResolvedArchDesignEndpointTarget[]>();
+    for (const item of targets) appendNamed(targetsByNodeId, item.nodeId, item);
     const seenEndpoints = new Set<string>();
     const connectedEndpoints = new Map<string, ResolvedArchDesignEndpoint>();
     const resolvedConnections: ResolvedArchDesignConnection[] = [];
     const connectionIndexes: ConnectionIndex[] = [];
+    const seenConnectionNames = new Set<string>();
     let endpointDeclarationOrder = 0;
 
     const resolveEndpointTarget = (
@@ -510,8 +713,8 @@ export function resolveArchDesign(
         path: string
     ): ResolvedArchDesignEndpointTarget | undefined => {
         if (endpoint.kind === 'port') {
-            const candidates = topTargetsByPort.get(endpoint.port);
-            if (!candidates) {
+            const declarations = portsByName.get(endpoint.port);
+            if (!declarations) {
                 diagnostics.push(diagnostic(
                     `${path}.port`,
                     'AD_ENDPOINT_UNKNOWN',
@@ -519,6 +722,15 @@ export function resolveArchDesign(
                 ));
                 return undefined;
             }
+            if (declarations.length !== 1) {
+                diagnostics.push(diagnostic(
+                    `${path}.port`,
+                    'AD_ENDPOINT_AMBIGUOUS',
+                    `More than one top-level port is named ${endpoint.port}`
+                ));
+                return undefined;
+            }
+            const candidates = targetsByNodeId.get(declarations[0].nodeId) ?? [];
             if (candidates.length === 1) {
                 if (endpoint.signal === undefined || endpoint.signal === 'value') {
                     return candidates[0];
@@ -540,8 +752,8 @@ export function resolveArchDesign(
             return undefined;
         }
 
-        const instance = instancesByName.get(endpoint.instance);
-        if (!instance) {
+        const instances = instancesByName.get(endpoint.instance);
+        if (!instances) {
             diagnostics.push(diagnostic(
                 `${path}.instance`,
                 'AD_ENDPOINT_UNKNOWN',
@@ -549,9 +761,18 @@ export function resolveArchDesign(
             ));
             return undefined;
         }
+        if (instances.length !== 1) {
+            diagnostics.push(diagnostic(
+                `${path}.instance`,
+                'AD_ENDPOINT_AMBIGUOUS',
+                `More than one instance is named ${endpoint.instance}`
+            ));
+            return undefined;
+        }
+        const instance = instances[0];
         if (!instance.definition) return undefined;
         const result = targetsByIdentity.get(
-            `instance:${endpoint.instance}:${endpoint.port}`
+            `${instance.nodeId}:${endpoint.port}`
         );
         if (!result) {
             diagnostics.push(diagnostic(
@@ -564,9 +785,17 @@ export function resolveArchDesign(
     };
 
     for (let connectionIndex = 0;
-        connectionIndex < designConnections.length;
+        connectionIndex < designSnapshot.connections.length;
         connectionIndex += 1) {
-        const connection = designConnections[connectionIndex];
+        const connection = designSnapshot.connections[connectionIndex];
+        const networkId = declarationId(
+            'network',
+            connection.name,
+            connectionIndex,
+            seenConnectionNames,
+            `$.connections[${connectionIndex}].name`,
+            diagnostics
+        );
         const declaredEndpointIdentities = new Set<string>();
         const knownWidthCounts = new Map<number, number>();
         const inoutTEndpoints: ResolvedArchDesignEndpoint[] = [];
@@ -650,6 +879,7 @@ export function resolveArchDesign(
         }
         const resolved = Object.freeze({
             index: connectionIndex,
+            networkId,
             connection,
             endpoints: Object.freeze(endpoints),
         });
@@ -661,7 +891,7 @@ export function resolveArchDesign(
         }));
     }
 
-    for (let index = 0; index < design.interfaceConnections.length; index += 1) {
+    for (let index = 0; index < designSnapshot.interfaceConnectionCount; index += 1) {
         diagnostics.push(diagnostic(
             `$.interfaceConnections[${index}]`,
             'AD_INTERFACE_UNSUPPORTED',
@@ -670,8 +900,8 @@ export function resolveArchDesign(
     }
 
     const designDefaults = new Map<string, DefaultSelection>();
-    for (const key of defaultEntries(design.defaults)) {
-        const expression = design.defaults[key];
+    for (const key of defaultEntries(designSnapshot.defaults)) {
+        const expression = designSnapshot.defaults[key];
         const inspected = inspectDefault(
             key,
             expression,
@@ -798,6 +1028,7 @@ export function resolveArchDesign(
         compareCodeUnits(left.path, right.path) || compareCodeUnits(left.code, right.code));
     return Object.freeze({
         moduleName,
+        ports: Object.freeze(resolvedPorts),
         instances: Object.freeze(resolvedInstances),
         endpointTargets: Object.freeze(targets),
         connections: Object.freeze(resolvedConnections),

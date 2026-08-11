@@ -800,6 +800,264 @@ test('snapshots hostile catalog getters once during validation', () => {
     });
 });
 
+test('snapshots every getter-backed design section and used field once during validation', () => {
+    const reads = new Map<string, number>();
+    const once = <T>(key: string, value: T): T => {
+        const count = (reads.get(key) ?? 0) + 1;
+        reads.set(key, count);
+        if (count > 1) throw new Error(`${key} read more than once`);
+        return value;
+    };
+    const observedArray = <T>(key: string, items: T[]): readonly T[] => new Proxy(items, {
+        get(target, property, receiver) {
+            if (property === 'length' || /^\d+$/.test(String(property))) {
+                once(`${key}.${String(property)}`, undefined);
+            }
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const entry = <T>(scope: string, key: string, value: T): Readonly<Record<string, T>> => {
+        const result: Record<string, T> = {};
+        Object.defineProperty(result, key, {
+            enumerable: true,
+            get() { return once(`${scope}.${key}`, value); },
+        });
+        return result;
+    };
+    const sharedWidth = {
+        get expression() { return once('width.expression', 'WIDTH'); },
+    };
+    const sourcePort = {
+        get name() { return once('sourcePort.name', 'source'); },
+        get direction() { return once('sourcePort.direction', 'input' as const); },
+        get width() { return once('sourcePort.width', sharedWidth); },
+    };
+    const sinkPort = {
+        get name() { return once('sinkPort.name', 'sink'); },
+        get direction() { return once('sinkPort.direction', 'output' as const); },
+        get width() { return once('sinkPort.width', sharedWidth); },
+    };
+    const instance = {
+        get name() { return once('instance.name', 'u_producer'); },
+        get module() { return once('instance.module', 'producer'); },
+        get parameters() {
+            return once('instance.parameters', entry('parameters', 'WIDTH', 8));
+        },
+    };
+    const sourceEndpoint = {
+        get kind() { return once('sourceEndpoint.kind', 'port' as const); },
+        get port() { return once('sourceEndpoint.port', 'source'); },
+        get signal() { return once('sourceEndpoint.signal', undefined); },
+    };
+    const sinkEndpoint = {
+        get kind() { return once('sinkEndpoint.kind', 'port' as const); },
+        get port() { return once('sinkEndpoint.port', 'sink'); },
+        get signal() { return once('sinkEndpoint.signal', 'value' as const); },
+    };
+    const connection = {
+        get name() { return once('connection.name', 'data'); },
+        get endpoints() {
+            return once(
+                'connection.endpoints',
+                observedArray('endpoints', [sourceEndpoint, sinkEndpoint])
+            );
+        },
+        get defaults() {
+            return once(
+                'connection.defaults',
+                entry('connectionDefaults', 'sink.value', "1'b1")
+            );
+        },
+    };
+    const ports = observedArray('ports', [sourcePort, sinkPort]);
+    const instances = observedArray('instances', [instance]);
+    const connections = observedArray('connections', [connection]);
+    const interfaceConnections = observedArray('interfaceConnections', [{}]);
+    const designDefaults = entry('designDefaults', 'sink.value', "1'b0");
+    const design = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        get module() { return once('design.module', 'getter_top'); },
+        get ports() { return once('design.ports', ports); },
+        get instances() { return once('design.instances', instances); },
+        get connections() { return once('design.connections', connections); },
+        get interfaceConnections() {
+            return once('design.interfaceConnections', interfaceConnections);
+        },
+        get defaults() { return once('design.defaults', designDefaults); },
+        export: {},
+        presentation: {},
+    } as ArchDesign;
+    const producer: ArchDesignModuleDefinition = {
+        key: 'rtl/producer.sv#producer',
+        name: 'producer',
+        parameters: [{ name: 'WIDTH' }],
+        ports: [{
+            name: 'data',
+            direction: 'output',
+            width: { kind: 'known', bits: 1 },
+        }],
+    };
+
+    let result: ReturnType<typeof validateArchDesign> | undefined;
+    assert.doesNotThrow(() => {
+        result = validateArchDesign(design, [producer]);
+    });
+    assert.ok(result);
+    assert.deepEqual(pathCodes(result), [
+        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+    ]);
+    assert.deepEqual(Object.fromEntries(reads), {
+        'design.module': 1,
+        'design.ports': 1,
+        'design.instances': 1,
+        'design.connections': 1,
+        'design.interfaceConnections': 1,
+        'design.defaults': 1,
+        'ports.length': 1,
+        'ports.0': 1,
+        'ports.1': 1,
+        'sourcePort.name': 1,
+        'sourcePort.direction': 1,
+        'sourcePort.width': 1,
+        'width.expression': 1,
+        'sinkPort.name': 1,
+        'sinkPort.direction': 1,
+        'sinkPort.width': 1,
+        'instances.length': 1,
+        'instances.0': 1,
+        'instance.name': 1,
+        'instance.module': 1,
+        'instance.parameters': 1,
+        'parameters.WIDTH': 1,
+        'connections.length': 1,
+        'connections.0': 1,
+        'connection.name': 1,
+        'connection.endpoints': 1,
+        'connection.defaults': 1,
+        'endpoints.length': 1,
+        'endpoints.0': 1,
+        'endpoints.1': 1,
+        'sourceEndpoint.kind': 1,
+        'sourceEndpoint.port': 1,
+        'sourceEndpoint.signal': 1,
+        'sinkEndpoint.kind': 1,
+        'sinkEndpoint.port': 1,
+        'sinkEndpoint.signal': 1,
+        'connectionDefaults.sink.value': 1,
+        'interfaceConnections.length': 1,
+        'interfaceConnections.0': 1,
+        'designDefaults.sink.value': 1,
+    });
+});
+
+test('captures design declaration slots before nested getters can replace later items', () => {
+    const replacementPort = { name: 'mutated_port', direction: 'input' as const };
+    const replacementInstance = { name: 'mutated_instance', module: 'empty' };
+    const replacementConnection = { name: 'mutated_connection', endpoints: [] };
+    const secondPort = { name: 'second_port', direction: 'input' as const };
+    const secondInstance = { name: 'second_instance', module: 'empty' };
+    const secondConnection = { name: 'second_connection', endpoints: [] };
+    let defaultExpression = "1'b0";
+    const defaults: Record<string, string> = {};
+    Object.defineProperty(defaults, 'fallback.value', {
+        enumerable: true,
+        get() { return defaultExpression; },
+    });
+    const ports = [{
+        get name() {
+            ports[1] = replacementPort;
+            instances[1] = replacementInstance;
+            connections[1] = replacementConnection;
+            defaultExpression = 'side_effect()';
+            return 'first_port';
+        },
+        direction: 'input' as const,
+    }, secondPort, {
+        name: 'fallback',
+        direction: 'output' as const,
+    }];
+    const instances = [{
+        get name() {
+            instances[1] = replacementInstance;
+            return 'first_instance';
+        },
+        module: 'empty',
+    }, secondInstance];
+    const connections = [{
+        get name() {
+            connections[1] = replacementConnection;
+            return 'first_connection';
+        },
+        endpoints: [],
+    }, secondConnection];
+    const design = {
+        ...createEmptyArchDesign('slot_snapshot'),
+        ports,
+        instances,
+        connections,
+        defaults,
+    } as ArchDesign;
+    const empty: ArchDesignModuleDefinition = {
+        key: 'rtl/empty.sv#empty',
+        name: 'empty',
+        parameters: [],
+        ports: [],
+    };
+
+    const resolution = resolveArchDesign(design, [empty]);
+
+    assert.deepEqual(resolution.ports.map(item => item.port.name), [
+        'first_port',
+        'second_port',
+        'fallback',
+    ]);
+    assert.deepEqual(resolution.instances.map(item => item.instance.name), [
+        'first_instance',
+        'second_instance',
+    ]);
+    assert.deepEqual(resolution.connections.map(item => item.connection.name), [
+        'first_connection',
+        'second_connection',
+    ]);
+    assert.equal(resolution.effectiveDefaults.find(item =>
+        item.endpoint === 'fallback.value'
+    )?.expression, "1'b0");
+});
+
+test('captures connection default slots before reading nested endpoint fields', () => {
+    let expression = "1'b0";
+    const defaults: Record<string, string> = {};
+    Object.defineProperty(defaults, 'sink.value', {
+        enumerable: true,
+        get() { return expression; },
+    });
+    const sourceEndpoint = {
+        get kind() {
+            expression = 'side_effect()';
+            return 'port' as const;
+        },
+        port: 'source',
+    };
+    const design = {
+        ...createEmptyArchDesign('connection_slot_snapshot'),
+        ports: [
+            { name: 'source', direction: 'input' as const },
+            { name: 'sink', direction: 'output' as const },
+        ],
+        connections: [{
+            name: 'data',
+            endpoints: [sourceEndpoint, { kind: 'port' as const, port: 'sink' }],
+            defaults,
+        }],
+    } as ArchDesign;
+
+    const resolution = resolveArchDesign(design, []);
+
+    assert.deepEqual(resolution.diagnostics, []);
+    assert.equal(resolution.connections[0].connection.defaults?.['sink.value'], "1'b0");
+});
+
 test('retains catalog declaration order and owns the resolved snapshot', () => {
     const parameters = [
         { name: 'Z_LAST', defaultExpression: '2' },
@@ -1011,4 +1269,116 @@ test('owns mutable design instance endpoint connection array and dictionary inpu
     assert.ok(Object.isFrozen(resolution.connections[0].connection.endpoints));
     assert.ok(Object.isFrozen(resolution.connections[0].connection.defaults));
     assert.ok(Object.isFrozen(resolution.connections[0].endpoints[0].endpoint));
+});
+
+test('owns the complete resolved design snapshot after caller mutation', () => {
+    const symbolicWidth = { expression: 'WIDTH' };
+    const ports: Array<{
+        name: string;
+        direction: 'input' | 'output';
+        width: number | { expression: string };
+    }> = [
+        { name: 'source', direction: 'input' as const, width: symbolicWidth },
+        { name: 'fallback', direction: 'output' as const, width: 8 },
+    ];
+    const parameters = { WIDTH: 8 };
+    const instances = [{ name: 'u_consumer', module: 'consumer', parameters }];
+    const sourceEndpoint = { kind: 'port' as const, port: 'source' };
+    const consumerEndpoint = {
+        kind: 'instance' as const,
+        instance: 'u_consumer',
+        port: 'data_i',
+    };
+    const connectionDefaults = { 'u_consumer.data_i': "8'b0" };
+    const connections: Array<{
+        name: string;
+        endpoints: Array<typeof sourceEndpoint | typeof consumerEndpoint>;
+        defaults: Record<string, string>;
+    }> = [{
+        name: 'data',
+        endpoints: [sourceEndpoint, consumerEndpoint],
+        defaults: connectionDefaults,
+    }];
+    const interfaceConnections = [{
+        name: 'unsupported',
+        master: { instance: 'u_consumer', interface: 'left' },
+        slave: { instance: 'u_consumer', interface: 'right' },
+    }];
+    const defaults = { 'fallback.value': "8'h5a" };
+    const design = {
+        ...createEmptyArchDesign('owned_top'),
+        ports,
+        instances,
+        connections,
+        interfaceConnections,
+        defaults,
+    } as ArchDesign;
+    const definition: ArchDesignModuleDefinition = {
+        key: 'rtl/consumer.sv#consumer',
+        name: 'consumer',
+        parameters: [{ name: 'WIDTH' }],
+        ports: [{
+            name: 'data_i',
+            direction: 'input',
+            width: { kind: 'known', bits: 8 },
+        }],
+    };
+
+    const resolution = resolveArchDesign(design, [definition]);
+    const mutableDesign = design as unknown as { module: string };
+    mutableDesign.module = 'mutated_top';
+    ports[0].name = 'mutated_source';
+    symbolicWidth.expression = 'MUTATED_WIDTH';
+    ports.push({ name: 'added', direction: 'input', width: 1 });
+    instances[0].name = 'mutated_instance';
+    instances.push({ name: 'added', module: 'consumer', parameters: { WIDTH: 1 } });
+    parameters.WIDTH = 99;
+    sourceEndpoint.port = 'mutated_source';
+    consumerEndpoint.instance = 'mutated_instance';
+    connectionDefaults['u_consumer.data_i'] = "8'hff";
+    connections[0].name = 'mutated_connection';
+    connections.push({ name: 'added', endpoints: [], defaults: {} });
+    interfaceConnections[0].name = 'mutated_interface';
+    interfaceConnections.push({
+        name: 'added',
+        master: { instance: 'u_consumer', interface: 'left' },
+        slave: { instance: 'u_consumer', interface: 'right' },
+    });
+    defaults['fallback.value'] = "8'hff";
+
+    assert.equal(resolution.moduleName, 'owned_top');
+    assert.deepEqual(resolution.ports.map(item => item.port), [
+        { name: 'source', direction: 'input', width: { expression: 'WIDTH' } },
+        { name: 'fallback', direction: 'output', width: 8 },
+    ]);
+    assert.deepEqual(resolution.instances[0].instance, {
+        name: 'u_consumer',
+        module: 'consumer',
+        parameters: { WIDTH: 8 },
+    });
+    assert.deepEqual(resolution.connections[0].connection, {
+        name: 'data',
+        endpoints: [
+            { kind: 'port', port: 'source' },
+            { kind: 'instance', instance: 'u_consumer', port: 'data_i' },
+        ],
+        defaults: { 'u_consumer.data_i': "8'b0" },
+    });
+    assert.deepEqual(resolution.effectiveDefaults.find(item =>
+        item.endpoint === 'fallback.value'
+    ), {
+        identity: 'port:fallback:value',
+        endpoint: 'fallback.value',
+        declarationOrder: 1,
+        sourcePath: '$.defaults.fallback.value',
+        expression: "8'h5a",
+        origin: 'design',
+    });
+    assert.deepEqual(resolution.diagnostics.map(item => [item.path, item.code]), [
+        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+    ]);
+    assert.ok(Object.isFrozen(resolution.ports));
+    assert.ok(Object.isFrozen(resolution.ports[0]));
+    assert.ok(Object.isFrozen(resolution.ports[0].port));
+    assert.ok(Object.isFrozen(resolution.ports[0].port.width));
 });
