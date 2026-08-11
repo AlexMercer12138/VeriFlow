@@ -189,3 +189,93 @@ options:
         assert.equal(result.stderr, '');
     });
 });
+
+const placeholderHandlerError = 'Error: Arch Design command is not implemented\n';
+
+for (const { name, argv } of [
+    {
+        name: 'before the design positional',
+        argv: [
+            'ad', 'export',
+            '--project', 'project.json',
+            '--lib', 'libs',
+            '--output', 'soc.v',
+            '--language', 'verilog',
+            'soc.ad',
+        ],
+    },
+    {
+        name: 'after the design positional',
+        argv: [
+            'ad', 'export', 'soc.ad',
+            '--project', 'project.json',
+            '--lib', 'libs',
+            '--output', 'soc.sv',
+            '--language', 'systemverilog',
+        ],
+    },
+]) {
+    test(`accepts Arch Design export options ${name}`, async () => {
+        await withTemporaryDirectory(async cwd => {
+            const result = await invoke(argv, cwd);
+
+            assert.equal(result.exitCode, 1);
+            assert.equal(result.stdout, '');
+            assert.equal(result.stderr, placeholderHandlerError);
+        });
+    });
+}
+
+test('accepts Arch Design export short aliases and attached values', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(
+            ['ad', 'export', '-p', 'project.json', '-Llibs', '-o', 'soc.v', 'soc.ad'],
+            cwd
+        );
+
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, placeholderHandlerError);
+    });
+});
+
+test('rejects an ambiguous Arch Design export long option', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'export', 'soc.ad', '--l', 'libs'], cwd);
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+veriflow ad export: error: ambiguous option: --l could match --lib, --language
+`);
+    });
+});
+
+test('rejects an extra Arch Design export positional', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'export', 'soc.ad', 'extra.ad'], cwd);
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+veriflow ad export: error: unrecognized arguments: extra.ad
+`);
+    });
+});
+
+test('rejects an export-only option during Arch Design validation', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(
+            ['ad', 'validate', 'soc.ad', '--output', 'soc.v'],
+            cwd
+        );
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad validate [-h] [-p PROJECT] [-L LIB] DESIGN
+veriflow ad validate: error: unrecognized arguments: --output
+`);
+    });
+});

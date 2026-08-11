@@ -1,4 +1,4 @@
-import { CommandEnvironment, CommandOptions } from './project';
+import type { CommandEnvironment, CommandOptions } from './project';
 
 export function adValidate(
     _options: CommandOptions,
