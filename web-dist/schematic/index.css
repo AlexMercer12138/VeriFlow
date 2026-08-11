@@ -3,13 +3,26 @@
     font-family: var(--vscode-font-family, system-ui, sans-serif);
     font-size: 12px;
     letter-spacing: 0;
-    color: var(--vscode-editor-foreground, #202124);
-    background: var(--vscode-editor-background, #ffffff);
+    color: var(--schematic-text);
+    background: var(--schematic-canvas);
+    --schematic-canvas: var(--vscode-editor-background, #ffffff);
+    --schematic-node-fill: var(--vscode-editorWidget-background,
+        var(--vscode-editor-background, #ffffff));
+    --schematic-node-border: var(--vscode-contrastBorder,
+        var(--vscode-editor-foreground, #3f4a5a));
+    --schematic-text: var(--vscode-editor-foreground, #1f2328);
+    --schematic-muted-text: var(--vscode-descriptionForeground, #57606a);
+    --schematic-pin: var(--vscode-contrastActiveBorder,
+        var(--vscode-editor-foreground, #1f2328));
+    --schematic-wire: var(--vscode-editor-foreground, #3f4a5a);
+    --schematic-wire-selected: var(--vscode-focusBorder, #0969da);
+    --schematic-junction: var(--schematic-wire);
+    --schematic-grid: var(--vscode-editorWhitespace-foreground, #d1d1d1);
     --schematic-border: var(--vscode-panel-border, #c7c7c7);
-    --schematic-muted: var(--vscode-descriptionForeground, #616161);
+    --schematic-muted: var(--schematic-muted-text);
     --schematic-hover: var(--vscode-toolbar-hoverBackground, #e8e8e8);
     --schematic-active: var(--vscode-toolbar-activeBackground, #d8d8d8);
-    --schematic-focus: var(--vscode-focusBorder, #0078d4);
+    --schematic-focus: var(--schematic-wire-selected);
     --schematic-selection: var(--vscode-editor-selectionBackground, #add6ff);
     --schematic-error: var(--vscode-errorForeground, #c72e0f);
     --schematic-warning: var(--vscode-editorWarning-foreground, #9a6700);
@@ -41,7 +54,7 @@ select {
     width: 100%;
     height: 100%;
     min-width: 0;
-    background: var(--vscode-editor-background, #ffffff);
+    background: var(--schematic-canvas);
 }
 
 #toolbar {
@@ -165,7 +178,7 @@ select {
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--vscode-editor-background, #ffffff);
+    background: var(--schematic-canvas);
 }
 
 #canvas,
@@ -184,7 +197,7 @@ select {
     color: var(--schematic-muted);
     text-align: center;
     overflow-wrap: anywhere;
-    background: var(--vscode-editor-background, #ffffff);
+    background: var(--schematic-canvas);
 }
 
 .canvas-state[hidden] {
@@ -199,7 +212,7 @@ select {
     width: 180px;
     height: 120px;
     overflow: hidden;
-    background: var(--vscode-editor-background, #ffffff);
+    background: var(--schematic-canvas);
     border: 1px solid var(--schematic-border);
     border-radius: 2px;
 }
@@ -280,7 +293,7 @@ select {
 
 .x6-widget-minimap,
 .x6-widget-minimap .x6-graph {
-    background: var(--vscode-editor-background, #ffffff) !important;
+    background: var(--schematic-canvas) !important;
     box-shadow: none !important;
 }
 

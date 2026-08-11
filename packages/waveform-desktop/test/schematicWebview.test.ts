@@ -346,6 +346,11 @@ async function renderedGeometry(page: Page): Promise<{
     junctionDirectionFailures: string[];
     documentOverflow: boolean;
     toolbarOverlaps: string[];
+    portTitles: Record<string, string>;
+    portTitleOverflow: string[];
+    nodeBorderContrast: number;
+    textContrast: number;
+    wireContrast: number;
 }> {
     return page.evaluate(() => {
         type Point = { x: number; y: number };
@@ -501,6 +506,61 @@ async function renderedGeometry(page: Page): Promise<{
                     : [`${cell.dataset.cellId}:${port.getAttribute('port') ?? 'pin'}`];
             });
         });
+        const portCells = nodeCells.filter(cell =>
+            (cell.dataset.cellId ?? '').startsWith('port:')
+        );
+        const portTitles = Object.fromEntries(portCells.map(cell => {
+            const title = cell.querySelector<SVGTextElement>('.veriflow-title-clip text');
+            const visibleText = [...(title?.querySelectorAll(':scope > tspan') ?? [])]
+                .map(node => node.textContent ?? '')
+                .join('');
+            return [cell.dataset.cellId ?? '', visibleText];
+        }));
+        const portTitleOverflow = portCells.flatMap(cell => {
+            const body = cell.querySelector<SVGRectElement>(':scope > rect')
+                ?.getBoundingClientRect();
+            const clip = cell.querySelector<SVGSVGElement>('.veriflow-title-clip');
+            if (!body || !clip) return [`${cell.dataset.cellId}:missing-title`];
+            return contains(body, svgViewportBounds(clip))
+                ? []
+                : [`${cell.dataset.cellId}:title-overflow`];
+        });
+        const parseColor = (value: string): [number, number, number] => {
+            const values = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+            if (!values || values.length !== 3 || values.some(Number.isNaN)) {
+                throw new Error(`unsupported computed color: ${value}`);
+            }
+            return values as [number, number, number];
+        };
+        const luminance = (color: [number, number, number]): number => {
+            const channels = color.map(value => {
+                const normalized = value / 255;
+                return normalized <= 0.04045
+                    ? normalized / 12.92
+                    : ((normalized + 0.055) / 1.055) ** 2.4;
+            });
+            return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+        };
+        const contrast = (foreground: string, background: string): number => {
+            const first = luminance(parseColor(foreground));
+            const second = luminance(parseColor(background));
+            return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+        };
+        const background = getComputedStyle(document.querySelector('#canvas-region')!)
+            .backgroundColor;
+        const sampleNode = nodeCells.find(cell =>
+            (cell.dataset.cellId ?? '').startsWith('instance:')
+        );
+        const sampleBody = sampleNode?.querySelector<SVGRectElement>(':scope > rect');
+        const sampleTitle = sampleNode?.querySelector<SVGTextElement>(
+            '.veriflow-title-clip text'
+        );
+        const sampleWire = document.querySelector<SVGPathElement>(
+            '#canvas .x6-edge[data-cell-id] > path:nth-child(2)'
+        );
+        if (!sampleBody || !sampleTitle || !sampleWire) {
+            throw new Error('contrast samples are missing');
+        }
         const junctionCells = [...document.querySelectorAll<SVGGElement>(
             '#canvas .x6-node[data-cell-id*=":junction:"]'
         )];
@@ -566,6 +626,11 @@ async function renderedGeometry(page: Page): Promise<{
             documentOverflow: document.documentElement.scrollWidth
                 > document.documentElement.clientWidth,
             toolbarOverlaps,
+            portTitles,
+            portTitleOverflow,
+            nodeBorderContrast: contrast(getComputedStyle(sampleBody).stroke, background),
+            textContrast: contrast(getComputedStyle(sampleTitle).fill, background),
+            wireContrast: contrast(getComputedStyle(sampleWire).stroke, background),
         };
     });
 }
@@ -1564,6 +1629,14 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         await page.locator('[data-testid="schematic-shell"]').waitFor();
         const fixture = visualSchematicFixture();
         await page.evaluate(({ graph, layout }) => {
+            const root = document.documentElement.style;
+            root.setProperty('--vscode-editor-background', '#181818');
+            root.setProperty('--vscode-editorWidget-background', '#202020');
+            root.setProperty('--vscode-editor-foreground', '#d4d4d4');
+            root.setProperty('--vscode-descriptionForeground', '#a0a0a0');
+            root.setProperty('--vscode-editorWidget-border', '#303030');
+            root.setProperty('--vscode-panel-border', '#2b2b2b');
+            root.setProperty('--vscode-focusBorder', '#4daafc');
             window.dispatchEvent(new MessageEvent('message', {
                 data: {
                     type: 'initialize',
@@ -1640,6 +1713,15 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             assert.deepEqual(geometry.junctionDirectionFailures, []);
             assert.equal(geometry.documentOverflow, false);
             assert.deepEqual(geometry.toolbarOverlaps, []);
+            assert.deepEqual(geometry.portTitles, {
+                'port:visual-input-a': 'input_a',
+                'port:visual-input-b': 'input_b',
+                'port:visual-output': 'result_out',
+            });
+            assert.deepEqual(geometry.portTitleOverflow, []);
+            assert.ok(geometry.nodeBorderContrast >= 3, JSON.stringify(geometry));
+            assert.ok(geometry.textContrast >= 4.5, JSON.stringify(geometry));
+            assert.ok(geometry.wireContrast >= 3, JSON.stringify(geometry));
 
             const pixels = await actualCanvasPixelStats(page);
             assert.ok(pixels.width > 0 && pixels.height > 0);

@@ -202,9 +202,9 @@ function registerShapes(): void {
             ],
             attrs: {
                 body: {
-                    fill: 'var(--vscode-editor-background, #ffffff)',
-                    stroke: 'var(--vscode-editorWidget-border, #8c8c8c)',
-                    strokeWidth: 1,
+                    fill: 'var(--schematic-node-fill)',
+                    stroke: 'var(--schematic-node-border)',
+                    strokeWidth: 1.5,
                     rx: 3,
                     ry: 3,
                 },
@@ -219,7 +219,7 @@ function registerShapes(): void {
                 label: {
                     x: 0,
                     y: SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
-                    fill: 'var(--vscode-editor-foreground, #202124)',
+                    fill: 'var(--schematic-text)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.title.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.title.fontWeight,
@@ -230,7 +230,7 @@ function registerShapes(): void {
                 subtitle: {
                     x: 0,
                     y: SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
-                    fill: 'var(--vscode-descriptionForeground, #616161)',
+                    fill: 'var(--schematic-muted-text)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.subtitle.fontWeight,
@@ -247,7 +247,7 @@ function registerShapes(): void {
         attrs: {
             line: {
                 fill: 'none',
-                stroke: 'var(--vscode-editor-foreground, #505050)',
+                stroke: 'var(--schematic-wire)',
                 strokeWidth: 1,
                 strokeLinejoin: 'round',
                 strokeLinecap: 'square',
@@ -262,9 +262,9 @@ function portGroups() {
     const body = {
         magnet: false,
         r: 3,
-        fill: 'var(--vscode-editor-background, #ffffff)',
-        stroke: 'var(--vscode-editor-foreground, #505050)',
-        strokeWidth: 1,
+        fill: 'var(--schematic-node-fill)',
+        stroke: 'var(--schematic-pin)',
+        strokeWidth: 1.5,
     };
     return {
         left: {
@@ -319,7 +319,7 @@ function pinItems(
                     title: pin.name,
                     x: pin.side === 'left' ? 0 : pin.clipBounds.width,
                     y: pin.clipBounds.height / 2,
-                    fill: 'var(--vscode-editor-foreground, #202124)',
+                    fill: 'var(--schematic-text)',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.pin.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -508,8 +508,8 @@ function renderNetworks(
                 },
                 body: {
                     class: 'veriflow-junction-dot',
-                    fill: 'var(--vscode-editor-foreground, #505050)',
-                    stroke: 'var(--vscode-editor-foreground, #505050)',
+                    fill: 'var(--schematic-junction)',
+                    stroke: 'var(--schematic-junction)',
                     strokeWidth: 1,
                     pointerEvents: 'none',
                 },
@@ -537,13 +537,13 @@ const selection = new Selection({
 const graph = new Graph({
     container: dom.canvas,
     autoResize: true,
-    background: { color: 'var(--vscode-editor-background, #ffffff)' },
+    background: { color: 'var(--schematic-canvas)' },
     grid: {
         visible: true,
         size: 16,
         type: 'dot',
         args: {
-            color: 'var(--vscode-editorWhitespace-foreground, #d1d1d1)',
+            color: 'var(--schematic-grid)',
             thickness: 1,
         },
     },
@@ -712,10 +712,10 @@ function refreshNetworkSelectionStyles(cells: readonly Cell[]): void {
         const selected = selectedIds.has(data.objectId);
         const searched = searchedIds.has(data.objectId);
         const stroke = selected
-            ? 'var(--vscode-focusBorder, #007acc)'
+            ? 'var(--schematic-wire-selected)'
             : searched
                 ? 'var(--vscode-editor-findMatchBorder, #f0a000)'
-                : 'var(--vscode-editor-foreground, #505050)';
+                : 'var(--schematic-wire)';
         if (data.junction) {
             cell.attr('body/fill', stroke);
             cell.attr('body/stroke', stroke);
@@ -967,14 +967,14 @@ function resetSearchStyles(): void {
     for (const cell of graph.getCells()) {
         const data = cellData(cell);
         if (data?.junction) {
-            cell.attr('body/fill', 'var(--vscode-editor-foreground, #505050)');
-            cell.attr('body/stroke', 'var(--vscode-editor-foreground, #505050)');
+            cell.attr('body/fill', 'var(--schematic-junction)');
+            cell.attr('body/stroke', 'var(--schematic-junction)');
             cell.attr('body/strokeWidth', 1);
         } else if (cell.isNode()) {
-            cell.attr('body/stroke', 'var(--vscode-editorWidget-border, #8c8c8c)');
-            cell.attr('body/strokeWidth', 1);
+            cell.attr('body/stroke', 'var(--schematic-node-border)');
+            cell.attr('body/strokeWidth', 1.5);
         } else {
-            cell.attr('line/stroke', 'var(--vscode-editor-foreground, #505050)');
+            cell.attr('line/stroke', 'var(--schematic-wire)');
             cell.attr('line/strokeWidth', data?.network
                 ? networkStrokeWidth(data.network)
                 : 1);

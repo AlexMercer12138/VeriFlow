@@ -223,6 +223,10 @@ test('keeps boundary port nodes compact with a centered side anchor', () => {
         x: measured.width,
         y: measured.height / 2,
     });
+    assert.equal(measured.title.fullText, 'data');
+    assert.equal(measured.title.visibleText, 'data');
+    assert.equal(measured.title.truncated, false);
+    assert.ok(measured.title.clipBounds.width > measureWidth('data'));
     assert.strictEqual(measured.pins[0].source, node.pins[0]);
     assert.equal(measured.pins[0].fullLabel, 'data');
 });

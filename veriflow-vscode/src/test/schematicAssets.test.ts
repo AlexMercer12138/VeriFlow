@@ -396,6 +396,20 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(css, /prefers-reduced-motion/);
     assert.match(css, /forced-colors/);
     assert.doesNotMatch(css, /gradient\s*\(/i);
+    const semanticColorTokens = [
+        '--schematic-canvas',
+        '--schematic-node-fill',
+        '--schematic-node-border',
+        '--schematic-text',
+        '--schematic-muted-text',
+        '--schematic-pin',
+        '--schematic-wire',
+        '--schematic-wire-selected',
+        '--schematic-junction',
+    ];
+    for (const token of semanticColorTokens) {
+        assert.ok(css.includes(`${token}:`), `CSS is missing ${token}`);
+    }
     assert.doesNotMatch(
         css,
         /\.x6-widget-minimap\s+\.x6-graph\s*{[^}]*\b(?:width|height):\s*100%\s*!important/s,
@@ -411,6 +425,9 @@ async function testSchematicAssets(): Promise<void> {
     assertNetworkSelectionContracts(webviewSource);
     assertAdapterSearchContract(webviewSource);
     assertNetworkNavigationContract(webviewSource);
+    for (const token of semanticColorTokens.slice(1)) {
+        assert.ok(webviewSource.includes(`var(${token})`), `renderer is missing ${token}`);
+    }
     const temporaryImportOwners = typeScriptFiles(
         path.join(repositoryRoot, 'packages')
     ).filter(filePath => fs.readFileSync(filePath, 'utf8').includes(

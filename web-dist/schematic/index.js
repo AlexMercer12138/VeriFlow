@@ -45180,9 +45180,9 @@
         ],
         attrs: {
           body: {
-            fill: "var(--vscode-editor-background, #ffffff)",
-            stroke: "var(--vscode-editorWidget-border, #8c8c8c)",
-            strokeWidth: 1,
+            fill: "var(--schematic-node-fill)",
+            stroke: "var(--schematic-node-border)",
+            strokeWidth: 1.5,
             rx: 3,
             ry: 3
           },
@@ -45197,7 +45197,7 @@
           label: {
             x: 0,
             y: import_schematic_core.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
-            fill: "var(--vscode-editor-foreground, #202124)",
+            fill: "var(--schematic-text)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
             fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.title.fontSize,
             fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.title.fontWeight,
@@ -45208,7 +45208,7 @@
           subtitle: {
             x: 0,
             y: import_schematic_core.SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
-            fill: "var(--vscode-descriptionForeground, #616161)",
+            fill: "var(--schematic-muted-text)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
             fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.subtitle.fontSize,
             fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.subtitle.fontWeight,
@@ -45224,7 +45224,7 @@
       attrs: {
         line: {
           fill: "none",
-          stroke: "var(--vscode-editor-foreground, #505050)",
+          stroke: "var(--schematic-wire)",
           strokeWidth: 1,
           strokeLinejoin: "round",
           strokeLinecap: "square"
@@ -45237,9 +45237,9 @@
     const body = {
       magnet: false,
       r: 3,
-      fill: "var(--vscode-editor-background, #ffffff)",
-      stroke: "var(--vscode-editor-foreground, #505050)",
-      strokeWidth: 1
+      fill: "var(--schematic-node-fill)",
+      stroke: "var(--schematic-pin)",
+      strokeWidth: 1.5
     };
     return {
       left: {
@@ -45290,7 +45290,7 @@
             title: pin2.name,
             x: pin2.side === "left" ? 0 : pin2.clipBounds.width,
             y: pin2.clipBounds.height / 2,
-            fill: "var(--vscode-editor-foreground, #202124)",
+            fill: "var(--schematic-text)",
             fontFamily: "var(--vscode-font-family, sans-serif)",
             fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontSize,
             fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -45439,8 +45439,8 @@
           },
           body: {
             class: "veriflow-junction-dot",
-            fill: "var(--vscode-editor-foreground, #505050)",
-            stroke: "var(--vscode-editor-foreground, #505050)",
+            fill: "var(--schematic-junction)",
+            stroke: "var(--schematic-junction)",
             strokeWidth: 1,
             pointerEvents: "none"
           },
@@ -45466,13 +45466,13 @@
   var graph = new Graph({
     container: dom.canvas,
     autoResize: true,
-    background: { color: "var(--vscode-editor-background, #ffffff)" },
+    background: { color: "var(--schematic-canvas)" },
     grid: {
       visible: true,
       size: 16,
       type: "dot",
       args: {
-        color: "var(--vscode-editorWhitespace-foreground, #d1d1d1)",
+        color: "var(--schematic-grid)",
         thickness: 1
       }
     },
@@ -45618,7 +45618,7 @@
       if (data2?.objectType !== "network") continue;
       const selected = selectedIds.has(data2.objectId);
       const searched = searchedIds.has(data2.objectId);
-      const stroke3 = selected ? "var(--vscode-focusBorder, #007acc)" : searched ? "var(--vscode-editor-findMatchBorder, #f0a000)" : "var(--vscode-editor-foreground, #505050)";
+      const stroke3 = selected ? "var(--schematic-wire-selected)" : searched ? "var(--vscode-editor-findMatchBorder, #f0a000)" : "var(--schematic-wire)";
       if (data2.junction) {
         cell.attr("body/fill", stroke3);
         cell.attr("body/stroke", stroke3);
@@ -45826,14 +45826,14 @@
     for (const cell of graph.getCells()) {
       const data2 = cellData(cell);
       if (data2?.junction) {
-        cell.attr("body/fill", "var(--vscode-editor-foreground, #505050)");
-        cell.attr("body/stroke", "var(--vscode-editor-foreground, #505050)");
+        cell.attr("body/fill", "var(--schematic-junction)");
+        cell.attr("body/stroke", "var(--schematic-junction)");
         cell.attr("body/strokeWidth", 1);
       } else if (cell.isNode()) {
-        cell.attr("body/stroke", "var(--vscode-editorWidget-border, #8c8c8c)");
-        cell.attr("body/strokeWidth", 1);
+        cell.attr("body/stroke", "var(--schematic-node-border)");
+        cell.attr("body/strokeWidth", 1.5);
       } else {
-        cell.attr("line/stroke", "var(--vscode-editor-foreground, #505050)");
+        cell.attr("line/stroke", "var(--schematic-wire)");
         cell.attr("line/strokeWidth", data2?.network ? networkStrokeWidth(data2.network) : 1);
       }
     }
