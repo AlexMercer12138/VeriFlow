@@ -212,11 +212,33 @@ function allowedArchDesignImport(specifier: string): boolean {
 }
 
 function pathIsInside(directory: string, candidate: string): boolean {
-    const relative = path.relative(directory, candidate);
+    const relative = path.relative(
+        path.resolve(directory),
+        path.resolve(candidate)
+    );
     return relative === ''
         || (!relative.startsWith(`..${path.sep}`)
             && relative !== '..'
             && !path.isAbsolute(relative));
+}
+
+function resolveRelativeModuleSpecifier(
+    importingFile: string,
+    specifier: string
+): string {
+    const nativeSpecifier = specifier.replace(/[/\\]/g, path.sep);
+    return path.resolve(path.dirname(importingFile), nativeSpecifier);
+}
+
+function relativeImportStaysInside(
+    sourceRoot: string,
+    importingFile: string,
+    specifier: string
+): boolean {
+    return pathIsInside(
+        sourceRoot,
+        resolveRelativeModuleSpecifier(importingFile, specifier)
+    );
 }
 
 test('shared import policy recognizes host and product subpaths', () => {
@@ -274,6 +296,61 @@ test('Arch Design import policy allows only local source and hdl-core', () => {
     assert.equal(allowedArchDesignImport('@veriflow/hdl-core/model'), true);
 });
 
+test('Arch Design relative imports cannot escape into product packages', () => {
+    const schematicSourceRoot = path.join(
+        packageDirectory('@veriflow/schematic-core'),
+        'src'
+    );
+    const importingFile = path.join(
+        schematicSourceRoot,
+        'archDesign',
+        'index.ts'
+    );
+    const productHost = path.join(
+        packageDirectory('@veriflow/cli'),
+        'dist',
+        'runtime',
+        'nodeWorkspaceHost'
+    );
+    for (const specifier of [
+        '../../../cli/dist/runtime/nodeWorkspaceHost',
+        '..\\..\\..\\cli\\dist\\runtime\\nodeWorkspaceHost',
+        '../..\\../cli\\dist/runtime/nodeWorkspaceHost',
+    ]) {
+        assert.equal(
+            resolveRelativeModuleSpecifier(importingFile, specifier),
+            productHost,
+            specifier
+        );
+        assert.equal(
+            relativeImportStaysInside(schematicSourceRoot, importingFile, specifier),
+            false,
+            specifier
+        );
+    }
+    for (const [specifier, expected] of [
+        ['./presentation', path.join(schematicSourceRoot, 'archDesign', 'presentation')],
+        ['.\\presentation', path.join(schematicSourceRoot, 'archDesign', 'presentation')],
+        ['../model', path.join(schematicSourceRoot, 'model')],
+        ['..\\model', path.join(schematicSourceRoot, 'model')],
+    ] as const) {
+        assert.equal(
+            resolveRelativeModuleSpecifier(importingFile, specifier),
+            expected,
+            specifier
+        );
+        assert.equal(
+            relativeImportStaysInside(schematicSourceRoot, importingFile, specifier),
+            true,
+            specifier
+        );
+    }
+    assert.equal(
+        pathIsInside(schematicSourceRoot, `${schematicSourceRoot}-sibling`),
+        false
+    );
+});
+
 test('Arch Design sources remain host-neutral and depend only on hdl-core', () => {
     const schematicSourceRoot = path.join(
         packageDirectory('@veriflow/schematic-core'),
@@ -291,9 +368,10 @@ test('Arch Design sources remain host-neutral and depend only on hdl-core', () =
             );
             if (!imported.startsWith('.')) continue;
             assert.equal(
-                pathIsInside(
+                relativeImportStaysInside(
                     schematicSourceRoot,
-                    path.resolve(path.dirname(file), imported)
+                    file,
+                    imported
                 ),
                 true,
                 context
