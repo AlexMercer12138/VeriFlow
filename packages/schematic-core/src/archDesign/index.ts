@@ -4,5 +4,6 @@ export * from './fingerprint';
 export * from './graph';
 export * from './model';
 export * from './parser';
+export * from './presentation';
 export * from './serializer';
 export * from './validation';
