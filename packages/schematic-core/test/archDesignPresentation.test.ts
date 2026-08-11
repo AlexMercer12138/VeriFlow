@@ -310,6 +310,115 @@ test('ignores array-shaped presentation node dictionaries', () => {
     );
 });
 
+test('snapshots every dictionary slot before reading entry fields', () => {
+    const { design: parsedDesign, graph } = fixture();
+    const slotReads = { first: 0, second: 0 };
+    const originalSecond = {
+        column: 2,
+        order: 0,
+        offset: 2,
+        userPositioned: true,
+    };
+    const replacementSecond = {
+        column: 2,
+        order: 0,
+        offset: 99,
+        userPositioned: true,
+    };
+    const nodes = Object.create(null) as Record<string, unknown>;
+    const first = {
+        order: 0,
+        offset: 1,
+        userPositioned: true,
+    } as Record<string, unknown>;
+    Object.defineProperty(first, 'column', {
+        enumerable: true,
+        get() {
+            Object.defineProperty(nodes, SECOND_ID, {
+                value: replacementSecond,
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
+            return 1;
+        },
+    });
+    Object.defineProperties(nodes, {
+        [FIRST_ID]: {
+            enumerable: true,
+            configurable: true,
+            get() {
+                slotReads.first += 1;
+                return first;
+            },
+        },
+        [SECOND_ID]: {
+            enumerable: true,
+            configurable: true,
+            get() {
+                slotReads.second += 1;
+                return originalSecond;
+            },
+        },
+    });
+    const design = structuralDesign(parsedDesign, { nodes });
+
+    const placement = projectArchDesignPlacement(design, graph);
+
+    assert.deepEqual(slotReads, { first: 1, second: 1 });
+    assert.equal(placement.nodes[FIRST_ID].yOffset, 1);
+    assert.equal(placement.nodes[SECOND_ID].yOffset, 2);
+});
+
+test('snapshots aliased entry fields once into detached placements', () => {
+    const { design: parsedDesign, graph } = fixture();
+    const reads = { column: 0, order: 0, offset: 0, userPositioned: 0 };
+    const shared = {} as Record<string, unknown>;
+    for (const [field, value] of [
+        ['column', 1],
+        ['order', 0],
+        ['offset', 23],
+        ['userPositioned', true],
+    ] as const) {
+        Object.defineProperty(shared, field, {
+            enumerable: true,
+            get() {
+                reads[field] += 1;
+                return value;
+            },
+        });
+    }
+    const nodes = {
+        [FIRST_ID]: shared,
+        [SECOND_ID]: shared,
+    };
+    const design = structuralDesign(parsedDesign, { nodes });
+
+    const placement = projectArchDesignPlacement(design, graph);
+
+    assert.deepEqual(reads, {
+        column: 1,
+        order: 1,
+        offset: 1,
+        userPositioned: 1,
+    });
+    assert.deepEqual(placement.nodes[FIRST_ID], {
+        column: 1,
+        order: 0,
+        yOffset: 23,
+        fixed: true,
+    });
+    assert.deepEqual(placement.nodes[SECOND_ID], {
+        column: 1,
+        order: 1,
+        yOffset: 23,
+        fixed: true,
+    });
+    assert.notEqual(placement.nodes[FIRST_ID], placement.nodes[SECOND_ID]);
+    placement.nodes[FIRST_ID].yOffset = 100;
+    assert.equal(placement.nodes[SECOND_ID].yOffset, 23);
+});
+
 test('snapshots caller-owned getter fields once and does not mutate graph', () => {
     const { design: parsedDesign, graph } = fixture();
     const graphBefore = structuredClone(graph);

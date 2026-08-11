@@ -28,6 +28,41 @@ function setOwn<T>(target: Record<string, T>, key: string, value: T): void {
     });
 }
 
+function snapshotMatchingEntries(
+    source: UnknownRecord,
+    graphNodeIds: ReadonlySet<string>
+): [string, unknown][] {
+    const entries: [string, unknown][] = [];
+    for (const id of Object.keys(source)) {
+        if (!graphNodeIds.has(id)
+            || !Object.prototype.hasOwnProperty.call(source, id)) {
+            continue;
+        }
+        entries.push([id, source[id]]);
+    }
+    return entries;
+}
+
+function snapshotEntry(
+    value: UnknownRecord,
+    cache: WeakMap<object, SchematicNodePlacement>
+): SchematicNodePlacement {
+    const cached = cache.get(value);
+    if (cached) return cached;
+    const column = ownValue(value, 'column');
+    const order = ownValue(value, 'order');
+    const offset = ownValue(value, 'offset');
+    const userPositioned = ownValue(value, 'userPositioned');
+    const placement: SchematicNodePlacement = {
+        column: column as number,
+        order: order as number,
+        yOffset: offset === undefined ? 0 : offset as number,
+        fixed: userPositioned === true,
+    };
+    cache.set(value, placement);
+    return placement;
+}
+
 function snapshotPersistedPlacement(
     design: ArchDesign,
     graph: SchematicGraph
@@ -39,23 +74,11 @@ function snapshotPersistedPlacement(
     if (!isRecord(source)) return { nodes: snapshot };
 
     const graphNodeIds = new Set(graph.nodes.map(node => node.id));
-    for (const id of Object.keys(source)) {
-        if (!graphNodeIds.has(id)
-            || !Object.prototype.hasOwnProperty.call(source, id)) {
-            continue;
-        }
-        const value = source[id];
+    const entries = snapshotMatchingEntries(source, graphNodeIds);
+    const cache = new WeakMap<object, SchematicNodePlacement>();
+    for (const [id, value] of entries) {
         if (!isRecord(value)) continue;
-        const column = ownValue(value, 'column');
-        const order = ownValue(value, 'order');
-        const offset = ownValue(value, 'offset');
-        const userPositioned = ownValue(value, 'userPositioned');
-        setOwn(snapshot, id, {
-            column: column as number,
-            order: order as number,
-            yOffset: offset === undefined ? 0 : offset as number,
-            fixed: userPositioned === true,
-        });
+        setOwn(snapshot, id, { ...snapshotEntry(value, cache) });
     }
     return { nodes: snapshot };
 }
