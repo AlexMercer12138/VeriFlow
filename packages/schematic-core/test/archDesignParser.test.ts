@@ -370,3 +370,121 @@ test('snapshots unknown-version header getters exactly once', () => {
     assert.equal(result.value.format, 'vik-veriflow.arch-design');
     assert.equal(result.value.schemaVersion, 2);
 });
+
+test('snapshots array items before normalizing getter-mutated input', () => {
+    const inheritedPort = { name: 'polluted', direction: 'output' };
+    const ports: unknown[] = [];
+    const firstPort = { name: 'clk', direction: 'input' };
+    Object.defineProperty(ports, '0', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+            delete ports[1];
+            Object.setPrototypeOf(ports, { 1: inheritedPort });
+            return firstPort;
+        },
+    });
+    ports[1] = { name: 'rst_n', direction: 'input' };
+
+    const current = parseArchDesignValue(minimalDesign({ ports }));
+    assert.deepEqual(invalidDiagnostics(current).map(item => [item.path, item.code]), [
+        ['$.ports', 'AD_VALUE'],
+    ]);
+    assert.equal(Object.isFrozen(firstPort), false);
+    assert.equal(Object.isFrozen(inheritedPort), false);
+
+    const futureArray: unknown[] = [];
+    Object.defineProperty(futureArray, '0', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+            delete futureArray[1];
+            Object.setPrototypeOf(futureArray, { 1: inheritedPort });
+            return { enabled: true };
+        },
+    });
+    futureArray[1] = { enabled: false };
+    const future = parseArchDesignValue(minimalDesign({
+        schemaVersion: 2,
+        futureArray,
+    }));
+    assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [
+        ['$', 'AD_VALUE'],
+    ]);
+    assert.equal(Object.isFrozen(inheritedPort), false);
+});
+
+test('does not read unknown top-level fields in the current schema', () => {
+    const value = minimalDesign();
+    let unknownReads = 0;
+    Object.defineProperty(value, 'futureField', {
+        enumerable: true,
+        get: () => {
+            unknownReads += 1;
+            throw new Error('current schema must ignore this field');
+        },
+    });
+
+    const result = parseArchDesignValue(value);
+
+    assert.equal(result.status, 'editable');
+    assert.equal(unknownReads, 0);
+});
+
+test('rejects dictionaries whose getter replaces a later own key with an inherited value', () => {
+    const inheritedDefault = "1'b1";
+    const defaults: Record<string, unknown> = {};
+    Object.defineProperty(defaults, 'a_target', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+            delete defaults.b_target;
+            Object.setPrototypeOf(defaults, { b_target: inheritedDefault });
+            return "1'b0";
+        },
+    });
+    defaults.b_target = "1'b0";
+
+    const current = parseArchDesignValue(minimalDesign({ defaults }));
+    assert.deepEqual(invalidDiagnostics(current).map(item => [item.path, item.code]), [
+        ['$.defaults', 'AD_VALUE'],
+    ]);
+
+    const futureObject: Record<string, unknown> = {};
+    Object.defineProperty(futureObject, 'a', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+            delete futureObject.b;
+            Object.setPrototypeOf(futureObject, { b: inheritedDefault });
+            return 1;
+        },
+    });
+    futureObject.b = 2;
+    const future = parseArchDesignValue(minimalDesign({
+        schemaVersion: 2,
+        futureObject,
+    }));
+    assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [
+        ['$', 'AD_VALUE'],
+    ]);
+});
+
+test('does not accept an inherited schema version introduced by the format getter', () => {
+    const value = minimalDesign({ schemaVersion: 2 });
+    Object.defineProperty(value, 'format', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+            delete value.schemaVersion;
+            Object.setPrototypeOf(value, { schemaVersion: 2 });
+            return 'vik-veriflow.arch-design';
+        },
+    });
+
+    const result = parseArchDesignValue(value);
+
+    assert.deepEqual(invalidDiagnostics(result).map(item => [item.path, item.code]), [
+        ['$.schemaVersion', 'AD_SCHEMA_VERSION'],
+    ]);
+});

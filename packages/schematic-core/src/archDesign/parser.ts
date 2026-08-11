@@ -53,19 +53,6 @@ function dictionary<T>(): Record<string, T> {
     return Object.create(null) as Record<string, T>;
 }
 
-function snapshotOwnRecord(value: MutableRecord): MutableRecord {
-    const result: MutableRecord = {};
-    for (const key of Object.keys(value)) {
-        Object.defineProperty(result, key, {
-            value: value[key],
-            enumerable: true,
-            configurable: true,
-            writable: true,
-        });
-    }
-    return result;
-}
-
 function deepFreeze<T>(value: T, visited = new WeakSet<object>()): T {
     if (value === null || typeof value !== 'object' || visited.has(value)) return value;
     visited.add(value);
@@ -141,11 +128,12 @@ function arrayValue(
         diagnostic(diagnostics, path, 'AD_TYPE', 'Expected an array');
         return [];
     }
-    if (!hasDenseOwnItems(value)) {
+    const snapshot = snapshotArrayItems(value);
+    if (!snapshot) {
         diagnostic(diagnostics, path, 'AD_VALUE', 'Expected a dense JSON array');
         return [];
     }
-    return value;
+    return snapshot;
 }
 
 function hasDenseOwnItems(source: readonly unknown[]): boolean {
@@ -163,6 +151,40 @@ function hasDenseOwnItems(source: readonly unknown[]): boolean {
         }
     }
     return ownItemCount === length;
+}
+
+function snapshotArrayItems(source: readonly unknown[]): unknown[] | undefined {
+    if (!hasDenseOwnItems(source)) return undefined;
+    const result: unknown[] = [];
+    const length = source.length;
+    for (let index = 0; index < length; index += 1) {
+        if (!Object.prototype.hasOwnProperty.call(source, index)) return undefined;
+        result.push(source[index]);
+    }
+    return result;
+}
+
+function snapshotRecordEntries(source: MutableRecord): [string, unknown][] | undefined {
+    const result: [string, unknown][] = [];
+    for (const key of Object.keys(source)) {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) return undefined;
+        result.push([key, source[key]]);
+    }
+    return result;
+}
+
+function dictionaryEntries(
+    value: unknown,
+    path: string,
+    diagnostics: ArchDesignDiagnostic[]
+): readonly (readonly [string, unknown])[] {
+    const source = recordValue(value, path, diagnostics);
+    const entries = snapshotRecordEntries(source);
+    if (!entries) {
+        diagnostic(diagnostics, path, 'AD_VALUE', 'Object changed while being read');
+        return [];
+    }
+    return entries;
 }
 
 function visitArray(
@@ -202,10 +224,9 @@ function normalizeStringDictionary(
     path: string,
     diagnostics: ArchDesignDiagnostic[]
 ): Record<string, string> {
-    const source = recordValue(value, path, diagnostics);
     const result = dictionary<string>();
-    for (const key of Object.keys(source)) {
-        const item = nonEmptyString(source[key], `${path}.${key}`, diagnostics);
+    for (const [key, valueAtKey] of dictionaryEntries(value, path, diagnostics)) {
+        const item = nonEmptyString(valueAtKey, `${path}.${key}`, diagnostics);
         if (item) result[key] = item;
     }
     return result;
@@ -216,10 +237,8 @@ function normalizeParameters(
     path: string,
     diagnostics: ArchDesignDiagnostic[]
 ): Record<string, string | number | boolean> {
-    const source = recordValue(value, path, diagnostics);
     const result = dictionary<string | number | boolean>();
-    for (const key of Object.keys(source)) {
-        const item = source[key];
+    for (const [key, item] of dictionaryEntries(value, path, diagnostics)) {
         if (
             typeof item === 'string'
             || typeof item === 'boolean'
@@ -566,10 +585,13 @@ function normalizePresentation(
     let nodes: Record<string, ArchDesignNodePlacement> | undefined;
     if (nodesValue !== undefined) {
         nodes = dictionary<ArchDesignNodePlacement>();
-        const source = recordValue(nodesValue, '$.presentation.nodes', diagnostics);
-        for (const key of Object.keys(source)) {
+        for (const [key, valueAtKey] of dictionaryEntries(
+            nodesValue,
+            '$.presentation.nodes',
+            diagnostics
+        )) {
             const placement = normalizePlacement(
-                source[key],
+                valueAtKey,
                 `$.presentation.nodes.${key}`,
                 diagnostics
             );
@@ -580,13 +602,11 @@ function normalizePresentation(
     let collapsedInterfaces: Record<string, boolean> | undefined;
     if (collapsedValue !== undefined) {
         collapsedInterfaces = dictionary<boolean>();
-        const source = recordValue(
+        for (const [key, item] of dictionaryEntries(
             collapsedValue,
             '$.presentation.collapsedInterfaces',
             diagnostics
-        );
-        for (const key of Object.keys(source)) {
-            const item = source[key];
+        )) {
             if (typeof item === 'boolean') {
                 collapsedInterfaces[key] = item;
             } else {
@@ -618,18 +638,20 @@ function cloneUnknownJson(value: unknown, visiting = new WeakSet<object>()): unk
     visiting.add(value);
     try {
         if (Array.isArray(value)) {
-            if (!hasDenseOwnItems(value)) throw new TypeError('Sparse array');
+            const items = snapshotArrayItems(value);
+            if (!items) throw new TypeError('Sparse or changing array');
             const result: unknown[] = [];
-            const length = value.length;
-            for (let index = 0; index < length; index += 1) {
-                result.push(cloneUnknownJson(value[index], visiting));
+            for (const item of items) {
+                result.push(cloneUnknownJson(item, visiting));
             }
             return result;
         }
+        const entries = snapshotRecordEntries(value as MutableRecord);
+        if (!entries) throw new TypeError('Changing object');
         const result: Record<string, unknown> = {};
-        for (const key of Object.keys(value)) {
+        for (const [key, valueAtKey] of entries) {
             Object.defineProperty(result, key, {
-                value: cloneUnknownJson((value as MutableRecord)[key], visiting),
+                value: cloneUnknownJson(valueAtKey, visiting),
                 enumerable: true,
                 configurable: true,
                 writable: true,
@@ -641,6 +663,38 @@ function cloneUnknownJson(value: unknown, visiting = new WeakSet<object>()): unk
     }
 }
 
+function cloneUnknownRoot(
+    input: MutableRecord,
+    format: unknown,
+    schemaVersion: number
+): Readonly<Record<string, unknown>> {
+    const result: Record<string, unknown> = {};
+    const keys = Object.keys(input);
+    let hasFormat = false;
+    let hasSchemaVersion = false;
+    for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(input, key)) {
+            throw new TypeError('Changing root object');
+        }
+        const valueAtKey = key === 'format'
+            ? format
+            : key === 'schemaVersion'
+                ? schemaVersion
+                : input[key];
+        hasFormat ||= key === 'format';
+        hasSchemaVersion ||= key === 'schemaVersion';
+        Object.defineProperty(result, key, {
+            value: cloneUnknownJson(valueAtKey),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    if (!hasFormat) result.format = format;
+    if (!hasSchemaVersion) result.schemaVersion = schemaVersion;
+    return result;
+}
+
 function parseValue(input: unknown): ArchDesignReadResult {
     if (!isRecord(input)) {
         return invalidResult([{
@@ -649,9 +703,8 @@ function parseValue(input: unknown): ArchDesignReadResult {
             message: 'Arch Design root must be an object',
         }]);
     }
-    const value = snapshotOwnRecord(input);
     const headerDiagnostics: ArchDesignDiagnostic[] = [];
-    const format = ownValue(value, 'format');
+    const format = ownValue(input, 'format');
     if (format !== ARCH_DESIGN_FORMAT) {
         diagnostic(
             headerDiagnostics,
@@ -660,7 +713,7 @@ function parseValue(input: unknown): ArchDesignReadResult {
             `Expected format ${ARCH_DESIGN_FORMAT}`
         );
     }
-    const versionValue = ownValue(value, 'schemaVersion');
+    const versionValue = ownValue(input, 'schemaVersion');
     const schemaVersion = typeof versionValue === 'number'
         && Number.isSafeInteger(versionValue)
         && versionValue > 0
@@ -678,22 +731,22 @@ function parseValue(input: unknown): ArchDesignReadResult {
         return invalidResult(headerDiagnostics);
     }
     if (schemaVersion !== ARCH_DESIGN_SCHEMA_VERSION) {
-        const snapshot = cloneUnknownJson(value) as Readonly<Record<string, unknown>>;
+        const snapshot = cloneUnknownRoot(input, format, schemaVersion);
         return deepFreeze({ status: 'unsupported' as const, schemaVersion, value: snapshot });
     }
 
     const diagnostics: ArchDesignDiagnostic[] = [];
-    const module = validIdentifier(ownValue(value, 'module'), '$.module', diagnostics);
-    const ports = normalizePorts(ownValue(value, 'ports'), diagnostics);
-    const instances = normalizeInstances(ownValue(value, 'instances'), diagnostics);
-    const connections = normalizeConnections(ownValue(value, 'connections'), diagnostics);
+    const module = validIdentifier(ownValue(input, 'module'), '$.module', diagnostics);
+    const ports = normalizePorts(ownValue(input, 'ports'), diagnostics);
+    const instances = normalizeInstances(ownValue(input, 'instances'), diagnostics);
+    const connections = normalizeConnections(ownValue(input, 'connections'), diagnostics);
     const interfaceConnections = normalizeInterfaceConnections(
-        ownValue(value, 'interfaceConnections'),
+        ownValue(input, 'interfaceConnections'),
         diagnostics
     );
-    const defaults = normalizeStringDictionary(ownValue(value, 'defaults'), '$.defaults', diagnostics);
-    const exportOptions = normalizeExport(ownValue(value, 'export'), diagnostics);
-    const presentation = normalizePresentation(ownValue(value, 'presentation'), diagnostics);
+    const defaults = normalizeStringDictionary(ownValue(input, 'defaults'), '$.defaults', diagnostics);
+    const exportOptions = normalizeExport(ownValue(input, 'export'), diagnostics);
+    const presentation = normalizePresentation(ownValue(input, 'presentation'), diagnostics);
     if (diagnostics.length > 0) return invalidResult(diagnostics);
 
     const design: ArchDesign = {
