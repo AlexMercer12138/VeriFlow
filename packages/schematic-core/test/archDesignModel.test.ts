@@ -6,7 +6,7 @@ import {
     ARCH_DESIGN_SCHEMA_VERSION,
     createEmptyArchDesign,
     type ArchDesign,
-} from '../src';
+} from '../src/archDesign';
 
 function typedDesign(design: ArchDesign): ArchDesign {
     return design;

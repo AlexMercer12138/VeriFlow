@@ -5,7 +5,7 @@ import {
     parseArchDesignText,
     parseArchDesignValue,
     type ArchDesignReadResult,
-} from '../src';
+} from '../src/archDesign';
 
 function minimalDesign(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {

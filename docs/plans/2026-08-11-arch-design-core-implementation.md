@@ -371,4 +371,3 @@ git diff --check
 
 Expected: only intentional Arch Design source, tests, and this plan are
 present, with no whitespace errors or generated build output.
-

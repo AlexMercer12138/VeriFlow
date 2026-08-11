@@ -7,7 +7,7 @@ import {
     semanticArchDesignFingerprint,
     serializeArchDesign,
     type ArchDesign,
-} from '../src';
+} from '../src/archDesign';
 
 function sourceDesign(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {

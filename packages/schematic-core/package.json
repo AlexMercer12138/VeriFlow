@@ -32,10 +32,18 @@
       "types": "./dist/model.d.ts",
       "require": "./dist/model.js",
       "default": "./dist/model.js"
+    },
+    "./arch-design": {
+      "types": "./dist/archDesign/index.d.ts",
+      "require": "./dist/archDesign/index.js",
+      "default": "./dist/archDesign/index.js"
     }
   },
   "typesVersions": {
     "*": {
+      "arch-design": [
+        "dist/archDesign/index.d.ts"
+      ],
       "model": [
         "dist/model.d.ts"
       ]

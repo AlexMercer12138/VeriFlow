@@ -48,11 +48,20 @@ test('shared package public imports compile for a host consumer', () => {
             ));
             assert.equal(manifest.name, packageName);
             assert.equal(manifest.exports['.'].types, './dist/index.d.ts');
+            if (packageName === '@veriflow/schematic-core') {
+                assert.equal(
+                    manifest.exports['./arch-design'].types,
+                    './dist/archDesign/index.d.ts'
+                );
+            }
         }
         writeFileSync(path.join(consumerRoot, 'consumer.ts'), [
             ...sharedPackages.map(packageName => `import '${packageName}';`),
+            "import * as archDesign from '@veriflow/schematic-core/arch-design';",
             "import * as schematicModel from '@veriflow/schematic-core/model';",
+            "export type ArchDesign = import('@veriflow/schematic-core/arch-design').ArchDesign;",
             "export type SchematicGraph = import('@veriflow/schematic-core/model').SchematicGraph;",
+            'export const archDesignRuntime = archDesign;',
             'export const schematicModelRuntime = schematicModel;',
             '',
         ].join('\n'));
