@@ -93,6 +93,23 @@ export type SchematicInspectorModel = Readonly<{
     rows: readonly Readonly<{ label: string; value: string }>[];
 }>;
 
+const MAX_INSPECTOR_ENDPOINT_PREVIEW = 8;
+
+type InspectorGraphIndex = Readonly<{
+    nodesById: ReadonlyMap<string, GraphNode>;
+    pinsByNodeId: ReadonlyMap<string, ReadonlyMap<string, GraphPin>>;
+}>;
+
+function inspectorGraphIndex(graph: SchematicGraph): InspectorGraphIndex {
+    const nodesById = new Map<string, GraphNode>();
+    const pinsByNodeId = new Map<string, ReadonlyMap<string, GraphPin>>();
+    for (const node of graph.nodes) {
+        nodesById.set(node.id, node);
+        pinsByNodeId.set(node.id, new Map(node.pins.map(pin => [pin.id, pin])));
+    }
+    return { nodesById, pinsByNodeId };
+}
+
 function formatWidth(width: GraphPin['width']): string {
     if (width.kind === 'known') {
         return `${width.bits} bit${width.bits === 1 ? '' : 's'}`;
@@ -110,29 +127,48 @@ function formatHdlDirection(
 }
 
 function endpointName(
-    graph: SchematicGraph,
+    index: InspectorGraphIndex,
     endpoint: SchematicNetwork['endpoints'][number]
 ): string | undefined {
-    const node = graph.nodes.find(candidate => candidate.id === endpoint.nodeId);
-    const pin = node?.pins.find(candidate => candidate.id === endpoint.pinId);
+    const node = index.nodesById.get(endpoint.nodeId);
+    const pin = index.pinsByNodeId.get(endpoint.nodeId)?.get(endpoint.pinId);
     if (!node || !pin) return undefined;
     return node.kind === 'port' ? node.label : `${node.label}.${pin.name}`;
 }
 
 function formattedEndpoints(
-    graph: SchematicGraph,
-    network: SchematicNetwork,
-    role: PinDirection
-): string {
-    const names = network.endpoints.filter(endpoint => endpoint.role === role)
-        .flatMap(endpoint => endpointName(graph, endpoint) ?? []);
-    return names.length > 0 ? names.join(', ') : 'None';
+    index: InspectorGraphIndex,
+    network: SchematicNetwork
+): Record<PinDirection, string> {
+    const summaries: Record<PinDirection, { count: number; names: string[] }> = {
+        driver: { count: 0, names: [] },
+        load: { count: 0, names: [] },
+        bidirectional: { count: 0, names: [] },
+    };
+    for (const endpoint of network.endpoints) {
+        const name = endpointName(index, endpoint);
+        if (name === undefined) continue;
+        const summary = summaries[endpoint.role];
+        summary.count += 1;
+        if (summary.names.length < MAX_INSPECTOR_ENDPOINT_PREVIEW) {
+            summary.names.push(name);
+        }
+    }
+    return Object.fromEntries(Object.entries(summaries).map(([role, summary]) => {
+        if (summary.count === 0) return [role, 'None'];
+        const hidden = summary.count - summary.names.length;
+        const values = hidden > 0
+            ? [...summary.names, `... (+${hidden} more)`]
+            : summary.names;
+        return [role, values.join(', ')];
+    })) as Record<PinDirection, string>;
 }
 
 function projectNetworkInspector(
     graph: SchematicGraph,
     network: SchematicNetwork
 ): SchematicInspectorModel {
+    const endpoints = formattedEndpoints(inspectorGraphIndex(graph), network);
     return {
         kind: 'network',
         title: network.name,
@@ -141,11 +177,11 @@ function projectNetworkInspector(
             { label: 'Name', value: network.name },
             { label: 'Adapter', value: network.adapterLabel ?? 'None' },
             { label: 'Width', value: formatWidth(network.width) },
-            { label: 'Drivers', value: formattedEndpoints(graph, network, 'driver') },
-            { label: 'Loads', value: formattedEndpoints(graph, network, 'load') },
+            { label: 'Drivers', value: endpoints.driver },
+            { label: 'Loads', value: endpoints.load },
             {
                 label: 'Bidirectional',
-                value: formattedEndpoints(graph, network, 'bidirectional'),
+                value: endpoints.bidirectional,
             },
         ],
     };

@@ -43,6 +43,18 @@ function inspectorGraph(): SchematicGraph {
             }],
             readOnly: false,
         }, {
+            id: 'port:done',
+            kind: 'port',
+            label: 'done',
+            pins: [{
+                id: 'port:done:done',
+                name: 'done',
+                direction: 'load',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }, {
             id: 'instance:u_core',
             kind: 'instance',
             label: 'u_core',
@@ -160,6 +172,24 @@ function testSchematicInspectorProjection(): void {
         }
     );
     assert.deepStrictEqual(
+        projectSchematicInspector(graph, ['port:shared'], undefined).rows,
+        [
+            { label: 'Name', value: 'shared' },
+            { label: 'Direction', value: 'Inout' },
+            { label: 'Width', value: '8 bits' },
+            { label: 'Network', value: 'bus_data' },
+        ]
+    );
+    assert.deepStrictEqual(
+        projectSchematicInspector(graph, ['port:done'], undefined).rows,
+        [
+            { label: 'Name', value: 'done' },
+            { label: 'Direction', value: 'Output' },
+            { label: 'Width', value: '1 bit' },
+            { label: 'Network', value: 'Unconnected' },
+        ]
+    );
+    assert.deepStrictEqual(
         projectSchematicInspector(
             graph,
             ['port:clk', 'instance:u_core'],
@@ -184,6 +214,83 @@ function testSchematicInspectorProjection(): void {
             rows: [],
         }
     );
+}
+
+function testLargeFanoutInspectorUsesBoundedIndexedPreview(): void {
+    const withoutFind = <T>(values: T[]): T[] => new Proxy(values, {
+        get(target, property, receiver): unknown {
+            assert.notStrictEqual(
+                property,
+                'find',
+                'Inspector projection must use an index instead of repeated array scans'
+            );
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    const source = {
+        id: 'instance:source',
+        kind: 'instance' as const,
+        label: 'source',
+        subtitle: 'source',
+        pins: withoutFind([{
+            id: 'instance:source:out',
+            name: 'out',
+            direction: 'driver' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }]),
+        readOnly: false,
+    };
+    const sinks = Array.from({ length: 32 }, (_, index) => ({
+        id: `instance:sink-${index}`,
+        kind: 'instance' as const,
+        label: `sink-${index}`,
+        subtitle: 'sink',
+        pins: withoutFind([{
+            id: `instance:sink-${index}:in`,
+            name: 'in',
+            direction: 'load' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }]),
+        readOnly: false,
+    }));
+    const graph: SchematicGraph = {
+        fileUri: 'file:///large-fanout.sv',
+        moduleKey: 'module:large-fanout:0',
+        moduleName: 'large_fanout',
+        nodes: withoutFind([source, ...sinks]),
+        networks: [{
+            id: 'network:fanout',
+            name: 'fanout',
+            width: { kind: 'known', bits: 1 },
+            endpoints: [{
+                nodeId: source.id,
+                pinId: source.pins[0].id,
+                role: 'driver',
+            }, ...sinks.map(sink => ({
+                nodeId: sink.id,
+                pinId: sink.pins[0].id,
+                role: 'load' as const,
+            }))],
+        }],
+        diagnostics: [],
+    };
+
+    const model = projectSchematicInspector(graph, [], 'network:fanout');
+    const loads = model.rows.find(row => row.label === 'Loads')?.value;
+    assert.strictEqual(loads, [
+        'sink-0.in',
+        'sink-1.in',
+        'sink-2.in',
+        'sink-3.in',
+        'sink-4.in',
+        'sink-5.in',
+        'sink-6.in',
+        'sink-7.in',
+        '... (+24 more)',
+    ].join(', '));
+    assert.ok((loads?.length ?? Infinity) < 160);
 }
 
 function testDiagnosticDetailFormatting(): void {
@@ -430,6 +537,7 @@ void Promise.resolve()
     .then(testSecureSchematicWebviewHtml)
     .then(testDiagnosticDetailFormatting)
     .then(testSchematicInspectorProjection)
+    .then(testLargeFanoutInspectorUsesBoundedIndexedPreview)
     .then(testSynchronousWebviewLayoutSnapshot)
     .then(testSelectionStatusSummary)
     .then(testExactCellNavigationCommands)

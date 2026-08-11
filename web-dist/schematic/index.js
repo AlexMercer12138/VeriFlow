@@ -44994,6 +44994,16 @@
   var import_schematic_core = __toESM(require_dist());
 
   // veriflow-vscode/src/schematic/webviewSupport.ts
+  var MAX_INSPECTOR_ENDPOINT_PREVIEW = 8;
+  function inspectorGraphIndex(graph2) {
+    const nodesById = /* @__PURE__ */ new Map();
+    const pinsByNodeId = /* @__PURE__ */ new Map();
+    for (const node of graph2.nodes) {
+      nodesById.set(node.id, node);
+      pinsByNodeId.set(node.id, new Map(node.pins.map((pin2) => [pin2.id, pin2])));
+    }
+    return { nodesById, pinsByNodeId };
+  }
   function formatWidth(width2) {
     if (width2.kind === "known") {
       return `${width2.bits} bit${width2.bits === 1 ? "" : "s"}`;
@@ -45005,17 +45015,36 @@
     if (boundaryPort) return direction === "driver" ? "Input" : "Output";
     return direction === "load" ? "input" : "output";
   }
-  function endpointName(graph2, endpoint) {
-    const node = graph2.nodes.find((candidate) => candidate.id === endpoint.nodeId);
-    const pin2 = node?.pins.find((candidate) => candidate.id === endpoint.pinId);
+  function endpointName(index2, endpoint) {
+    const node = index2.nodesById.get(endpoint.nodeId);
+    const pin2 = index2.pinsByNodeId.get(endpoint.nodeId)?.get(endpoint.pinId);
     if (!node || !pin2) return void 0;
     return node.kind === "port" ? node.label : `${node.label}.${pin2.name}`;
   }
-  function formattedEndpoints(graph2, network, role) {
-    const names = network.endpoints.filter((endpoint) => endpoint.role === role).flatMap((endpoint) => endpointName(graph2, endpoint) ?? []);
-    return names.length > 0 ? names.join(", ") : "None";
+  function formattedEndpoints(index2, network) {
+    const summaries = {
+      driver: { count: 0, names: [] },
+      load: { count: 0, names: [] },
+      bidirectional: { count: 0, names: [] }
+    };
+    for (const endpoint of network.endpoints) {
+      const name = endpointName(index2, endpoint);
+      if (name === void 0) continue;
+      const summary = summaries[endpoint.role];
+      summary.count += 1;
+      if (summary.names.length < MAX_INSPECTOR_ENDPOINT_PREVIEW) {
+        summary.names.push(name);
+      }
+    }
+    return Object.fromEntries(Object.entries(summaries).map(([role, summary]) => {
+      if (summary.count === 0) return [role, "None"];
+      const hidden = summary.count - summary.names.length;
+      const values = hidden > 0 ? [...summary.names, `... (+${hidden} more)`] : summary.names;
+      return [role, values.join(", ")];
+    }));
   }
   function projectNetworkInspector(graph2, network) {
+    const endpoints = formattedEndpoints(inspectorGraphIndex(graph2), network);
     return {
       kind: "network",
       title: network.name,
@@ -45024,11 +45053,11 @@
         { label: "Name", value: network.name },
         { label: "Adapter", value: network.adapterLabel ?? "None" },
         { label: "Width", value: formatWidth(network.width) },
-        { label: "Drivers", value: formattedEndpoints(graph2, network, "driver") },
-        { label: "Loads", value: formattedEndpoints(graph2, network, "load") },
+        { label: "Drivers", value: endpoints.driver },
+        { label: "Loads", value: endpoints.load },
         {
           label: "Bidirectional",
-          value: formattedEndpoints(graph2, network, "bidirectional")
+          value: endpoints.bidirectional
         }
       ]
     };

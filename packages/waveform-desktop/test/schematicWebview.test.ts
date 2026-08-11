@@ -1900,7 +1900,11 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         );
         assert.equal(instanceInspector.Definition, 'Unavailable');
         const canvasBeforeCollapse = await page.locator('#canvas-region').boundingBox();
+        const svgBeforeCollapse = await page.locator(
+            '#canvas.x6-graph > svg.x6-graph-svg'
+        ).boundingBox();
         assert.ok(canvasBeforeCollapse);
+        assert.ok(svgBeforeCollapse);
         await page.locator('#inspector-toggle-button').click({ force: true });
         await page.locator('#inspector').waitFor({ state: 'hidden' });
         assert.equal(
@@ -1916,6 +1920,21 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
         assert.ok(
             canvasAfterCollapse.x + canvasAfterCollapse.width <= 440.5,
             JSON.stringify(canvasAfterCollapse)
+        );
+        await page.waitForFunction(expectedWidth => {
+            const svg = document.querySelector<SVGSVGElement>(
+                '#canvas.x6-graph > svg.x6-graph-svg'
+            );
+            return svg !== null
+                && svg.getBoundingClientRect().width >= expectedWidth - 0.5;
+        }, canvasAfterCollapse.width);
+        const svgAfterCollapse = await page.locator(
+            '#canvas.x6-graph > svg.x6-graph-svg'
+        ).boundingBox();
+        assert.ok(svgAfterCollapse);
+        assert.ok(
+            svgAfterCollapse.width > svgBeforeCollapse.width,
+            JSON.stringify({ svgBeforeCollapse, svgAfterCollapse })
         );
         assert.deepEqual(rendererErrors, []);
     } finally {
