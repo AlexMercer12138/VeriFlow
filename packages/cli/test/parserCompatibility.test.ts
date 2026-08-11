@@ -85,3 +85,107 @@ veriflow project new: error: argument -n/--name: expected one argument
         assert.equal(existsSync(path.join(cwd, '-dash.json')), false);
     });
 });
+
+test('shows Arch Design parent help', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', '--help'], cwd);
+
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.stdout, `usage: veriflow ad [-h] ACTION ...
+
+positional arguments:
+  ACTION
+    validate  validate an Arch Design
+    export    export an Arch Design to RTL
+
+options:
+  -h, --help  show this help message and exit
+`);
+        assert.equal(result.stderr, '');
+    });
+});
+
+test('requires a design for Arch Design validation', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'validate'], cwd);
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad validate [-h] [-p PROJECT] [-L LIB] DESIGN
+veriflow ad validate: error: the following arguments are required: DESIGN
+`);
+    });
+});
+
+test('rejects an unsupported Arch Design export language', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(
+            ['ad', 'export', 'soc.ad', '--language', 'vhdl'],
+            cwd
+        );
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+veriflow ad export: error: argument --language: invalid choice: 'vhdl' (choose from verilog, systemverilog)
+`);
+    });
+});
+
+test('requires a design for Arch Design export after parsing options', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'export', '--language', 'verilog'], cwd);
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+veriflow ad export: error: the following arguments are required: DESIGN
+`);
+    });
+});
+
+test('shows only Arch Design validation options in leaf help', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'validate', '--help'], cwd);
+
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.stdout, `usage: veriflow ad validate [-h] [-p PROJECT] [-L LIB] DESIGN
+
+positional arguments:
+  DESIGN                Arch Design file
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+  -L, --lib LIB         additional library directory
+`);
+        assert.equal(result.stderr, '');
+    });
+});
+
+test('shows only Arch Design export options in leaf help', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'export', '--help'], cwd);
+
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.stdout, `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+
+positional arguments:
+  DESIGN                Arch Design file
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+  -L, --lib LIB         additional library directory
+  -o, --output OUTPUT   output RTL file
+  --language {verilog,systemverilog}
+                        output language
+`);
+        assert.equal(result.stderr, '');
+    });
+});

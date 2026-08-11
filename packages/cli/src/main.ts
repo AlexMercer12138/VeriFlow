@@ -4,6 +4,7 @@ import os from 'node:os';
 
 import type { CommandExecutor } from '@veriflow/flow-core/simulation';
 
+import { adExport, adValidate } from './commands/ad';
 import { analyze } from './commands/analyze';
 import { libAdd, libList, libRemove } from './commands/lib';
 import {
@@ -28,14 +29,21 @@ type CommandHandler = (
     environment: CliEnvironment
 ) => number | Promise<number>;
 
+interface PositionalDefinition {
+    key: string;
+    requiredName: string;
+}
+
 interface OptionDefinition {
     key: string;
     aliases: string[];
     requiredName?: string;
+    choices?: readonly string[];
 }
 
 interface LeafCommand {
     help: string;
+    positionals?: readonly PositionalDefinition[];
     options: OptionDefinition[];
     handler: CommandHandler;
 }
@@ -54,6 +62,7 @@ positional arguments:
     analyze      analyze dependencies
     sim          compile and simulate
     wave         open waveform viewer
+    ad           validate and export Arch Designs
 
 options:
   -h, --help     show this help message and exit
@@ -90,6 +99,17 @@ positional arguments:
   ACTION
     set       set top module (auto-saved)
     get       get current top module
+
+options:
+  -h, --help  show this help message and exit
+`;
+
+const AD_HELP = `usage: veriflow ad [-h] ACTION ...
+
+positional arguments:
+  ACTION
+    validate  validate an Arch Design
+    export    export an Arch Design to RTL
 
 options:
   -h, --help  show this help message and exit
@@ -186,6 +206,34 @@ options:
                         project JSON file
 `;
 
+const AD_VALIDATE_HELP = `usage: veriflow ad validate [-h] [-p PROJECT] [-L LIB] DESIGN
+
+positional arguments:
+  DESIGN                Arch Design file
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+  -L, --lib LIB         additional library directory
+`;
+
+const AD_EXPORT_HELP = `usage: veriflow ad export [-h] [-p PROJECT] [-L LIB] [-o OUTPUT]
+                          [--language {verilog,systemverilog}] DESIGN
+
+positional arguments:
+  DESIGN                Arch Design file
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project PROJECT
+                        project JSON file
+  -L, --lib LIB         additional library directory
+  -o, --output OUTPUT   output RTL file
+  --language {verilog,systemverilog}
+                        output language
+`;
+
 const LEAF_COMMANDS: Record<string, LeafCommand> = {
     'project new': {
         help: PROJECT_NEW_HELP,
@@ -248,18 +296,44 @@ const LEAF_COMMANDS: Record<string, LeafCommand> = {
         ],
         handler: topGet,
     },
+    'ad validate': {
+        help: AD_VALIDATE_HELP,
+        positionals: [{ key: 'design', requiredName: 'DESIGN' }],
+        options: [
+            { key: 'project', aliases: ['-p', '--project'] },
+            { key: 'lib', aliases: ['-L', '--lib'] },
+        ],
+        handler: adValidate,
+    },
+    'ad export': {
+        help: AD_EXPORT_HELP,
+        positionals: [{ key: 'design', requiredName: 'DESIGN' }],
+        options: [
+            { key: 'project', aliases: ['-p', '--project'] },
+            { key: 'lib', aliases: ['-L', '--lib'] },
+            { key: 'output', aliases: ['-o', '--output'] },
+            {
+                key: 'language',
+                aliases: ['--language'],
+                choices: ['verilog', 'systemverilog'],
+            },
+        ],
+        handler: adExport,
+    },
 };
 
 const PARENT_HELP: Record<string, string> = {
     project: PROJECT_HELP,
     lib: LIB_HELP,
     top: TOP_HELP,
+    ad: AD_HELP,
 };
 
 const PARENT_ACTIONS: Record<string, string[]> = {
     project: ['new', 'open', 'show'],
     lib: ['add', 'remove', 'list'],
     top: ['set', 'get'],
+    ad: ['validate', 'export'],
 };
 
 const TOP_LEVEL_COMMANDS: Record<string, LeafCommand> = {
@@ -334,6 +408,7 @@ function parseOptions(
     }
 
     const values: CommandOptions = {};
+    let positionalIndex = 0;
     for (let index = 0; index < argv.length; index += 1) {
         const argument = argv[index];
         let option = byAlias.get(argument);
@@ -364,6 +439,15 @@ function parseOptions(
             if (option) inlineValue = argument.slice(2);
         }
 
+        if (!option && !argument.startsWith('-')) {
+            const positional = definition.positionals?.[positionalIndex];
+            if (positional) {
+                values[positional.key] = argument;
+                positionalIndex += 1;
+                continue;
+            }
+        }
+
         if (!option) {
             return parseError(
                 environment,
@@ -386,12 +470,25 @@ function parseOptions(
             );
         }
         values[option.key] = value;
+        if (option.choices && !option.choices.includes(value)) {
+            return parseError(
+                environment,
+                command,
+                definition.help,
+                `argument ${option.aliases.join('/')}: invalid choice: '${value}' `
+                + `(choose from ${option.choices.join(', ')})`
+            );
+        }
         if (inlineValue === undefined) index += 1;
     }
 
-    const missing = definition.options
+    const missingPositionals = (definition.positionals ?? [])
+        .filter(positional => values[positional.key] === undefined)
+        .map(positional => positional.requiredName);
+    const missingOptions = definition.options
         .filter(option => option.requiredName && values[option.key] === undefined)
         .map(option => option.requiredName!);
+    const missing = [...missingPositionals, ...missingOptions];
     if (missing.length > 0) {
         return parseError(
             environment,
@@ -434,7 +531,7 @@ export async function runCli(argv: string[], environment: CliEnvironment): Promi
     if (!(parent in PARENT_HELP)) {
         environment.stderr(
             `${usage(ROOT_HELP)}veriflow: error: argument COMMAND: invalid choice: '${parent}' `
-            + `(choose from project, lib, top, analyze, sim, wave)\n`
+            + `(choose from project, lib, top, analyze, sim, wave, ad)\n`
         );
         return 2;
     }
