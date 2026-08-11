@@ -51,6 +51,8 @@ const SAFE_OPERATORS = [
     '.',
 ] as const;
 
+const UNSAFE_OPERATORS = ['->>', '->', '++', '--'] as const;
+
 type TokenKind =
     | 'identifier'
     | 'system-function'
@@ -184,7 +186,7 @@ export function isSafeDefaultExpression(expression: string): boolean {
             previousToken = 'closing';
             continue;
         }
-        if (expression.startsWith('++', index) || expression.startsWith('--', index)) {
+        if (UNSAFE_OPERATORS.some(candidate => expression.startsWith(candidate, index))) {
             return false;
         }
         const operator = SAFE_OPERATORS.find(candidate =>

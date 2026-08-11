@@ -646,6 +646,8 @@ test('rejects unsafe default expressions even when the endpoint is driven', () =
         'state ^= value',
         'state <<= value',
         'state >>= value',
+        '-> event_name',
+        '->> event_name',
         '(a]',
         '{a',
         'a'.repeat(4097),
