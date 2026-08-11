@@ -1,11 +1,20 @@
+import type { WidthValue } from '@veriflow/hdl-core/model';
+
 import type { ArchDesignModuleDefinition } from './definitions';
 import { semanticArchDesignFingerprint } from './fingerprint';
 import {
     ARCH_DESIGN_SCHEMA_VERSION,
     type ArchDesign,
     type ArchDesignLanguage,
+    type ArchDesignPort,
+    type ArchDesignWidth,
 } from './model';
 import type { ArchDesignDiagnostic } from './parser';
+import {
+    resolveArchDesign,
+    type ArchDesignResolution,
+    type ResolvedArchDesignConnection,
+} from './resolution';
 
 export type ArchDesignRtlExportOptions = Readonly<{
     language?: ArchDesignLanguage;
@@ -44,11 +53,111 @@ export function parseArchDesignRtlMarker(text: string): ArchDesignRtlMarker | un
     });
 }
 
+function packedRange(width: ArchDesignWidth | undefined): string {
+    if (width === undefined) return '';
+    return typeof width === 'number'
+        ? width === 1 ? '' : `[${width - 1}:0] `
+        : `[(${width.expression})-1:0] `;
+}
+
+function resolvedPackedRange(width: WidthValue): string {
+    if (width.kind === 'known') return width.bits === 1 ? '' : `[${width.bits - 1}:0] `;
+    if (width.kind === 'symbolic') return `[(${width.expression})-1:0] `;
+    return '';
+}
+
+function portDeclaration(port: ArchDesignPort, final: boolean): string {
+    return `    ${port.direction} wire ${packedRange(port.width)}${port.name}${final ? '' : ','}`;
+}
+
+function allocateIdentifier(preferred: string, used: Set<string>): string {
+    if (!used.has(preferred)) {
+        used.add(preferred);
+        return preferred;
+    }
+    let suffix = 2;
+    while (used.has(`${preferred}_${suffix}`)) suffix += 1;
+    const result = `${preferred}_${suffix}`;
+    used.add(result);
+    return result;
+}
+
+function connectionWidth(connection: ResolvedArchDesignConnection): WidthValue {
+    const source = connection.endpoints.find(endpoint =>
+        endpoint.role === 'driver' || endpoint.role === 'bidirectional');
+    const selected = source ?? connection.endpoints.find(endpoint => endpoint.width.kind !== 'unknown');
+    return selected?.width ?? { kind: 'unknown' };
+}
+
+type RtlBindings = Readonly<{
+    netByConnection: ReadonlyMap<number, string>;
+    netByEndpoint: ReadonlyMap<string, string>;
+}>;
+
+function createBindings(resolution: ArchDesignResolution): RtlBindings {
+    const used = new Set<string>();
+    for (const port of resolution.ports) used.add(port.port.name);
+    for (const instance of resolution.instances) used.add(instance.instance.name);
+    const netByConnection = new Map<number, string>();
+    const netByEndpoint = new Map<string, string>();
+    for (const connection of resolution.connections) {
+        const net = allocateIdentifier(`__vf_net_${connection.connection.name}`, used);
+        netByConnection.set(connection.index, net);
+        for (const endpoint of connection.endpoints) netByEndpoint.set(endpoint.identity, net);
+    }
+    return { netByConnection, netByEndpoint };
+}
+
+function renderModule(resolution: ArchDesignResolution): string {
+    const { netByConnection, netByEndpoint } = createBindings(resolution);
+    const header = resolution.ports.length === 0
+        ? [`module ${resolution.moduleName};`]
+        : [
+            `module ${resolution.moduleName} (`,
+            ...resolution.ports.map((item, index) =>
+                portDeclaration(item.port, index === resolution.ports.length - 1)),
+            ');',
+        ];
+    const declarations = resolution.connections.map(connection =>
+        `wire ${resolvedPackedRange(connectionWidth(connection))}${netByConnection.get(connection.index)};`);
+    const targetsByNode = new Map<string, typeof resolution.endpointTargets>();
+    for (const target of resolution.endpointTargets) {
+        const existing = targetsByNode.get(target.nodeId);
+        if (existing) targetsByNode.set(target.nodeId, [...existing, target]);
+        else targetsByNode.set(target.nodeId, [target]);
+    }
+    const assignments: string[] = [];
+    for (const item of resolution.ports) {
+        if (item.port.direction === 'inout') continue;
+        const target = targetsByNode.get(item.nodeId)?.[0];
+        const net = target ? netByEndpoint.get(target.identity) : undefined;
+        if (!net) continue;
+        assignments.push(item.port.direction === 'input'
+            ? `assign ${net} = ${item.port.name};`
+            : `assign ${item.port.name} = ${net};`);
+    }
+    const sections = [header, declarations, assignments]
+        .filter(section => section.length > 0);
+    return [
+        ...sections.flatMap((section, index) => index === 0 ? section : ['', ...section]),
+        ...(sections.length > 1 ? [''] : []),
+        'endmodule',
+        '',
+    ].join('\n');
+}
+
 export function exportArchDesignRtl(
     design: ArchDesign,
-    _definitions: readonly ArchDesignModuleDefinition[],
+    definitions: readonly ArchDesignModuleDefinition[],
     options: ArchDesignRtlExportOptions = {}
 ): ArchDesignRtlExportResult {
+    const resolution = resolveArchDesign(design, definitions);
+    if (resolution.diagnostics.length > 0) {
+        return Object.freeze({
+            status: 'invalid',
+            diagnostics: resolution.diagnostics,
+        });
+    }
     const language = options.language ?? design.export.language ?? 'verilog';
     const fingerprint = semanticArchDesignFingerprint({
         ...design,
@@ -65,9 +174,7 @@ export function exportArchDesignRtl(
         marker,
         `// vik-veriflow:source ${JSON.stringify(sourcePath)}`,
         '',
-        `module ${design.module};`,
-        'endmodule',
-        '',
+        renderModule(resolution),
     ].join('\n');
     return Object.freeze({
         status: 'generated',
