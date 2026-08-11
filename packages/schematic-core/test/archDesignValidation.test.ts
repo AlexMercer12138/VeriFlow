@@ -799,4 +799,186 @@ test('retains catalog declaration order and owns the resolved snapshot', () => {
     assert.ok(Object.isFrozen(snapshot.parameters));
     assert.ok(Object.isFrozen(snapshot.ports));
     assert.ok(Object.isFrozen(snapshot.ports[0].width));
+    assert.equal(Reflect.has(snapshot, 'parametersByName'), false);
+    assert.equal(Object.values(snapshot).some(value => value instanceof Map), false);
+});
+
+test('retains canonical identities and source paths on internally resolved defaults', () => {
+    const consumer: ArchDesignModuleDefinition = {
+        key: 'rtl/consumer.sv#consumer',
+        name: 'consumer',
+        parameters: [],
+        ports: [{ name: 't', direction: 'input', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        ports: [
+            { name: 'node', direction: 'inout', width: 8 },
+            { name: 'source', direction: 'input' },
+        ],
+        instances: [{ name: 'node', module: 'consumer' }],
+        connections: [{
+            name: 'instance_t',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'instance', instance: 'node', port: 't' },
+            ],
+        }],
+        defaults: { 'node.o': "8'b0" },
+    });
+
+    const resolution = resolveArchDesign(design, [consumer]);
+    const defaults = resolution.effectiveDefaults;
+
+    assert.deepEqual(resolution.diagnostics, []);
+    assert.deepEqual(resolution.endpointTargets
+        .filter(endpoint => endpoint.defaultKey === 'node.t')
+        .map(endpoint => endpoint.identity), [
+        'port:node:t',
+        'instance:node:t',
+    ]);
+    assert.deepEqual(defaults.find(item => item.identity === 'port:node:o'), {
+        identity: 'port:node:o',
+        endpoint: 'node.o',
+        declarationOrder: 1,
+        sourcePath: '$.defaults.node.o',
+        expression: "8'b0",
+        origin: 'design',
+    });
+    assert.deepEqual(defaults.find(item => item.identity === 'port:node:t'), {
+        identity: 'port:node:t',
+        endpoint: 'node.t',
+        declarationOrder: 2,
+        sourcePath: '$.ports[0]',
+        expression: "1'b1",
+        origin: 'implicit-inout-t',
+    });
+});
+
+test('uses indexes instead of peer and membership array scans per connection', () => {
+    const busNames = Array.from({ length: 24 }, (_, index) => `bus_${index}`);
+    const design = designOf({
+        ports: [{ name: 'source', direction: 'input' }, ...busNames.map(name => ({
+            name,
+            direction: 'inout' as const,
+            width: 8,
+        }))],
+        connections: [{
+            name: 'indexed',
+            endpoints: [{ kind: 'port', port: 'source' }, ...busNames.map(port => ({
+                kind: 'port' as const,
+                port,
+                signal: 't' as const,
+            }))],
+            defaults: Object.fromEntries(busNames.map(name => [`${name}.t`, "1'b0"])),
+        }],
+        defaults: Object.fromEntries(busNames.map(name => [`${name}.o`, "8'b0"])),
+    });
+    const scans = { some: 0, includes: 0 };
+    const someDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, 'some')!;
+    const includesDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, 'includes')!;
+    Object.defineProperty(Array.prototype, 'some', {
+        ...someDescriptor,
+        value: function (this: unknown[], ...args: unknown[]) {
+            scans.some += 1;
+            return Reflect.apply(
+                someDescriptor.value as (...parameters: unknown[]) => unknown,
+                this,
+                args
+            );
+        },
+    });
+    Object.defineProperty(Array.prototype, 'includes', {
+        ...includesDescriptor,
+        value: function (this: unknown[], ...args: unknown[]) {
+            scans.includes += 1;
+            return Reflect.apply(
+                includesDescriptor.value as (...parameters: unknown[]) => unknown,
+                this,
+                args
+            );
+        },
+    });
+    let resolution: ReturnType<typeof resolveArchDesign> | undefined;
+    try {
+        resolution = resolveArchDesign(design, []);
+    } finally {
+        Object.defineProperty(Array.prototype, 'some', someDescriptor);
+        Object.defineProperty(Array.prototype, 'includes', includesDescriptor);
+    }
+
+    assert.ok(resolution);
+    assert.deepEqual(resolution.diagnostics, []);
+    assert.deepEqual(scans, { some: 0, includes: 0 });
+});
+
+test('owns mutable design instance endpoint connection array and dictionary inputs', () => {
+    const parameters = { WIDTH: 8 };
+    const instance = { name: 'u_consumer', module: 'consumer', parameters };
+    const sourceEndpoint = { kind: 'port' as const, port: 'source' };
+    const instanceEndpoint = {
+        kind: 'instance' as const,
+        instance: 'u_consumer',
+        port: 'data_i',
+    };
+    const connectionDefaults = { 'u_consumer.data_i': "8'b0" };
+    const connection = {
+        name: 'data',
+        endpoints: [sourceEndpoint, instanceEndpoint],
+        defaults: connectionDefaults,
+    };
+    const instances = [instance];
+    const connections: Array<{
+        name: string;
+        endpoints: Array<typeof sourceEndpoint | typeof instanceEndpoint>;
+        defaults: Record<string, string>;
+    }> = [connection];
+    const design: ArchDesign = {
+        ...createEmptyArchDesign('soc_top'),
+        ports: [{ name: 'source', direction: 'input', width: 8 }],
+        instances,
+        connections,
+    };
+    const definition: ArchDesignModuleDefinition = {
+        key: 'rtl/consumer.sv#consumer',
+        name: 'consumer',
+        parameters: [{ name: 'WIDTH', defaultExpression: '8' }],
+        ports: [{ name: 'data_i', direction: 'input', width: { kind: 'known', bits: 8 } }],
+    };
+
+    const resolution = resolveArchDesign(design, [definition]);
+    instance.name = 'mutated_instance';
+    instance.module = 'mutated_module';
+    parameters.WIDTH = 99;
+    sourceEndpoint.port = 'mutated_source';
+    instanceEndpoint.instance = 'mutated_instance';
+    instanceEndpoint.port = 'mutated_port';
+    connection.name = 'mutated_connection';
+    connection.endpoints.push({ kind: 'port', port: 'mutated_extra' });
+    connectionDefaults['u_consumer.data_i'] = "8'hff";
+    instances.push({ name: 'added', module: 'consumer', parameters: { WIDTH: 1 } });
+    connections.push({ name: 'added', endpoints: [], defaults: {} });
+
+    assert.deepEqual(resolution.instances[0].instance, {
+        name: 'u_consumer',
+        module: 'consumer',
+        parameters: { WIDTH: 8 },
+    });
+    assert.deepEqual(resolution.connections[0].connection, {
+        name: 'data',
+        endpoints: [
+            { kind: 'port', port: 'source' },
+            { kind: 'instance', instance: 'u_consumer', port: 'data_i' },
+        ],
+        defaults: { 'u_consumer.data_i': "8'b0" },
+    });
+    assert.deepEqual(resolution.connections[0].endpoints.map(endpoint => endpoint.endpoint), [
+        { kind: 'port', port: 'source' },
+        { kind: 'instance', instance: 'u_consumer', port: 'data_i' },
+    ]);
+    assert.ok(Object.isFrozen(resolution.instances[0].instance));
+    assert.ok(Object.isFrozen(resolution.instances[0].instance.parameters));
+    assert.ok(Object.isFrozen(resolution.connections[0].connection));
+    assert.ok(Object.isFrozen(resolution.connections[0].connection.endpoints));
+    assert.ok(Object.isFrozen(resolution.connections[0].connection.defaults));
+    assert.ok(Object.isFrozen(resolution.connections[0].endpoints[0].endpoint));
 });

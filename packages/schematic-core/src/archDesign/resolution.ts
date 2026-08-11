@@ -11,6 +11,7 @@ import type {
     ArchDesignConnection,
     ArchDesignEndpoint,
     ArchDesignInstance,
+    ArchDesignParameterValue,
     ArchDesignPort,
 } from './model';
 import { compareCodeUnits } from './ordering';
@@ -21,7 +22,6 @@ export type ResolvedArchDesignModuleDefinition = Readonly<{
     name: string;
     parameters: readonly ArchDesignDefinitionParameter[];
     ports: readonly ArchDesignDefinitionPort[];
-    parametersByName: ReadonlyMap<string, ArchDesignDefinitionParameter>;
 }>;
 
 export type ResolvedArchDesignInstance = Readonly<{
@@ -68,7 +68,6 @@ export type ResolvedArchDesignEndpoint = Readonly<{
 export type ResolvedArchDesignConnection = Readonly<{
     index: number;
     connection: ArchDesignConnection;
-    declaredEndpointIdentities: readonly string[];
     endpoints: readonly ResolvedArchDesignEndpoint[];
 }>;
 
@@ -81,17 +80,33 @@ export type ArchDesignEffectiveDefault = Readonly<{
     connection?: string;
 }>;
 
+export type ResolvedArchDesignDefault = Readonly<{
+    identity: string;
+    endpoint: string;
+    declarationOrder: number;
+    sourcePath: string;
+    expression: string;
+    origin: ArchDesignDefaultOrigin;
+    connection?: string;
+}>;
+
 export type ArchDesignResolution = Readonly<{
     instances: readonly ResolvedArchDesignInstance[];
     endpointTargets: readonly ResolvedArchDesignEndpointTarget[];
     connections: readonly ResolvedArchDesignConnection[];
     diagnostics: readonly ArchDesignDiagnostic[];
-    effectiveDefaults: readonly ArchDesignEffectiveDefault[];
+    effectiveDefaults: readonly ResolvedArchDesignDefault[];
 }>;
 
 type DefaultSelection = Readonly<{
     expression: string;
     safe: boolean;
+    sourcePath: string;
+}>;
+
+type ConnectionIndex = Readonly<{
+    declaredEndpointIdentities: ReadonlySet<string>;
+    definiteDriverCount: number;
 }>;
 
 function snapshotArray<T>(source: readonly T[]): T[] {
@@ -99,6 +114,60 @@ function snapshotArray<T>(source: readonly T[]): T[] {
     const result: T[] = [];
     for (let index = 0; index < length; index += 1) result.push(source[index]);
     return result;
+}
+
+function snapshotRecord<T>(source: Readonly<Record<string, T>>): Readonly<Record<string, T>> {
+    const result: Record<string, T> = {};
+    for (const key of Object.keys(source).sort(compareCodeUnits)) {
+        Object.defineProperty(result, key, {
+            value: source[key],
+            enumerable: true,
+            configurable: false,
+            writable: false,
+        });
+    }
+    return Object.freeze(result);
+}
+
+function snapshotDesignInstance(source: ArchDesignInstance): ArchDesignInstance {
+    const name = source.name;
+    const module = source.module;
+    const parameters = source.parameters;
+    return Object.freeze({
+        name,
+        module,
+        ...(parameters === undefined
+            ? {}
+            : { parameters: snapshotRecord<ArchDesignParameterValue>(parameters) }),
+    });
+}
+
+function snapshotDesignEndpoint(source: ArchDesignEndpoint): ArchDesignEndpoint {
+    const kind = source.kind;
+    if (kind === 'port') {
+        const port = source.port;
+        const signal = source.signal;
+        return Object.freeze({
+            kind,
+            port,
+            ...(signal === undefined ? {} : { signal }),
+        });
+    }
+    const instance = source.instance;
+    const port = source.port;
+    return Object.freeze({ kind, instance, port });
+}
+
+function snapshotDesignConnection(source: ArchDesignConnection): ArchDesignConnection {
+    const name = source.name;
+    const endpointSources = source.endpoints;
+    const defaults = source.defaults;
+    const endpoints = Object.freeze(snapshotArray(endpointSources).map(snapshotDesignEndpoint));
+    return Object.freeze({
+        name,
+        endpoints,
+        ...(defaults === undefined ? {} : { defaults: snapshotRecord(defaults) }),
+    });
 }
 
 function snapshotParameter(
@@ -137,17 +206,11 @@ function snapshotDefinition(
     const portSources = source.ports;
     const parameters = snapshotArray(parameterSources).map(snapshotParameter);
     const ports = snapshotArray(portSources).map(snapshotPort);
-    const parametersByName = new Map<string, ArchDesignDefinitionParameter>();
-    for (const parameter of [...parameters].sort((left, right) =>
-        compareCodeUnits(left.name, right.name))) {
-        parametersByName.set(parameter.name, parameter);
-    }
     return Object.freeze({
         key,
         name,
         parameters: Object.freeze(parameters),
         ports: Object.freeze(ports),
-        parametersByName,
     });
 }
 
@@ -291,57 +354,14 @@ function resolvedEndpoint(
     });
 }
 
-function validateNetwork(
-    connection: ResolvedArchDesignConnection,
-    diagnostics: ArchDesignDiagnostic[]
-): void {
-    const drivers = connection.endpoints.filter(endpoint => endpoint.role === 'driver');
-    for (const extraDriver of drivers.slice(1)) {
-        diagnostics.push(diagnostic(
-            extraDriver.path,
-            'AD_MULTIPLE_DRIVERS',
-            `Connection ${connection.connection.name} has more than one definite driver`
-        ));
-    }
-
-    let knownWidth: number | undefined;
-    for (const endpoint of connection.endpoints) {
-        if (endpoint.signal === 't' || endpoint.width.kind !== 'known') continue;
-        if (knownWidth === undefined) knownWidth = endpoint.width.bits;
-        else if (endpoint.width.bits !== knownWidth) {
-            diagnostics.push(diagnostic(
-                endpoint.path,
-                'AD_WIDTH_MISMATCH',
-                `Endpoint width ${endpoint.width.bits} does not match network width ${knownWidth}`
-            ));
-        }
-    }
-
-    for (const endpoint of connection.endpoints) {
-        if (endpoint.signal !== 't' || endpoint.inoutPortWidth?.kind !== 'known') continue;
-        const portBits = endpoint.inoutPortWidth.bits;
-        const invalidPeer = connection.endpoints.some(peer =>
-            peer !== endpoint
-            && peer.width.kind === 'known'
-            && peer.width.bits !== 1
-            && peer.width.bits !== portBits);
-        if (invalidPeer) {
-            diagnostics.push(diagnostic(
-                endpoint.path,
-                'AD_INOUT_T_WIDTH',
-                `Inout t must connect to width 1 or the ${portBits}-bit inout width`
-            ));
-        }
-    }
-}
-
 function inspectDefault(
     key: string,
     expression: string,
     path: string,
     byDefaultKey: ReadonlyMap<string, readonly ResolvedArchDesignEndpointTarget[]>,
     diagnostics: ArchDesignDiagnostic[],
-    connection?: ResolvedArchDesignConnection
+    connection?: ResolvedArchDesignConnection,
+    connectionIndex?: ConnectionIndex
 ): readonly [ResolvedArchDesignEndpointTarget, DefaultSelection] | undefined {
     const safe = isSafeDefaultExpression(expression);
     if (!safe) {
@@ -361,7 +381,7 @@ function inspectDefault(
         return undefined;
     }
     const endpoint = matches[0];
-    if (connection && !connection.declaredEndpointIdentities.includes(endpoint.identity)) {
+    if (connection && !connectionIndex?.declaredEndpointIdentities.has(endpoint.identity)) {
         diagnostics.push(diagnostic(
             path,
             'AD_DEFAULT_CONNECTION',
@@ -377,7 +397,7 @@ function inspectDefault(
         ));
         return undefined;
     }
-    return Object.freeze([endpoint, Object.freeze({ expression, safe })]);
+    return Object.freeze([endpoint, Object.freeze({ expression, safe, sourcePath: path })]);
 }
 
 function defaultEntries(value: Readonly<Record<string, string>>): readonly string[] {
@@ -388,12 +408,19 @@ export function resolveArchDesign(
     design: ArchDesign,
     definitionSources: readonly ArchDesignModuleDefinition[]
 ): ArchDesignResolution {
-    const catalog = definitionsByName(snapshotDefinitions(definitionSources));
+    const definitions = snapshotDefinitions(definitionSources);
+    const catalog = definitionsByName(definitions);
+    const parameterNamesByDefinition = new Map(definitions.map(definition => [
+        definition,
+        new Set(definition.parameters.map(parameter => parameter.name)),
+    ]));
+    const designInstances = snapshotArray(design.instances).map(snapshotDesignInstance);
+    const designConnections = snapshotArray(design.connections).map(snapshotDesignConnection);
     const resolvedInstances: ResolvedArchDesignInstance[] = [];
     const diagnostics: ArchDesignDiagnostic[] = [];
 
-    for (let index = 0; index < design.instances.length; index += 1) {
-        const instance = design.instances[index];
+    for (let index = 0; index < designInstances.length; index += 1) {
+        const instance = designInstances[index];
         const matches = catalog.get(instance.module) ?? [];
         const modulePath = `$.instances[${index}].module`;
         if (matches.length === 0) {
@@ -420,7 +447,7 @@ export function resolveArchDesign(
         const parameters = instance.parameters;
         if (!parameters) continue;
         for (const key of Object.keys(parameters).sort(compareCodeUnits)) {
-            if (definition.parametersByName.has(key)) continue;
+            if (parameterNamesByDefinition.get(definition)?.has(key)) continue;
             diagnostics.push(diagnostic(
                 `$.instances[${index}].parameters.${key}`,
                 'AD_PARAMETER_UNKNOWN',
@@ -451,6 +478,7 @@ export function resolveArchDesign(
     const seenEndpoints = new Set<string>();
     const connectedEndpoints = new Map<string, ResolvedArchDesignEndpoint>();
     const resolvedConnections: ResolvedArchDesignConnection[] = [];
+    const connectionIndexes: ConnectionIndex[] = [];
     let endpointDeclarationOrder = 0;
 
     const resolveEndpointTarget = (
@@ -512,11 +540,16 @@ export function resolveArchDesign(
     };
 
     for (let connectionIndex = 0;
-        connectionIndex < design.connections.length;
+        connectionIndex < designConnections.length;
         connectionIndex += 1) {
-        const connection = design.connections[connectionIndex];
-        const declaredEndpointIdentities: string[] = [];
+        const connection = designConnections[connectionIndex];
+        const declaredEndpointIdentities = new Set<string>();
+        const knownWidthCounts = new Map<number, number>();
+        const inoutTEndpoints: ResolvedArchDesignEndpoint[] = [];
         const endpoints: ResolvedArchDesignEndpoint[] = [];
+        let definiteDriverCount = 0;
+        let knownEndpointCount = 0;
+        let knownNetworkWidth: number | undefined;
         for (let endpointIndex = 0;
             endpointIndex < connection.endpoints.length;
             endpointIndex += 1) {
@@ -524,7 +557,7 @@ export function resolveArchDesign(
             const path = `$.connections[${connectionIndex}].endpoints[${endpointIndex}]`;
             const targetValue = resolveEndpointTarget(endpoint, path);
             if (!targetValue) continue;
-            declaredEndpointIdentities.push(targetValue.identity);
+            declaredEndpointIdentities.add(targetValue.identity);
             if (seenEndpoints.has(targetValue.identity)) {
                 diagnostics.push(diagnostic(
                     path,
@@ -545,15 +578,58 @@ export function resolveArchDesign(
             endpointDeclarationOrder += 1;
             endpoints.push(result);
             connectedEndpoints.set(result.identity, result);
+            if (result.role === 'driver') {
+                if (definiteDriverCount > 0) {
+                    diagnostics.push(diagnostic(
+                        result.path,
+                        'AD_MULTIPLE_DRIVERS',
+                        `Connection ${connection.name} has more than one definite driver`
+                    ));
+                }
+                definiteDriverCount += 1;
+            }
+            if (result.signal !== 't' && result.width.kind === 'known') {
+                if (knownNetworkWidth === undefined) knownNetworkWidth = result.width.bits;
+                else if (result.width.bits !== knownNetworkWidth) {
+                    diagnostics.push(diagnostic(
+                        result.path,
+                        'AD_WIDTH_MISMATCH',
+                        `Endpoint width ${result.width.bits} does not match network width ${knownNetworkWidth}`
+                    ));
+                }
+            }
+            if (result.width.kind === 'known') {
+                knownEndpointCount += 1;
+                knownWidthCounts.set(
+                    result.width.bits,
+                    (knownWidthCounts.get(result.width.bits) ?? 0) + 1
+                );
+            }
+            if (result.signal === 't') inoutTEndpoints.push(result);
+        }
+        for (const endpoint of inoutTEndpoints) {
+            if (endpoint.inoutPortWidth?.kind !== 'known') continue;
+            const portBits = endpoint.inoutPortWidth.bits;
+            const allowedKnownCount = (knownWidthCounts.get(1) ?? 0)
+                + (portBits === 1 ? 0 : knownWidthCounts.get(portBits) ?? 0);
+            if (knownEndpointCount > allowedKnownCount) {
+                diagnostics.push(diagnostic(
+                    endpoint.path,
+                    'AD_INOUT_T_WIDTH',
+                    `Inout t must connect to width 1 or the ${portBits}-bit inout width`
+                ));
+            }
         }
         const resolved = Object.freeze({
             index: connectionIndex,
             connection,
-            declaredEndpointIdentities: Object.freeze(declaredEndpointIdentities),
             endpoints: Object.freeze(endpoints),
         });
         resolvedConnections.push(resolved);
-        validateNetwork(resolved, diagnostics);
+        connectionIndexes.push(Object.freeze({
+            declaredEndpointIdentities,
+            definiteDriverCount,
+        }));
     }
 
     for (let index = 0; index < design.interfaceConnections.length; index += 1) {
@@ -591,19 +667,21 @@ export function resolveArchDesign(
                 `$.connections[${connection.index}].defaults.${key}`,
                 targetsByDefaultKey,
                 diagnostics,
-                connection
+                connection,
+                connectionIndexes[connection.index]
             );
             if (inspected) selections.set(inspected[0].identity, inspected[1]);
         }
     }
 
-    const driverCountByConnection = resolvedConnections.map(connection =>
-        connection.endpoints.filter(endpoint => endpoint.role === 'driver').length);
-    const effectiveDefaults: ArchDesignEffectiveDefault[] = [];
+    const effectiveDefaults: ResolvedArchDesignDefault[] = [];
     for (const endpoint of targets) {
         if (endpoint.role !== 'load') continue;
         const connected = connectedEndpoints.get(endpoint.identity);
-        if (connected && driverCountByConnection[connected.connectionIndex] > 0) continue;
+        if (
+            connected
+            && connectionIndexes[connected.connectionIndex].definiteDriverCount > 0
+        ) continue;
 
         const connectionSelection = connected
             ? connectionDefaults.get(connected.connectionIndex)?.get(endpoint.identity)
@@ -613,11 +691,17 @@ export function resolveArchDesign(
         if (selection) {
             if (selection.safe) {
                 effectiveDefaults.push(Object.freeze({
+                    identity: endpoint.identity,
                     endpoint: endpoint.defaultKey,
+                    declarationOrder: endpoint.declarationOrder,
+                    sourcePath: selection.sourcePath,
                     expression: selection.expression,
                     origin: connectionSelection ? 'connection' : 'design',
                     ...(connectionSelection && connected
-                        ? { connection: design.connections[connected.connectionIndex].name }
+                        ? {
+                            connection: resolvedConnections[connected.connectionIndex]
+                                .connection.name,
+                        }
                         : {}),
                 }));
             }
@@ -625,7 +709,10 @@ export function resolveArchDesign(
         }
         if (endpoint.kind === 'port' && endpoint.signal === 't') {
             effectiveDefaults.push(Object.freeze({
+                identity: endpoint.identity,
                 endpoint: endpoint.defaultKey,
+                declarationOrder: endpoint.declarationOrder,
+                sourcePath: endpoint.declarationPath,
                 expression: "1'b1",
                 origin: 'implicit-inout-t',
             }));
