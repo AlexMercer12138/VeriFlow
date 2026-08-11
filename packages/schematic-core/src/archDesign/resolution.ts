@@ -91,6 +91,7 @@ export type ResolvedArchDesignDefault = Readonly<{
 }>;
 
 export type ArchDesignResolution = Readonly<{
+    moduleName: string;
     instances: readonly ResolvedArchDesignInstance[];
     endpointTargets: readonly ResolvedArchDesignEndpointTarget[];
     connections: readonly ResolvedArchDesignConnection[];
@@ -408,6 +409,7 @@ export function resolveArchDesign(
     design: ArchDesign,
     definitionSources: readonly ArchDesignModuleDefinition[]
 ): ArchDesignResolution {
+    const moduleName = design.module;
     const definitions = snapshotDefinitions(definitionSources);
     const catalog = definitionsByName(definitions);
     const parameterNamesByDefinition = new Map(definitions.map(definition => [
@@ -728,6 +730,7 @@ export function resolveArchDesign(
     diagnostics.sort((left, right) =>
         compareCodeUnits(left.path, right.path) || compareCodeUnits(left.code, right.code));
     return Object.freeze({
+        moduleName,
         instances: Object.freeze(resolvedInstances),
         endpointTargets: Object.freeze(targets),
         connections: Object.freeze(resolvedConnections),

@@ -1,6 +1,7 @@
 export * from './definitions';
 export * from './defaults';
 export * from './fingerprint';
+export * from './graph';
 export * from './model';
 export * from './parser';
 export * from './serializer';

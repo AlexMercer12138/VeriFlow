@@ -1,0 +1,393 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { assignColumns, resolvePinSides } from '../src';
+import {
+    createEmptyArchDesign,
+    parseArchDesignValue,
+    projectArchDesignGraph,
+    validateArchDesign,
+    type ArchDesign,
+    type ArchDesignModuleDefinition,
+} from '../src/archDesign';
+import { pinKey } from '../src/pins';
+
+function designOf(overrides: Partial<ArchDesign>): ArchDesign {
+    const result = parseArchDesignValue({
+        ...createEmptyArchDesign('soc_top'),
+        ...overrides,
+    });
+    if (result.status !== 'editable') throw new Error('expected editable design');
+    return result.design;
+}
+
+const coreDefinition: ArchDesignModuleDefinition = {
+    key: 'rtl/core.sv#core',
+    name: 'core',
+    parameters: [],
+    ports: [
+        { name: 'clk', direction: 'input', width: { kind: 'known', bits: 1 } },
+        { name: 'data_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+        { name: 'enable', direction: 'input', width: { kind: 'known', bits: 1 } },
+    ],
+};
+
+const ioDefinition: ArchDesignModuleDefinition = {
+    key: 'rtl/io_cell.sv#io_cell',
+    name: 'io_cell',
+    parameters: [],
+    ports: [
+        { name: 'data_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+        { name: 'gpio_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+        { name: 'gpio_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+    ],
+};
+
+test('projects an ordered schema-v1 design and exposes inout feedback flow', () => {
+    const presentation = {
+        nodes: {
+            'instance:u_core': { column: 7, order: 2, offset: 13, userPositioned: true },
+        },
+        viewport: { x: 10, y: 20, zoom: 1.25 },
+    };
+    const design = designOf({
+        ports: [
+            { name: 'clk', direction: 'input' },
+            { name: 'result', direction: 'output', width: 8 },
+            { name: 'gpio', direction: 'inout', width: 8 },
+        ],
+        instances: [
+            { name: 'u_core', module: 'core' },
+            { name: 'u_io', module: 'io_cell' },
+        ],
+        connections: [
+            {
+                name: 'clock',
+                endpoints: [
+                    { kind: 'port', port: 'clk' },
+                    { kind: 'instance', instance: 'u_core', port: 'clk' },
+                ],
+            },
+            {
+                name: 'result',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_core', port: 'data_o' },
+                    { kind: 'port', port: 'result' },
+                ],
+            },
+            {
+                name: 'driverless',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_io', port: 'data_i' },
+                ],
+                defaults: { 'u_io.data_i': "8'h5a" },
+            },
+            {
+                name: 'gpio_drive',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_io', port: 'gpio_o' },
+                    { kind: 'port', port: 'gpio', signal: 'o' },
+                ],
+            },
+            {
+                name: 'gpio_readback',
+                endpoints: [
+                    { kind: 'port', port: 'gpio', signal: 'i' },
+                    { kind: 'instance', instance: 'u_io', port: 'gpio_i' },
+                ],
+            },
+        ],
+        defaults: { 'u_core.enable': "1'b1" },
+        presentation,
+    });
+    const presentationBefore = JSON.parse(JSON.stringify(design.presentation));
+
+    const projection = projectArchDesignGraph(design, [coreDefinition, ioDefinition], {
+        fileUri: 'file:///workspace/soc_top.ad',
+    });
+    const { graph } = projection;
+
+    assert.deepEqual({
+        fileUri: graph.fileUri,
+        moduleKey: graph.moduleKey,
+        moduleName: graph.moduleName,
+    }, {
+        fileUri: 'file:///workspace/soc_top.ad',
+        moduleKey: 'arch-design:soc_top',
+        moduleName: 'soc_top',
+    });
+    assert.deepEqual(graph.nodes.map(node => node.id), [
+        'port:clk',
+        'instance:u_core',
+        'instance:u_io',
+        'port:result',
+        'port:gpio',
+        'default:port:gpio:t',
+        'default:instance:u_core:enable',
+        'default:instance:u_io:data_i',
+    ]);
+    assert.deepEqual(graph.nodes.slice(0, 5).map(node => [
+        node.id,
+        node.kind,
+        node.definitionKey,
+        node.readOnly,
+    ]), [
+        ['port:clk', 'port', undefined, false],
+        ['instance:u_core', 'instance', 'rtl/core.sv#core', false],
+        ['instance:u_io', 'instance', 'rtl/io_cell.sv#io_cell', false],
+        ['port:result', 'port', undefined, false],
+        ['port:gpio', 'port', undefined, false],
+    ]);
+    assert.deepEqual(
+        graph.nodes.find(node => node.id === 'instance:u_core')?.pins.map(pin => pin.name),
+        ['clk', 'data_o', 'enable']
+    );
+    assert.deepEqual(
+        graph.nodes.find(node => node.id === 'instance:u_io')?.pins.map(pin => pin.name),
+        ['data_i', 'gpio_o', 'gpio_i']
+    );
+    const inoutNode = graph.nodes.find(node => node.id === 'port:gpio');
+    assert.ok(inoutNode);
+    assert.deepEqual(inoutNode.pins.map(pin => [pin.name, pin.direction]), [
+        ['gpio_o', 'load'],
+        ['gpio_t', 'load'],
+        ['gpio_i', 'driver'],
+    ]);
+    assert.deepEqual(inoutNode.pins.map(pin => pin.width), [
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+    ]);
+    assert.equal(graph.nodes.slice(5).every(node =>
+        node.kind === 'constant'
+        && node.readOnly
+        && node.pins.length === 1
+        && node.pins[0].readOnly
+        && node.pins[0].direction === 'driver'), true);
+
+    assert.deepEqual(graph.networks.map(network => network.id), [
+        'network:clock',
+        'network:result',
+        'network:driverless',
+        'network:gpio_drive',
+        'network:gpio_readback',
+        'network:default:port:gpio:t',
+        'network:default:instance:u_core:enable',
+    ]);
+    assert.deepEqual(graph.networks.map(network => network.width), [
+        { kind: 'known', bits: 1 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 8 },
+        { kind: 'known', bits: 1 },
+    ]);
+    assert.deepEqual(graph.networks.map(network =>
+        network.endpoints.map(endpoint => endpoint.role)), [
+        ['driver', 'load'],
+        ['driver', 'load'],
+        ['load', 'driver'],
+        ['driver', 'load'],
+        ['driver', 'load'],
+        ['load', 'driver'],
+        ['load', 'driver'],
+    ]);
+    assert.deepEqual(graph.networks.map(network =>
+        network.endpoints.map(endpoint => endpoint.nodeId)), [
+        ['port:clk', 'instance:u_core'],
+        ['instance:u_core', 'port:result'],
+        ['instance:u_io', 'default:instance:u_io:data_i'],
+        ['instance:u_io', 'port:gpio'],
+        ['port:gpio', 'instance:u_io'],
+        ['port:gpio', 'default:port:gpio:t'],
+        ['instance:u_core', 'default:instance:u_core:enable'],
+    ]);
+    assert.deepEqual(
+        projection.validation,
+        validateArchDesign(design, [coreDefinition, ioDefinition])
+    );
+    assert.deepEqual(graph.diagnostics, []);
+    assert.equal(projection.validation.valid, true);
+    assert.ok(Object.isFrozen(projection.validation));
+    assert.equal(JSON.stringify(design.presentation), JSON.stringify(presentationBefore));
+
+    const sides = resolvePinSides(graph);
+    const input = graph.nodes.find(node => node.id === 'port:clk')!;
+    const output = graph.nodes.find(node => node.id === 'port:result')!;
+    assert.equal(sides.get(pinKey(input.id, input.pins[0].id)), 'right');
+    assert.equal(sides.get(pinKey(output.id, output.pins[0].id)), 'left');
+    assert.equal(sides.get(pinKey(inoutNode.id, inoutNode.pins[0].id)), 'left');
+    const columns = assignColumns(graph);
+    assert.equal(columns.feedbackNetworkIds.has('network:gpio_readback'), true);
+    assert.equal(columns.feedbackNetworkIds.has('network:gpio_drive'), true);
+});
+
+test('maps colliding public default keys by canonical receiver identity', () => {
+    const consumer: ArchDesignModuleDefinition = {
+        key: 'rtl/consumer.sv#consumer',
+        name: 'consumer',
+        parameters: [],
+        ports: [{ name: 't', direction: 'input', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        ports: [
+            { name: 'node', direction: 'inout', width: 8 },
+            { name: 'source', direction: 'input' },
+        ],
+        instances: [{ name: 'node', module: 'consumer' }],
+        connections: [{
+            name: 'instance_t',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'instance', instance: 'node', port: 't' },
+            ],
+        }],
+        defaults: { 'node.o': "8'b0" },
+    });
+
+    const projection = projectArchDesignGraph(design, [consumer], {
+        fileUri: 'file:///workspace/collision.ad',
+    });
+    const topDefault = projection.graph.nodes.find(node =>
+        node.id === 'default:port:node:t'
+    );
+    const defaultNetwork = projection.graph.networks.find(network =>
+        network.id === 'network:default:port:node:t'
+    );
+
+    assert.ok(topDefault);
+    assert.ok(defaultNetwork);
+    assert.equal(topDefault.label, "1'b1");
+    assert.deepEqual(defaultNetwork.endpoints, [
+        { nodeId: 'port:node', pinId: 'port:node:t', role: 'load' },
+        {
+            nodeId: 'default:port:node:t',
+            pinId: 'default:port:node:t:value',
+            role: 'driver',
+        },
+    ]);
+    assert.equal(projection.graph.nodes.some(node =>
+        node.id === 'default:instance:node:t'), false);
+});
+
+test('projects network widths without hiding mismatches or ambiguous symbols', () => {
+    const widthModule: ArchDesignModuleDefinition = {
+        key: 'rtl/widths.sv#widths',
+        name: 'widths',
+        parameters: [],
+        ports: [
+            { name: 'known_a', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'known_b', direction: 'input', width: { kind: 'known', bits: 8 } },
+            { name: 'mismatch_source', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'mismatch', direction: 'input', width: { kind: 'known', bits: 4 } },
+            { name: 'symbol_a', direction: 'output', width: { kind: 'symbolic', expression: 'W' } },
+            { name: 'symbol_b', direction: 'input', width: { kind: 'symbolic', expression: 'W' } },
+            { name: 'symbol_c_source', direction: 'output', width: { kind: 'symbolic', expression: 'W' } },
+            { name: 'symbol_c', direction: 'input', width: { kind: 'symbolic', expression: 'V' } },
+        ],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_widths', module: 'widths' }],
+        connections: [
+            {
+                name: 'known',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'known_a' },
+                    { kind: 'instance', instance: 'u_widths', port: 'known_b' },
+                ],
+            },
+            {
+                name: 'mismatch',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'mismatch_source' },
+                    { kind: 'instance', instance: 'u_widths', port: 'mismatch' },
+                ],
+            },
+            {
+                name: 'symbolic',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'symbol_a' },
+                    { kind: 'instance', instance: 'u_widths', port: 'symbol_b' },
+                ],
+            },
+            {
+                name: 'ambiguous_symbolic',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_widths', port: 'symbol_c_source' },
+                    { kind: 'instance', instance: 'u_widths', port: 'symbol_c' },
+                ],
+            },
+        ],
+    });
+
+    const projection = projectArchDesignGraph(design, [widthModule], {
+        fileUri: 'file:///workspace/widths.ad',
+    });
+
+    assert.deepEqual(projection.graph.networks.map(network => [
+        network.id,
+        network.width,
+    ]), [
+        ['network:known', { kind: 'known', bits: 8 }],
+        ['network:mismatch', { kind: 'unknown' }],
+        ['network:symbolic', { kind: 'symbolic', expression: 'W' }],
+        ['network:ambiguous_symbolic', { kind: 'unknown' }],
+    ]);
+    assert.equal(projection.validation.valid, false);
+    assert.equal(projection.validation.diagnostics.some(diagnostic =>
+        diagnostic.code === 'AD_WIDTH_MISMATCH'), true);
+});
+
+test('keeps invalid intermediate graphs visible and maps path-aware diagnostics', () => {
+    const unresolved = designOf({
+        instances: [{ name: 'u_missing', module: 'missing' }],
+    });
+
+    const projection = projectArchDesignGraph(unresolved, [], {
+        fileUri: 'file:///workspace/invalid.ad',
+    });
+
+    assert.equal(projection.validation.valid, false);
+    assert.equal(projection.graph.diagnostics[0].code, 'AD_MODULE_UNRESOLVED');
+    assert.deepEqual(projection.validation.diagnostics[0], {
+        path: '$.instances[0].module',
+        code: 'AD_MODULE_UNRESOLVED',
+        message: 'No module definition is named missing',
+    });
+    assert.deepEqual(projection.graph.nodes[0], {
+        id: 'instance:u_missing',
+        kind: 'instance',
+        label: 'u_missing',
+        subtitle: 'missing',
+        pins: [],
+        readOnly: false,
+    });
+    assert.equal(projection.graph.diagnostics[0].severity, 'error');
+    assert.match(projection.graph.diagnostics[0].message, /\$\.instances\[0\]\.module/);
+    assert.ok(Object.isFrozen(projection.validation));
+    assert.ok(Object.isFrozen(projection.validation.diagnostics));
+    assert.ok(Object.isFrozen(projection.validation.diagnostics[0]));
+
+    const badEndpoint = designOf({
+        ports: [{ name: 'source', direction: 'input' }],
+        connections: [{
+            name: 'partial',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'port', port: 'missing' },
+            ],
+        }],
+    });
+    const partial = projectArchDesignGraph(badEndpoint, [], {
+        fileUri: 'file:///workspace/partial.ad',
+    });
+
+    assert.equal(partial.validation.valid, false);
+    assert.deepEqual(partial.graph.networks[0].endpoints, [{
+        nodeId: 'port:source',
+        pinId: 'port:source:value',
+        role: 'driver',
+    }]);
+    assert.equal(partial.graph.diagnostics[0].code, 'AD_ENDPOINT_UNKNOWN');
+});
