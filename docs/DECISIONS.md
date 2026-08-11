@@ -98,3 +98,36 @@ deterministic RTL generation, defaulting to sibling Verilog-2001 `.v` output.
 **Tags:** #architecture #tooling #schematic #routing #code-generation
 
 ---
+
+## 2026-08-11: Share a right-side Inspector and keep network names off-canvas
+
+**Context:** The phase-one schematic renderer exposes top-level port names
+poorly, draws offset network-label backgrounds, applies X6 bounding boxes to
+selected wire trees, and has insufficient contrast in dark themes. The `.ad`
+editor also needs one extensible property surface for networks, instances,
+ports, parameters, defaults, and export settings.
+
+**Decision:** Reuse one webview-owned, collapsible right-side Inspector for
+read-only HDL schematics and editable Arch Designs. Keep network names in the
+semantic graph and show them in the Inspector, but draw no network labels on
+the canvas. Select networks through logical network IDs and highlight only
+their segments and junctions; reserve X6 selection boxes for nodes. Strengthen
+shared theme tokens for modules, ports, pins, and wires.
+
+**Why not:**
+- Bottom property drawer: complex endpoint, interface-default, and parameter
+  data becomes cramped and consumes vertical canvas space.
+- VS Code native side View: selection ownership becomes ambiguous with multiple
+  open schematic editors and requires more cross-panel synchronization.
+- Keep canvas network labels: their backgrounds obscure routing and duplicate
+  information that selection and the Inspector can present without clutter.
+- Use X6 edge selection boxes: a wire-tree bounding rectangle looks like a
+  selected area and misrepresents the selected electrical object.
+
+**Affects:** `packages/schematic-core/`, `packages/schematic-webview/`,
+`veriflow-vscode/src/schematic/`,
+`docs/plans/2026-08-11-ad-editor-schematic-ux-design.md`
+
+**Tags:** #architecture #schematic #frontend #arch-design
+
+---
