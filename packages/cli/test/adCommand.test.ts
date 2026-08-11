@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -87,15 +87,17 @@ test('validates a standalone Arch Design against HDL beside the design', async (
     });
 });
 
-test('uses global and comma-separated command libraries for standalone validation', async () => {
+test('uses source, global, and comma-separated libraries for standalone validation', async () => {
     await withTemporaryDirectory(async cwd => {
         const homeDir = path.join(cwd, 'home');
         writeDesign(cwd, archDesign({
             instances: [
+                { name: 'u_source', module: 'source_leaf' },
                 { name: 'u_global', module: 'global_leaf' },
                 { name: 'u_extra', module: 'extra_leaf' },
             ],
         }));
+        writeFixture(cwd, 'design/source_leaf.sv', 'module source_leaf; endmodule\n');
         writeFixture(cwd, 'global-lib/global_leaf.sv', 'module global_leaf; endmodule\n');
         writeFixture(cwd, 'extra-lib/extra_leaf.sv', 'module extra_leaf; endmodule\n');
         writeFixture(cwd, 'not-a-directory', 'ignored\n');
@@ -111,6 +113,139 @@ test('uses global and comma-separated command libraries for standalone validatio
             'design/soc.ad',
             '-L',
             'extra-lib,missing-lib,not-a-directory,extra-lib',
+        ], cwd, homeDir);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design: OK\n',
+            stderr: '',
+        });
+    });
+});
+
+test('resolves project and library catalogs without mutating the project', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const homeDir = path.join(cwd, 'home');
+        writeDesign(cwd, archDesign({
+            instances: [
+                { name: 'u_root', module: 'root_leaf' },
+                { name: 'u_project', module: 'project_leaf' },
+                { name: 'u_global', module: 'global_leaf' },
+                { name: 'u_extra', module: 'extra_leaf' },
+            ],
+        }));
+        writeFixture(cwd, 'project-root/root_leaf.sv', 'module root_leaf; endmodule\n');
+        writeFixture(cwd, 'project-library/project_leaf.sv', 'module project_leaf; endmodule\n');
+        writeFixture(cwd, 'global-library/global_leaf.sv', 'module global_leaf; endmodule\n');
+        writeFixture(cwd, 'extra-a/extra_leaf.sv', 'module extra_leaf; endmodule\n');
+        writeFixture(
+            homeDir,
+            '.veriflow_config.json',
+            `${JSON.stringify({ lib_dirs: ['global-library', 'missing-global-library'] })}\n`
+        );
+        const projectSource = `{
+  "project_name": "catalog-fixture",
+  "project_root": "project-root",
+  "lib_dirs": ["project-library", "missing-project-library"],
+  "fixture_metadata": { "preserve": true }
+}\n`;
+        writeFixture(cwd, 'project.json', projectSource);
+        const originalProject = readFileSync(path.join(cwd, 'project.json'), 'utf8');
+
+        const result = await invoke([
+            'ad',
+            'validate',
+            'design/soc.ad',
+            '--project',
+            'project.json',
+            '--lib',
+            'extra-a,extra-b',
+        ], cwd, homeDir);
+
+        assert.equal(readFileSync(path.join(cwd, 'project.json'), 'utf8'), originalProject);
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design: OK\n',
+            stderr: '',
+        });
+    });
+});
+
+test('excludes the design source directory from project-mode catalogs', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeFixture(
+            cwd,
+            'design/source-only.ad',
+            `${JSON.stringify(archDesign({
+                instances: [{ name: 'u_source', module: 'source_only_leaf' }],
+            }), null, 2)}\n`
+        );
+        writeFixture(
+            cwd,
+            'design/source_only_leaf.sv',
+            'module source_only_leaf; endmodule\n'
+        );
+        writeFixture(cwd, 'project-root/root_leaf.sv', 'module root_leaf; endmodule\n');
+        writeFixture(cwd, 'project.json', `${JSON.stringify({
+            project_name: 'source-exclusion',
+            project_root: 'project-root',
+            lib_dirs: [],
+        })}\n`);
+
+        const result = await invoke([
+            'ad', 'validate', 'design/source-only.ad', '--project', 'project.json',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'design/source-only.ad:$.instances[0].module [AD_MODULE_UNRESOLVED] '
+                + 'No module definition is named source_only_leaf\n',
+        });
+    });
+});
+
+test('reports a missing project before scanning module catalogs', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd);
+        writeFixture(cwd, 'design/leaf.sv', 'module leaf; endmodule\n');
+
+        const result = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'missing/project.json',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error: Project file not found: missing/project.json\n',
+        });
+    });
+});
+
+test('deduplicates repeated and overlapping project catalog roots', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const homeDir = path.join(cwd, 'home');
+        writeDesign(cwd);
+        writeFixture(cwd, 'hdl/nested/leaf.sv', 'module leaf; endmodule\n');
+        writeFixture(cwd, 'project.json', `${JSON.stringify({
+            project_name: 'overlapping-roots',
+            project_root: 'hdl',
+            lib_dirs: ['hdl', 'hdl/nested'],
+        })}\n`);
+        writeFixture(
+            homeDir,
+            '.veriflow_config.json',
+            `${JSON.stringify({ lib_dirs: ['hdl/nested', 'hdl'] })}\n`
+        );
+
+        const result = await invoke([
+            'ad',
+            'validate',
+            'design/soc.ad',
+            '--project',
+            'project.json',
+            '-L',
+            'hdl,hdl/nested,missing-library',
         ], cwd, homeDir);
 
         assert.deepEqual(result, {

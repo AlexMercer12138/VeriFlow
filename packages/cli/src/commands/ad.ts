@@ -1,8 +1,8 @@
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { GlobalConfigStore } from '@veriflow/flow-core';
+import { GlobalConfigStore, ProjectStore } from '@veriflow/flow-core';
 import {
     parseArchDesignText,
     validateArchDesign,
@@ -87,20 +87,7 @@ function isDirectory(filepath: string): boolean {
     }
 }
 
-function standaloneRoots(
-    loaded: LoadedArchDesign,
-    options: CommandOptions,
-    environment: CommandEnvironment
-): string[] {
-    const globalLibraries = new GlobalConfigStore({
-        homeDir: environment.homeDir,
-    }).getLibDirs();
-    const commandLibraries = (options.lib ?? '').split(',').filter(Boolean);
-    const candidates = [
-        path.dirname(loaded.filepath),
-        ...globalLibraries.map(directory => path.resolve(environment.cwd, directory)),
-        ...commandLibraries.map(directory => path.resolve(environment.cwd, directory)),
-    ];
+function existingDirectories(candidates: readonly string[]): string[] {
     const seen = new Set<string>();
     const roots: string[] = [];
     for (const candidate of candidates) {
@@ -110,6 +97,39 @@ function standaloneRoots(
         roots.push(resolved);
     }
     return roots;
+}
+
+function moduleCatalogRoots(
+    loaded: LoadedArchDesign,
+    options: CommandOptions,
+    environment: CommandEnvironment
+): string[] {
+    const globalLibraries = new GlobalConfigStore({
+        homeDir: environment.homeDir,
+    }).getLibDirs().map(directory => path.resolve(environment.cwd, directory));
+    const commandLibraries = (options.lib ?? '').split(',').filter(Boolean).map(directory => (
+        path.resolve(environment.cwd, directory)
+    ));
+
+    if (options.project !== undefined) {
+        const projectPath = path.resolve(environment.cwd, options.project);
+        if (!existsSync(projectPath)) {
+            throw new Error(`Project file not found: ${options.project}`);
+        }
+        const project = new ProjectStore().open(projectPath);
+        return existingDirectories([
+            project.rootDir,
+            ...project.libDirs,
+            ...globalLibraries,
+            ...commandLibraries,
+        ]);
+    }
+
+    return existingDirectories([
+        path.dirname(loaded.filepath),
+        ...globalLibraries,
+        ...commandLibraries,
+    ]);
 }
 
 async function scanModuleDefinitions(roots: string[]) {
@@ -137,7 +157,7 @@ export async function adValidate(
     if (!loaded) return 1;
 
     const definitions = await scanModuleDefinitions(
-        standaloneRoots(loaded, options, environment)
+        moduleCatalogRoots(loaded, options, environment)
     );
     const validation = validateArchDesign(loaded.design, definitions);
     if (!validation.valid) {
