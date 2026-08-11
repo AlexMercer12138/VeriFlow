@@ -82,6 +82,19 @@ async function withTemporaryDirectory(
     }
 }
 
+function createDirectoryAlias(target: string, alias: string): string | undefined {
+    try {
+        symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+        return undefined;
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '')) {
+            return code ?? 'unknown';
+        }
+        throw error;
+    }
+}
+
 test('validates a standalone Arch Design against HDL beside the design', async () => {
     await withTemporaryDirectory(async cwd => {
         writeDesign(cwd);
@@ -130,6 +143,58 @@ test('uses source, global, and comma-separated libraries for standalone validati
             stdout: 'Arch Design: OK\n',
             stderr: '',
         });
+    });
+});
+
+test('deduplicates aliased standalone catalog roots during validation', async t => {
+    await withTemporaryDirectory(async cwd => {
+        const realDirectory = path.join(cwd, 'real');
+        const aliasDirectory = path.join(cwd, 'alias');
+        writeFixture(cwd, 'real/soc.ad', `${JSON.stringify(archDesign(), null, 2)}\n`);
+        writeFixture(cwd, 'real/leaf.v', 'module leaf; endmodule\n');
+        const unavailableCode = createDirectoryAlias(realDirectory, aliasDirectory);
+        if (unavailableCode !== undefined) {
+            t.skip(`directory links are unavailable (${unavailableCode})`);
+            return;
+        }
+
+        const result = await invoke([
+            'ad', 'validate', 'alias/soc.ad', '-L', 'real',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design: OK\n',
+            stderr: '',
+        });
+    });
+});
+
+test('deduplicates aliased standalone catalog roots during export', async t => {
+    await withTemporaryDirectory(async cwd => {
+        const realDirectory = path.join(cwd, 'real');
+        const aliasDirectory = path.join(cwd, 'alias');
+        writeFixture(cwd, 'real/soc.ad', `${JSON.stringify(archDesign(), null, 2)}\n`);
+        writeFixture(cwd, 'real/leaf.v', 'module leaf; endmodule\n');
+        const unavailableCode = createDirectoryAlias(realDirectory, aliasDirectory);
+        if (unavailableCode !== undefined) {
+            t.skip(`directory links are unavailable (${unavailableCode})`);
+            return;
+        }
+
+        const result = await invoke([
+            'ad', 'export', 'alias/soc.ad', '-L', 'real', '-o', 'generated/soc.v',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'RTL exported: generated/soc.v\n',
+            stderr: '',
+        });
+        assert.notEqual(
+            parseArchDesignRtlMarker(readFileSync(path.join(cwd, 'generated/soc.v'), 'utf8')),
+            undefined
+        );
     });
 });
 
@@ -622,7 +687,7 @@ test('repeated export ignores the target when it defines the dependency module n
     });
 });
 
-test('repeated export resolves an aliased design directory to the output entry', async t => {
+test('repeated export resolves an aliased output directory to the scanned entry', async t => {
     await withTemporaryDirectory(async cwd => {
         const realDirectory = path.join(cwd, 'real');
         const aliasDirectory = path.join(cwd, 'alias');
@@ -632,31 +697,20 @@ test('repeated export resolves an aliased design directory to the output entry',
             2
         )}\n`);
         writeFixture(cwd, 'deps/leaf.v', 'module leaf; endmodule\n');
-        try {
-            symlinkSync(
-                realDirectory,
-                aliasDirectory,
-                process.platform === 'win32' ? 'junction' : 'dir'
-            );
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (
-                ['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '')
-            ) {
-                t.skip(`directory links are unavailable (${code})`);
-                return;
-            }
-            throw error;
+        const unavailableCode = createDirectoryAlias(realDirectory, aliasDirectory);
+        if (unavailableCode !== undefined) {
+            t.skip(`directory links are unavailable (${unavailableCode})`);
+            return;
         }
         const outputPath = path.join(realDirectory, 'soc.v');
         const argv = [
-            'ad', 'export', 'alias/soc.ad', '-o', 'real/soc.v', '-L', 'deps,real',
+            'ad', 'export', 'real/soc.ad', '-o', 'alias/soc.v', '-L', 'deps',
         ];
 
         const first = await invoke(argv, cwd);
         assert.deepEqual(first, {
             exitCode: 0,
-            stdout: 'RTL exported: real/soc.v\n',
+            stdout: 'RTL exported: alias/soc.v\n',
             stderr: '',
         });
         const original = readFileSync(outputPath, 'utf8');
@@ -666,7 +720,7 @@ test('repeated export resolves an aliased design directory to the output entry',
 
         assert.deepEqual(second, {
             exitCode: 0,
-            stdout: 'RTL exported: real/soc.v\n',
+            stdout: 'RTL exported: alias/soc.v\n',
             stderr: '',
         });
         const repeated = readFileSync(outputPath, 'utf8');

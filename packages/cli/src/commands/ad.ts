@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -112,9 +112,18 @@ function existingDirectories(candidates: readonly string[]): string[] {
     const roots: string[] = [];
     for (const candidate of candidates) {
         const resolved = path.resolve(candidate);
-        if (seen.has(resolved) || !isDirectory(resolved)) continue;
-        seen.add(resolved);
-        roots.push(resolved);
+        if (!isDirectory(resolved)) continue;
+        let physical: string;
+        try {
+            physical = realpathSync(resolved);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+            throw error;
+        }
+        if (seen.has(physical)) continue;
+        seen.add(physical);
+        roots.push(physical);
     }
     return roots;
 }
