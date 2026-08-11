@@ -34,9 +34,11 @@ string so newlines and other control characters cannot inject generated RTL.
 `parseArchDesignRtlMarker(text)` lets future hosts decide whether an existing
 target is owned by VeriFlow without duplicating marker parsing.
 
-The fingerprint is computed with the effective language substituted into the
-semantic design. Therefore a CLI language override changes the fingerprint,
-while presentation and output-path edits do not.
+The fingerprint hashes the semantic design with the effective language
+substituted together with the generated module body. Therefore a CLI language
+override or a referenced module-interface change that affects emitted RTL
+changes the fingerprint, while presentation, output-path, and source-comment
+edits do not.
 
 ## RTL Mapping
 
@@ -56,6 +58,11 @@ identifier. This allows a network and top port to share the common name
 renderable definite source width, then the first renderable endpoint width;
 known widths become `[N-1:0]`, symbolic widths become `[(EXPR)-1:0]`, and a
 fully unknown or empty connection is emitted as a scalar net.
+
+User-declared top ports and instances cannot be renamed without changing the
+design contract. If their names collide in the Verilog module namespace,
+export is rejected with an `AD_RTL_NAME_COLLISION` diagnostic at the instance
+declaration instead of producing invalid RTL.
 
 Top-level inputs drive their connected internal nets with continuous assigns.
 Top-level outputs are continuously assigned from their net or effective

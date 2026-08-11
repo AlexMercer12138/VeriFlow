@@ -509,3 +509,75 @@ test('generated Verilog and SystemVerilog compile with Icarus when available', t
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+test('prefers a renderable definite driver width over an unknown bidirectional peer', () => {
+    const bridge: ArchDesignModuleDefinition = {
+        key: 'rtl/bridge.v#bridge',
+        name: 'bridge',
+        parameters: [],
+        ports: [{ name: 'io', direction: 'inout', width: { kind: 'unknown' } }],
+    };
+    const design = designOf({
+        ports: [{ name: 'data', direction: 'input', width: 8 }],
+        instances: [{ name: 'u_bridge', module: 'bridge' }],
+        connections: [{
+            name: 'bus',
+            endpoints: [
+                { kind: 'instance', instance: 'u_bridge', port: 'io' },
+                { kind: 'port', port: 'data' },
+            ],
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [bridge]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /wire \[7:0\] __vf_net_bus;/);
+});
+
+test('changes the RTL fingerprint when a referenced module interface changes', () => {
+    const withoutPort: ArchDesignModuleDefinition = {
+        key: 'rtl/leaf.v#leaf',
+        name: 'leaf',
+        parameters: [],
+        ports: [],
+    };
+    const withPort: ArchDesignModuleDefinition = {
+        ...withoutPort,
+        ports: [{ name: 'extra_o', direction: 'output', width: { kind: 'known', bits: 1 } }],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_leaf', module: 'leaf' }],
+    });
+
+    const first = exportArchDesignRtl(design, [withoutPort]);
+    const changed = exportArchDesignRtl(design, [withPort]);
+
+    assert.equal(first.status, 'generated');
+    assert.equal(changed.status, 'generated');
+    if (first.status !== 'generated' || changed.status !== 'generated') return;
+    assert.notEqual(changed.text, first.text);
+    assert.notEqual(changed.fingerprint, first.fingerprint);
+});
+
+test('rejects a top port and instance that collide in the RTL module namespace', () => {
+    const leaf: ArchDesignModuleDefinition = {
+        key: 'rtl/leaf.v#leaf',
+        name: 'leaf',
+        parameters: [],
+        ports: [],
+    };
+    const design = designOf({
+        ports: [{ name: 'u_leaf', direction: 'input' }],
+        instances: [{ name: 'u_leaf', module: 'leaf' }],
+    });
+
+    const result = exportArchDesignRtl(design, [leaf]);
+
+    assert.equal(result.status, 'invalid');
+    if (result.status !== 'invalid') return;
+    assert.deepEqual(result.diagnostics.map(item => [item.path, item.code]), [
+        ['$.instances[0].name', 'AD_RTL_NAME_COLLISION'],
+    ]);
+});

@@ -2,6 +2,7 @@ import type { WidthValue } from '@veriflow/hdl-core/model';
 
 import type { ArchDesignModuleDefinition } from './definitions';
 import { semanticArchDesignFingerprint } from './fingerprint';
+import { fnv1a64 } from './hash';
 import {
     ARCH_DESIGN_SCHEMA_VERSION,
     type ArchDesign,
@@ -71,6 +72,20 @@ function invalidExport(
     });
 }
 
+function rtlNameDiagnostics(
+    resolution: ArchDesignResolution
+): readonly ArchDesignDiagnostic[] {
+    const portNames = new Set(resolution.ports.map(item => item.port.name));
+    return resolution.instances.flatMap(item =>
+        portNames.has(item.instance.name)
+            ? [Object.freeze({
+                path: `$.instances[${item.index}].name`,
+                code: 'AD_RTL_NAME_COLLISION',
+                message: `Instance ${item.instance.name} collides with a top-level port`,
+            })]
+            : []);
+}
+
 function packedRange(width: ArchDesignWidth | undefined): string {
     if (width === undefined) return '';
     return typeof width === 'number'
@@ -102,8 +117,9 @@ function allocateIdentifier(preferred: string, used: Set<string>): string {
 
 function connectionWidth(connection: ResolvedArchDesignConnection): WidthValue {
     const source = connection.endpoints.find(endpoint =>
-        endpoint.role === 'driver' || endpoint.role === 'bidirectional');
-    const selected = source ?? connection.endpoints.find(endpoint => endpoint.width.kind !== 'unknown');
+        endpoint.role === 'driver' && endpoint.width.kind !== 'unknown');
+    const selected = source
+        ?? connection.endpoints.find(endpoint => endpoint.width.kind !== 'unknown');
     return selected?.width ?? { kind: 'unknown' };
 }
 
@@ -359,11 +375,18 @@ export function exportArchDesignRtl(
     if (resolution.diagnostics.length > 0) {
         return invalidExport(resolution.diagnostics);
     }
+    const nameDiagnostics = rtlNameDiagnostics(resolution);
+    if (nameDiagnostics.length > 0) return invalidExport(nameDiagnostics);
     const language = options.language ?? snapshot.export.language ?? 'verilog';
-    const fingerprint = semanticArchDesignFingerprint({
+    const semanticDesign = {
         ...snapshot,
         export: { ...snapshot.export, language },
-    });
+    };
+    const moduleText = renderModule(resolution);
+    const fingerprint = `ad-v1-${fnv1a64([
+        semanticArchDesignFingerprint(semanticDesign),
+        moduleText,
+    ].join('\n'))}`;
     const marker = [
         '// vik-veriflow:generated arch-design',
         `schema=${ARCH_DESIGN_SCHEMA_VERSION}`,
@@ -375,7 +398,7 @@ export function exportArchDesignRtl(
         marker,
         `// vik-veriflow:source ${JSON.stringify(sourcePath)}`,
         '',
-        renderModule(resolution),
+        moduleText,
     ].join('\n');
     return Object.freeze({
         status: 'generated',
