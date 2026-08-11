@@ -7,6 +7,7 @@ import {
     parseArchDesignValue,
     parseArchDesignRtlMarker,
     type ArchDesign,
+    type ArchDesignModuleDefinition,
 } from '../src/archDesign';
 
 function designOf(overrides: Partial<ArchDesign>): ArchDesign {
@@ -119,4 +120,109 @@ test('uses an explicit language override for extension, marker, and fingerprint'
     assert.equal(systemVerilog.extension, '.sv');
     assert.match(systemVerilog.marker, / language=systemverilog$/);
     assert.notEqual(systemVerilog.fingerprint, verilog.fingerprint);
+});
+
+test('exports explicit ordered instances, parameters, and effective defaults', () => {
+    const producer: ArchDesignModuleDefinition = {
+        key: 'rtl/producer.v#producer',
+        name: 'producer',
+        parameters: [
+            { name: 'MODE' },
+            { name: 'WIDTH' },
+            { name: 'ENABLE' },
+        ],
+        ports: [
+            { name: 'clk', direction: 'input', width: { kind: 'known', bits: 1 } },
+            { name: 'data_o', direction: 'output', width: { kind: 'known', bits: 8 } },
+            { name: 'unused_o', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'io', direction: 'inout', width: { kind: 'known', bits: 1 } },
+        ],
+    };
+    const sink: ArchDesignModuleDefinition = {
+        key: 'rtl/sink.v#sink',
+        name: 'sink',
+        parameters: [],
+        ports: [
+            { name: 'data_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+            { name: 'enable', direction: 'input', width: { kind: 'known', bits: 1 } },
+            { name: 'spare_o', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'io', direction: 'inout', width: { kind: 'known', bits: 1 } },
+        ],
+    };
+    const design = designOf({
+        ports: [
+            { name: 'clk', direction: 'input' },
+            { name: 'result', direction: 'output', width: 8 },
+        ],
+        instances: [{
+            name: 'u_prod',
+            module: 'producer',
+            parameters: { ENABLE: true, WIDTH: 8, MODE: "2'b10" },
+        }, {
+            name: 'u_sink',
+            module: 'sink',
+        }],
+        connections: [{
+            name: 'clock',
+            endpoints: [
+                { kind: 'port', port: 'clk' },
+                { kind: 'instance', instance: 'u_prod', port: 'clk' },
+            ],
+        }, {
+            name: 'result',
+            endpoints: [
+                { kind: 'instance', instance: 'u_prod', port: 'data_o' },
+                { kind: 'port', port: 'result' },
+            ],
+        }, {
+            name: 'fallback',
+            endpoints: [{ kind: 'instance', instance: 'u_sink', port: 'data_i' }],
+            defaults: { 'u_sink.data_i': "8'h5a" },
+        }],
+        defaults: {
+            'u_sink.data_i': "8'h00",
+            'u_sink.enable': "1'b0",
+        },
+    });
+
+    const result = exportArchDesignRtl(design, [producer, sink]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    const body = result.text.slice(result.text.indexOf('module'));
+    assert.equal(body, [
+        'module soc_top (',
+        '    input wire clk,',
+        '    output wire [7:0] result',
+        ');',
+        '',
+        'wire __vf_net_clock;',
+        'wire [7:0] __vf_net_result;',
+        'wire [7:0] __vf_net_fallback;',
+        '',
+        'assign __vf_net_clock = clk;',
+        'assign result = __vf_net_result;',
+        'assign __vf_net_fallback = 8\'h5a;',
+        '',
+        'producer #(',
+        '    .MODE(2\'b10),',
+        '    .WIDTH(8),',
+        '    .ENABLE(1\'b1)',
+        ') u_prod (',
+        '    .clk(__vf_net_clock),',
+        '    .data_o(__vf_net_result),',
+        '    .unused_o(),',
+        '    .io()',
+        ');',
+        '',
+        'sink u_sink (',
+        '    .data_i(__vf_net_fallback),',
+        '    .enable(1\'b0),',
+        '    .spare_o(),',
+        '    .io()',
+        ');',
+        '',
+        'endmodule',
+        '',
+    ].join('\n'));
 });

@@ -14,6 +14,8 @@ import {
     resolveArchDesign,
     type ArchDesignResolution,
     type ResolvedArchDesignConnection,
+    type ResolvedArchDesignEndpointTarget,
+    type ResolvedArchDesignInstance,
 } from './resolution';
 
 export type ArchDesignRtlExportOptions = Readonly<{
@@ -108,8 +110,63 @@ function createBindings(resolution: ArchDesignResolution): RtlBindings {
     return { netByConnection, netByEndpoint };
 }
 
+function targetsByNode(
+    resolution: ArchDesignResolution
+): ReadonlyMap<string, readonly ResolvedArchDesignEndpointTarget[]> {
+    const result = new Map<string, ResolvedArchDesignEndpointTarget[]>();
+    for (const target of resolution.endpointTargets) {
+        const existing = result.get(target.nodeId);
+        if (existing) existing.push(target);
+        else result.set(target.nodeId, [target]);
+    }
+    return result;
+}
+
+function renderParameterValue(value: string | number | boolean): string {
+    if (typeof value === 'boolean') return value ? "1'b1" : "1'b0";
+    return String(value);
+}
+
+function renderInstance(
+    item: ResolvedArchDesignInstance,
+    targets: readonly ResolvedArchDesignEndpointTarget[],
+    netByEndpoint: ReadonlyMap<string, string>,
+    defaultByEndpoint: ReadonlyMap<string, string>
+): readonly string[] {
+    if (!item.definition) return [];
+    const parameters = item.instance.parameters;
+    const parameterMappings = parameters
+        ? item.definition.parameters.flatMap(parameter =>
+            Object.prototype.hasOwnProperty.call(parameters, parameter.name)
+                ? [[parameter.name, renderParameterValue(parameters[parameter.name])] as const]
+                : [])
+        : [];
+    const prefix = parameterMappings.length === 0
+        ? [`${item.instance.module} ${item.instance.name} (`]
+        : [
+            `${item.instance.module} #(`,
+            ...parameterMappings.map(([name, value], index) =>
+                `    .${name}(${value})${index === parameterMappings.length - 1 ? '' : ','}`),
+            `) ${item.instance.name} (`,
+        ];
+    const ports = targets.map((target, index) => {
+        const binding = netByEndpoint.get(target.identity)
+            ?? (target.role === 'load' ? defaultByEndpoint.get(target.identity) : undefined)
+            ?? '';
+        return `    .${target.port}(${binding})${index === targets.length - 1 ? '' : ','}`;
+    });
+    return [
+        ...prefix,
+        ...ports,
+        ');',
+    ];
+}
+
 function renderModule(resolution: ArchDesignResolution): string {
     const { netByConnection, netByEndpoint } = createBindings(resolution);
+    const defaultByEndpoint = new Map(
+        resolution.effectiveDefaults.map(item => [item.identity, item.expression])
+    );
     const header = resolution.ports.length === 0
         ? [`module ${resolution.moduleName};`]
         : [
@@ -120,23 +177,36 @@ function renderModule(resolution: ArchDesignResolution): string {
         ];
     const declarations = resolution.connections.map(connection =>
         `wire ${resolvedPackedRange(connectionWidth(connection))}${netByConnection.get(connection.index)};`);
-    const targetsByNode = new Map<string, typeof resolution.endpointTargets>();
-    for (const target of resolution.endpointTargets) {
-        const existing = targetsByNode.get(target.nodeId);
-        if (existing) targetsByNode.set(target.nodeId, [...existing, target]);
-        else targetsByNode.set(target.nodeId, [target]);
-    }
+    const targets = targetsByNode(resolution);
     const assignments: string[] = [];
     for (const item of resolution.ports) {
         if (item.port.direction === 'inout') continue;
-        const target = targetsByNode.get(item.nodeId)?.[0];
+        const target = targets.get(item.nodeId)?.[0];
         const net = target ? netByEndpoint.get(target.identity) : undefined;
-        if (!net) continue;
-        assignments.push(item.port.direction === 'input'
-            ? `assign ${net} = ${item.port.name};`
-            : `assign ${item.port.name} = ${net};`);
+        if (item.port.direction === 'input') {
+            if (net) assignments.push(`assign ${net} = ${item.port.name};`);
+            continue;
+        }
+        const binding = net ?? (target ? defaultByEndpoint.get(target.identity) : undefined);
+        if (binding) assignments.push(`assign ${item.port.name} = ${binding};`);
     }
-    const sections = [header, declarations, assignments]
+    for (const source of resolution.connectionDefaultSources) {
+        const net = netByConnection.get(source.connectionIndex);
+        if (net) assignments.push(`assign ${net} = ${source.default.expression};`);
+    }
+    const instances: string[] = [];
+    for (const item of resolution.instances) {
+        const block = renderInstance(
+            item,
+            targets.get(item.nodeId) ?? [],
+            netByEndpoint,
+            defaultByEndpoint
+        );
+        if (block.length === 0) continue;
+        if (instances.length > 0) instances.push('');
+        instances.push(...block);
+    }
+    const sections = [header, declarations, assignments, instances]
         .filter(section => section.length > 0);
     return [
         ...sections.flatMap((section, index) => index === 0 ? section : ['', ...section]),
