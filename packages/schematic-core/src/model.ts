@@ -12,12 +12,36 @@ export type PinDirection = 'driver' | 'load' | 'bidirectional';
 
 export type PinSide = 'left' | 'right';
 
+export type GraphInterfaceRole = 'master' | 'slave' | 'unknown';
+
+export type GraphInterfacePin = {
+    id: string;
+    protocol: string;
+    protocolName: string;
+    role: GraphInterfaceRole;
+    roleSource: 'inferred' | 'override' | 'declared' | 'unknown';
+    kind: 'aggregate' | 'member';
+    topLevel: boolean;
+    collapsed: boolean;
+    member?: string;
+};
+
+export type GraphInterfaceNetwork = {
+    id: string;
+    connection: string;
+    protocol: string;
+    protocolName: string;
+    collapsed: boolean;
+    member?: string;
+};
+
 export type GraphPin = {
     id: string;
     name: string;
     direction: PinDirection;
     width: WidthValue;
     readOnly: boolean;
+    interface?: GraphInterfacePin;
     sourceSpan?: SourceSpan;
 };
 
@@ -43,6 +67,8 @@ export type SchematicNetwork = {
     name: string;
     width: WidthValue;
     endpoints: NetworkEndpoint[];
+    renderWidth?: number;
+    interface?: GraphInterfaceNetwork;
     sourceSpan?: SourceSpan;
     adapterLabel?: string;
 };

@@ -19,6 +19,20 @@ function ownValue(record: UnknownRecord, key: string): unknown {
         : undefined;
 }
 
+export function isArchDesignInterfaceCollapsed(
+    design: ArchDesign,
+    interfaceId: string
+): boolean {
+    const presentation = design.presentation as unknown;
+    if (!isRecord(presentation)) return true;
+    const collapsed = ownValue(presentation, 'collapsedInterfaces');
+    if (!isRecord(collapsed)
+        || !Object.prototype.hasOwnProperty.call(collapsed, interfaceId)) {
+        return true;
+    }
+    return ownValue(collapsed, interfaceId) !== false;
+}
+
 function setOwn<T>(target: Record<string, T>, key: string, value: T): void {
     Object.defineProperty(target, key, {
         value,

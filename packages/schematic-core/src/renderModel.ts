@@ -1,4 +1,10 @@
-import type { GraphNodeKind, PinDirection, PinSide } from './model';
+import type {
+    GraphInterfaceNetwork,
+    GraphInterfacePin,
+    GraphNodeKind,
+    PinDirection,
+    PinSide,
+} from './model';
 import type { TextMeasurementStyle } from './nodeGeometry';
 import type { Point, Rectangle, RouteSegment } from './routing/geometry';
 import type { Direction } from './routing/junctions';
@@ -27,6 +33,7 @@ export type RenderedPinGeometry = Readonly<{
     visibleLabel: string;
     truncated: boolean;
     clipBounds: Readonly<Rectangle>;
+    interface?: Readonly<GraphInterfacePin>;
 }>;
 
 export type RenderedNodeGeometry = Readonly<{
@@ -60,6 +67,8 @@ export type NetworkRoute = Readonly<{
     displayName: string;
     selectionDescription: string;
     feedback: boolean;
+    renderWidth?: number;
+    interface?: Readonly<GraphInterfaceNetwork>;
     terminals: readonly NetworkTerminalGeometry[];
     segments: readonly Readonly<RouteSegment>[];
     /** @deprecated Network names are shown in the Inspector, not on canvas. */

@@ -1,5 +1,6 @@
 import type { WidthValue } from '@veriflow/hdl-core/model';
 
+import type { InterfaceProtocolCatalog } from '../interfaces';
 import type {
     GraphNode,
     GraphPin,
@@ -9,12 +10,19 @@ import type {
 } from '../model';
 import type { ArchDesignModuleDefinition } from './definitions';
 import type { ArchDesign } from './model';
+import { compareCodeUnits } from './ordering';
+import { isArchDesignInterfaceCollapsed } from './presentation';
 import {
     resolveArchDesign,
     type ArchDesignResolution,
     type ResolvedArchDesignDefault,
     type ResolvedArchDesignEndpointTarget,
 } from './resolution';
+import type {
+    ResolvedArchDesignInterfaceConnection,
+    ResolvedArchDesignInterfaceEndpoint,
+    ResolvedArchDesignInterfaceMember,
+} from './interfaces';
 import type { ArchDesignValidationResult } from './validation';
 
 export type ArchDesignGraphProjection = Readonly<{
@@ -32,6 +40,11 @@ type TopPortTargets = {
     nodeId: string;
     targets: ResolvedArchDesignEndpointTarget[];
 };
+
+type InterfaceProjectionState = Readonly<{
+    endpoint: ResolvedArchDesignInterfaceEndpoint;
+    collapsed: boolean;
+}>;
 
 function cloneWidth(width: WidthValue): WidthValue {
     if (width.kind === 'known') return { kind: 'known', bits: width.bits };
@@ -63,7 +76,9 @@ function projectValidation(resolution: ArchDesignResolution): ArchDesignValidati
 
 function graphPin(
     target: ResolvedArchDesignEndpointTarget,
-    name: string
+    name: string,
+    interfaceState?: InterfaceProjectionState,
+    member?: ResolvedArchDesignInterfaceMember
 ): GraphPin {
     return {
         id: target.identity,
@@ -71,6 +86,74 @@ function graphPin(
         direction: target.role,
         width: cloneWidth(target.width),
         readOnly: false,
+        ...(interfaceState === undefined || member === undefined
+            ? {}
+            : { interface: interfacePinMetadata(interfaceState, 'member', member.member) }),
+    };
+}
+
+function interfacePinMetadata(
+    state: InterfaceProjectionState,
+    kind: 'aggregate' | 'member',
+    member?: string
+): NonNullable<GraphPin['interface']> {
+    const endpoint = state.endpoint;
+    return {
+        id: endpoint.identity,
+        protocol: endpoint.protocol,
+        protocolName: endpoint.protocolName,
+        role: endpoint.role,
+        roleSource: endpoint.roleSource,
+        kind,
+        topLevel: endpoint.endpoint.kind === 'port',
+        collapsed: state.collapsed,
+        ...(member === undefined ? {} : { member }),
+    };
+}
+
+function aggregateDirection(
+    endpoint: ResolvedArchDesignInterfaceEndpoint
+): GraphPin['direction'] {
+    return endpoint.effectiveRole === 'master'
+        ? 'driver'
+        : endpoint.effectiveRole === 'slave' ? 'load' : 'bidirectional';
+}
+
+function memberDirection(
+    state: InterfaceProjectionState,
+    member: ResolvedArchDesignInterfaceMember
+): GraphPin['direction'] {
+    const direction = member.portDirection === 'output'
+        ? 'driver'
+        : member.portDirection === 'input' ? 'load' : 'bidirectional';
+    if (state.endpoint.endpoint.kind !== 'port') return direction;
+    return direction === 'driver' ? 'load' : direction === 'load' ? 'driver' : direction;
+}
+
+function aggregatePin(state: InterfaceProjectionState): GraphPin {
+    return {
+        id: state.endpoint.identity,
+        name: state.endpoint.endpoint.kind === 'instance'
+            ? state.endpoint.endpoint.interface
+            : state.endpoint.endpoint.port,
+        direction: aggregateDirection(state.endpoint),
+        width: { kind: 'unknown' },
+        readOnly: false,
+        interface: interfacePinMetadata(state, 'aggregate'),
+    };
+}
+
+function interfaceMemberPin(
+    state: InterfaceProjectionState,
+    member: ResolvedArchDesignInterfaceMember
+): GraphPin {
+    return {
+        id: member.targetIdentity,
+        name: member.port,
+        direction: memberDirection(state, member),
+        width: cloneWidth(member.width),
+        readOnly: false,
+        interface: interfacePinMetadata(state, 'member', member.member),
     };
 }
 
@@ -150,6 +233,26 @@ function constantNode(
     };
 }
 
+function interfaceDefaultNode(
+    connection: ResolvedArchDesignInterfaceConnection,
+    item: ResolvedArchDesignInterfaceConnection['defaults'][number]
+): GraphNode {
+    const nodeId = `default:interface:${connection.connection.name}:${item.member}`;
+    return {
+        id: nodeId,
+        kind: 'constant',
+        label: item.expression,
+        pins: [{
+            id: `${nodeId}:value`,
+            name: 'value',
+            direction: 'driver',
+            width: cloneWidth(item.receiver.width),
+            readOnly: true,
+        }],
+        readOnly: true,
+    };
+}
+
 function selectNetworkWidth(widths: readonly WidthValue[]): WidthValue {
     const first = widths[0];
     if (first?.kind === 'known' && widths.every(width =>
@@ -175,15 +278,50 @@ function endpoint(
 export function projectArchDesignGraph(
     design: ArchDesign,
     definitions: readonly ArchDesignModuleDefinition[],
-    options: Readonly<{ fileUri: string }>
+    options: Readonly<{
+        fileUri: string;
+        interfaceCatalog?: InterfaceProtocolCatalog;
+    }>
 ): ArchDesignGraphProjection {
-    const resolution = resolveArchDesign(design, definitions);
+    const resolution = resolveArchDesign(design, definitions, options.interfaceCatalog);
     const validation = projectValidation(resolution);
     const targetByIdentity = new Map(
         resolution.endpointTargets.map(target => [target.identity, target])
     );
     const locations = new Map<string, PinLocation>();
     const nodes: GraphNode[] = [];
+
+    const requestedCollapse = new Map(resolution.interfaces.endpoints.map(item => [
+        item.identity,
+        isArchDesignInterfaceCollapsed(design, item.identity),
+    ]));
+    const expandedByConnection = new Set<string>();
+    for (const connection of resolution.interfaces.connections) {
+        const endpoints = [connection.master, connection.slave].filter(
+            (item): item is ResolvedArchDesignInterfaceEndpoint => item !== undefined
+        );
+        if (endpoints.some(item => requestedCollapse.get(item.identity) === false)) {
+            endpoints.forEach(item => expandedByConnection.add(item.identity));
+        }
+    }
+    const interfaceStates = resolution.interfaces.endpoints.map(endpoint => ({
+        endpoint,
+        collapsed: (requestedCollapse.get(endpoint.identity) ?? true)
+            && !expandedByConnection.has(endpoint.identity),
+    }));
+    const interfaceStateByIdentity = new Map(interfaceStates.map(state => [
+        state.endpoint.identity,
+        state,
+    ]));
+    const interfaceMemberByTarget = new Map(interfaceStates.flatMap(state =>
+        state.endpoint.members.map(member => [
+            member.targetIdentity,
+            { state, member },
+        ] as const)
+    ));
+    const scalarOccupied = new Set(resolution.connections.flatMap(connection =>
+        connection.endpoints.map(item => item.identity)
+    ));
 
     const topPorts = collectTopPorts(resolution);
     const inputPorts = topPorts.filter(isInputPort);
@@ -200,10 +338,64 @@ export function projectArchDesignGraph(
         addNode(node, identities);
     }
 
+
+    const topInterfaceStates = interfaceStates.filter(state =>
+        state.endpoint.endpoint.kind === 'port'
+    );
+    const topInterfaceNode = (state: InterfaceProjectionState): GraphNode => {
+        const endpoint = state.endpoint;
+        const pins = state.collapsed
+            ? [aggregatePin(state)]
+            : endpoint.members.map(member => interfaceMemberPin(state, member));
+        return {
+            id: endpoint.identity,
+            kind: 'port',
+            label: endpoint.endpoint.kind === 'port'
+                ? endpoint.endpoint.port
+                : endpoint.identity,
+            subtitle: `${endpoint.protocolName} ${endpoint.role}`,
+            pins,
+            readOnly: false,
+        };
+    };
+    const topSlaveInterfaces = topInterfaceStates.filter(state =>
+        state.endpoint.role === 'slave'
+    );
+    const topOtherInterfaces = topInterfaceStates.filter(state =>
+        state.endpoint.role !== 'slave'
+    );
+    for (const state of topSlaveInterfaces) {
+        const node = topInterfaceNode(state);
+        addNode(node, state.collapsed
+            ? [state.endpoint.identity]
+            : state.endpoint.members.map(member => member.targetIdentity));
+    }
+
     const targetsByInstance = instanceTargets(resolution);
     for (const item of resolution.instances) {
         const nodeId = item.nodeId;
         const targets = targetsByInstance.get(nodeId) ?? [];
+        const aggregateAdded = new Set<string>();
+        const pins: GraphPin[] = [];
+        const identities: string[] = [];
+        for (const target of targets) {
+            const membership = interfaceMemberByTarget.get(target.identity);
+            if (!membership) {
+                pins.push(graphPin(target, target.port));
+                identities.push(target.identity);
+                continue;
+            }
+            const { state, member } = membership;
+            if (!state.collapsed || scalarOccupied.has(target.identity)) {
+                pins.push(graphPin(target, target.port, state, member));
+                identities.push(target.identity);
+                continue;
+            }
+            if (aggregateAdded.has(state.endpoint.identity)) continue;
+            aggregateAdded.add(state.endpoint.identity);
+            pins.push(aggregatePin(state));
+            identities.push(state.endpoint.identity);
+        }
         addNode({
             id: nodeId,
             kind: 'instance',
@@ -212,15 +404,21 @@ export function projectArchDesignGraph(
             ...(item.definition === undefined
                 ? {}
                 : { definitionKey: item.definition.key }),
-            pins: targets.map(target => graphPin(target, target.port)),
+            pins,
             readOnly: false,
-        }, targets.map(target => target.identity));
+        }, identities);
     }
 
     for (const port of outputPorts) {
         const node = topPortNode(port);
         const identities = node.pins.map(pin => pin.id);
         addNode(node, identities);
+    }
+    for (const state of topOtherInterfaces) {
+        const node = topInterfaceNode(state);
+        addNode(node, state.collapsed
+            ? [state.endpoint.identity]
+            : state.endpoint.members.map(member => member.targetIdentity));
     }
 
     const connectedDefaultIdentities = new Set(
@@ -286,6 +484,84 @@ export function projectArchDesignGraph(
                 endpoint(driver, 'driver'),
             ],
         });
+    }
+
+
+    for (const connection of resolution.interfaces.connections) {
+        const collapsed = connection.master !== undefined
+            && connection.slave !== undefined
+            && interfaceStateByIdentity.get(connection.master.identity)?.collapsed === true
+            && interfaceStateByIdentity.get(connection.slave.identity)?.collapsed === true;
+        const protocolEndpoint = connection.master ?? connection.slave;
+        if (collapsed && connection.master && connection.slave && protocolEndpoint) {
+            const master = locations.get(connection.master.identity);
+            const slave = locations.get(connection.slave.identity);
+            if (!master || !slave) continue;
+            networks.push({
+                id: `network:interface:${connection.connection.name}`,
+                name: connection.connection.name,
+                width: { kind: 'unknown' },
+                endpoints: [endpoint(master, 'driver'), endpoint(slave, 'load')],
+                renderWidth: 4,
+                interface: {
+                    id: `interface-connection:${connection.connection.name}`,
+                    connection: connection.connection.name,
+                    protocol: protocolEndpoint.protocol,
+                    protocolName: protocolEndpoint.protocolName,
+                    collapsed: true,
+                },
+            });
+            continue;
+        }
+        if (!protocolEndpoint) continue;
+        const members = [
+            ...connection.bindings.map(item => ({
+                member: item.member,
+                width: item.sender.width,
+                endpoints: [
+                    [item.sender.targetIdentity, 'driver' as const],
+                    [item.receiver.targetIdentity, 'load' as const],
+                ] as const,
+                order: Math.min(item.sender.declarationOrder, item.receiver.declarationOrder),
+            })),
+            ...connection.defaults.map(item => ({
+                member: item.member,
+                width: item.receiver.width,
+                endpoints: [
+                    [`default:interface:${connection.connection.name}:${item.member}`, 'driver' as const],
+                    [item.receiver.targetIdentity, 'load' as const],
+                ] as const,
+                order: item.receiver.declarationOrder,
+            })),
+        ].sort((left, right) => left.order - right.order
+            || compareCodeUnits(left.member, right.member));
+        for (const item of connection.defaults) {
+            const receiver = locations.get(item.receiver.targetIdentity);
+            if (!receiver) continue;
+            const node = interfaceDefaultNode(connection, item);
+            nodes.push(node);
+            locations.set(node.id, { nodeId: node.id, pinId: node.pins[0].id });
+        }
+        for (const member of members) {
+            const endpoints = member.endpoints.flatMap(([identity, role]) => {
+                const location = locations.get(identity);
+                return location ? [endpoint(location, role)] : [];
+            });
+            networks.push({
+                id: `network:interface:${connection.connection.name}:${member.member}`,
+                name: `${connection.connection.name}.${member.member}`,
+                width: cloneWidth(member.width),
+                endpoints,
+                interface: {
+                    id: `interface-connection:${connection.connection.name}`,
+                    connection: connection.connection.name,
+                    protocol: protocolEndpoint.protocol,
+                    protocolName: protocolEndpoint.protocolName,
+                    collapsed: false,
+                    member: member.member,
+                },
+            });
+        }
     }
 
     const graph: SchematicGraph = {

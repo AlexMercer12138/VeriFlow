@@ -669,3 +669,52 @@ test('never measures or places a network name on clear horizontal routes', () =>
     assert.equal(route.selectionDescription, 'short_name');
     assert.equal(measured.includes('short_name'), false);
 });
+
+test('preserves interface metadata and render width through layout snapshots', () => {
+    const source = node('instance:master', 'instance', 'master', [['BUS', 'driver']]);
+    const target = node('instance:slave', 'instance', 'slave', [['BUS', 'load']]);
+    source.pins[0].interface = {
+        id: 'interface:instance:master:BUS',
+        protocol: 'project.link',
+        protocolName: 'Project Link',
+        role: 'master',
+        roleSource: 'inferred',
+        kind: 'aggregate',
+        topLevel: false,
+        collapsed: true,
+    };
+    target.pins[0].interface = {
+        ...source.pins[0].interface,
+        id: 'interface:instance:slave:BUS',
+        role: 'slave',
+    };
+    const bus = network('network:interface:bus', 'bus', [
+        endpoint(source, 0),
+        endpoint(target, 0),
+    ]);
+    bus.renderWidth = 4;
+    bus.interface = {
+        id: 'interface-connection:bus',
+        connection: 'bus',
+        protocol: 'project.link',
+        protocolName: 'Project Link',
+        collapsed: true,
+    };
+    const graph: SchematicGraph = {
+        fileUri: 'file:///interface.ad',
+        moduleKey: 'arch-design:interface',
+        moduleName: 'interface',
+        nodes: [source, target],
+        networks: [bus],
+        diagnostics: [],
+    };
+
+    const rendered = layoutSchematic(graph, undefined, text => text.length * 7);
+    const serialized = serializeSchematicRenderModel(rendered);
+
+    assert.deepEqual(rendered.nodes.get(source.id)?.pins[0].interface,
+        source.pins[0].interface);
+    assert.equal(rendered.networks[0].renderWidth, 4);
+    assert.deepEqual(rendered.networks[0].interface, bus.interface);
+    assert.deepEqual(serialized.networks[0].interface, bus.interface);
+});

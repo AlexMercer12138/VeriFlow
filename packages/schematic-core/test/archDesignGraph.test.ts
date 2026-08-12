@@ -11,6 +11,7 @@ import {
     type ArchDesign,
     type ArchDesignModuleDefinition,
 } from '../src/archDesign';
+import { createInterfaceProtocolCatalog } from '../src/interfaces';
 import { pinKey } from '../src/pins';
 
 function designOf(overrides: Partial<ArchDesign>): ArchDesign {
@@ -893,4 +894,206 @@ test('keeps duplicate connection declarations localized, unique, and layoutable'
         'network:shared_network:declaration:1',
     ]);
     assertUniqueAndLayoutable(design, projection.graph);
+});
+
+const interfaceCatalog = createInterfaceProtocolCatalog([{
+    source: '/workspace/link.json',
+    value: {
+        format: 'veriflow-interface-protocol',
+        schemaVersion: 1,
+        id: 'project.link',
+        name: 'Project Link',
+        separator: '_',
+        priority: 100,
+        members: [
+            { name: 'request', direction: 'master-to-slave' },
+            { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+            { name: 'tag', direction: 'master-to-slave', default: '0' },
+        ],
+        recognitionGroups: [['request', 'accept']],
+    },
+}]);
+
+const interfaceMaster: ArchDesignModuleDefinition = {
+    key: 'rtl/interface_master.sv#interface_master',
+    name: 'interface_master',
+    parameters: [],
+    ports: [
+        { name: 'BUS_REQUEST', direction: 'output', width: { kind: 'known', bits: 32 } },
+        { name: 'BUS_ACCEPT', direction: 'input', width: { kind: 'known', bits: 1 } },
+    ],
+};
+
+const interfaceSlave: ArchDesignModuleDefinition = {
+    key: 'rtl/interface_slave.sv#interface_slave',
+    name: 'interface_slave',
+    parameters: [],
+    ports: [
+        { name: 'LINK_REQUEST', direction: 'input', width: { kind: 'known', bits: 32 } },
+        { name: 'LINK_ACCEPT', direction: 'output', width: { kind: 'known', bits: 1 } },
+        { name: 'LINK_TAG', direction: 'input', width: { kind: 'known', bits: 4 } },
+    ],
+};
+
+function interfaceDesign(presentation: ArchDesign['presentation'] = {}): ArchDesign {
+    return designOf({
+        instances: [
+            { name: 'u_master', module: 'interface_master' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+        presentation,
+    });
+}
+
+test('projects recognized interfaces collapsed by default as one semantic route', () => {
+    const design = interfaceDesign();
+    const projection = projectArchDesignGraph(
+        design,
+        [interfaceMaster, interfaceSlave],
+        { fileUri: 'file:///workspace/interfaces.ad', interfaceCatalog }
+    );
+    const masterNode = projection.graph.nodes.find(node => node.id === 'instance:u_master')!;
+    const slaveNode = projection.graph.nodes.find(node => node.id === 'instance:u_slave')!;
+
+    assert.deepEqual(masterNode.pins.map(pin => pin.id), [
+        'interface:instance:u_master:BUS',
+    ]);
+    assert.deepEqual(slaveNode.pins.map(pin => pin.id), [
+        'interface:instance:u_slave:LINK',
+    ]);
+    assert.deepEqual(masterNode.pins[0].interface, {
+        id: 'interface:instance:u_master:BUS',
+        protocol: 'project.link',
+        protocolName: 'Project Link',
+        role: 'master',
+        roleSource: 'inferred',
+        kind: 'aggregate',
+        topLevel: false,
+        collapsed: true,
+    });
+    assert.equal(masterNode.pins[0].direction, 'driver');
+    assert.equal(slaveNode.pins[0].direction, 'load');
+    assert.deepEqual(projection.graph.networks.map(network => ({
+        id: network.id,
+        endpoints: network.endpoints.map(endpoint => endpoint.pinId),
+        renderWidth: network.renderWidth,
+        interface: network.interface,
+    })), [{
+        id: 'network:interface:control',
+        endpoints: [
+            'interface:instance:u_master:BUS',
+            'interface:instance:u_slave:LINK',
+        ],
+        renderWidth: 4,
+        interface: {
+            id: 'interface-connection:control',
+            connection: 'control',
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            collapsed: true,
+        },
+    }]);
+
+    const sides = resolvePinSides(projection.graph);
+    assert.equal(sides.get(pinKey(masterNode.id, masterNode.pins[0].id)), 'right');
+    assert.equal(sides.get(pinKey(slaveNode.id, slaveNode.pins[0].id)), 'left');
+    assertUniqueAndLayoutable(design, projection.graph);
+});
+
+test('expands both interface endpoints into declaration-ordered member routes and defaults', () => {
+    const design = interfaceDesign({
+        collapsedInterfaces: {
+            'interface:instance:u_master:BUS': false,
+            'interface:instance:u_slave:LINK': false,
+        },
+    });
+    const projection = projectArchDesignGraph(
+        design,
+        [interfaceMaster, interfaceSlave],
+        { fileUri: 'file:///workspace/interfaces.ad', interfaceCatalog }
+    );
+    const masterNode = projection.graph.nodes.find(node => node.id === 'instance:u_master')!;
+    const slaveNode = projection.graph.nodes.find(node => node.id === 'instance:u_slave')!;
+
+    assert.deepEqual(masterNode.pins.map(pin => pin.name), ['BUS_REQUEST', 'BUS_ACCEPT']);
+    assert.deepEqual(slaveNode.pins.map(pin => pin.name), [
+        'LINK_REQUEST',
+        'LINK_ACCEPT',
+        'LINK_TAG',
+    ]);
+    assert.deepEqual(masterNode.pins.map(pin => pin.interface?.member), [
+        'request',
+        'accept',
+    ]);
+    assert.deepEqual(projection.graph.networks.map(network => [
+        network.id,
+        network.interface?.member,
+        network.renderWidth,
+    ]), [
+        ['network:interface:control:request', 'request', undefined],
+        ['network:interface:control:accept', 'accept', undefined],
+        ['network:interface:control:tag', 'tag', undefined],
+    ]);
+    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant').map(node => [
+        node.id,
+        node.label,
+    ]), [[
+        'default:interface:control:tag',
+        '0',
+    ]]);
+    assert.equal(projection.graph.networks[2].endpoints.find(endpoint =>
+        endpoint.role === 'driver'
+    )?.nodeId, 'default:interface:control:tag');
+    assertUniqueAndLayoutable(design, projection.graph);
+});
+
+test('places top-level Slave interfaces left and Master interfaces right with metadata', () => {
+    const design = designOf({
+        interfacePorts: [{
+            name: 's_link',
+            protocol: 'project.link',
+            role: 'slave',
+            memberPrefix: 'S_LINK',
+            members: [
+                { member: 'request', width: 32 },
+                { member: 'accept', width: 1 },
+            ],
+        }, {
+            name: 'm_link',
+            protocol: 'project.link',
+            role: 'master',
+            memberPrefix: 'M_LINK',
+            members: [
+                { member: 'request', width: 32 },
+                { member: 'accept', width: 1 },
+            ],
+        }],
+        presentation: {
+            collapsedInterfaces: {
+                'interface:port:s_link': false,
+                'interface:port:m_link': false,
+            },
+        },
+    });
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/boundaries.ad',
+        interfaceCatalog,
+    });
+    const slaveNode = projection.graph.nodes.find(node => node.id === 'interface:port:s_link')!;
+    const masterNode = projection.graph.nodes.find(node => node.id === 'interface:port:m_link')!;
+
+    assert.equal(slaveNode.kind, 'port');
+    assert.deepEqual(slaveNode.pins.map(pin => pin.direction), ['driver', 'load']);
+    assert.equal(slaveNode.pins[0].interface?.role, 'slave');
+    assert.equal(slaveNode.pins[0].interface?.topLevel, true);
+    assert.deepEqual(masterNode.pins.map(pin => pin.direction), ['load', 'driver']);
+    assert.equal(masterNode.pins[0].interface?.role, 'master');
+    const columns = assignColumns(projection.graph).nodeColumn;
+    assert.equal(columns.get(slaveNode.id), 0);
+    assert.ok(columns.get(masterNode.id)! > columns.get(slaveNode.id)!);
 });

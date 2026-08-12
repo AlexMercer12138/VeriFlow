@@ -140,6 +140,7 @@ function snapshotPin(value: unknown, nodeId: string, pinIndex: number): GraphPin
     const direction = record.direction;
     const widthValue = record.width;
     const readOnly = record.readOnly;
+    const interfaceValue = record.interface;
     const sourceSpanValue = record.sourceSpan;
     if (typeof id !== 'string' || typeof name !== 'string'
         || !PIN_DIRECTIONS.has(direction as PinDirection)
@@ -152,7 +153,48 @@ function snapshotPin(value: unknown, nodeId: string, pinIndex: number): GraphPin
         direction: direction as PinDirection,
         width: snapshotWidth(widthValue, `node ${nodeId} pin ${id}`),
         readOnly,
+        interface: snapshotPinInterface(interfaceValue, `node ${nodeId} pin ${id}`),
         sourceSpan: snapshotSourceSpan(sourceSpanValue, `node ${nodeId} pin ${id}`),
+    };
+}
+
+function snapshotPinInterface(
+    value: unknown,
+    label: string
+): GraphPin['interface'] {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new RangeError(`${label} interface metadata must be an object`);
+    }
+    const record = value as Record<string, unknown>;
+    const id = record.id;
+    const protocol = record.protocol;
+    const protocolName = record.protocolName;
+    const role = record.role;
+    const roleSource = record.roleSource;
+    const kind = record.kind;
+    const topLevel = record.topLevel;
+    const collapsed = record.collapsed;
+    const member = record.member;
+    if (typeof id !== 'string' || typeof protocol !== 'string'
+        || typeof protocolName !== 'string'
+        || !['master', 'slave', 'unknown'].includes(role as string)
+        || !['inferred', 'override', 'declared', 'unknown'].includes(roleSource as string)
+        || !['aggregate', 'member'].includes(kind as string)
+        || typeof topLevel !== 'boolean' || typeof collapsed !== 'boolean'
+        || (member !== undefined && typeof member !== 'string')) {
+        throw new RangeError(`${label} has invalid interface metadata`);
+    }
+    return {
+        id,
+        protocol,
+        protocolName,
+        role: role as NonNullable<GraphPin['interface']>['role'],
+        roleSource: roleSource as NonNullable<GraphPin['interface']>['roleSource'],
+        kind: kind as NonNullable<GraphPin['interface']>['kind'],
+        topLevel,
+        collapsed,
+        ...(member === undefined ? {} : { member }),
     };
 }
 
@@ -225,12 +267,18 @@ function snapshotNetwork(
     const endpointsValue = record.endpoints;
     const sourceSpanValue = record.sourceSpan;
     const adapterLabel = record.adapterLabel;
+    const renderWidth = record.renderWidth;
+    const interfaceValue = record.interface;
     if (typeof id !== 'string' || seenNetworkIds.has(id)) {
         throw new RangeError('graph network IDs must be unique strings');
     }
     seenNetworkIds.add(id);
     if (typeof name !== 'string'
-        || (adapterLabel !== undefined && typeof adapterLabel !== 'string')) {
+        || (adapterLabel !== undefined && typeof adapterLabel !== 'string')
+        || (renderWidth !== undefined
+            && (typeof renderWidth !== 'number'
+                || !Number.isFinite(renderWidth)
+                || renderWidth <= 0))) {
         throw new RangeError(`graph network ${id} is invalid`);
     }
     const seenTerminals = new Set<PinKey>();
@@ -283,8 +331,41 @@ function snapshotNetwork(
         name,
         width: snapshotWidth(widthValue, `network ${id}`),
         endpoints,
+        renderWidth: renderWidth as number | undefined,
+        interface: snapshotNetworkInterface(interfaceValue, `network ${id}`),
         sourceSpan: snapshotSourceSpan(sourceSpanValue, `network ${id}`),
         adapterLabel: adapterLabel as string | undefined,
+    };
+}
+
+function snapshotNetworkInterface(
+    value: unknown,
+    label: string
+): SchematicNetwork['interface'] {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new RangeError(`${label} interface metadata must be an object`);
+    }
+    const record = value as Record<string, unknown>;
+    const id = record.id;
+    const connection = record.connection;
+    const protocol = record.protocol;
+    const protocolName = record.protocolName;
+    const collapsed = record.collapsed;
+    const member = record.member;
+    if (typeof id !== 'string' || typeof connection !== 'string'
+        || typeof protocol !== 'string' || typeof protocolName !== 'string'
+        || typeof collapsed !== 'boolean'
+        || (member !== undefined && typeof member !== 'string')) {
+        throw new RangeError(`${label} has invalid interface metadata`);
+    }
+    return {
+        id,
+        connection,
+        protocol,
+        protocolName,
+        collapsed,
+        ...(member === undefined ? {} : { member }),
     };
 }
 
@@ -436,6 +517,9 @@ function renderPin(
         visibleLabel: pin.visibleLabel,
         truncated: pin.truncated,
         clipBounds: translateRectangle(pin.clipBounds, offset),
+        ...(pin.source.interface === undefined
+            ? {}
+            : { interface: Object.freeze({ ...pin.source.interface }) }),
     });
 }
 
@@ -612,6 +696,12 @@ export function layoutSchematic(
             displayName,
             selectionDescription: network.name,
             feedback: route.feedback,
+            ...(network.renderWidth === undefined
+                ? {}
+                : { renderWidth: network.renderWidth }),
+            ...(network.interface === undefined
+                ? {}
+                : { interface: Object.freeze({ ...network.interface }) }),
             terminals,
             segments,
         });

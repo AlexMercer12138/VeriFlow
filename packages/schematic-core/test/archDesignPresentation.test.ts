@@ -8,6 +8,7 @@ import {
 } from '../src';
 import {
     createEmptyArchDesign,
+    isArchDesignInterfaceCollapsed,
     parseArchDesignValue,
     projectArchDesignGraph,
     projectArchDesignPlacement,
@@ -115,6 +116,29 @@ test('projects empty presentation as automatic placement for every graph node', 
         projectArchDesignPlacement(design, graph),
         createPlacement(graph, assignColumns(graph))
     );
+});
+
+test('treats recognized interfaces as collapsed unless their stable ID is explicitly false', () => {
+    const { design } = fixture();
+    const interfaceId = 'interface:instance:u_first:BUS';
+
+    assert.equal(isArchDesignInterfaceCollapsed(design, interfaceId), true);
+    assert.equal(isArchDesignInterfaceCollapsed(structuralDesign(design, {
+        collapsedInterfaces: { [interfaceId]: false },
+    }), interfaceId), false);
+    assert.equal(isArchDesignInterfaceCollapsed(structuralDesign(design, {
+        collapsedInterfaces: { [interfaceId]: true },
+    }), interfaceId), true);
+});
+
+test('ignores inherited collapsed-interface state', () => {
+    const { design } = fixture();
+    const interfaceId = 'interface:instance:u_first:BUS';
+    const collapsedInterfaces = Object.create({ [interfaceId]: false });
+
+    assert.equal(isArchDesignInterfaceCollapsed(structuralDesign(design, {
+        collapsedInterfaces,
+    }), interfaceId), true);
 });
 
 test('maps persisted schema placement fields into shared placement fields', () => {
