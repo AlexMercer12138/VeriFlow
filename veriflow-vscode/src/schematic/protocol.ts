@@ -52,9 +52,11 @@ export type HostEvent =
         revision: string;
         graph: SchematicGraph;
         layout: SchematicLayout;
+        fitOnFirstRender?: boolean;
     }
     | { type: 'diagnostics'; errors: number; warnings: number }
     | { type: 'hostError'; message: string }
+    | { type: 'archDesignLayoutSaved'; revision: string }
     | {
         type: 'archDesignState';
         status: 'editable';

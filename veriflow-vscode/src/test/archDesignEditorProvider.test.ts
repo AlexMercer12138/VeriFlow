@@ -70,6 +70,9 @@ type ProviderHarness = {
     invalidateIndex(): void;
     send(message: unknown): void;
     changeDocument(text: string, version: number): void;
+    signalDocumentStateChange(): void;
+    applyReplacement(index: number, version: number): void;
+    closePanel(): void;
     dispose(): Promise<void>;
 };
 
@@ -116,7 +119,10 @@ async function createHarness(
     let documentText = initialText;
     let documentVersion = 1;
     let messageListener: ((message: unknown) => void) | undefined;
-    let documentListener: ((event: { document: typeof document }) => void) | undefined;
+    let documentListener: ((event: {
+        document: typeof document;
+        contentChanges: readonly unknown[];
+    }) => void) | undefined;
     let disposeListener: (() => void) | undefined;
     let invalidationListener: ((index?: object) => void) | undefined;
     let definitions = [...initialDefinitions];
@@ -348,8 +354,19 @@ async function createHarness(
         changeDocument(text, version): void {
             documentText = text;
             documentVersion = version;
-            documentListener?.({ document });
+            documentListener?.({ document, contentChanges: [{}] });
         },
+        signalDocumentStateChange(): void {
+            documentListener?.({ document, contentChanges: [] });
+        },
+        applyReplacement(index, version): void {
+            const replacement = replacements[index];
+            assert.ok(replacement, `missing replacement ${index}`);
+            documentText = replacement.text;
+            documentVersion = version;
+            documentListener?.({ document, contentChanges: [{}] });
+        },
+        closePanel(): void { disposeListener?.(); },
         async dispose(): Promise<void> {
             disposeListener?.();
             await new Promise<void>(resolve => setImmediate(resolve));
@@ -511,6 +528,7 @@ async function testEditableLifecycleAndNativeEdit(): Promise<void> {
         }]);
         const graph = harness.messages.find(event => event.type === 'graph');
         assert.ok(graph?.type === 'graph');
+        assert.strictEqual(graph.fitOnFirstRender, true);
         assert.deepStrictEqual(
             graph.graph.nodes.find(node => node.id === 'instance:u_core')?.pins.map(pin => pin.name),
             ['clk', 'data_o']
@@ -802,6 +820,354 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
     }
 }
 
+async function testPresentationChangeAcknowledgesWithoutReloadingGraph(): Promise<void> {
+    const source = sourceDesign({
+        ports: [{ name: 'clk', direction: 'input' }],
+        instances: [{ name: 'u_core', module: 'core' }],
+    });
+    const harness = await createHarness(source, [moduleDefinition()]);
+    try {
+        const graphEvent = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graphEvent?.type === 'graph');
+        if (graphEvent?.type !== 'graph') return;
+        const initialInitializeCount = harness.messages.filter(
+            event => event.type === 'initialize'
+        ).length;
+        const initialGraphCount = harness.messages.filter(
+            event => event.type === 'graph'
+        ).length;
+        const initialStateCount = harness.messages.filter(
+            event => event.type === 'archDesignState'
+        ).length;
+        const layout = structuredClone(graphEvent.layout);
+        layout.placement.nodes['instance:u_core'] = {
+            column: 1,
+            order: 0,
+            yOffset: 40,
+            fixed: true,
+        };
+        layout.viewport = { x: -48, y: 72, zoom: 1.2 };
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graphEvent.graph.moduleKey,
+            revision: graphEvent.revision,
+            layout,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'presentation replacement');
+        harness.applyReplacement(0, 2);
+        await waitFor(
+            () => harness.messages.some(event => event.type === 'archDesignLayoutSaved'),
+            'presentation acknowledgement'
+        );
+
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'initialize').length,
+            initialInitializeCount
+        );
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'graph').length,
+            initialGraphCount
+        );
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'archDesignState').length,
+            initialStateCount
+        );
+        const acknowledgement = harness.messages.find(
+            event => event.type === 'archDesignLayoutSaved'
+        );
+        assert.ok(acknowledgement?.type === 'archDesignLayoutSaved');
+        if (acknowledgement?.type !== 'archDesignLayoutSaved') return;
+        assert.notStrictEqual(acknowledgement.revision, graphEvent.revision);
+
+        harness.send({
+            type: 'editArchDesign',
+            revision: acknowledgement.revision,
+            edit: { type: 'addPort', port: { name: 'reset_n', direction: 'input' } },
+        });
+        await waitFor(() => harness.replacements.length === 2, 'semantic edit after layout');
+        const parsed = parseArchDesignText(harness.replacements[1].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.presentation.viewport, layout.viewport);
+        assert.deepStrictEqual(
+            parsed.design.presentation.nodes?.['instance:u_core'],
+            { column: 1, order: 0, offset: 40, userPositioned: true }
+        );
+        assert.deepStrictEqual(
+            parsed.design.ports.map(port => port.name),
+            ['clk', 'reset_n']
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testExternalChangeDuringPresentationSaveStillReloadsGraph(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), []);
+    try {
+        const graphEvent = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graphEvent?.type === 'graph');
+        if (graphEvent?.type !== 'graph') return;
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graphEvent.graph.moduleKey,
+            revision: graphEvent.revision,
+            layout: {
+                ...structuredClone(graphEvent.layout),
+                viewport: { x: 10, y: 20, zoom: 1.1 },
+            },
+        });
+        await waitFor(() => harness.replacements.length === 1, 'pending presentation edit');
+        const external = sourceDesign({ module: 'external_top' });
+        harness.changeDocument(external, 2);
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'archDesignState'
+                && event.status === 'editable'
+                && event.design.module === 'external_top'
+            ),
+            'external document refresh'
+        );
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'graph').length,
+            2
+        );
+        assert.strictEqual(
+            harness.messages.some(event => event.type === 'archDesignLayoutSaved'),
+            false
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testDocumentStateChangeDoesNotReloadGraph(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), []);
+    try {
+        const initialInitializeCount = harness.messages.filter(
+            event => event.type === 'initialize'
+        ).length;
+        const initialGraphCount = harness.messages.filter(
+            event => event.type === 'graph'
+        ).length;
+        const initialStateCount = harness.messages.filter(
+            event => event.type === 'archDesignState'
+        ).length;
+
+        harness.signalDocumentStateChange();
+        await new Promise<void>(resolve => setImmediate(resolve));
+
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'initialize').length,
+            initialInitializeCount
+        );
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'graph').length,
+            initialGraphCount
+        );
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'archDesignState').length,
+            initialStateCount
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testOverlappingPresentationSavesPersistLatestLayout(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }), [moduleDefinition()]);
+    try {
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graph?.type === 'graph');
+        if (graph?.type !== 'graph') return;
+        const firstLayout = structuredClone(graph.layout);
+        firstLayout.viewport = { x: 12, y: 24, zoom: 1.1 };
+        const latestLayout = structuredClone(graph.layout);
+        latestLayout.viewport = { x: 96, y: -48, zoom: 1.35 };
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: firstLayout,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'first layout replacement');
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: latestLayout,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(harness.replacements.length, 1);
+
+        harness.applyReplacement(0, 2);
+        await waitFor(() => harness.replacements.length === 2, 'queued layout replacement');
+        harness.applyReplacement(1, 3);
+        await waitFor(
+            () => harness.messages.filter(
+                event => event.type === 'archDesignLayoutSaved'
+            ).length === 2,
+            'queued layout acknowledgements'
+        );
+
+        const parsed = parseArchDesignText(harness.replacements[1].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.presentation.viewport, latestLayout.viewport);
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'graph').length,
+            1
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testQueuedPresentationSaveCompletesAfterPanelClose(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }), [moduleDefinition()]);
+    try {
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graph?.type === 'graph');
+        if (graph?.type !== 'graph') return;
+        const firstLayout = structuredClone(graph.layout);
+        firstLayout.viewport = { x: 8, y: 16, zoom: 1.1 };
+        const latestLayout = structuredClone(graph.layout);
+        latestLayout.viewport = { x: -120, y: 64, zoom: 0.9 };
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: firstLayout,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'closing first layout');
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: latestLayout,
+        });
+        harness.closePanel();
+
+        harness.applyReplacement(0, 2);
+        await waitFor(
+            () => harness.replacements.length === 2,
+            'layout queued before panel close'
+        );
+        const parsed = parseArchDesignText(harness.replacements[1].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.presentation.viewport, latestLayout.viewport);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testLatestLayoutAcceptsRevisionWhoseAcknowledgementIsPending(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }), [moduleDefinition()]);
+    try {
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graph?.type === 'graph');
+        if (graph?.type !== 'graph') return;
+        const firstLayout = structuredClone(graph.layout);
+        firstLayout.viewport = { x: 10, y: 20, zoom: 1.1 };
+        const latestLayout = structuredClone(graph.layout);
+        latestLayout.viewport = { x: 140, y: -72, zoom: 0.8 };
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: firstLayout,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'first stale-revision layout');
+        harness.applyReplacement(0, 2);
+        await waitFor(
+            () => harness.messages.some(event => event.type === 'archDesignLayoutSaved'),
+            'first stale-revision acknowledgement'
+        );
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: latestLayout,
+        });
+        await waitFor(
+            () => harness.replacements.length === 2,
+            'latest layout with unhandled acknowledgement revision'
+        );
+        const parsed = parseArchDesignText(harness.replacements[1].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.presentation.viewport, latestLayout.viewport);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testQueuedLayoutSurvivesPanelCloseDuringSemanticEdit(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }), [moduleDefinition()]);
+    try {
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graph?.type === 'graph');
+        if (graph?.type !== 'graph') return;
+        harness.send({
+            type: 'editArchDesign',
+            revision: graph.revision,
+            edit: { type: 'addPort', port: { name: 'reset_n', direction: 'input' } },
+        });
+        await waitFor(() => harness.replacements.length === 1, 'closing semantic edit');
+        const latestLayout = structuredClone(graph.layout);
+        latestLayout.viewport = { x: -88, y: 44, zoom: 1.25 };
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graph.graph.moduleKey,
+            revision: graph.revision,
+            layout: latestLayout,
+        });
+        harness.closePanel();
+
+        harness.applyReplacement(0, 2);
+        await waitFor(
+            () => harness.replacements.length === 2,
+            'layout after closing semantic edit'
+        );
+        const parsed = parseArchDesignText(harness.replacements[1].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.presentation.viewport, latestLayout.viewport);
+        assert.deepStrictEqual(parsed.design.ports.map(port => port.name), ['reset_n']);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testPersistedViewportDisablesInitialFit(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        presentation: { viewport: { x: 0, y: 0, zoom: 1 } },
+    }), []);
+    try {
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graph?.type === 'graph');
+        if (graph?.type === 'graph') {
+            assert.strictEqual(graph.fitOnFirstRender, false);
+        }
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
     const harness = await createHarness(sourceDesign(), []);
     try {
@@ -842,6 +1208,14 @@ async function main(): Promise<void> {
     await testUnsupportedSchemaIsReadOnly();
     await testCatalogInvalidationAndDisposal();
     await testLayoutSavePersistsOnlyStableArchDesignNodes();
+    await testPresentationChangeAcknowledgesWithoutReloadingGraph();
+    await testExternalChangeDuringPresentationSaveStillReloadsGraph();
+    await testDocumentStateChangeDoesNotReloadGraph();
+    await testOverlappingPresentationSavesPersistLatestLayout();
+    await testQueuedPresentationSaveCompletesAfterPanelClose();
+    await testLatestLayoutAcceptsRevisionWhoseAcknowledgementIsPending();
+    await testQueuedLayoutSurvivesPanelCloseDuringSemanticEdit();
+    await testPersistedViewportDisablesInitialFit();
     await testRelayoutRejectsStaleArchDesignRevision();
     await testValidateReportsLatestDiagnosticCount();
     await testExportUsesLatestSnapshotAndReportsAfterPublication();

@@ -601,7 +601,7 @@
     "packages/schematic-core/dist/columns.js"(exports2) {
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
-      exports2.assignColumns = assignColumns;
+      exports2.assignColumns = assignColumns2;
       var pins_1 = require_pins();
       function addDependencyEdge(edgesByPair, source, target, networkId) {
         const key = `${source.nodeIndex}\0${target.nodeIndex}`;
@@ -808,7 +808,7 @@
         }
         return { order, adjacency };
       }
-      function assignColumns(graph2) {
+      function assignColumns2(graph2) {
         const { placementEdges, semanticEdges, semanticSelfCycleNetworkIds } = buildDependencyEdges(graph2);
         const { components, componentByNode } = stronglyConnectedComponents(graph2.nodes.length, placementEdges);
         const { order, adjacency } = topologicalComponents(components, componentByNode, placementEdges);
@@ -1034,7 +1034,7 @@
       "use strict";
       Object.defineProperty(exports2, "__esModule", { value: true });
       exports2.MAX_SCHEMATIC_PLACEMENT_OFFSET = void 0;
-      exports2.createPlacement = createPlacement;
+      exports2.createPlacement = createPlacement2;
       exports2.mergePlacement = mergePlacement;
       exports2.moveNodeToColumn = moveNodeToColumn;
       exports2.moveNodesToColumns = moveNodesToColumns;
@@ -1152,7 +1152,7 @@
         const right4 = legalInternalColumns[low];
         return column - left4 <= right4 - column ? left4 : right4;
       }
-      function createPlacement(graph2, assignment) {
+      function createPlacement2(graph2, assignment) {
         const nodes = {};
         const orderByColumn = /* @__PURE__ */ new Map();
         for (const node of graph2.nodes) {
@@ -1173,7 +1173,7 @@
         return { nodes: normalizeOrders(graph2, nodes) };
       }
       function mergedPlacementNodes(graph2, assignment, persisted, legalInternalColumns) {
-        const automatic = createPlacement(graph2, assignment);
+        const automatic = createPlacement2(graph2, assignment);
         if (!persisted || typeof persisted !== "object" || persisted === null || typeof persisted.nodes !== "object" || persisted.nodes === null) {
           return automatic.nodes;
         }
@@ -1245,7 +1245,7 @@
         return { nodes: normalizeOrders(graph2, nodes) };
       }
       function migrateLegacyPlacement(graph2, assignment, legacyNodes) {
-        const placement = createPlacement(graph2, assignment);
+        const placement = createPlacement2(graph2, assignment);
         const sourceIndex = sourceIndexes(graph2);
         const legacyOrder = /* @__PURE__ */ new Map();
         const byColumn = /* @__PURE__ */ new Map();
@@ -45522,6 +45522,10 @@
       const pending = this.pending.get(moduleKey);
       if (pending) this.commit(moduleKey, pending);
     }
+    rebaseRevision(moduleKey, revision) {
+      const pending = this.pending.get(moduleKey);
+      if (pending) pending.revision = revision;
+    }
     dispose() {
       for (const pending of this.pending.values()) {
         if (pending.handle !== void 0) this.timers.clear(pending.handle);
@@ -46057,6 +46061,13 @@
   var authoringPending = false;
   var currentArchDesignState;
   var currentArchDesignInspector;
+  var autoFittedModules = /* @__PURE__ */ new Set();
+  var archDesignLayoutSaveInFlight = false;
+  var queuedArchDesignLayoutSave;
+  var queuedArchDesignCommand;
+  var archDesignSemanticEditInFlight = false;
+  var unloadLayoutForwarded = false;
+  var archDesignGraphRefreshInProgress = false;
   function connectionAuthoringEnabled() {
     return archDesignEditable && !authoringPending && currentArchDesignState !== void 0 && dom.connectButton.getAttribute("aria-pressed") === "true";
   }
@@ -46103,15 +46114,23 @@
   }
   var layoutSaveScheduler = new DebouncedLayoutSaveScheduler(
     SAVE_DELAY_MS,
-    (moduleKey, revision, layout) => post({
-      type: "saveLayout",
-      moduleKey,
-      revision,
-      layout
-    })
+    (moduleKey, revision, layout) => {
+      if (archDesignDocument && (archDesignLayoutSaveInFlight || authoringPending || archDesignGraphRefreshInProgress)) {
+        queuedArchDesignLayoutSave = { moduleKey, layout };
+        unloadLayoutForwarded = false;
+        return;
+      }
+      if (archDesignDocument) archDesignLayoutSaveInFlight = true;
+      post({
+        type: "saveLayout",
+        moduleKey,
+        revision,
+        layout
+      });
+    }
   );
-  function scheduleLayoutSave() {
-    if (!currentLayout || !currentGraph || !currentRevision || applyingLayout) return;
+  function persistCurrentLayoutState() {
+    if (!currentLayout || !currentGraph || !currentRevision || applyingLayout) return void 0;
     const moduleKey = currentGraph.moduleKey;
     const layouts = mergeSchematicWebviewLayouts(
       vscode.getState()?.layouts,
@@ -46119,10 +46138,28 @@
       currentLayout
     );
     vscode.setState({ layouts });
-    layoutSaveScheduler.schedule(moduleKey, currentRevision, layouts[moduleKey]);
+    return layouts[moduleKey];
+  }
+  function scheduleLayoutSave() {
+    if (!currentLayout || !currentGraph || !currentRevision || applyingLayout) return;
+    const layout = persistCurrentLayoutState();
+    if (!layout) return;
+    const moduleKey = currentGraph.moduleKey;
+    layoutSaveScheduler.schedule(moduleKey, currentRevision, layout);
   }
   function flushLayoutSaves() {
     layoutSaveScheduler.flush();
+  }
+  function flushLayoutSavesForUnload() {
+    flushLayoutSaves();
+    if (!archDesignDocument || !queuedArchDesignLayoutSave || unloadLayoutForwarded || !currentRevision) return;
+    unloadLayoutForwarded = true;
+    post({
+      type: "saveLayout",
+      moduleKey: queuedArchDesignLayoutSave.moduleKey,
+      revision: currentRevision,
+      layout: queuedArchDesignLayoutSave.layout
+    });
   }
   function setCanvasState(message) {
     if (message === void 0) {
@@ -46218,7 +46255,13 @@
     }
     dom.selectionStatus.textContent = summary.statusText;
     renderCurrentInspector(cells);
-    if (persist) scheduleLayoutSave();
+    if (persist) {
+      if (archDesignDocument) {
+        persistCurrentLayoutState();
+      } else {
+        scheduleLayoutSave();
+      }
+    }
   }
   function renderInspector(model) {
     dom.inspector.dataset.kind = model.kind;
@@ -46255,12 +46298,41 @@
   function postArchDesignEdit(edit) {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
     authoringPending = true;
+    queuedArchDesignCommand = { type: "edit", edit };
     setAuthoringControls();
-    post({
-      type: "editArchDesign",
-      revision: currentArchDesignState.revision,
-      edit
-    });
+    if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    drainArchDesignWrites();
+  }
+  function drainArchDesignWrites() {
+    if (!archDesignDocument || archDesignLayoutSaveInFlight || archDesignSemanticEditInFlight || !currentRevision) return;
+    if (queuedArchDesignLayoutSave) {
+      const queued = queuedArchDesignLayoutSave;
+      queuedArchDesignLayoutSave = void 0;
+      unloadLayoutForwarded = false;
+      archDesignLayoutSaveInFlight = true;
+      post({
+        type: "saveLayout",
+        moduleKey: queued.moduleKey,
+        revision: currentRevision,
+        layout: queued.layout
+      });
+      return;
+    }
+    const command = queuedArchDesignCommand;
+    if (!command) return;
+    queuedArchDesignCommand = void 0;
+    if (command.type === "edit") {
+      archDesignSemanticEditInFlight = true;
+      post({
+        type: "editArchDesign",
+        revision: currentRevision,
+        edit: command.edit
+      });
+      return;
+    }
+    post({ type: "exportArchDesign", revision: currentRevision });
+    authoringPending = false;
+    setAuthoringControls();
   }
   function renderArchDesignInspector(model) {
     currentArchDesignInspector = model;
@@ -46436,7 +46508,7 @@
     refreshNetworkSelectionStyles();
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
-  function renderSchematic(model, layout, preservedSelection) {
+  function renderSchematic(model, layout, preservedSelection, fitOnFirstRender = false) {
     const searchQuery = dom.searchInput.value;
     clearPendingNodeMoves();
     applyingLayout = true;
@@ -46454,10 +46526,24 @@
       }
       renderNetworks(model, renderModel);
     });
-    applyViewport(layout);
+    let autoFitted = false;
+    if (fitOnFirstRender && model.nodes.length > 0 && !autoFittedModules.has(model.moduleKey)) {
+      autoFittedModules.add(model.moduleKey);
+      autoFitted = true;
+      graph.zoomToFit({ padding: 24, maxScale: 1 });
+      const translation = graph.translate();
+      currentLayout.viewport = {
+        x: translation.tx,
+        y: translation.ty,
+        zoom: graph.zoom()
+      };
+    } else {
+      applyViewport(layout);
+    }
     restoreSelection(layout, preservedSelection);
     refreshSearchMatches(searchQuery, true);
     applyingLayout = false;
+    if (autoFitted) persistCurrentLayoutState();
     setGraphControls(model.nodes.length > 0);
     setCanvasState(model.nodes.length === 0 ? "No schematic objects" : void 0);
     const graphErrors = model.diagnostics.filter((item) => item.severity === "error").length;
@@ -46675,11 +46761,18 @@
       dom.moduleSelector.append(option);
     }
     selectedModuleKey = event.selectedModuleKey;
-    archDesignDocument = event.documentKind === "arch-design";
+    const nextArchDesignDocument = event.documentKind === "arch-design";
+    if (!nextArchDesignDocument) {
+      archDesignLayoutSaveInFlight = false;
+      queuedArchDesignLayoutSave = void 0;
+      queuedArchDesignCommand = void 0;
+      archDesignSemanticEditInFlight = false;
+      authoringPending = false;
+    }
+    archDesignDocument = nextArchDesignDocument;
     archDesignEditable = false;
     currentArchDesignState = void 0;
     currentArchDesignInspector = void 0;
-    authoringPending = false;
     setAuthoringControls();
     dom.moduleSelector.value = event.selectedModuleKey;
     dom.moduleSelector.disabled = event.modules.length === 0;
@@ -46688,12 +46781,15 @@
       setCanvasState("No modules");
       return;
     }
-    setCanvasState("Loading schematic");
+    if (!currentGraph || currentGraph.moduleKey !== event.selectedModuleKey) {
+      setCanvasState("Loading schematic");
+    }
   }
   function updateArchDesignState(event) {
-    authoringPending = false;
     archDesignDocument = true;
     if (event.status === "editable") {
+      archDesignSemanticEditInFlight = false;
+      authoringPending = queuedArchDesignCommand !== void 0;
       currentArchDesignState = event;
       archDesignEditable = true;
       dom.instanceModuleSelect.replaceChildren();
@@ -46706,6 +46802,10 @@
       }
       renderCurrentInspector();
     } else {
+      archDesignSemanticEditInFlight = false;
+      queuedArchDesignCommand = void 0;
+      queuedArchDesignLayoutSave = void 0;
+      authoringPending = false;
       currentArchDesignState = void 0;
       currentArchDesignInspector = void 0;
       archDesignEditable = false;
@@ -46720,6 +46820,7 @@
       });
     }
     setAuthoringControls();
+    drainArchDesignWrites();
   }
   function handleHostEvent(event) {
     switch (event.type) {
@@ -46727,18 +46828,50 @@
         initialize(event);
         return;
       case "graph":
+        archDesignGraphRefreshInProgress = archDesignDocument;
         if (currentGraph) {
           layoutSaveScheduler.flushModule(currentGraph.moduleKey);
         }
         layoutSaveScheduler.flushModule(event.graph.moduleKey);
+        archDesignGraphRefreshInProgress = false;
+        archDesignLayoutSaveInFlight = false;
+        unloadLayoutForwarded = false;
+        const preservedSelection = archDesignDocument && currentGraph?.moduleKey === event.graph.moduleKey ? selectedObjectIds(selection.getSelectedCells()) : void 0;
+        const localViewport = event.fitOnFirstRender === true && autoFittedModules.has(event.graph.moduleKey) ? vscode.getState()?.layouts?.[event.graph.moduleKey]?.viewport : void 0;
+        const localLayout = queuedArchDesignLayoutSave?.moduleKey === event.graph.moduleKey ? queuedArchDesignLayoutSave.layout : void 0;
+        const layout = localLayout ?? (localViewport ? {
+          ...event.layout,
+          viewport: { ...localViewport }
+        } : event.layout);
         currentRevision = event.revision;
-        renderSchematic(event.graph, event.layout);
+        renderSchematic(
+          event.graph,
+          layout,
+          preservedSelection,
+          event.fitOnFirstRender === true
+        );
+        drainArchDesignWrites();
         return;
       case "diagnostics":
         updateDiagnostics(event.errors, event.warnings);
         return;
       case "archDesignState":
         updateArchDesignState(event);
+        return;
+      case "archDesignLayoutSaved":
+        currentRevision = event.revision;
+        archDesignLayoutSaveInFlight = false;
+        if (currentGraph) {
+          layoutSaveScheduler.rebaseRevision(currentGraph.moduleKey, event.revision);
+        }
+        if (currentArchDesignState) {
+          currentArchDesignState = {
+            ...currentArchDesignState,
+            revision: event.revision
+          };
+        }
+        setAuthoringControls();
+        drainArchDesignWrites();
         return;
       case "hostError":
         setGraphControls(false);
@@ -46807,7 +46940,15 @@
     updateViewportFromGraph();
   });
   dom.relayoutButton.addEventListener("click", () => {
-    if (currentGraph) {
+    if (currentGraph && currentLayout && archDesignDocument) {
+      currentLayout.placement = (0, import_schematic_core.createPlacement)(
+        currentGraph,
+        (0, import_schematic_core.assignColumns)(currentGraph)
+      );
+      const preservedSelection = selectedObjectIds(selection.getSelectedCells());
+      renderSchematic(currentGraph, currentLayout, preservedSelection);
+      scheduleLayoutSave();
+    } else if (currentGraph) {
       post({
         type: "relayoutAll",
         moduleKey: currentGraph.moduleKey,
@@ -46886,10 +47027,11 @@
   });
   dom.exportButton.addEventListener("click", () => {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
-    post({
-      type: "exportArchDesign",
-      revision: currentArchDesignState.revision
-    });
+    authoringPending = true;
+    queuedArchDesignCommand = { type: "export" };
+    setAuthoringControls();
+    if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
+    drainArchDesignWrites();
   });
   dom.deleteButton.addEventListener("click", () => {
     if (currentArchDesignInspector?.deleteEdit) {
@@ -47004,12 +47146,12 @@
     updateMinimapAvailability();
   });
   resizeObserver.observe(dom.canvasRegion);
-  window.addEventListener("pagehide", flushLayoutSaves);
-  window.addEventListener("beforeunload", flushLayoutSaves);
+  window.addEventListener("pagehide", flushLayoutSavesForUnload);
+  window.addEventListener("beforeunload", flushLayoutSavesForUnload);
   window.addEventListener("message", (event) => {
     if (!event.data || typeof event.data !== "object") return;
     const type = event.data.type;
-    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "archDesignState" || type === "hostError") {
+    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "archDesignState" || type === "archDesignLayoutSaved" || type === "hostError") {
       handleHostEvent(event.data);
     }
   });

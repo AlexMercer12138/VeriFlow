@@ -777,6 +777,11 @@ export class DebouncedLayoutSaveScheduler<Handle = DefaultTimerHandle> {
         if (pending) this.commit(moduleKey, pending);
     }
 
+    rebaseRevision(moduleKey: string, revision: string): void {
+        const pending = this.pending.get(moduleKey);
+        if (pending) pending.revision = revision;
+    }
+
     dispose(): void {
         for (const pending of this.pending.values()) {
             if (pending.handle !== undefined) this.timers.clear(pending.handle);

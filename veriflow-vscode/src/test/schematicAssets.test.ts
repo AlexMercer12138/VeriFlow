@@ -498,7 +498,7 @@ async function testSchematicAssets(): Promise<void> {
     );
     assert.match(
         editPosting,
-        /type:\s*'editArchDesign',[^]*revision:\s*currentArchDesignState\.revision,[^]*edit,/
+        /queuedArchDesignCommand\s*=\s*{\s*type:\s*'edit',\s*edit\s*}[^]*function drainArchDesignWrites\(\)[^]*queuedArchDesignLayoutSave[^]*type:\s*'editArchDesign',[^]*revision:\s*currentRevision,[^]*edit:\s*command\.edit,/
     );
     assert.doesNotMatch(editPosting, /\.design\s*=|design\.[A-Za-z_$][\w$]*\s*=/);
     for (const token of semanticColorTokens.slice(1).filter(
@@ -584,10 +584,34 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(webviewSource, /\brouter:\s*/);
     assert.match(webviewSource, /new DebouncedLayoutSaveScheduler\(/);
     assert.doesNotMatch(webviewSource, /\bsaveTimer\b/);
-    assert.match(
+    const localLayoutPersistence = sourceSection(
         webviewSource,
-        /function scheduleLayoutSave\(\): void[^]*vscode\.setState\([^]*layoutSaveScheduler\.schedule\(/,
+        'function persistCurrentLayoutState()',
+        '\nfunction scheduleLayoutSave()',
+        'local layout persistence'
+    );
+    assert.match(localLayoutPersistence, /vscode\.setState\(/);
+    const scheduledLayoutPersistence = sourceSection(
+        webviewSource,
+        'function scheduleLayoutSave()',
+        '\nfunction flushLayoutSaves()',
+        'scheduled layout persistence'
+    );
+    assert.match(
+        scheduledLayoutPersistence,
+        /persistCurrentLayoutState\(\)[^]*layoutSaveScheduler\.schedule\(/,
         'layout changes must reach webview state before the debounced host save'
+    );
+    const selectionPersistence = sourceSection(
+        webviewSource,
+        'function updateSelectionStatus(',
+        '\nfunction renderInspector(',
+        'selection persistence'
+    );
+    assert.match(
+        selectionPersistence,
+        /if \(archDesignDocument\)\s*{\s*persistCurrentLayoutState\(\);\s*}\s*else\s*{\s*scheduleLayoutSave\(\);/,
+        'Arch Design selection must remain local while HDL selection keeps host persistence'
     );
     assert.match(
         webviewSource,
@@ -604,11 +628,11 @@ async function testSchematicAssets(): Promise<void> {
     assert.doesNotMatch(emptyStateReset, /graph\.clearCells\(\)/);
     assert.match(
         webviewSource,
-        /window\.addEventListener\('pagehide',\s*flushLayoutSaves\)/
+        /window\.addEventListener\('pagehide',\s*flushLayoutSavesForUnload\)/
     );
     assert.match(
         webviewSource,
-        /window\.addEventListener\('beforeunload',\s*flushLayoutSaves\)/
+        /window\.addEventListener\('beforeunload',\s*flushLayoutSavesForUnload\)/
     );
     assert.match(webviewSource, /function clearSchematicState\(\): void/);
     for (const resetOperation of [

@@ -1148,6 +1148,137 @@ async function assertHdlPinsCannotAuthorConnections(page: Page): Promise<void> {
     assert.equal(messages.some(message => message.type === 'editArchDesign'), false);
 }
 
+function archDesignInteractionFixture(moduleName = 'interaction_top') {
+    const sourceId = 'instance:u_source';
+    const sinkId = 'instance:u_sink';
+    const graph = {
+        fileUri: `file:///${moduleName}.ad`,
+        moduleKey: `arch-design:${moduleName}`,
+        moduleName,
+        nodes: [{
+            id: sourceId,
+            kind: 'instance',
+            label: 'u_source',
+            subtitle: 'source',
+            pins: [{
+                id: `${sourceId}:out`,
+                name: 'out',
+                direction: 'driver',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }, {
+            id: sinkId,
+            kind: 'instance',
+            label: 'u_sink',
+            subtitle: 'sink',
+            pins: [{
+                id: `${sinkId}:in`,
+                name: 'in',
+                direction: 'load',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }],
+        networks: [{
+            id: 'network:payload',
+            name: 'payload',
+            width: { kind: 'known', bits: 1 },
+            endpoints: [
+                { nodeId: sourceId, pinId: `${sourceId}:out`, role: 'driver' },
+                { nodeId: sinkId, pinId: `${sinkId}:in`, role: 'load' },
+            ],
+        }],
+        diagnostics: [],
+    };
+    return {
+        graph,
+        design: {
+            format: 'vik-veriflow.arch-design',
+            schemaVersion: 1,
+            module: moduleName,
+            ports: [],
+            instances: [
+                { name: 'u_source', module: 'source' },
+                { name: 'u_sink', module: 'sink' },
+            ],
+            connections: [{
+                name: 'payload',
+                endpoints: [
+                    { kind: 'instance', instance: 'u_source', port: 'out' },
+                    { kind: 'instance', instance: 'u_sink', port: 'in' },
+                ],
+            }],
+            interfaceConnections: [],
+            defaults: {},
+            export: {},
+            presentation: {},
+        },
+        layout: {
+            placement: { nodes: {
+                [sourceId]: { column: 0, order: 0, yOffset: 0, fixed: false },
+                [sinkId]: { column: 1, order: 0, yOffset: 0, fixed: false },
+            } },
+            viewport: { x: 0, y: 0, zoom: 1 },
+            minimap: false,
+        },
+        catalog: [{
+            key: 'module:file:///source.sv:0',
+            name: 'source',
+            parameters: [],
+            ports: [{
+                name: 'out',
+                direction: 'output',
+                width: { kind: 'known', bits: 1 },
+            }],
+        }, {
+            key: 'module:file:///sink.sv:0',
+            name: 'sink',
+            parameters: [],
+            ports: [{
+                name: 'in',
+                direction: 'input',
+                width: { kind: 'known', bits: 1 },
+            }],
+        }],
+    };
+}
+
+async function publishArchDesignFixture(
+    page: Page,
+    revision: string,
+    fixture = archDesignInteractionFixture(),
+    graphOptions: { fitOnFirstRender?: boolean } = {}
+): Promise<void> {
+    await page.evaluate(({ revision, fixture, graphOptions }) => {
+        for (const data of [{
+            type: 'initialize',
+            fileUri: fixture.graph.fileUri,
+            modules: [{ key: fixture.graph.moduleKey, name: fixture.graph.moduleName }],
+            selectedModuleKey: fixture.graph.moduleKey,
+            documentKind: 'arch-design',
+            editable: true,
+        }, {
+            type: 'graph',
+            revision,
+            graph: fixture.graph,
+            layout: fixture.layout,
+            ...graphOptions,
+        }, {
+            type: 'archDesignState',
+            status: 'editable',
+            revision,
+            design: fixture.design,
+            catalog: fixture.catalog,
+            validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+        }]) {
+            window.dispatchEvent(new MessageEvent('message', { data }));
+        }
+    }, { revision, fixture, graphOptions });
+}
+
 test('schematic runtime renders every visible pin label in a local clip viewport', {
     timeout: 20_000,
 }, async () => {
@@ -2113,6 +2244,465 @@ test('schematic selection boxes persist single and rubberband batch moves once',
         assert.equal((await capturedSaves(page)).length, 0);
         assert.deepEqual(await verticalNodeOrder(page, nodeIds), [...nodeIds]);
         assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design selection stays local and layout acknowledgement preserves cells', {
+    timeout: 30_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+
+        await publishArchDesignFixture(page, 'fixture:interaction:1');
+        const sourceNode = page.locator(
+            '.x6-node[data-cell-id="instance:u_source"]'
+        );
+        await sourceNode.waitFor();
+        await sourceNode.locator('rect').first().click();
+        await page.locator('#selection-status').getByText(
+            'instance: u_source',
+            { exact: true }
+        ).waitFor();
+        await page.locator('#inspector-title').getByText(
+            'u_source',
+            { exact: true }
+        ).waitFor();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 0);
+
+        const networkPath = page.locator(
+            '.x6-edge[data-cell-id^="network:payload:segment:"] > path:nth-child(2)'
+        ).first();
+        const sourceBeforeDrag = await sourceNode.boundingBox();
+        const routeBeforeDrag = await networkPath.getAttribute('d');
+        assert.ok(sourceBeforeDrag && routeBeforeDrag);
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 96);
+        await page.waitForFunction(() => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+            }> };
+            return state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            ).length === 1;
+        });
+        const sourceAfterDrag = await sourceNode.boundingBox();
+        const routeAfterDrag = await networkPath.getAttribute('d');
+        assert.ok(sourceAfterDrag && routeAfterDrag);
+        assert.ok(sourceAfterDrag.y > sourceBeforeDrag.y + 40);
+        assert.notEqual(routeAfterDrag, routeBeforeDrag);
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: u_source'
+        );
+        assert.equal((await capturedSaves(page)).length, 1);
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+        });
+
+        await networkPath.click({ force: true });
+        await page.locator('#selection-status').getByText(
+            'network: payload',
+            { exact: true }
+        ).waitFor();
+        await page.locator('#inspector-title').getByText(
+            'payload',
+            { exact: true }
+        ).waitFor();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 0);
+
+        await sourceNode.evaluate(element => {
+            element.setAttribute('data-interaction-marker', 'preserved');
+        });
+        await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:interaction:2',
+            } }));
+        });
+        assert.equal(
+            await page.locator(
+                '.x6-node[data-cell-id="instance:u_source"]'
+            ).getAttribute('data-interaction-marker'),
+            'preserved'
+        );
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'network: payload'
+        );
+        assert.equal(await page.locator('#inspector-title').textContent(), 'payload');
+
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+        });
+        await page.locator('#fit-button').click();
+        await page.waitForFunction(() => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                revision?: string;
+            }> };
+            return state.__veriflowMessages.some(message =>
+                message.type === 'saveLayout'
+                && message.revision === 'fixture:interaction:2'
+            );
+        });
+        await page.locator('#zoom-reset-button').click();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 1);
+        await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:interaction:3',
+            } }));
+        });
+        await page.waitForFunction(() => {
+            const state = window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                revision?: string;
+            }> };
+            const saves = state.__veriflowMessages.filter(
+                message => message.type === 'saveLayout'
+            );
+            return saves.length === 2
+                && saves[1]?.revision === 'fixture:interaction:3';
+        });
+        await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:interaction:4',
+            } }));
+        });
+        await sourceNode.locator('rect').first().click();
+        const sourceBeforeRelayout = await sourceNode.boundingBox();
+        assert.ok(sourceBeforeRelayout);
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+        });
+        await page.locator('#relayout-button').click();
+        const sourceAfterRelayout = await sourceNode.boundingBox();
+        assert.ok(sourceAfterRelayout);
+        assert.ok(Math.abs(sourceAfterRelayout.y - sourceBeforeRelayout.y) > 20);
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: u_source'
+        );
+        await page.waitForFunction(() => {
+            const messages = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string; revision?: string }>;
+            }).__veriflowMessages;
+            return messages.some(message =>
+                message.type === 'saveLayout'
+                && message.revision === 'fixture:interaction:4'
+            );
+        });
+        assert.equal(await page.evaluate(() => (
+            (window as unknown as {
+                __veriflowMessages: Array<{ type?: string }>;
+            }).__veriflowMessages.some(message => message.type === 'relayoutAll')
+        )), false);
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design serializes layout saves with semantic edits', {
+    timeout: 30_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+        await publishArchDesignFixture(page, 'fixture:serialized:1');
+        await page.locator('.x6-node[data-cell-id="instance:u_source"]').waitFor();
+
+        await page.locator('#fit-button').click();
+        await page.waitForFunction(() => {
+            const messages = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string }>;
+            }).__veriflowMessages;
+            return messages.filter(message => message.type === 'saveLayout').length === 1;
+        });
+        await page.locator('#add-port-button').click();
+        await page.locator('#port-name-input').fill('valid');
+        await page.locator('#add-port-form button[type="submit"]').click();
+        await page.waitForTimeout(50);
+        assert.equal(await page.evaluate(() => (
+            (window as unknown as {
+                __veriflowMessages: Array<{ type?: string }>;
+            }).__veriflowMessages.filter(message => message.type === 'editArchDesign').length
+        )), 0);
+        assert.equal(await page.locator('#add-port-button').isDisabled(), true);
+
+        await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:serialized:2',
+            } }));
+        });
+        await page.waitForFunction(() => {
+            const messages = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string; revision?: string }>;
+            }).__veriflowMessages;
+            return messages.some(message =>
+                message.type === 'editArchDesign'
+                && message.revision === 'fixture:serialized:2'
+            );
+        });
+        assert.equal(await page.locator('#add-port-button').isDisabled(), true);
+
+        await page.locator('#fit-button').click();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 1);
+
+        const nextFixture = archDesignInteractionFixture();
+        await page.evaluate(({ fixture }) => {
+            for (const data of [{
+                type: 'graph',
+                revision: 'fixture:serialized:3',
+                graph: fixture.graph,
+                layout: fixture.layout,
+                fitOnFirstRender: false,
+            }, {
+                type: 'archDesignState',
+                status: 'editable',
+                revision: 'fixture:serialized:3',
+                design: fixture.design,
+                catalog: fixture.catalog,
+                validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+            }]) {
+                window.dispatchEvent(new MessageEvent('message', { data }));
+            }
+        }, { fixture: nextFixture });
+        await page.waitForFunction(() => {
+            const saves = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string; revision?: string }>;
+            }).__veriflowMessages.filter(message => message.type === 'saveLayout');
+            return saves.length === 2 && saves[1]?.revision === 'fixture:serialized:3';
+        });
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design pagehide forwards the latest queued layout', {
+    timeout: 30_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+        await publishArchDesignFixture(page, 'fixture:pagehide:1');
+        await page.locator('.x6-node[data-cell-id="instance:u_source"]').waitFor();
+
+        await page.locator('#fit-button').click();
+        await page.waitForFunction(() => {
+            const messages = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string }>;
+            }).__veriflowMessages;
+            return messages.filter(message => message.type === 'saveLayout').length === 1;
+        });
+        await page.locator('#zoom-reset-button').click();
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 1);
+
+        await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+        await page.waitForFunction(() => {
+            const messages = (window as unknown as {
+                __veriflowMessages: Array<{ type?: string }>;
+            }).__veriflowMessages;
+            return messages.filter(message => message.type === 'saveLayout').length === 2;
+        });
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design first render fits once without persisting an automatic viewport', {
+    timeout: 30_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+
+        const emptyFixture = archDesignInteractionFixture('fit_top');
+        emptyFixture.graph.nodes = [];
+        emptyFixture.graph.networks = [];
+        emptyFixture.design.instances = [];
+        emptyFixture.design.connections = [];
+        Reflect.deleteProperty(emptyFixture.layout.placement.nodes, 'instance:u_source');
+        Reflect.deleteProperty(emptyFixture.layout.placement.nodes, 'instance:u_sink');
+        await publishArchDesignFixture(
+            page,
+            'fixture:fit:empty',
+            emptyFixture,
+            { fitOnFirstRender: true }
+        );
+        await page.locator('#canvas-state-message').getByText(
+            'No schematic objects',
+            { exact: true }
+        ).waitFor();
+        const fixture = archDesignInteractionFixture('fit_top');
+        await publishArchDesignFixture(
+            page,
+            'fixture:fit:1',
+            fixture,
+            { fitOnFirstRender: true }
+        );
+        await page.locator(
+            '#canvas .x6-node[data-cell-id^="instance:"]'
+        ).nth(1).waitFor();
+        const centered = await page.evaluate(() => {
+            const canvas = document.querySelector<HTMLElement>('#canvas')!.getBoundingClientRect();
+            const nodes = [...document.querySelectorAll<SVGGElement>(
+                '#canvas .x6-node[data-cell-id^="instance:"]'
+            )].map(element => element.getBoundingClientRect());
+            const left = Math.min(...nodes.map(bounds => bounds.left));
+            const right = Math.max(...nodes.map(bounds => bounds.right));
+            const top = Math.min(...nodes.map(bounds => bounds.top));
+            const bottom = Math.max(...nodes.map(bounds => bounds.bottom));
+            return {
+                canvasCenter: { x: canvas.left + canvas.width / 2, y: canvas.top + canvas.height / 2 },
+                contentCenter: { x: (left + right) / 2, y: (top + bottom) / 2 },
+                canvas: {
+                    left: canvas.left,
+                    top: canvas.top,
+                    width: canvas.width,
+                    height: canvas.height,
+                },
+                transform: document.querySelector<SVGGElement>(
+                    '#canvas .x6-graph-svg-viewport'
+                )?.getAttribute('transform'),
+            };
+        });
+        assert.ok(
+            Math.abs(centered.contentCenter.x - centered.canvasCenter.x) < 4,
+            JSON.stringify(centered)
+        );
+        assert.ok(
+            Math.abs(centered.contentCenter.y - centered.canvasCenter.y) < 4,
+            JSON.stringify(centered)
+        );
+        await page.waitForTimeout(400);
+        assert.equal((await capturedSaves(page)).length, 0);
+
+        const fittedSourceBounds = await page.locator(
+            '.x6-node[data-cell-id="instance:u_source"]'
+        ).boundingBox();
+        assert.ok(fittedSourceBounds);
+        fixture.layout.placement.nodes['instance:u_sink'] = {
+            column: 4,
+            order: 0,
+            yOffset: 0,
+            fixed: false,
+        };
+        await publishArchDesignFixture(
+            page,
+            'fixture:fit:repeated',
+            fixture,
+            { fitOnFirstRender: true }
+        );
+        const repeatedSourceBounds = await page.locator(
+            '.x6-node[data-cell-id="instance:u_source"]'
+        ).boundingBox();
+        assert.ok(repeatedSourceBounds);
+        assert.ok(Math.abs(repeatedSourceBounds.x - fittedSourceBounds.x) < 2);
+        assert.ok(Math.abs(repeatedSourceBounds.y - fittedSourceBounds.y) < 2);
+        const savedFixture = archDesignInteractionFixture('saved_view_top');
+        await publishArchDesignFixture(
+            page,
+            'fixture:fit:baseline',
+            savedFixture,
+            { fitOnFirstRender: false }
+        );
+        const baselineSourceBounds = await page.locator(
+            '.x6-node[data-cell-id="instance:u_source"]'
+        ).boundingBox();
+        assert.ok(baselineSourceBounds);
+        savedFixture.layout.viewport = { x: 84, y: 68, zoom: 1 };
+        await publishArchDesignFixture(
+            page,
+            'fixture:fit:2',
+            savedFixture,
+            { fitOnFirstRender: false }
+        );
+        const sourceBounds = await page.locator(
+            '.x6-node[data-cell-id="instance:u_source"]'
+        ).boundingBox();
+        assert.ok(sourceBounds);
+        assert.ok(Math.abs(sourceBounds.x - baselineSourceBounds.x - 84) < 2);
+        assert.ok(Math.abs(sourceBounds.y - baselineSourceBounds.y - 68) < 2);
+        assert.equal((await capturedSaves(page)).length, 0);
     } finally {
         await electronApp.close();
         rmSync(fixtureRoot, { recursive: true, force: true });

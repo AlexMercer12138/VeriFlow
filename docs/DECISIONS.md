@@ -196,3 +196,32 @@ a separate follow-up.
 **Tags:** #architecture #vscode #schematic #arch-design #code-generation
 
 ---
+
+## 2026-08-12: Acknowledge Arch Design presentation writes without rebuilding the graph
+
+**Context:** Arch Design selection, viewport changes, and node movement shared a
+full-document edit path. The provider treated its own presentation write as a
+new semantic document, republished `initialize` and `graph`, and cleared the
+selection after every ordinary interaction.
+
+**Decision:** Keep selection in webview state only. Continue persisting viewport
+and node placement in `.ad`, but recognize provider-owned presentation-only
+document changes and respond with a lightweight revision acknowledgement.
+Rebuild the graph only for semantic edits, external document changes, undo/redo,
+or catalog changes. Relayout locally and persist it through the same lightweight
+presentation path. Serialize presentation and semantic writes, coalesce newer
+layouts in both the webview and provider, and fit a design with no saved viewport
+once per webview without dirtying the document.
+
+**Why not:**
+- Stop persisting presentation: users would lose deliberate placement and viewport state.
+- Store presentation in a sidecar: `.ad` would cease to be the complete portable design source.
+- Ignore all presentation document changes: the provider snapshot would retain an old revision and could overwrite the latest layout during a later semantic edit.
+
+**Affects:** `packages/schematic-webview/`,
+`veriflow-vscode/src/archDesign/archDesignEditorProvider.ts`,
+`veriflow-vscode/src/schematic/protocol.ts`
+
+**Tags:** #architecture #lesson-learned #vscode #schematic #arch-design
+
+---

@@ -657,6 +657,7 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
 
     scheduler.schedule('module:a', 'revision:a-before-switch', layout(75));
     scheduler.schedule('module:b', 'revision:b-still-pending', layout(76));
+    scheduler.rebaseRevision('module:b', 'revision:b-after-ack');
     scheduler.flushModule('module:a');
     assert.deepStrictEqual(saves.at(-1), {
         moduleKey: 'module:a',
@@ -667,7 +668,7 @@ async function testModuleSafeLayoutSaveDebounce(): Promise<void> {
     runPending();
     assert.deepStrictEqual(saves.at(-1), {
         moduleKey: 'module:b',
-        revision: 'revision:b-still-pending',
+        revision: 'revision:b-after-ack',
         layout: layout(76),
     });
     const saveCountAfterModuleFlush = saves.length;
