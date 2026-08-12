@@ -13,6 +13,7 @@ import {
     type ArchDesign,
     type ArchDesignModuleDefinition,
 } from '../src/archDesign';
+import { createInterfaceProtocolCatalog } from '../src/interfaces';
 
 function designOf(overrides: Partial<ArchDesign>): ArchDesign {
     const parsed = parseArchDesignValue({
@@ -22,6 +23,59 @@ function designOf(overrides: Partial<ArchDesign>): ArchDesign {
     if (parsed.status !== 'editable') throw new Error('expected editable design');
     return parsed.design;
 }
+
+function interfaceProtocol(defaultTag = '0'): Record<string, unknown> {
+    return {
+        format: 'veriflow-interface-protocol',
+        schemaVersion: 1,
+        id: 'project.link',
+        name: 'Project Link',
+        separator: '_',
+        priority: 100,
+        members: [
+            { name: 'request', direction: 'master-to-slave' },
+            { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+            { name: 'tag', direction: 'master-to-slave', default: defaultTag },
+        ],
+        recognitionGroups: [['request', 'accept']],
+    };
+}
+
+function interfaceCatalog(defaultTag = '0') {
+    return createInterfaceProtocolCatalog([{
+        source: '/workspace/link.json',
+        value: interfaceProtocol(defaultTag),
+    }]);
+}
+
+const interfaceMaster: ArchDesignModuleDefinition = {
+    key: 'rtl/interface_master.v#interface_master',
+    name: 'interface_master',
+    parameters: [],
+    ports: [
+        { name: 'BUS_REQUEST', direction: 'output', width: { kind: 'known', bits: 32 } },
+        { name: 'BUS_ACCEPT', direction: 'input', width: { kind: 'known', bits: 1 } },
+        { name: 'BUS_TAG', direction: 'output', width: { kind: 'known', bits: 4 } },
+    ],
+};
+
+const interfaceMasterWithoutTag: ArchDesignModuleDefinition = {
+    ...interfaceMaster,
+    key: 'rtl/interface_master_without_tag.v#interface_master_without_tag',
+    name: 'interface_master_without_tag',
+    ports: interfaceMaster.ports.slice(0, 2),
+};
+
+const interfaceSlave: ArchDesignModuleDefinition = {
+    key: 'rtl/interface_slave.v#interface_slave',
+    name: 'interface_slave',
+    parameters: [],
+    ports: [
+        { name: 'LINK_REQUEST', direction: 'input', width: { kind: 'known', bits: 16 } },
+        { name: 'LINK_ACCEPT', direction: 'output', width: { kind: 'known', bits: 1 } },
+        { name: 'LINK_TAG', direction: 'input', width: { kind: 'known', bits: 4 } },
+    ],
+};
 
 test('exports a deterministic empty Verilog module with an owned marker', () => {
     const result = exportArchDesignRtl(createEmptyArchDesign('soc_top'), [], {
@@ -372,6 +426,153 @@ test('blocks invalid interface connections with frozen endpoint diagnostics', ()
     assert.equal('text' in result, false);
 });
 
+test('exports interface bindings as ordinary collision-safe Verilog nets', () => {
+    const design = designOf({
+        instances: [
+            { name: 'u_master', module: 'interface_master' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [interfaceMaster, interfaceSlave], {
+        interfaceCatalog: interfaceCatalog(),
+    });
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /wire \[31:0\] __vf_if_control_request;/);
+    assert.match(result.text, /wire __vf_if_control_accept;/);
+    assert.match(result.text, /wire \[3:0\] __vf_if_control_tag;/);
+    assert.match(result.text, /\.BUS_REQUEST\(__vf_if_control_request\)/);
+    assert.match(result.text, /\.LINK_REQUEST\(__vf_if_control_request\)/);
+    assert.match(result.text, /\.LINK_ACCEPT\(__vf_if_control_accept\)/);
+    assert.match(result.text, /\.BUS_ACCEPT\(__vf_if_control_accept\)/);
+    assert.match(result.text, /\.BUS_TAG\(__vf_if_control_tag\)/);
+    assert.match(result.text, /\.LINK_TAG\(__vf_if_control_tag\)/);
+    assert.equal(result.text.includes('interface '), false);
+    assert.equal(result.text.includes('adapter'), false);
+});
+
+test('exports promoted interface members as deterministic scalar top-level ports', () => {
+    const design = designOf({
+        instances: [{ name: 'u_master', module: 'interface_master' }],
+        interfacePorts: [{
+            name: 'm_link',
+            protocol: 'project.link',
+            role: 'master',
+            memberPrefix: 'M_LINK',
+            members: [
+                { member: 'request', width: 32 },
+                { member: 'accept', width: 1 },
+                { member: 'tag', width: 4 },
+            ],
+        }],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'port', port: 'm_link' },
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [interfaceMaster], {
+        language: 'systemverilog',
+        interfaceCatalog: interfaceCatalog(),
+    });
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.equal(result.extension, '.sv');
+    assert.match(result.text, /output wire \[31:0\] M_LINK_request,/);
+    assert.match(result.text, /input wire M_LINK_accept,/);
+    assert.match(result.text, /output wire \[3:0\] M_LINK_tag/);
+    assert.match(result.text, /assign M_LINK_request = __vf_if_control_request;/);
+    assert.match(result.text, /assign __vf_if_control_accept = M_LINK_accept;/);
+    assert.match(result.text, /assign M_LINK_tag = __vf_if_control_tag;/);
+});
+
+test('binds receiver-only members to explicit defaults and leaves sender-only outputs open', () => {
+    const receiverOnly = designOf({
+        instances: [
+            { name: 'u_master', module: 'interface_master_without_tag' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+            defaults: { tag: "4'ha" },
+        }],
+    });
+    const defaulted = exportArchDesignRtl(
+        receiverOnly,
+        [interfaceMasterWithoutTag, interfaceSlave],
+        { interfaceCatalog: interfaceCatalog() }
+    );
+    assert.equal(defaulted.status, 'generated');
+    if (defaulted.status !== 'generated') return;
+    assert.match(defaulted.text, /\.LINK_TAG\(4'ha\)/);
+    assert.equal(defaulted.text.includes('__vf_if_control_tag'), false);
+
+    const senderOnly = designOf({
+        instances: [
+            { name: 'u_master', module: 'interface_master' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+    });
+    const slaveWithoutTag = { ...interfaceSlave, ports: interfaceSlave.ports.slice(0, 2) };
+    const opened = exportArchDesignRtl(senderOnly, [interfaceMaster, slaveWithoutTag], {
+        interfaceCatalog: interfaceCatalog(),
+    });
+    assert.equal(opened.status, 'generated');
+    if (opened.status !== 'generated') return;
+    assert.match(opened.text, /\.BUS_TAG\(\)/);
+    assert.equal(opened.text.includes('__vf_if_control_tag'), false);
+});
+
+test('permits interface width warnings and fingerprints the effective protocol', () => {
+    const design = designOf({
+        instances: [
+            { name: 'u_master', module: 'interface_master_without_tag' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+    });
+
+    const zero = exportArchDesignRtl(
+        design,
+        [interfaceMasterWithoutTag, interfaceSlave],
+        { interfaceCatalog: interfaceCatalog('0') }
+    );
+    const one = exportArchDesignRtl(
+        design,
+        [interfaceMasterWithoutTag, interfaceSlave],
+        { interfaceCatalog: interfaceCatalog("4'h1") }
+    );
+
+    assert.equal(zero.status, 'generated');
+    assert.equal(one.status, 'generated');
+    if (zero.status !== 'generated' || one.status !== 'generated') return;
+    assert.match(zero.text, /wire \[31:0\] __vf_if_control_request;/);
+    assert.match(zero.text, /\.LINK_TAG\(0\)/);
+    assert.match(one.text, /\.LINK_TAG\(4'h1\)/);
+    assert.notEqual(one.text, zero.text);
+    assert.notEqual(one.fingerprint, zero.fingerprint);
+});
+
 test('keeps output deterministic across presentation and output-path changes', () => {
     const original = designOf({
         export: { output: 'generated/first.v' },
@@ -486,6 +687,36 @@ test('generated Verilog and SystemVerilog compile with Icarus when available', t
             'endmodule',
             '',
         ].join('\n'));
+        const interfaceChildPath = path.join(root, 'interface_children.v');
+        writeFileSync(interfaceChildPath, [
+            'module interface_master(',
+            '    output wire [31:0] BUS_REQUEST,',
+            '    input wire BUS_ACCEPT,',
+            '    output wire [3:0] BUS_TAG',
+            ');',
+            "assign BUS_REQUEST = 32'h0;",
+            "assign BUS_TAG = 4'h0;",
+            'endmodule',
+            'module interface_slave(',
+            '    input wire [15:0] LINK_REQUEST,',
+            '    output wire LINK_ACCEPT,',
+            '    input wire [3:0] LINK_TAG',
+            ');',
+            "assign LINK_ACCEPT = 1'b1;",
+            'endmodule',
+            '',
+        ].join('\n'));
+        const interfaceDesignValue = designOf({
+            instances: [
+                { name: 'u_master', module: 'interface_master' },
+                { name: 'u_slave', module: 'interface_slave' },
+            ],
+            interfaceConnections: [{
+                name: 'control',
+                master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+                slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+            }],
+        });
         for (const [language, generation] of [
             ['verilog', '2001'],
             ['systemverilog', '2012'],
@@ -505,6 +736,33 @@ test('generated Verilog and SystemVerilog compile with Icarus when available', t
                 generatedPath,
             ], { encoding: 'utf8' });
             assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+
+            const interfaceExported = exportArchDesignRtl(
+                interfaceDesignValue,
+                [interfaceMaster, interfaceSlave],
+                { language, interfaceCatalog: interfaceCatalog() }
+            );
+            assert.equal(interfaceExported.status, 'generated');
+            if (interfaceExported.status !== 'generated') continue;
+            const interfaceGeneratedPath = path.join(
+                root,
+                `interface-top-${language}${interfaceExported.extension}`
+            );
+            writeFileSync(interfaceGeneratedPath, interfaceExported.text);
+            const interfaceCompiled = spawnSync('iverilog', [
+                `-g${generation}`,
+                '-s',
+                'soc_top',
+                '-o',
+                path.join(root, `interface-top-${language}.out`),
+                interfaceChildPath,
+                interfaceGeneratedPath,
+            ], { encoding: 'utf8' });
+            assert.equal(
+                interfaceCompiled.status,
+                0,
+                interfaceCompiled.stdout + interfaceCompiled.stderr
+            );
         }
     } finally {
         rmSync(root, { recursive: true, force: true });

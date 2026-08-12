@@ -1,5 +1,9 @@
 import type { WidthValue } from '@veriflow/hdl-core/model';
 
+import {
+    createInterfaceProtocolCatalog,
+    type InterfaceProtocolCatalog,
+} from '../interfaces';
 import type { ArchDesignModuleDefinition } from './definitions';
 import { semanticArchDesignFingerprint } from './fingerprint';
 import { fnv1a64 } from './hash';
@@ -25,6 +29,7 @@ import {
 export type ArchDesignRtlExportOptions = Readonly<{
     language?: ArchDesignLanguage;
     sourcePath?: string;
+    interfaceCatalog?: InterfaceProtocolCatalog;
 }>;
 
 export type ArchDesignRtlMarker = Readonly<{
@@ -48,6 +53,7 @@ export type ArchDesignRtlExportResult =
     }>;
 
 const GENERATED_MARKER = /^\/\/ vik-veriflow:generated arch-design schema=(\d+) fingerprint=(ad-v1-[0-9a-f]{16}) language=(verilog|systemverilog)(?:\r?\n|$)/;
+const DEFAULT_INTERFACE_PROTOCOL_CATALOG = createInterfaceProtocolCatalog();
 
 export function parseArchDesignRtlMarker(text: string): ArchDesignRtlMarker | undefined {
     const match = GENERATED_MARKER.exec(text);
@@ -75,15 +81,32 @@ function invalidExport(
 function rtlNameDiagnostics(
     resolution: ArchDesignResolution
 ): readonly ArchDesignDiagnostic[] {
-    const portNames = new Set(resolution.ports.map(item => item.port.name));
-    return resolution.instances.flatMap(item =>
+    const diagnostics: ArchDesignDiagnostic[] = [];
+    const portNames = new Set<string>();
+    for (const item of resolution.ports) portNames.add(item.port.name);
+    for (const endpoint of resolution.interfaces.endpoints) {
+        if (endpoint.endpoint.kind !== 'port') continue;
+        endpoint.members.forEach((member, index) => {
+            if (portNames.has(member.port)) {
+                diagnostics.push(Object.freeze({
+                    path: `${endpoint.declarationPath}.members[${index}]`,
+                    code: 'AD_RTL_NAME_COLLISION',
+                    message: `Top-level interface member ${member.port} collides with another top-level port`,
+                }));
+            } else {
+                portNames.add(member.port);
+            }
+        });
+    }
+    diagnostics.push(...resolution.instances.flatMap(item =>
         portNames.has(item.instance.name)
             ? [Object.freeze({
                 path: `$.instances[${item.index}].name`,
                 code: 'AD_RTL_NAME_COLLISION',
                 message: `Instance ${item.instance.name} collides with a top-level port`,
             })]
-            : []);
+            : []));
+    return diagnostics;
 }
 
 function packedRange(width: ArchDesignWidth | undefined): string {
@@ -101,6 +124,15 @@ function resolvedPackedRange(width: WidthValue): string {
 
 function portDeclaration(port: ArchDesignPort, final: boolean): string {
     return `    ${port.direction} wire ${packedRange(port.width)}${port.name}${final ? '' : ','}`;
+}
+
+function resolvedPortDeclaration(
+    direction: 'input' | 'output' | 'inout',
+    width: WidthValue,
+    name: string,
+    final: boolean
+): string {
+    return `    ${direction} wire ${resolvedPackedRange(width)}${name}${final ? '' : ','}`;
 }
 
 function allocateIdentifier(preferred: string, used: Set<string>): string {
@@ -126,12 +158,17 @@ function connectionWidth(connection: ResolvedArchDesignConnection): WidthValue {
 type RtlBindings = Readonly<{
     netByConnection: ReadonlyMap<number, string>;
     netByEndpoint: ReadonlyMap<string, string>;
+    interfaceNets: readonly Readonly<{ name: string; width: WidthValue }>[];
     usedIdentifiers: Set<string>;
 }>;
 
 function createBindings(resolution: ArchDesignResolution): RtlBindings {
     const used = new Set<string>();
     for (const port of resolution.ports) used.add(port.port.name);
+    for (const endpoint of resolution.interfaces.endpoints) {
+        if (endpoint.endpoint.kind !== 'port') continue;
+        for (const member of endpoint.members) used.add(member.port);
+    }
     for (const instance of resolution.instances) used.add(instance.instance.name);
     const netByConnection = new Map<number, string>();
     const netByEndpoint = new Map<string, string>();
@@ -140,7 +177,24 @@ function createBindings(resolution: ArchDesignResolution): RtlBindings {
         netByConnection.set(connection.index, net);
         for (const endpoint of connection.endpoints) netByEndpoint.set(endpoint.identity, net);
     }
-    return { netByConnection, netByEndpoint, usedIdentifiers: used };
+    const interfaceNets: Array<{ name: string; width: WidthValue }> = [];
+    for (const connection of resolution.interfaces.connections) {
+        for (const binding of connection.bindings) {
+            const net = allocateIdentifier(
+                `__vf_if_${connection.connection.name}_${binding.member}`,
+                used
+            );
+            interfaceNets.push({ name: net, width: binding.sender.width });
+            netByEndpoint.set(binding.sender.targetIdentity, net);
+            netByEndpoint.set(binding.receiver.targetIdentity, net);
+        }
+    }
+    return {
+        netByConnection,
+        netByEndpoint,
+        interfaceNets,
+        usedIdentifiers: used,
+    };
 }
 
 function targetsByNode(
@@ -292,16 +346,48 @@ function renderModule(resolution: ArchDesignResolution): string {
     const defaultByEndpoint = new Map(
         resolution.effectiveDefaults.map(item => [item.identity, item.expression])
     );
-    const header = resolution.ports.length === 0
+    for (const connection of resolution.interfaces.connections) {
+        for (const item of connection.defaults) {
+            defaultByEndpoint.set(item.receiver.targetIdentity, item.expression);
+        }
+    }
+    const publicPorts = [
+        ...resolution.ports.map(item => ({
+            kind: 'scalar' as const,
+            port: item.port,
+        })),
+        ...resolution.interfaces.endpoints.flatMap(endpoint =>
+            endpoint.endpoint.kind === 'port'
+                ? endpoint.members.map(member => ({
+                    kind: 'interface' as const,
+                    direction: member.portDirection,
+                    width: member.width,
+                    name: member.port,
+                    identity: member.targetIdentity,
+                }))
+                : []
+        ),
+    ];
+    const header = publicPorts.length === 0
         ? [`module ${resolution.moduleName};`]
         : [
             `module ${resolution.moduleName} (`,
-            ...resolution.ports.map((item, index) =>
-                portDeclaration(item.port, index === resolution.ports.length - 1)),
+            ...publicPorts.map((item, index) => item.kind === 'scalar'
+                ? portDeclaration(item.port, index === publicPorts.length - 1)
+                : resolvedPortDeclaration(
+                    item.direction,
+                    item.width,
+                    item.name,
+                    index === publicPorts.length - 1
+                )),
             ');',
         ];
-    const declarations = resolution.connections.map(connection =>
-        `wire ${resolvedPackedRange(connectionWidth(connection))}${netByConnection.get(connection.index)};`);
+    const declarations = [
+        ...resolution.connections.map(connection =>
+            `wire ${resolvedPackedRange(connectionWidth(connection))}${netByConnection.get(connection.index)};`),
+        ...bindings.interfaceNets.map(item =>
+            `wire ${resolvedPackedRange(item.width)}${item.name};`),
+    ];
     const targets = targetsByNode(resolution);
     const assignments: string[] = [];
     const generateBlocks: string[] = [];
@@ -329,6 +415,16 @@ function renderModule(resolution: ArchDesignResolution): string {
         }
         const binding = net ?? (target ? defaultByEndpoint.get(target.identity) : undefined);
         if (binding) assignments.push(`assign ${item.port.name} = ${binding};`);
+    }
+    for (const item of publicPorts) {
+        if (item.kind !== 'interface') continue;
+        const net = netByEndpoint.get(item.identity);
+        const binding = net ?? defaultByEndpoint.get(item.identity);
+        if (item.direction === 'input') {
+            if (net) assignments.push(`assign ${net} = ${item.name};`);
+        } else if (item.direction === 'output' && binding) {
+            assignments.push(`assign ${item.name} = ${binding};`);
+        }
     }
     for (const source of resolution.connectionDefaultSources) {
         const net = netByConnection.get(source.connectionIndex);
@@ -371,7 +467,8 @@ export function exportArchDesignRtl(
         })]);
     }
     const snapshot = parsed.design;
-    const resolution = resolveArchDesign(snapshot, definitions);
+    const interfaceCatalog = options.interfaceCatalog ?? DEFAULT_INTERFACE_PROTOCOL_CATALOG;
+    const resolution = resolveArchDesign(snapshot, definitions, interfaceCatalog);
     if (resolution.diagnostics.length > 0) {
         return invalidExport(resolution.diagnostics);
     }
@@ -384,7 +481,7 @@ export function exportArchDesignRtl(
     };
     const moduleText = renderModule(resolution);
     const fingerprint = `ad-v1-${fnv1a64([
-        semanticArchDesignFingerprint(semanticDesign),
+        semanticArchDesignFingerprint(semanticDesign, interfaceCatalog),
         moduleText,
     ].join('\n'))}`;
     const marker = [
