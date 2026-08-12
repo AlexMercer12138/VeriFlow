@@ -45436,6 +45436,23 @@
     }
     return projectDesignInspector(snapshot);
   }
+  function ownsArchDesignPin(node, pin2) {
+    return node.pins.some((candidate) => candidate.id === pin2.id);
+  }
+  function archDesignEndpointForPin(design, node, pin2) {
+    if (!ownsArchDesignPin(node, pin2)) return void 0;
+    if (node.kind === "instance") {
+      const instance = design.instances.find((candidate) => candidate.name === node.label);
+      return instance ? { kind: "instance", instance: instance.name, port: pin2.name } : void 0;
+    }
+    if (node.kind !== "port") return void 0;
+    const port2 = design.ports.find((candidate) => candidate.name === node.label);
+    if (!port2) return void 0;
+    if (port2.direction !== "inout") return { kind: "port", port: port2.name };
+    const prefix = `${port2.name}_`;
+    const signal = pin2.name.startsWith(prefix) ? pin2.name.slice(prefix.length) : "";
+    return signal === "i" || signal === "o" || signal === "t" ? { kind: "port", port: port2.name, signal } : void 0;
+  }
   function formatSchematicDiagnosticDetails(diagnostics) {
     return diagnostics.map(
       (diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`
@@ -45756,6 +45773,7 @@
         },
         attrs: {
           portBody: {
+            magnet: connectionAuthoringEnabled() && source?.readOnly !== true,
             strokeDasharray: source?.readOnly ? "2 1" : void 0
           },
           portLabelClip: {
@@ -45977,8 +45995,40 @@
       vertexMovable: false,
       vertexAddable: false,
       vertexDeletable: false,
-      magnetConnectable: false,
+      magnetConnectable: () => connectionAuthoringEnabled(),
       toolsAddable: false
+    },
+    connecting: {
+      snap: { radius: 20 },
+      allowBlank: false,
+      allowLoop: false,
+      allowNode: false,
+      allowEdge: false,
+      allowPort: true,
+      allowMulti: true,
+      highlight: true,
+      validateMagnet({ cell, magnet }) {
+        return connectionSourceFor(cell, magnet.getAttribute("port")) !== void 0;
+      },
+      validateConnection({ sourceCell, targetCell, sourcePort, targetPort }) {
+        const source = connectionSourceFor(sourceCell, sourcePort);
+        const target = connectionTargetFor(targetCell, targetPort);
+        return source !== void 0 && target !== void 0 && source.pin.id !== target.pin.id;
+      },
+      createEdge() {
+        return this.createEdge({
+          shape: "veriflow-network",
+          attrs: {
+            line: {
+              stroke: "var(--schematic-wire-selected)",
+              strokeWidth: 2,
+              strokeDasharray: "5 3",
+              pointerEvents: "none"
+            }
+          },
+          zIndex: 3
+        });
+      }
     },
     preventDefaultContextMenu: true
   });
@@ -46007,6 +46057,47 @@
   var authoringPending = false;
   var currentArchDesignState;
   var currentArchDesignInspector;
+  function connectionAuthoringEnabled() {
+    return archDesignEditable && !authoringPending && currentArchDesignState !== void 0 && dom.connectButton.getAttribute("aria-pressed") === "true";
+  }
+  function connectionTerminal(cell, portId) {
+    if (!connectionAuthoringEnabled() || !currentArchDesignState || !currentGraph || !cell || !portId) return void 0;
+    const data2 = cellData(cell);
+    const node = data2?.objectType === "node" ? data2.node : void 0;
+    const pin2 = node?.pins.find((candidate) => candidate.id === portId);
+    if (!node || !pin2 || pin2.readOnly) return void 0;
+    const endpoint = archDesignEndpointForPin(
+      currentArchDesignState.design,
+      node,
+      pin2
+    );
+    return endpoint ? { endpoint, pin: pin2 } : void 0;
+  }
+  function connectionSourceFor(cell, portId) {
+    const terminal = connectionTerminal(cell, portId);
+    return terminal && (terminal.pin.direction === "driver" || terminal.pin.direction === "bidirectional") ? terminal : void 0;
+  }
+  function connectionTargetFor(cell, portId) {
+    const terminal = connectionTerminal(cell, portId);
+    return terminal && (terminal.pin.direction === "load" || terminal.pin.direction === "bidirectional") ? terminal : void 0;
+  }
+  function refreshConnectionMagnets() {
+    const enabled = connectionAuthoringEnabled();
+    for (const cell of graph.getNodes()) {
+      const data2 = cellData(cell);
+      if (data2?.objectType !== "node" || !data2.node || data2.junction) continue;
+      const pinsById = new Map(data2.node.pins.map((pin2) => [pin2.id, pin2]));
+      const view = graph.findViewByCell(cell);
+      view?.container.querySelectorAll(".x6-port-body[port]").forEach(
+        (port2) => {
+          const pin2 = pinsById.get(port2.getAttribute("port") ?? "");
+          const magnet = String(enabled && pin2?.readOnly !== true);
+          port2.setAttribute("magnet", magnet);
+          port2.querySelector('[data-selector="portBody"]')?.setAttribute("magnet", magnet);
+        }
+      );
+    }
+  }
   function post(message) {
     vscode.postMessage(message);
   }
@@ -46159,6 +46250,7 @@
     ).forEach((control) => {
       control.disabled = disabled || control.dataset.readonly === "true";
     });
+    refreshConnectionMagnets();
   }
   function postArchDesignEdit(edit) {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
@@ -46786,6 +46878,7 @@
   dom.connectButton.addEventListener("click", () => {
     const active = dom.connectButton.getAttribute("aria-pressed") !== "true";
     dom.connectButton.setAttribute("aria-pressed", String(active));
+    refreshConnectionMagnets();
   });
   dom.exportButton.addEventListener("click", () => {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
@@ -46850,6 +46943,24 @@
   graph.on("node:open-definition", ({ cell }) => {
     const command = navigationCommandForCell(navigationTargetForCell(cell), true);
     if (command) post(command);
+  });
+  graph.on("edge:connected", ({ edge, isNew }) => {
+    if (!isNew) return;
+    const source = connectionSourceFor(
+      edge.getSourceCell(),
+      edge.getSourcePortId()
+    );
+    const target = connectionTargetFor(
+      edge.getTargetCell(),
+      edge.getTargetPortId()
+    );
+    graph.removeCell(edge);
+    if (!source || !target) return;
+    postArchDesignEdit({
+      type: "connect",
+      source: source.endpoint,
+      target: target.endpoint
+    });
   });
   graph.on("edge:click", ({ edge }) => {
     const data2 = cellData(edge);

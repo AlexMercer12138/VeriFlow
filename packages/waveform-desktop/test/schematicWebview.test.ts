@@ -109,6 +109,32 @@ async function dragElement(
     await page.mouse.up();
 }
 
+async function dragBetween(page: Page, source: Locator, target: Locator): Promise<void> {
+    await source.waitFor({ state: 'visible' });
+    await target.waitFor({ state: 'visible' });
+    const sourceBounds = await source.boundingBox();
+    const targetBounds = await target.boundingBox();
+    assert.ok(sourceBounds && targetBounds);
+    const sourcePoint = {
+        x: sourceBounds.x + sourceBounds.width / 2,
+        y: sourceBounds.y + sourceBounds.height / 2,
+    };
+    const targetPoint = {
+        x: targetBounds.x + targetBounds.width / 2,
+        y: targetBounds.y + targetBounds.height / 2,
+    };
+    await page.mouse.move(sourcePoint.x, sourcePoint.y);
+    await page.mouse.down();
+    await page.mouse.move(
+        (sourcePoint.x + targetPoint.x) / 2,
+        (sourcePoint.y + targetPoint.y) / 2,
+        { steps: 5 }
+    );
+    assert.equal(await page.locator('#canvas .x6-edge').count(), 1);
+    await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 5 });
+    await page.mouse.up();
+}
+
 async function verticalNodeOrder(page: Page, nodeIds: readonly string[]): Promise<string[]> {
     const centers = await Promise.all(nodeIds.map(async nodeId => {
         const bounds = await page.locator(
@@ -654,6 +680,472 @@ async function renderedGeometry(page: Page): Promise<{
             wireContrast: contrast(getComputedStyle(sampleWire).stroke, background),
         };
     });
+}
+
+async function exerciseArchDesignConnections(page: Page): Promise<void> {
+    page.setDefaultTimeout(pageTimeoutMs * 2);
+    if (await page.locator('#inspector').isHidden()) {
+        await page.locator('#inspector-toggle-button').click({ force: true });
+        await page.locator('#inspector').waitFor({ state: 'visible' });
+    }
+    await assertHdlPinsCannotAuthorConnections(page);
+    await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: unknown[] };
+        state.__veriflowMessages = [];
+    });
+
+    const design = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'authoring_top',
+        ports: [],
+        instances: [
+            { name: 'u_source', module: 'source' },
+            { name: 'u_sink', module: 'sink' },
+        ],
+        connections: [],
+        interfaceConnections: [],
+        defaults: {},
+        export: {},
+        presentation: {},
+    };
+    const catalog = [{
+        key: 'module:file:///source.sv:0',
+        name: 'source',
+        parameters: [],
+        ports: [{
+            name: 'out',
+            direction: 'output',
+            width: { kind: 'known', bits: 1 },
+        }],
+    }, {
+        key: 'module:file:///sink.sv:0',
+        name: 'sink',
+        parameters: [],
+        ports: [{
+            name: 'in',
+            direction: 'input',
+            width: { kind: 'known', bits: 1 },
+        }],
+    }];
+    const disconnectedGraph = {
+        fileUri: 'file:///authoring.ad',
+        moduleKey: 'arch-design:authoring_top',
+        moduleName: 'authoring_top',
+        nodes: [{
+            id: 'instance:u_source',
+            kind: 'instance',
+            label: 'u_source',
+            subtitle: 'source',
+            definitionKey: catalog[0].key,
+            pins: [{
+                id: 'instance:u_source:out',
+                name: 'out',
+                direction: 'driver',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }, {
+            id: 'instance:u_sink',
+            kind: 'instance',
+            label: 'u_sink',
+            subtitle: 'sink',
+            definitionKey: catalog[1].key,
+            pins: [{
+                id: 'instance:u_sink:in',
+                name: 'in',
+                direction: 'load',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }],
+        networks: [],
+        diagnostics: [],
+    };
+    const layout = {
+        placement: {
+            nodes: {
+                'instance:u_source': {
+                    column: 0,
+                    order: 0,
+                    yOffset: 0,
+                    fixed: false,
+                },
+                'instance:u_sink': {
+                    column: 1,
+                    order: 0,
+                    yOffset: 0,
+                    fixed: false,
+                },
+            },
+        },
+        viewport: { x: 16, y: 16, zoom: 1 },
+        minimap: false,
+    };
+    const publish = async (
+        revision: string,
+        selectedDesign: Record<string, unknown>,
+        selectedGraph: Record<string, unknown>
+    ): Promise<void> => {
+        await page.evaluate(({ revision, design, catalog, graph, layout }) => {
+            const graphIdentity = graph as {
+                fileUri: string;
+                moduleKey: string;
+                moduleName: string;
+            };
+            for (const data of [{
+                type: 'initialize',
+                fileUri: graphIdentity.fileUri,
+                modules: [{
+                    key: graphIdentity.moduleKey,
+                    name: graphIdentity.moduleName,
+                }],
+                selectedModuleKey: graphIdentity.moduleKey,
+                documentKind: 'arch-design',
+                editable: true,
+            }, {
+                type: 'graph',
+                revision,
+                graph,
+                layout,
+            }, {
+                type: 'archDesignState',
+                status: 'editable',
+                revision,
+                design,
+                catalog,
+                validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+            }]) {
+                window.dispatchEvent(new MessageEvent('message', { data }));
+            }
+        }, { revision, design: selectedDesign, catalog, graph: selectedGraph, layout });
+    };
+
+    await publish('fixture:ad-connect:1', design, disconnectedGraph);
+    await page.locator('#connect-button').click();
+    assert.equal(
+        await page.locator('#connect-button').getAttribute('aria-pressed'),
+        'true'
+    );
+    const sourcePin = page.locator(
+        '.x6-node[data-cell-id="instance:u_source"] .x6-port-body[port="instance:u_source:out"]'
+    );
+    const targetPin = page.locator(
+        '.x6-node[data-cell-id="instance:u_sink"] .x6-port-body[port="instance:u_sink:in"]'
+    );
+    await dragBetween(page, sourcePin, targetPin);
+    await page.waitForFunction(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+        }> };
+        return state.__veriflowMessages.some(message => message.type === 'editArchDesign');
+    });
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#canvas .x6-edge').length === 0
+    );
+    assert.equal(await page.locator('#canvas .x6-edge').count(), 0);
+    const editMessages = await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+        }> };
+        return state.__veriflowMessages.filter(message =>
+            message.type === 'editArchDesign'
+        );
+    });
+    assert.deepEqual(editMessages, [{
+        type: 'editArchDesign',
+        revision: 'fixture:ad-connect:1',
+        edit: {
+            type: 'connect',
+            source: { kind: 'instance', instance: 'u_source', port: 'out' },
+            target: { kind: 'instance', instance: 'u_sink', port: 'in' },
+        },
+    }]);
+    assert.equal(await page.locator('#connect-button').isDisabled(), true);
+
+    const connectedDesign = {
+        ...design,
+        connections: [{
+            name: 'net_1',
+            endpoints: [
+                { kind: 'instance', instance: 'u_source', port: 'out' },
+                { kind: 'instance', instance: 'u_sink', port: 'in' },
+            ],
+        }],
+    };
+    const connectedGraph = {
+        ...disconnectedGraph,
+        networks: [{
+            id: 'network:net_1',
+            name: 'net_1',
+            width: { kind: 'known', bits: 1 },
+            endpoints: [{
+                nodeId: 'instance:u_source',
+                pinId: 'instance:u_source:out',
+                role: 'driver',
+            }, {
+                nodeId: 'instance:u_sink',
+                pinId: 'instance:u_sink:in',
+                role: 'load',
+            }],
+        }],
+    };
+    await publish('fixture:ad-connect:2', connectedDesign, connectedGraph);
+    const canonicalSegments = page.locator(
+        '#canvas .x6-edge > path:nth-child(2)'
+    );
+    await canonicalSegments.first().waitFor({ state: 'attached' });
+    await page.waitForFunction(() => [...document.querySelectorAll<SVGPathElement>(
+        '#canvas .x6-edge > path:nth-child(2)'
+    )].every(path => path.getTotalLength() > 0));
+    const nonOrthogonalSegments = await canonicalSegments.evaluateAll(paths =>
+        paths.filter(path => {
+            const segment = path as SVGPathElement;
+            const start = segment.getPointAtLength(0);
+            const end = segment.getPointAtLength(segment.getTotalLength());
+            return Math.abs(start.x - end.x) > 0.5
+                && Math.abs(start.y - end.y) > 0.5;
+        }).length
+    );
+    assert.equal(nonOrthogonalSegments, 0);
+    await canonicalSegments.first().click({ force: true });
+    await page.locator('#connection-name').fill('payload');
+    await page.locator('#connection-name').press('Tab');
+    await page.waitForFunction(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.some(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'renameConnection'
+        );
+    });
+    const renameMessage = await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            revision?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.find(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'renameConnection'
+        );
+    });
+    assert.deepEqual(renameMessage, {
+        type: 'editArchDesign',
+        revision: 'fixture:ad-connect:2',
+        edit: { type: 'renameConnection', name: 'net_1', nextName: 'payload' },
+    });
+
+    const renamedDesign = {
+        ...connectedDesign,
+        connections: [{
+            name: 'payload',
+            endpoints: connectedDesign.connections[0].endpoints,
+        }],
+    };
+    const renamedGraph = {
+        ...connectedGraph,
+        networks: [{
+            ...connectedGraph.networks[0],
+            id: 'network:payload',
+            name: 'payload',
+        }],
+    };
+    await publish('fixture:ad-connect:3', renamedDesign, renamedGraph);
+    await page.locator(
+        '#canvas .x6-edge[data-cell-id^="network:payload:segment:"] > path:nth-child(2)'
+    ).first().click({ force: true });
+    await page.locator('#default-u_sink\\.in').fill("1'b0");
+    await page.locator('#default-u_sink\\.in').press('Tab');
+    await page.waitForFunction(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.some(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'setDefault'
+        );
+    });
+    const defaultMessage = await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            revision?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.find(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'setDefault'
+        );
+    });
+    assert.deepEqual(defaultMessage, {
+        type: 'editArchDesign',
+        revision: 'fixture:ad-connect:3',
+        edit: {
+            type: 'setDefault',
+            connection: 'payload',
+            endpoint: 'u_sink.in',
+            expression: "1'b0",
+        },
+    });
+
+    const defaultedDesign = {
+        ...renamedDesign,
+        connections: [{
+            ...renamedDesign.connections[0],
+            defaults: { 'u_sink.in': "1'b0" },
+        }],
+    };
+    await publish('fixture:ad-connect:4', defaultedDesign, renamedGraph);
+    await page.locator(
+        '#canvas .x6-edge[data-cell-id^="network:payload:segment:"] > path:nth-child(2)'
+    ).first().click({ force: true });
+    await page.locator('#delete-button').click();
+    await page.waitForFunction(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.some(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'removeConnection'
+        );
+    });
+    const removeMessage = await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+            revision?: string;
+            edit?: { type?: string };
+        }> };
+        return state.__veriflowMessages.find(message =>
+            message.type === 'editArchDesign'
+            && message.edit?.type === 'removeConnection'
+        );
+    });
+    assert.deepEqual(removeMessage, {
+        type: 'editArchDesign',
+        revision: 'fixture:ad-connect:4',
+        edit: { type: 'removeConnection', name: 'payload' },
+    });
+
+    await page.setViewportSize({ width: 440, height: 640 });
+    const narrowLayout = await page.evaluate(() => {
+        const toolbar = document.querySelector<HTMLElement>('#toolbar')!;
+        const canvas = document.querySelector<HTMLElement>('#canvas-region')!;
+        const inspector = document.querySelector<HTMLElement>('#inspector')!;
+        const visibleToolbarGroups = [...toolbar.children].filter(element =>
+            !(element as HTMLElement).hidden
+            && element.getBoundingClientRect().width > 0
+        );
+        const overlaps = (left: DOMRect, right: DOMRect): boolean =>
+            Math.max(left.left, right.left) < Math.min(left.right, right.right)
+            && Math.max(left.top, right.top) < Math.min(left.bottom, right.bottom);
+        return {
+            documentOverflow: document.documentElement.scrollWidth
+                > document.documentElement.clientWidth,
+            canvasInspectorOverlap: overlaps(
+                canvas.getBoundingClientRect(),
+                inspector.getBoundingClientRect()
+            ),
+            toolbarOverlap: visibleToolbarGroups.some((left, index) =>
+                visibleToolbarGroups.slice(index + 1).some(right => overlaps(
+                    left.getBoundingClientRect(),
+                    right.getBoundingClientRect()
+                ))
+            ),
+        };
+    });
+    assert.deepEqual(narrowLayout, {
+        documentOverflow: false,
+        canvasInspectorOverlap: false,
+        toolbarOverlap: false,
+    });
+}
+
+async function assertHdlPinsCannotAuthorConnections(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const graph = {
+            fileUri: 'file:///readonly.sv',
+            moduleKey: 'module:readonly:0',
+            moduleName: 'readonly',
+            nodes: [{
+                id: 'instance:source',
+                kind: 'instance',
+                label: 'source',
+                pins: [{
+                    id: 'instance:source:out',
+                    name: 'out',
+                    direction: 'driver',
+                    width: { kind: 'known', bits: 1 },
+                    readOnly: false,
+                }],
+                readOnly: false,
+            }, {
+                id: 'instance:sink',
+                kind: 'instance',
+                label: 'sink',
+                pins: [{
+                    id: 'instance:sink:in',
+                    name: 'in',
+                    direction: 'load',
+                    width: { kind: 'known', bits: 1 },
+                    readOnly: false,
+                }],
+                readOnly: false,
+            }],
+            networks: [],
+            diagnostics: [],
+        };
+        window.dispatchEvent(new MessageEvent('message', { data: {
+            type: 'initialize',
+            fileUri: graph.fileUri,
+            modules: [{ key: graph.moduleKey, name: graph.moduleName }],
+            selectedModuleKey: graph.moduleKey,
+            documentKind: 'hdl',
+            editable: false,
+        } }));
+        window.dispatchEvent(new MessageEvent('message', { data: {
+            type: 'graph',
+            revision: 'fixture:hdl',
+            graph,
+            layout: {
+                placement: { nodes: {
+                    'instance:source': { column: 0, order: 0, yOffset: 0, fixed: false },
+                    'instance:sink': { column: 1, order: 0, yOffset: 0, fixed: false },
+                } },
+                viewport: { x: 16, y: 16, zoom: 1 },
+                minimap: false,
+            },
+        } }));
+    });
+    assert.equal(await page.locator('#authoring-actions').isHidden(), true);
+    const sourcePin = page.locator(
+        '.x6-node[data-cell-id="instance:source"] .x6-port-body'
+    );
+    const targetPin = page.locator(
+        '.x6-node[data-cell-id="instance:sink"] .x6-port-body'
+    );
+    await sourcePin.waitFor({ state: 'visible' });
+    await targetPin.waitFor({ state: 'visible' });
+    const sourceBounds = await sourcePin.boundingBox();
+    const targetBounds = await targetPin.boundingBox();
+    assert.ok(sourceBounds && targetBounds);
+    await page.mouse.move(sourceBounds.x + 2, sourceBounds.y + 2);
+    await page.mouse.down();
+    await page.mouse.move(targetBounds.x + 2, targetBounds.y + 2, { steps: 8 });
+    await page.mouse.up();
+    assert.equal(await page.locator('#canvas .x6-edge').count(), 0);
+    const messages = await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: Array<{
+            type?: string;
+        }> };
+        return state.__veriflowMessages;
+    });
+    assert.equal(messages.some(message => message.type === 'editArchDesign'), false);
 }
 
 test('schematic runtime renders every visible pin label in a local clip viewport', {
@@ -1628,8 +2120,8 @@ test('schematic selection boxes persist single and rubberband batch moves once',
     }
 });
 
-test('schematic runtime paints obstacle-free geometry at desktop and narrow viewports', {
-    timeout: 30_000,
+test('schematic runtime paints responsive geometry and authors Arch Design connections', {
+    timeout: 60_000,
 }, async () => {
     rmSync(screenshotRoot, { recursive: true, force: true });
     mkdirSync(screenshotRoot, { recursive: true });
@@ -1946,6 +2438,7 @@ test('schematic runtime paints obstacle-free geometry at desktop and narrow view
             svgAfterCollapse.width > svgBeforeCollapse.width,
             JSON.stringify({ svgBeforeCollapse, svgAfterCollapse })
         );
+        await exerciseArchDesignConnections(page);
         assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();

@@ -634,6 +634,33 @@ export function projectArchDesignInspector(
     return projectDesignInspector(snapshot);
 }
 
+function ownsArchDesignPin(node: GraphNode, pin: GraphPin): boolean {
+    return node.pins.some(candidate => candidate.id === pin.id);
+}
+
+export function archDesignEndpointForPin(
+    design: ArchDesign,
+    node: GraphNode,
+    pin: GraphPin
+): ArchDesignEndpoint | undefined {
+    if (!ownsArchDesignPin(node, pin)) return undefined;
+    if (node.kind === 'instance') {
+        const instance = design.instances.find(candidate => candidate.name === node.label);
+        return instance
+            ? { kind: 'instance', instance: instance.name, port: pin.name }
+            : undefined;
+    }
+    if (node.kind !== 'port') return undefined;
+    const port = design.ports.find(candidate => candidate.name === node.label);
+    if (!port) return undefined;
+    if (port.direction !== 'inout') return { kind: 'port', port: port.name };
+    const prefix = `${port.name}_`;
+    const signal = pin.name.startsWith(prefix) ? pin.name.slice(prefix.length) : '';
+    return signal === 'i' || signal === 'o' || signal === 't'
+        ? { kind: 'port', port: port.name, signal }
+        : undefined;
+}
+
 export function formatSchematicDiagnosticDetails(
     diagnostics: readonly HdlDiagnostic[]
 ): string {

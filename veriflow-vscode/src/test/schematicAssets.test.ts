@@ -473,6 +473,23 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /function renderArchDesignInspector\(/);
     assert.match(webviewSource, /case 'archDesignState':/);
     assert.match(webviewSource, /type === 'archDesignState'/);
+    assert.match(webviewSource, /\barchDesignEndpointForPin\(/);
+    assert.match(
+        webviewSource,
+        /magnetConnectable:\s*\(\)\s*=>\s*connectionAuthoringEnabled\(\)/
+    );
+    assert.match(webviewSource, /graph\.on\('edge:connected'/);
+    const completedConnection = sourceSection(
+        webviewSource,
+        "graph.on('edge:connected'",
+        "\ngraph.on('edge:click'",
+        'Arch Design connection completion'
+    );
+    assert.match(
+        completedConnection,
+        /graph\.removeCell\(edge\);[^]*postArchDesignEdit\(\{[^]*type:\s*'connect'/,
+        'preview edge removal must precede the revision-bound edit'
+    );
     const editPosting = sourceSection(
         webviewSource,
         'function postArchDesignEdit(',
