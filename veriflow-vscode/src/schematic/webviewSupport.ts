@@ -14,6 +14,7 @@ import type {
     ArchDesignPort,
     ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
+import type { ArchDesignInspectorData } from '../archDesign/editorSupport';
 import type { SchematicLayout } from './layoutStore';
 import type { WebviewCommand } from './protocol';
 
@@ -105,6 +106,7 @@ export type ArchDesignAuthoringSnapshot = Readonly<{
     design: ArchDesign;
     catalog: readonly ArchDesignModuleDefinition[];
     validation: ArchDesignValidationResult;
+    inspector?: ArchDesignInspectorData;
 }>;
 
 export type ArchDesignInspectorField = Readonly<{
@@ -118,9 +120,15 @@ export type ArchDesignInspectorField = Readonly<{
 }>;
 
 export type ArchDesignInspectorModel = Readonly<{
-    kind: 'design' | 'instance' | 'port' | 'network' | 'multiple';
+    kind: 'design' | 'instance' | 'port' | 'pin' | 'interface' | 'network' | 'multiple';
     title: string;
     fields: readonly ArchDesignInspectorField[];
+    actions?: readonly Readonly<{
+        id: string;
+        label: string;
+        edit?: ArchDesignEdit;
+        disabledReason?: string;
+    }>[];
     deleteEdit?: ArchDesignEdit;
 }>;
 
@@ -359,6 +367,18 @@ function normalizedWidth(value: string): ArchDesignPort['width'] {
 function displayedWidth(width: ArchDesignPort['width']): string {
     if (width === undefined) return '1';
     return typeof width === 'number' ? String(width) : width.expression;
+}
+
+function promotedWidth(width: GraphPin['width']): ArchDesignPort['width'] {
+    if (width.kind === 'known') return width.bits;
+    if (width.kind === 'symbolic') return { expression: width.expression };
+    return undefined;
+}
+
+function promotedDirection(pin: GraphPin): ArchDesignPort['direction'] {
+    return pin.direction === 'driver'
+        ? 'output'
+        : pin.direction === 'load' ? 'input' : 'inout';
 }
 
 function endpointLabel(endpoint: ArchDesignEndpoint): string {
@@ -600,12 +620,316 @@ function projectNetworkAuthoringInspector(
     };
 }
 
+function findPin(
+    graph: SchematicGraph,
+    pinId: string
+): { node: GraphNode; pin: GraphPin } | undefined {
+    for (const node of graph.nodes) {
+        const pin = node.pins.find(candidate => candidate.id === pinId);
+        if (pin) return { node, pin };
+    }
+    return undefined;
+}
+
+function scalarConnectionForPin(
+    snapshot: ArchDesignAuthoringSnapshot,
+    node: GraphNode,
+    pin: GraphPin
+): string | undefined {
+    if (node.kind !== 'instance') return undefined;
+    return snapshot.design.connections.find(connection => connection.endpoints.some(endpoint =>
+        endpoint.kind === 'instance'
+        && endpoint.instance === node.label
+        && endpoint.port === pin.name
+    ))?.name;
+}
+
+function projectPinAuthoringInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    node: GraphNode,
+    pin: GraphPin
+): ArchDesignInspectorModel | undefined {
+    if (node.kind !== 'instance') return undefined;
+    if (pin.interface?.kind === 'aggregate') {
+        return projectInterfaceAuthoringInspector(snapshot, pin.interface.id);
+    }
+    const instance = snapshot.design.instances.find(candidate => candidate.name === node.label);
+    if (!instance) return undefined;
+    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definitionPort = definition?.ports.find(candidate => candidate.name === pin.name);
+    const interfaceItem = pin.interface === undefined
+        ? undefined
+        : snapshot.inspector?.interfaces.find(item => item.identity === pin.interface?.id);
+    const occupancy = scalarConnectionForPin(snapshot, node, pin)
+        ?? interfaceItem?.members.find(member => member.port === pin.name)?.occupancy;
+    const width = promotedWidth(pin.width);
+    const direction = definitionPort?.direction ?? promotedDirection(pin);
+    const port: ArchDesignPort = {
+        name: pin.name,
+        direction,
+        ...(width === undefined ? {} : { width }),
+    };
+    return {
+        kind: 'pin',
+        title: `${instance.name}.${pin.name}`,
+        fields: [
+            readonlyField('pin-instance', 'Instance', instance.name),
+            readonlyField('pin-name', 'Port', pin.name),
+            readonlyField('pin-direction', 'Direction', direction),
+            readonlyField('pin-width', 'Width', formatWidth(pin.width)),
+            readonlyField(
+                'pin-interface',
+                'Interface',
+                interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
+                    interfaceItem.endpoint
+                )}` : 'None'
+            ),
+            readonlyField('pin-occupancy', 'Occupancy', occupancy ?? 'Unconnected'),
+        ],
+        actions: [{
+            id: 'expose-port',
+            label: 'Expose as top-level port',
+            ...(occupancy ? { disabledReason: `Port is connected by ${occupancy}` } : {
+                edit: {
+                    type: 'promotePort',
+                    source: { kind: 'instance', instance: instance.name, port: pin.name },
+                    port,
+                    connection: pin.name,
+                },
+            }),
+        }],
+    };
+}
+
+function interfaceEndpointName(
+    endpoint: ArchDesignInspectorData['interfaces'][number]['endpoint']
+): string {
+    return endpoint.kind === 'port'
+        ? endpoint.port
+        : `${endpoint.instance}.${endpoint.interface}`;
+}
+
+function interfaceCollapseEdit(
+    snapshot: ArchDesignAuthoringSnapshot,
+    identity: string,
+    collapsed: boolean
+): ArchDesignEdit {
+    return {
+        type: 'setPresentation',
+        presentation: {
+            ...snapshot.design.presentation,
+            collapsedInterfaces: {
+                ...snapshot.design.presentation.collapsedInterfaces,
+                [identity]: collapsed,
+            },
+        },
+    };
+}
+
+function projectInterfaceAuthoringInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    identity: string
+): ArchDesignInspectorModel | undefined {
+    const item = snapshot.inspector?.interfaces.find(candidate => candidate.identity === identity);
+    if (!item) return undefined;
+    const override = item.endpoint.kind === 'instance'
+        ? snapshot.design.interfaceOverrides[`${item.endpoint.instance}.${item.endpoint.interface}`]
+        : undefined;
+    const fields: ArchDesignInspectorField[] = [
+        readonlyField('interface-protocol', 'Protocol', item.protocolName),
+        readonlyField('interface-role', 'Role', item.role),
+        readonlyField('interface-role-source', 'Role source', item.roleSource),
+        readonlyField('interface-top-level', 'Top-level', item.topLevel ? 'Yes' : 'No'),
+        readonlyField(
+            'interface-members',
+            'Members',
+            item.members.length === 0
+                ? 'None'
+                : item.members.map(member => `${member.member} (${member.port})`).join(', ')
+        ),
+        readonlyField(
+            'interface-missing',
+            'Missing members',
+            item.missingMembers.length === 0 ? 'None' : item.missingMembers.join(', ')
+        ),
+        readonlyField(
+            'interface-peer',
+            'Peer',
+            item.connection?.peer ?? 'Unconnected'
+        ),
+        readonlyField(
+            'interface-warnings',
+            'Warnings',
+            item.connection?.warnings.map(warning => warning.message).join('; ') || 'None'
+        ),
+        {
+            id: 'interface-collapse',
+            label: 'Display',
+            control: 'select',
+            value: item.collapsed ? 'collapsed' : 'expanded',
+            options: [
+                { value: 'collapsed', label: 'Collapsed' },
+                { value: 'expanded', label: 'Expanded' },
+            ],
+            commit: value => value === 'collapsed' || value === 'expanded'
+                ? interfaceCollapseEdit(snapshot, item.identity, value === 'collapsed')
+                : undefined,
+        },
+    ];
+    if (item.endpoint.kind === 'instance') {
+        const endpoint = item.endpoint;
+        fields.push({
+            id: 'interface-protocol-override',
+            label: 'Protocol override',
+            control: 'select',
+            value: override?.protocol ?? '',
+            options: [
+                { value: '', label: 'Automatic' },
+                ...(snapshot.inspector?.protocols.map(protocol => ({
+                    value: protocol.id,
+                    label: protocol.name,
+                })) ?? []),
+            ],
+            commit: value => value === '' && override?.role === undefined
+                ? {
+                    type: 'clearInterfaceOverride',
+                    instance: endpoint.instance,
+                    interface: endpoint.interface,
+                }
+                : value === '' ? {
+                    type: 'setInterfaceOverride',
+                    instance: endpoint.instance,
+                    interface: endpoint.interface,
+                    role: override!.role,
+                }
+                    : snapshot.inspector?.protocols.some(protocol => protocol.id === value)
+                        ? {
+                            type: 'setInterfaceOverride',
+                            instance: endpoint.instance,
+                            interface: endpoint.interface,
+                            protocol: value,
+                            ...(override?.role === undefined ? {} : { role: override.role }),
+                        } : undefined,
+        });
+        fields.push({
+            id: 'interface-role-override',
+            label: 'Role override',
+            control: 'select',
+            value: override?.role ?? '',
+            options: [
+                { value: '', label: 'Automatic' },
+                { value: 'master', label: 'Master' },
+                { value: 'slave', label: 'Slave' },
+            ],
+            commit: value => value === 'master' || value === 'slave'
+                ? {
+                    type: 'setInterfaceOverride',
+                    instance: endpoint.instance,
+                    interface: endpoint.interface,
+                    role: value,
+                    ...(override?.protocol === undefined ? {} : { protocol: override.protocol }),
+                }
+                : value === '' && override?.protocol === undefined
+                    ? {
+                        type: 'clearInterfaceOverride',
+                        instance: endpoint.instance,
+                        interface: endpoint.interface,
+                    }
+                    : value === '' ? {
+                        type: 'setInterfaceOverride',
+                        instance: endpoint.instance,
+                        interface: endpoint.interface,
+                        protocol: override!.protocol,
+                    } : undefined,
+        });
+    }
+    for (const value of item.connection?.defaults ?? []) {
+        fields.push(textField(
+            `interface-default-${value.member}`,
+            `Default ${value.member}`,
+            value.origin === 'connection' ? value.expression : '',
+            expression => ({
+                type: 'setInterfaceDefault',
+                connection: item.connection!.name,
+                member: value.member,
+                ...(expression.trim().length === 0 ? {} : { expression: expression.trim() }),
+            }),
+            value.protocolExpression === undefined
+                ? 'No protocol default'
+                : `Protocol default: ${value.protocolExpression}`
+        ));
+    }
+    const actions: NonNullable<ArchDesignInspectorModel['actions']>[number][] = [];
+    if (item.topLevel) {
+        const peer = item.connection?.peerIdentity === undefined
+            ? undefined
+            : snapshot.inspector?.interfaces.find(
+                candidate => candidate.identity === item.connection?.peerIdentity
+            );
+        actions.push({
+            id: 'resync-interface',
+            label: 'Resynchronize from current connection',
+            ...(peer?.snapshot === undefined ? {
+                disabledReason: 'No connected module interface is available',
+            } : {
+                edit: {
+                    type: 'resyncInterfacePort',
+                    port: item.endpoint.kind === 'port' ? item.endpoint.port : '',
+                    source: peer.snapshot,
+                },
+            }),
+        });
+    } else {
+        actions.push({
+            id: 'expose-interface',
+            label: 'Expose as top-level interface',
+            ...(item.connection ? {
+                disabledReason: `Interface is connected by ${item.connection.name}`,
+            } : item.snapshot === undefined ? {
+                disabledReason: 'Resolve the interface role and member widths first',
+            } : {
+                edit: {
+                    type: 'promoteInterface',
+                    source: item.snapshot,
+                    port: item.endpoint.kind === 'instance' ? item.endpoint.interface : '',
+                    memberPrefix: item.endpoint.kind === 'instance'
+                        ? item.endpoint.interface
+                        : '',
+                    connection: item.endpoint.kind === 'instance'
+                        ? item.endpoint.interface
+                        : '',
+                },
+            }),
+        });
+    }
+    return {
+        kind: 'interface',
+        title: interfaceEndpointName(item.endpoint),
+        fields,
+        actions,
+    };
+}
+
 export function projectArchDesignInspector(
     snapshot: ArchDesignAuthoringSnapshot,
     graph: SchematicGraph,
     selectedNodeIds: readonly string[],
-    selectedNetworkId: string | undefined
+    selectedNetworkId: string | undefined,
+    selectedPinId?: string
 ): ArchDesignInspectorModel {
+    if (selectedPinId !== undefined) {
+        const selectedPin = findPin(graph, selectedPinId);
+        if (selectedPin) {
+            const pin = projectPinAuthoringInspector(
+                snapshot,
+                selectedPin.node,
+                selectedPin.pin
+            );
+            if (pin) return pin;
+        }
+        const interfaceModel = projectInterfaceAuthoringInspector(snapshot, selectedPinId);
+        if (interfaceModel) return interfaceModel;
+    }
     if (selectedNetworkId !== undefined) {
         const network = projectNetworkAuthoringInspector(
             snapshot,

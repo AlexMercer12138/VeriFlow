@@ -1,6 +1,8 @@
 import * as assert from 'assert';
 
 import type { SchematicGraph } from '@veriflow/schematic-core';
+import { projectArchDesignGraph } from '@veriflow/schematic-core/arch-design';
+import { createInterfaceProtocolCatalog } from '@veriflow/schematic-core/interfaces';
 import type {
     ArchDesign,
     ArchDesignModuleDefinition,
@@ -18,6 +20,7 @@ import {
     summarizeSchematicSelection,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
+import { projectArchDesignInspectorData } from '../archDesign/editorSupport';
 
 function fieldById(
     model: ReturnType<typeof projectArchDesignInspector>,
@@ -26,6 +29,15 @@ function fieldById(
     const field = model.fields.find(candidate => candidate.id === id);
     assert.ok(field, `missing Inspector field ${id}`);
     return field;
+}
+
+function actionById(
+    model: ReturnType<typeof projectArchDesignInspector>,
+    id: string
+): NonNullable<ReturnType<typeof projectArchDesignInspector>['actions']>[number] {
+    const action = model.actions?.find(candidate => candidate.id === id);
+    assert.ok(action, `missing Inspector action ${id}`);
+    return action;
 }
 
 function inspectorGraph(): SchematicGraph {
@@ -417,6 +429,259 @@ function testArchDesignInspectorProjection(): void {
     });
 }
 
+function interfaceFixture() {
+    const interfaceCatalog = createInterfaceProtocolCatalog([{
+        source: '/workspace/protocols/link.json',
+        value: {
+            format: 'veriflow-interface-protocol',
+            schemaVersion: 1,
+            id: 'project.link',
+            name: 'Project Link',
+            separator: '_',
+            priority: 100,
+            members: [
+                { name: 'request', direction: 'master-to-slave' },
+                { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+                { name: 'tag', direction: 'master-to-slave', default: "4'h0" },
+            ],
+            recognitionGroups: [['request', 'accept']],
+        },
+    }]);
+    const catalog: ArchDesignModuleDefinition[] = [{
+        key: 'master',
+        name: 'master',
+        parameters: [],
+        ports: [
+            { name: 'irq', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'BUS_REQUEST', direction: 'output', width: { kind: 'known', bits: 32 } },
+            { name: 'BUS_ACCEPT', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ],
+    }, {
+        key: 'slave',
+        name: 'slave',
+        parameters: [],
+        ports: [
+            { name: 'LINK_REQUEST', direction: 'input', width: { kind: 'known', bits: 16 } },
+            { name: 'LINK_ACCEPT', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'LINK_TAG', direction: 'input', width: { kind: 'known', bits: 4 } },
+        ],
+    }];
+    const design: ArchDesign = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'interface_top',
+        ports: [],
+        instances: [
+            { name: 'u_master', module: 'master' },
+            { name: 'u_slave', module: 'slave' },
+        ],
+        connections: [],
+        interfacePorts: [],
+        interfaceOverrides: {},
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+        defaults: {},
+        export: {},
+        presentation: {},
+    };
+    const projection = projectArchDesignGraph(design, catalog, {
+        fileUri: 'file:///workspace/interface.ad',
+        interfaceCatalog,
+    });
+    return {
+        interfaceCatalog,
+        catalog,
+        design,
+        graph: projection.graph,
+        snapshot: {
+            design,
+            catalog,
+            validation: projection.validation,
+            inspector: projectArchDesignInspectorData(design, catalog, interfaceCatalog),
+        },
+    };
+}
+
+function testPinAndInterfaceInspectorProjection(): void {
+    const fixture = interfaceFixture();
+    const pin = projectArchDesignInspector(
+        fixture.snapshot,
+        fixture.graph,
+        [],
+        undefined,
+        'instance:u_master:irq'
+    );
+    assert.strictEqual(pin.kind, 'pin');
+    assert.strictEqual(fieldById(pin, 'pin-instance').value, 'u_master');
+    assert.strictEqual(fieldById(pin, 'pin-name').value, 'irq');
+    assert.strictEqual(fieldById(pin, 'pin-direction').value, 'output');
+    assert.strictEqual(fieldById(pin, 'pin-width').value, '1 bit');
+    assert.strictEqual(fieldById(pin, 'pin-interface').value, 'None');
+    assert.strictEqual(fieldById(pin, 'pin-occupancy').value, 'Unconnected');
+    assert.deepStrictEqual(actionById(pin, 'expose-port').edit, {
+        type: 'promotePort',
+        source: { kind: 'instance', instance: 'u_master', port: 'irq' },
+        port: { name: 'irq', direction: 'output', width: 1 },
+        connection: 'irq',
+    });
+
+    const interfaceModel = projectArchDesignInspector(
+        fixture.snapshot,
+        fixture.graph,
+        [],
+        undefined,
+        'interface:instance:u_master:BUS'
+    );
+    assert.strictEqual(interfaceModel.kind, 'interface');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-protocol').value, 'Project Link');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-role').value, 'master');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-role-source').value, 'inferred');
+    assert.deepStrictEqual(
+        fieldById(interfaceModel, 'interface-protocol-override').commit?.('project.link'),
+        {
+            type: 'setInterfaceOverride',
+            instance: 'u_master',
+            interface: 'BUS',
+            protocol: 'project.link',
+        }
+    );
+    assert.strictEqual(fieldById(interfaceModel, 'interface-members').value,
+        'request (BUS_REQUEST), accept (BUS_ACCEPT)');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-missing').value, 'tag');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-peer').value, 'u_slave.LINK');
+    assert.strictEqual(fieldById(interfaceModel, 'interface-default-tag').placeholder,
+        "Protocol default: 4'h0");
+    assert.deepStrictEqual(
+        fieldById(interfaceModel, 'interface-default-tag').commit?.("4'hf"),
+        {
+            type: 'setInterfaceDefault',
+            connection: 'control',
+            member: 'tag',
+            expression: "4'hf",
+        }
+    );
+    assert.deepStrictEqual(
+        fieldById(interfaceModel, 'interface-collapse').commit?.('expanded'),
+        {
+            type: 'setPresentation',
+            presentation: {
+                collapsedInterfaces: {
+                    'interface:instance:u_master:BUS': false,
+                },
+            },
+        }
+    );
+    assert.strictEqual(fieldById(interfaceModel, 'interface-warnings').value,
+        'Interface member request connects 32 bits to 16 bits');
+    assert.strictEqual(actionById(interfaceModel, 'expose-interface').disabledReason,
+        'Interface is connected by control');
+
+    const unconnectedDesign: ArchDesign = {
+        ...fixture.design,
+        interfaceConnections: [],
+    };
+    const unconnectedProjection = projectArchDesignGraph(
+        unconnectedDesign,
+        fixture.catalog,
+        {
+            fileUri: 'file:///workspace/interface.ad',
+            interfaceCatalog: fixture.interfaceCatalog,
+        }
+    );
+    const unconnectedSnapshot = {
+        design: unconnectedDesign,
+        catalog: fixture.catalog,
+        validation: unconnectedProjection.validation,
+        inspector: projectArchDesignInspectorData(
+            unconnectedDesign,
+            fixture.catalog,
+            fixture.interfaceCatalog
+        ),
+    };
+    const exposed = projectArchDesignInspector(
+        unconnectedSnapshot,
+        unconnectedProjection.graph,
+        [],
+        undefined,
+        'interface:instance:u_master:BUS'
+    );
+    assert.deepStrictEqual(actionById(exposed, 'expose-interface').edit, {
+        type: 'promoteInterface',
+        source: {
+            endpoint: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            protocol: 'project.link',
+            role: 'master',
+            members: [
+                { member: 'request', port: 'BUS_REQUEST', width: 32 },
+                { member: 'accept', port: 'BUS_ACCEPT', width: 1 },
+            ],
+        },
+        port: 'BUS',
+        memberPrefix: 'BUS',
+        connection: 'BUS',
+    });
+}
+
+function testTopInterfaceResynchronizationProjection(): void {
+    const fixture = interfaceFixture();
+    const design: ArchDesign = {
+        ...fixture.design,
+        interfacePorts: [{
+            name: 'm_link',
+            protocol: 'project.link',
+            role: 'master',
+            memberPrefix: 'M_LINK',
+            members: [{ member: 'request', width: 8 }],
+        }],
+        interfaceConnections: [{
+            name: 'boundary',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'port', port: 'm_link' },
+        }],
+    };
+    const projection = projectArchDesignGraph(design, fixture.catalog, {
+        fileUri: 'file:///workspace/interface.ad',
+        interfaceCatalog: fixture.interfaceCatalog,
+    });
+    const snapshot = {
+        design,
+        catalog: fixture.catalog,
+        validation: projection.validation,
+        inspector: projectArchDesignInspectorData(
+            design,
+            fixture.catalog,
+            fixture.interfaceCatalog
+        ),
+    };
+
+    const model = projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        [],
+        undefined,
+        'interface:port:m_link'
+    );
+
+    assert.strictEqual(model.kind, 'interface');
+    assert.strictEqual(fieldById(model, 'interface-top-level').value, 'Yes');
+    assert.deepStrictEqual(actionById(model, 'resync-interface').edit, {
+        type: 'resyncInterfacePort',
+        port: 'm_link',
+        source: {
+            endpoint: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            protocol: 'project.link',
+            role: 'master',
+            members: [
+                { member: 'request', port: 'BUS_REQUEST', width: 32 },
+                { member: 'accept', port: 'BUS_ACCEPT', width: 1 },
+            ],
+        },
+    });
+}
+
 function testLargeFanoutInspectorUsesBoundedIndexedPreview(): void {
     const withoutFind = <T>(values: T[]): T[] => new Proxy(values, {
         get(target, property, receiver): unknown {
@@ -740,6 +1005,8 @@ void Promise.resolve()
     .then(testDiagnosticDetailFormatting)
     .then(testSchematicInspectorProjection)
     .then(testArchDesignInspectorProjection)
+    .then(testPinAndInterfaceInspectorProjection)
+    .then(testTopInterfaceResynchronizationProjection)
     .then(testLargeFanoutInspectorUsesBoundedIndexedPreview)
     .then(testSynchronousWebviewLayoutSnapshot)
     .then(testSelectionStatusSummary)

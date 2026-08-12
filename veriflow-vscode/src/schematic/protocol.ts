@@ -15,6 +15,7 @@ import type {
     ArchDesignPresentation,
     ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
+import type { ArchDesignInspectorData } from '../archDesign/editorSupport';
 
 import type { SourceSpan } from '../core/hdl/model';
 import {
@@ -68,6 +69,7 @@ export type HostEvent =
         design: ArchDesign;
         catalog: readonly ArchDesignModuleDefinition[];
         validation: ArchDesignValidationResult;
+        inspector: ArchDesignInspectorData;
     }
     | {
         type: 'archDesignState';

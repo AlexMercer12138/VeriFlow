@@ -27,6 +27,7 @@ import {
     archDesignLayout,
     archDesignGraphsEqual,
     archDesignPresentationFromLayout,
+    projectArchDesignInspectorData,
     toArchDesignModuleDefinitions,
 } from './editorSupport';
 import {
@@ -344,6 +345,11 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 fileUri: document.uri.toString(),
                 interfaceCatalog: interfaceProtocols.catalog,
             });
+            const inspector = projectArchDesignInspectorData(
+                design,
+                definitions,
+                interfaceProtocols.catalog
+            );
             const protocolDiagnostics: ArchDesignDiagnostic[] =
                 interfaceProtocols.diagnostics.map(item => ({
                     path: `${item.source}:${item.path}`,
@@ -405,6 +411,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 design,
                 catalog: definitions,
                 validation,
+                inspector,
             });
         };
         const applyDocumentEdit = async (

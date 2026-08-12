@@ -7,6 +7,7 @@ import {
     type ArchDesign,
     type ArchDesignModuleDefinition,
 } from '@veriflow/schematic-core/arch-design';
+import { createInterfaceProtocolCatalog } from '@veriflow/schematic-core/interfaces';
 
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import {
@@ -14,6 +15,7 @@ import {
     archDesignGraphsEqual,
     archDesignLayout,
     archDesignPresentationFromLayout,
+    projectArchDesignInspectorData,
     toArchDesignModuleDefinitions,
 } from '../archDesign/editorSupport';
 
@@ -209,11 +211,99 @@ function testGraphEqualityForLightweightProtocolRefresh(): void {
     assert.strictEqual(archDesignGraphsEqual(projected, equal), false);
 }
 
+function testResolvedInterfaceInspectorData(): void {
+    const interfaceCatalog = createInterfaceProtocolCatalog([{
+        source: '/workspace/protocols/link.json',
+        value: {
+            format: 'veriflow-interface-protocol',
+            schemaVersion: 1,
+            id: 'project.link',
+            name: 'Project Link',
+            separator: '_',
+            priority: 100,
+            members: [
+                { name: 'request', direction: 'master-to-slave' },
+                { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+                { name: 'tag', direction: 'master-to-slave', default: "4'h0" },
+            ],
+            recognitionGroups: [['request', 'accept']],
+        },
+    }]);
+    const definitions: ArchDesignModuleDefinition[] = [{
+        key: 'master',
+        name: 'master',
+        parameters: [],
+        ports: [
+            { name: 'BUS_REQUEST', direction: 'output', width: { kind: 'known', bits: 32 } },
+            { name: 'BUS_ACCEPT', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ],
+    }, {
+        key: 'slave',
+        name: 'slave',
+        parameters: [],
+        ports: [
+            { name: 'LINK_REQUEST', direction: 'input', width: { kind: 'known', bits: 16 } },
+            { name: 'LINK_ACCEPT', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'LINK_TAG', direction: 'input', width: { kind: 'known', bits: 4 } },
+        ],
+    }];
+    const selectedDesign = designOf({
+        instances: [
+            { name: 'u_master', module: 'master' },
+            { name: 'u_slave', module: 'slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+    });
+
+    const projected = projectArchDesignInspectorData(
+        selectedDesign,
+        definitions,
+        interfaceCatalog
+    );
+
+    assert.deepStrictEqual(projected.protocols.find(item => item.id === 'project.link'), {
+        id: 'project.link',
+        name: 'Project Link',
+        source: '/workspace/protocols/link.json',
+    });
+    const master = projected.interfaces.find(
+        item => item.identity === 'interface:instance:u_master:BUS'
+    );
+    assert.ok(master);
+    assert.strictEqual(master?.role, 'master');
+    assert.strictEqual(master?.roleSource, 'inferred');
+    assert.deepStrictEqual(master?.members.map(member => [
+        member.member,
+        member.port,
+        member.occupancy,
+    ]), [
+        ['request', 'BUS_REQUEST', 'control'],
+        ['accept', 'BUS_ACCEPT', 'control'],
+    ]);
+    assert.deepStrictEqual(master?.missingMembers, ['tag']);
+    assert.strictEqual(master?.connection?.peer, 'u_slave.LINK');
+    assert.deepStrictEqual(master?.connection?.defaults, [{
+        member: 'tag',
+        expression: "4'h0",
+        origin: 'protocol',
+        source: 'protocol:project.link:tag',
+        protocolExpression: "4'h0",
+    }]);
+    assert.deepStrictEqual(master?.connection?.warnings.map(item => item.code), [
+        'AD_INTERFACE_WIDTH',
+    ]);
+}
+
 function main(): void {
     testCatalogProjection();
     testLayoutProjection();
     testEndpointProjection();
     testGraphEqualityForLightweightProtocolRefresh();
+    testResolvedInterfaceInspectorData();
     console.log('Arch Design editor support tests passed');
 }
 
