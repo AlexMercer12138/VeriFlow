@@ -44929,11 +44929,35 @@
     return createSVGElement([tag, attrs, iconNode]);
   };
 
+  // node_modules/lucide/dist/esm/icons/cable.mjs
+  var Cable = [
+    ["path", { d: "M17 19a1 1 0 0 1-1-1v-2a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2a1 1 0 0 1-1 1z" }],
+    ["path", { d: "M17 21v-2" }],
+    ["path", { d: "M19 14V6.5a1 1 0 0 0-7 0v11a1 1 0 0 1-7 0V10" }],
+    ["path", { d: "M21 21v-2" }],
+    ["path", { d: "M3 5V3" }],
+    ["path", { d: "M4 10a2 2 0 0 1-2-2V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2z" }],
+    ["path", { d: "M7 5V3" }]
+  ];
+
   // node_modules/lucide/dist/esm/icons/chevron-down.mjs
   var ChevronDown = [["path", { d: "m6 9 6 6 6-6" }]];
 
   // node_modules/lucide/dist/esm/icons/chevron-up.mjs
   var ChevronUp = [["path", { d: "m18 15-6-6-6 6" }]];
+
+  // node_modules/lucide/dist/esm/icons/file-output.mjs
+  var FileOutput = [
+    [
+      "path",
+      {
+        d: "M4.226 20.925A2 2 0 0 0 6 22h12a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v3.127"
+      }
+    ],
+    ["path", { d: "M14 2v5a1 1 0 0 0 1 1h5" }],
+    ["path", { d: "m5 11-3 3" }],
+    ["path", { d: "m5 17-3-3h10" }]
+  ];
 
   // node_modules/lucide/dist/esm/icons/map.mjs
   var Map3 = [
@@ -44969,6 +44993,13 @@
     ["path", { d: "m10 15-3-3 3-3" }]
   ];
 
+  // node_modules/lucide/dist/esm/icons/panel-top-open.mjs
+  var PanelTopOpen = [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M3 9h18" }],
+    ["path", { d: "m15 14-3 3-3-3" }]
+  ];
+
   // node_modules/lucide/dist/esm/icons/scan.mjs
   var Scan = [
     ["path", { d: "M3 7V5a2 2 0 0 1 2-2h2" }],
@@ -44981,6 +45012,22 @@
   var Search = [
     ["path", { d: "m21 21-4.34-4.34" }],
     ["circle", { cx: "11", cy: "11", r: "8" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/square-plus.mjs
+  var SquarePlus = [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M8 12h8" }],
+    ["path", { d: "M12 8v8" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/trash-2.mjs
+  var Trash2 = [
+    ["path", { d: "M10 11v6" }],
+    ["path", { d: "M14 11v6" }],
+    ["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }],
+    ["path", { d: "M3 6h18" }],
+    ["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }]
   ];
 
   // node_modules/lucide/dist/esm/icons/workflow.mjs
@@ -45150,6 +45197,245 @@
       rows: []
     };
   }
+  function textField(id, label, value, commit, placeholder) {
+    return {
+      id,
+      label,
+      control: "text",
+      value,
+      ...placeholder === void 0 ? {} : { placeholder },
+      commit
+    };
+  }
+  function readonlyField(id, label, value) {
+    return { id, label, control: "readonly", value };
+  }
+  function normalizedWidth(value) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return void 0;
+    if (/^[1-9][0-9]*$/.test(trimmed)) return Number(trimmed);
+    return { expression: trimmed };
+  }
+  function displayedWidth(width2) {
+    if (width2 === void 0) return "1";
+    return typeof width2 === "number" ? String(width2) : width2.expression;
+  }
+  function endpointLabel(endpoint) {
+    if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
+    return endpoint.signal === void 0 ? endpoint.port : `${endpoint.port}.${endpoint.signal}`;
+  }
+  function endpointIdentity(endpoint) {
+    if (endpoint.kind === "instance") {
+      return `instance:${endpoint.instance}:${endpoint.port}`;
+    }
+    return `port:${endpoint.port}:${endpoint.signal ?? "value"}`;
+  }
+  function endpointDefaultKey(endpoint) {
+    if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
+    return `${endpoint.port}.${endpoint.signal ?? "value"}`;
+  }
+  function matchingDefinition(catalog, module2) {
+    const matches = catalog.filter((candidate) => candidate.name === module2);
+    return matches.length === 1 ? matches[0] : void 0;
+  }
+  function projectDesignInspector(snapshot) {
+    const { design } = snapshot;
+    const language = design.export.language ?? "verilog";
+    const output = design.export.output ?? "";
+    const languageOptions = [{ value: "verilog", label: "Verilog (.v)" }, {
+      value: "systemverilog",
+      label: "SystemVerilog (.sv)"
+    }];
+    return {
+      kind: "design",
+      title: design.module,
+      fields: [
+        readonlyField("design-module", "Module", design.module),
+        {
+          id: "export-language",
+          label: "RTL language",
+          control: "select",
+          value: language,
+          options: languageOptions,
+          commit: (value) => value === "verilog" || value === "systemverilog" ? {
+            type: "setExport",
+            language: value,
+            ...output.length === 0 ? {} : { output }
+          } : void 0
+        },
+        textField("export-output", "Output path", output, (value) => ({
+          type: "setExport",
+          language,
+          ...value.trim().length === 0 ? {} : { output: value.trim() }
+        }), "Sibling .v or .sv")
+      ]
+    };
+  }
+  function projectInstanceInspector(snapshot, name) {
+    const instance = snapshot.design.instances.find((candidate) => candidate.name === name);
+    if (!instance) return void 0;
+    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const fields = [
+      textField("instance-name", "Name", instance.name, (value) => value.trim().length > 0 ? { type: "renameInstance", name: instance.name, nextName: value.trim() } : void 0),
+      readonlyField("instance-module", "Module", instance.module)
+    ];
+    const parameterNames = /* @__PURE__ */ new Set([
+      ...definition?.parameters.map((parameter) => parameter.name) ?? [],
+      ...Object.keys(instance.parameters ?? {})
+    ]);
+    for (const parameter of parameterNames) {
+      const value = instance.parameters?.[parameter];
+      const defaultExpression = definition?.parameters.find(
+        (candidate) => candidate.name === parameter
+      )?.defaultExpression;
+      fields.push(textField(
+        `parameter-${parameter}`,
+        parameter,
+        value === void 0 ? "" : String(value),
+        (next) => ({
+          type: "setInstanceParameter",
+          instance: instance.name,
+          parameter,
+          ...next.length === 0 ? {} : { value: next }
+        }),
+        defaultExpression === void 0 ? "No override" : `Default: ${defaultExpression}`
+      ));
+    }
+    return {
+      kind: "instance",
+      title: instance.name,
+      fields,
+      deleteEdit: { type: "removeInstance", name: instance.name }
+    };
+  }
+  function portDefaultKeys(port2) {
+    if (port2.direction === "output") return [`${port2.name}.value`];
+    if (port2.direction === "inout") return [`${port2.name}.o`, `${port2.name}.t`];
+    return [];
+  }
+  function effectiveDefaultPlaceholder(snapshot, endpoint, connection2) {
+    const effective = snapshot.validation.effectiveDefaults.find(
+      (candidate) => candidate.endpoint === endpoint && (connection2 === void 0 || candidate.connection === connection2)
+    );
+    if (!effective) return "No default";
+    const source = effective.origin === "implicit-inout-t" ? "Implicit default" : effective.origin === "design" ? "Design default" : "Connection default";
+    return `${source}: ${effective.expression}`;
+  }
+  function projectPortInspector(snapshot, name) {
+    const port2 = snapshot.design.ports.find((candidate) => candidate.name === name);
+    if (!port2) return void 0;
+    const updatedPort = (next) => ({
+      type: "updatePort",
+      name: port2.name,
+      port: {
+        name: next.name ?? port2.name,
+        direction: next.direction ?? port2.direction,
+        ...next.width === void 0 && !Object.prototype.hasOwnProperty.call(next, "width") ? port2.width === void 0 ? {} : { width: port2.width } : next.width === void 0 ? {} : { width: next.width }
+      }
+    });
+    const fields = [
+      textField("port-name", "Name", port2.name, (value) => value.trim().length > 0 ? updatedPort({ name: value.trim() }) : void 0),
+      {
+        id: "port-direction",
+        label: "Direction",
+        control: "select",
+        value: port2.direction,
+        options: ["input", "output", "inout"].map((value) => ({ value, label: value })),
+        commit: (value) => value === "input" || value === "output" || value === "inout" ? updatedPort({ direction: value }) : void 0
+      },
+      textField("port-width", "Width", displayedWidth(port2.width), (value) => updatedPort({ width: normalizedWidth(value) }))
+    ];
+    for (const key of portDefaultKeys(port2)) {
+      fields.push(textField(
+        `default-${key}`,
+        `Default ${key.slice(port2.name.length + 1)}`,
+        snapshot.design.defaults[key] ?? "",
+        (value) => ({
+          type: "setDefault",
+          endpoint: key,
+          ...value.trim().length === 0 ? {} : { expression: value.trim() }
+        }),
+        effectiveDefaultPlaceholder(snapshot, key)
+      ));
+    }
+    return {
+      kind: "port",
+      title: port2.name,
+      fields,
+      deleteEdit: { type: "removePort", name: port2.name }
+    };
+  }
+  function projectNetworkAuthoringInspector(snapshot, graph2, networkId) {
+    const graphNetwork = graph2.networks.find((candidate) => candidate.id === networkId);
+    if (!graphNetwork) return void 0;
+    const connection2 = snapshot.design.connections.find(
+      (candidate) => candidate.name === graphNetwork.name
+    );
+    if (!connection2) return void 0;
+    const roles = new Map(graphNetwork.endpoints.map((endpoint) => [endpoint.pinId, endpoint.role]));
+    const fields = [
+      textField("connection-name", "Name", connection2.name, (value) => value.trim().length > 0 ? {
+        type: "renameConnection",
+        name: connection2.name,
+        nextName: value.trim()
+      } : void 0),
+      readonlyField(
+        "connection-endpoints",
+        "Endpoints",
+        connection2.endpoints.map(endpointLabel).join(", ")
+      )
+    ];
+    for (const endpoint of connection2.endpoints) {
+      if (roles.get(endpointIdentity(endpoint)) !== "load") continue;
+      const key = endpointDefaultKey(endpoint);
+      fields.push(textField(
+        `default-${key}`,
+        `Default ${key}`,
+        connection2.defaults?.[key] ?? "",
+        (value) => ({
+          type: "setDefault",
+          connection: connection2.name,
+          endpoint: key,
+          ...value.trim().length === 0 ? {} : { expression: value.trim() }
+        }),
+        effectiveDefaultPlaceholder(snapshot, key, connection2.name)
+      ));
+    }
+    return {
+      kind: "network",
+      title: connection2.name,
+      fields,
+      deleteEdit: { type: "removeConnection", name: connection2.name }
+    };
+  }
+  function projectArchDesignInspector(snapshot, graph2, selectedNodeIds2, selectedNetworkId2) {
+    if (selectedNetworkId2 !== void 0) {
+      const network = projectNetworkAuthoringInspector(
+        snapshot,
+        graph2,
+        selectedNetworkId2
+      );
+      if (network) return network;
+    }
+    const selected = [...new Set(selectedNodeIds2)];
+    if (selected.length > 1) {
+      return {
+        kind: "multiple",
+        title: `${selected.length} objects selected`,
+        fields: [readonlyField("selection-count", "Count", String(selected.length))]
+      };
+    }
+    const [nodeId] = selected;
+    if (nodeId?.startsWith("instance:")) {
+      const model = projectInstanceInspector(snapshot, nodeId.slice("instance:".length));
+      if (model) return model;
+    }
+    if (nodeId?.startsWith("port:")) {
+      const model = projectPortInspector(snapshot, nodeId.slice("port:".length));
+      if (model) return model;
+    }
+    return projectDesignInspector(snapshot);
+  }
   function formatSchematicDiagnosticDetails(diagnostics) {
     return diagnostics.map(
       (diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`
@@ -45270,9 +45556,26 @@
     minimapButton: requiredElement("minimap-button"),
     minimap: requiredElement("minimap"),
     inspectorToggleButton: requiredElement("inspector-toggle-button"),
+    authoringActions: requiredElement("authoring-actions"),
+    addInstanceButton: requiredElement("add-instance-button"),
+    addPortButton: requiredElement("add-port-button"),
+    connectButton: requiredElement("connect-button"),
+    exportButton: requiredElement("export-button"),
+    deleteButton: requiredElement("delete-button"),
     inspector: requiredElement("inspector"),
     inspectorTitle: requiredElement("inspector-title"),
+    inspectorMode: requiredElement("inspector-mode"),
     inspectorProperties: requiredElement("inspector-properties"),
+    inspectorForm: requiredElement("inspector-form"),
+    addInstanceDialog: requiredElement("add-instance-dialog"),
+    addInstanceForm: requiredElement("add-instance-form"),
+    instanceNameInput: requiredElement("instance-name-input"),
+    instanceModuleSelect: requiredElement("instance-module-select"),
+    addPortDialog: requiredElement("add-port-dialog"),
+    addPortForm: requiredElement("add-port-form"),
+    portNameInput: requiredElement("port-name-input"),
+    portDirectionSelect: requiredElement("port-direction-select"),
+    portWidthInput: requiredElement("port-width-input"),
     errorCount: requiredElement("error-count"),
     warningCount: requiredElement("warning-count"),
     selectionStatus: requiredElement("selection-status"),
@@ -45699,6 +46002,11 @@
   var scheduledNodeMoveGeneration;
   var pendingNodeMoves = /* @__PURE__ */ new Map();
   var selectionBoxOrigins = /* @__PURE__ */ new Map();
+  var archDesignDocument = false;
+  var archDesignEditable = false;
+  var authoringPending = false;
+  var currentArchDesignState;
+  var currentArchDesignInspector;
   function post(message) {
     vscode.postMessage(message);
   }
@@ -45825,6 +46133,9 @@
     dom.inspector.dataset.kind = model.kind;
     dom.inspector.dataset.readOnly = String(model.readOnly);
     dom.inspectorTitle.textContent = model.title;
+    dom.inspectorMode.textContent = "Read only";
+    dom.inspectorProperties.hidden = false;
+    dom.inspectorForm.hidden = true;
     const rows = document.createDocumentFragment();
     for (const row of model.rows) {
       const term = document.createElement("dt");
@@ -45834,6 +46145,80 @@
       rows.append(term, description);
     }
     dom.inspectorProperties.replaceChildren(rows);
+  }
+  function setAuthoringControls() {
+    dom.authoringActions.hidden = !archDesignDocument;
+    const disabled = !archDesignEditable || authoringPending;
+    dom.addInstanceButton.disabled = disabled || (currentArchDesignState?.catalog.length ?? 0) === 0;
+    dom.addPortButton.disabled = disabled;
+    dom.connectButton.disabled = disabled || !currentGraph;
+    dom.exportButton.disabled = disabled;
+    dom.deleteButton.disabled = disabled || currentArchDesignInspector?.deleteEdit === void 0;
+    dom.inspectorForm.querySelectorAll(
+      "input, select"
+    ).forEach((control) => {
+      control.disabled = disabled || control.dataset.readonly === "true";
+    });
+  }
+  function postArchDesignEdit(edit) {
+    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    authoringPending = true;
+    setAuthoringControls();
+    post({
+      type: "editArchDesign",
+      revision: currentArchDesignState.revision,
+      edit
+    });
+  }
+  function renderArchDesignInspector(model) {
+    currentArchDesignInspector = model;
+    dom.inspector.dataset.kind = model.kind;
+    dom.inspector.dataset.readOnly = "false";
+    dom.inspectorTitle.textContent = model.title;
+    dom.inspectorMode.textContent = authoringPending ? "Applying change" : "Arch Design";
+    dom.inspectorProperties.hidden = true;
+    dom.inspectorForm.hidden = false;
+    const fields = document.createDocumentFragment();
+    for (const field of model.fields) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "inspector-field";
+      const label = document.createElement("label");
+      label.htmlFor = field.id;
+      label.textContent = field.label;
+      if (field.control === "readonly") {
+        const output = document.createElement("output");
+        output.id = field.id;
+        output.textContent = field.value;
+        wrapper.append(label, output);
+      } else {
+        const control = field.control === "select" ? document.createElement("select") : document.createElement("input");
+        control.id = field.id;
+        control.value = field.value;
+        if (control instanceof HTMLInputElement) {
+          control.type = "text";
+          control.autocomplete = "off";
+          control.spellcheck = false;
+          control.placeholder = field.placeholder ?? "";
+        }
+        if (control instanceof HTMLSelectElement) {
+          for (const option of field.options ?? []) {
+            const element = document.createElement("option");
+            element.value = option.value;
+            element.textContent = option.label;
+            control.append(element);
+          }
+          control.value = field.value;
+        }
+        control.addEventListener("change", () => {
+          const edit = field.commit?.(control.value);
+          if (edit) postArchDesignEdit(edit);
+        });
+        wrapper.append(label, control);
+      }
+      fields.append(wrapper);
+    }
+    dom.inspectorForm.replaceChildren(fields);
+    setAuthoringControls();
   }
   function selectedNodeIds(cells) {
     return [...new Set(cells.flatMap((cell) => {
@@ -45849,6 +46234,15 @@
         readOnly: true,
         rows: []
       });
+      return;
+    }
+    if (currentArchDesignState) {
+      renderArchDesignInspector(projectArchDesignInspector(
+        currentArchDesignState,
+        currentGraph,
+        selectedNodeIds(cells),
+        selectedNetworkId
+      ));
       return;
     }
     renderInspector(projectSchematicInspector(
@@ -46174,6 +46568,8 @@
     dom.minimapButton.setAttribute("aria-pressed", "false");
     setGraphControls(false);
     updateDiagnostics(0, 0, []);
+    currentArchDesignInspector = void 0;
+    setAuthoringControls();
   }
   function initialize(event) {
     if (currentGraph && currentGraph.moduleKey !== event.selectedModuleKey) {
@@ -46187,6 +46583,12 @@
       dom.moduleSelector.append(option);
     }
     selectedModuleKey = event.selectedModuleKey;
+    archDesignDocument = event.documentKind === "arch-design";
+    archDesignEditable = false;
+    currentArchDesignState = void 0;
+    currentArchDesignInspector = void 0;
+    authoringPending = false;
+    setAuthoringControls();
     dom.moduleSelector.value = event.selectedModuleKey;
     dom.moduleSelector.disabled = event.modules.length === 0;
     if (event.modules.length === 0) {
@@ -46195,6 +46597,37 @@
       return;
     }
     setCanvasState("Loading schematic");
+  }
+  function updateArchDesignState(event) {
+    authoringPending = false;
+    archDesignDocument = true;
+    if (event.status === "editable") {
+      currentArchDesignState = event;
+      archDesignEditable = true;
+      dom.instanceModuleSelect.replaceChildren();
+      const moduleNames = [...new Set(event.catalog.map((module2) => module2.name))];
+      for (const moduleName of moduleNames) {
+        const option = document.createElement("option");
+        option.value = moduleName;
+        option.textContent = moduleName;
+        dom.instanceModuleSelect.append(option);
+      }
+      renderCurrentInspector();
+    } else {
+      currentArchDesignState = void 0;
+      currentArchDesignInspector = void 0;
+      archDesignEditable = false;
+      renderInspector({
+        kind: "empty",
+        title: event.status === "readonly" ? "Read-only Arch Design" : "Invalid Arch Design",
+        readOnly: true,
+        rows: [{
+          label: "Status",
+          value: event.status === "readonly" ? event.reason : `${event.diagnostics.length} error${event.diagnostics.length === 1 ? "" : "s"}`
+        }]
+      });
+    }
+    setAuthoringControls();
   }
   function handleHostEvent(event) {
     switch (event.type) {
@@ -46211,6 +46644,9 @@
         return;
       case "diagnostics":
         updateDiagnostics(event.errors, event.warnings);
+        return;
+      case "archDesignState":
+        updateArchDesignState(event);
         return;
       case "hostError":
         setGraphControls(false);
@@ -46247,7 +46683,12 @@
       [dom.searchButton, Search],
       [dom.minimapButton, Map3],
       [dom.searchPreviousButton, ChevronUp],
-      [dom.searchNextButton, ChevronDown]
+      [dom.searchNextButton, ChevronDown],
+      [dom.addInstanceButton, SquarePlus],
+      [dom.addPortButton, PanelTopOpen],
+      [dom.connectButton, Cable],
+      [dom.exportButton, FileOutput],
+      [dom.deleteButton, Trash2]
     ];
     for (const [button, icon] of icons) {
       installIcon(button, icon);
@@ -46321,6 +46762,68 @@
     inspectorExpanded = !inspectorExpanded;
     updateInspectorToggle();
   });
+  function showDialog(dialog, firstControl) {
+    if (!archDesignEditable || authoringPending) return;
+    dialog.showModal();
+    firstControl.focus();
+  }
+  function parsedPortWidth(value) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || trimmed === "1") return void 0;
+    if (/^[1-9][0-9]*$/.test(trimmed)) return Number(trimmed);
+    return { expression: trimmed };
+  }
+  dom.addInstanceButton.addEventListener("click", () => {
+    dom.instanceNameInput.value = "";
+    showDialog(dom.addInstanceDialog, dom.instanceNameInput);
+  });
+  dom.addPortButton.addEventListener("click", () => {
+    dom.portNameInput.value = "";
+    dom.portDirectionSelect.value = "input";
+    dom.portWidthInput.value = "1";
+    showDialog(dom.addPortDialog, dom.portNameInput);
+  });
+  dom.connectButton.addEventListener("click", () => {
+    const active = dom.connectButton.getAttribute("aria-pressed") !== "true";
+    dom.connectButton.setAttribute("aria-pressed", String(active));
+  });
+  dom.exportButton.addEventListener("click", () => {
+    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    post({
+      type: "exportArchDesign",
+      revision: currentArchDesignState.revision
+    });
+  });
+  dom.deleteButton.addEventListener("click", () => {
+    if (currentArchDesignInspector?.deleteEdit) {
+      postArchDesignEdit(currentArchDesignInspector.deleteEdit);
+    }
+  });
+  dom.addInstanceForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = dom.instanceNameInput.value.trim();
+    const module2 = dom.instanceModuleSelect.value;
+    if (!name || !module2) return;
+    dom.addInstanceDialog.close();
+    postArchDesignEdit({ type: "addInstance", instance: { name, module: module2 } });
+  });
+  dom.addPortForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = dom.portNameInput.value.trim();
+    const direction = dom.portDirectionSelect.value;
+    if (!name || direction !== "input" && direction !== "output" && direction !== "inout") {
+      return;
+    }
+    const width2 = parsedPortWidth(dom.portWidthInput.value);
+    dom.addPortDialog.close();
+    postArchDesignEdit({
+      type: "addPort",
+      port: { name, direction, ...width2 === void 0 ? {} : { width: width2 } }
+    });
+  });
+  document.querySelectorAll("[data-dialog-cancel]").forEach((button) => {
+    button.addEventListener("click", () => button.closest("dialog")?.close());
+  });
   dom.canvas.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.target instanceof Element)) return;
     const cellElement = event.target.closest(".x6-cell[data-cell-id]");
@@ -46391,7 +46894,7 @@
   window.addEventListener("message", (event) => {
     if (!event.data || typeof event.data !== "object") return;
     const type = event.data.type;
-    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "hostError") {
+    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "archDesignState" || type === "hostError") {
       handleHostEvent(event.data);
     }
   });

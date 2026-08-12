@@ -26,6 +26,13 @@
                 <button id="minimap-button" class="icon-button" type="button" title="Toggle minimap" aria-label="Toggle minimap" aria-pressed="false" disabled><span data-icon-slot></span></button>
                 <button id="inspector-toggle-button" class="icon-button" type="button" title="Hide properties" aria-label="Hide properties" aria-controls="inspector" aria-expanded="true"><span data-icon-slot></span></button>
             </div>
+            <div id="authoring-actions" class="toolbar-actions authoring-actions" hidden>
+                <button id="add-instance-button" class="icon-button" type="button" title="Add instance" aria-label="Add instance" disabled><span data-icon-slot></span></button>
+                <button id="add-port-button" class="icon-button" type="button" title="Add port" aria-label="Add port" disabled><span data-icon-slot></span></button>
+                <button id="connect-button" class="icon-button" type="button" title="Connect pins" aria-label="Connect pins" aria-pressed="false" disabled><span data-icon-slot></span></button>
+                <button id="export-button" class="icon-button" type="button" title="Export RTL" aria-label="Export RTL" disabled><span data-icon-slot></span></button>
+                <button id="delete-button" class="icon-button" type="button" title="Delete selection" aria-label="Delete selection" disabled><span data-icon-slot></span></button>
+            </div>
             <div class="diagnostic-counts" aria-label="Validation counts">
                 <span id="error-count">E 0</span>
                 <span id="warning-count">W 0</span>
@@ -42,9 +49,10 @@
             <aside id="inspector" aria-label="Properties">
                 <header class="inspector-header">
                     <h2 id="inspector-title">No selection</h2>
-                    <span class="inspector-mode">Read only</span>
+                    <span id="inspector-mode" class="inspector-mode">Read only</span>
                 </header>
                 <dl id="inspector-properties"></dl>
+                <form id="inspector-form" aria-label="Arch Design properties" hidden></form>
             </aside>
         </div>
         <footer id="status-strip" role="status" aria-live="polite">
@@ -52,6 +60,38 @@
             <span id="diagnostic-status">0 errors, 0 warnings</span>
         </footer>
     </main>
+    <dialog id="add-instance-dialog" aria-labelledby="add-instance-title">
+        <form id="add-instance-form" method="dialog" class="authoring-dialog-form">
+            <h2 id="add-instance-title">Add instance</h2>
+            <label for="instance-name-input">Instance name</label>
+            <input id="instance-name-input" name="name" required autocomplete="off" spellcheck="false">
+            <label for="instance-module-select">Module</label>
+            <select id="instance-module-select" name="module" required></select>
+            <div class="dialog-actions">
+                <button type="button" data-dialog-cancel>Cancel</button>
+                <button type="submit">Add</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="add-port-dialog" aria-labelledby="add-port-title">
+        <form id="add-port-form" method="dialog" class="authoring-dialog-form">
+            <h2 id="add-port-title">Add port</h2>
+            <label for="port-name-input">Port name</label>
+            <input id="port-name-input" name="name" required autocomplete="off" spellcheck="false">
+            <label for="port-direction-select">Direction</label>
+            <select id="port-direction-select" name="direction" required>
+                <option value="input">Input</option>
+                <option value="output">Output</option>
+                <option value="inout">Inout</option>
+            </select>
+            <label for="port-width-input">Width</label>
+            <input id="port-width-input" name="width" value="1" autocomplete="off" spellcheck="false">
+            <div class="dialog-actions">
+                <button type="button" data-dialog-cancel>Cancel</button>
+                <button type="submit">Add</button>
+            </div>
+        </form>
+    </dialog>
     <script src="./index.js"></script>
 </body>
 </html>

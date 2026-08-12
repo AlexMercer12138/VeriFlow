@@ -48,6 +48,10 @@ select {
     letter-spacing: 0;
 }
 
+button {
+    color: var(--vscode-button-foreground, inherit);
+}
+
 #schematic-shell {
     display: grid;
     grid-template-rows: 36px minmax(0, 1fr) 24px;
@@ -93,6 +97,15 @@ select {
     align-items: center;
     gap: 2px;
     min-width: 0;
+}
+
+#authoring-actions[hidden] {
+    display: none;
+}
+
+.authoring-actions {
+    padding-left: 4px;
+    border-left: 1px solid var(--schematic-border);
 }
 
 .icon-button {
@@ -281,6 +294,111 @@ select {
     border-bottom: 1px solid var(--schematic-border);
 }
 
+#inspector-form[hidden] {
+    display: none;
+}
+
+#inspector-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    margin: 0;
+}
+
+.inspector-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    padding: 7px 10px;
+    gap: 4px;
+    border-bottom: 1px solid var(--schematic-border);
+}
+
+.inspector-field label {
+    min-width: 0;
+    color: var(--schematic-muted-text);
+    overflow-wrap: anywhere;
+    font-weight: 600;
+}
+
+.inspector-field input,
+.inspector-field select {
+    width: 100%;
+    min-width: 0;
+    height: 26px;
+    padding: 0 6px;
+    color: var(--vscode-input-foreground, inherit);
+    background: var(--vscode-input-background, var(--schematic-canvas));
+    border: 1px solid var(--vscode-input-border, var(--schematic-border));
+    border-radius: 2px;
+}
+
+.inspector-field output {
+    min-width: 0;
+    color: var(--schematic-text);
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+dialog {
+    width: min(360px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    padding: 0;
+    color: var(--schematic-text);
+    background: var(--schematic-node-fill);
+    border: 1px solid var(--schematic-node-border);
+    border-radius: 4px;
+}
+
+dialog::backdrop {
+    background: rgb(0 0 0 / 35%);
+}
+
+.authoring-dialog-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 14px;
+    gap: 7px;
+}
+
+.authoring-dialog-form h2 {
+    margin: 0 0 5px;
+    font-size: 15px;
+    line-height: 20px;
+}
+
+.authoring-dialog-form label {
+    color: var(--schematic-muted-text);
+    font-weight: 600;
+}
+
+.authoring-dialog-form input,
+.authoring-dialog-form select {
+    width: 100%;
+    min-width: 0;
+    height: 28px;
+    padding: 0 7px;
+    color: var(--vscode-input-foreground, inherit);
+    background: var(--vscode-input-background, var(--schematic-canvas));
+    border: 1px solid var(--vscode-input-border, var(--schematic-border));
+    border-radius: 2px;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 7px;
+    gap: 6px;
+}
+
+.dialog-actions button {
+    min-height: 28px;
+    padding: 3px 10px;
+    background: var(--vscode-button-background, var(--schematic-active));
+    border: 1px solid var(--vscode-button-border, var(--schematic-border));
+    border-radius: 2px;
+}
+
 #inspector-properties dt {
     color: var(--schematic-muted-text);
     font-weight: 600;
@@ -440,7 +558,12 @@ select {
     #module-selector,
     #search-input,
     #minimap,
-    #inspector {
+    #inspector,
+    dialog,
+    .inspector-field input,
+    .inspector-field select,
+    .authoring-dialog-form input,
+    .authoring-dialog-form select {
         border-color: CanvasText;
     }
 

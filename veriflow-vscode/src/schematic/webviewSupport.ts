@@ -6,6 +6,14 @@ import type {
     SchematicGraph,
     SchematicNetwork,
 } from '@veriflow/schematic-core';
+import type {
+    ArchDesign,
+    ArchDesignEdit,
+    ArchDesignEndpoint,
+    ArchDesignModuleDefinition,
+    ArchDesignPort,
+    ArchDesignValidationResult,
+} from '@veriflow/schematic-core/arch-design';
 import type { SchematicLayout } from './layoutStore';
 import type { WebviewCommand } from './protocol';
 
@@ -91,6 +99,29 @@ export type SchematicInspectorModel = Readonly<{
     title: string;
     readOnly: true;
     rows: readonly Readonly<{ label: string; value: string }>[];
+}>;
+
+export type ArchDesignAuthoringSnapshot = Readonly<{
+    design: ArchDesign;
+    catalog: readonly ArchDesignModuleDefinition[];
+    validation: ArchDesignValidationResult;
+}>;
+
+export type ArchDesignInspectorField = Readonly<{
+    id: string;
+    label: string;
+    control: 'readonly' | 'text' | 'select';
+    value: string;
+    placeholder?: string;
+    options?: readonly Readonly<{ value: string; label: string }>[];
+    commit?: (value: string) => ArchDesignEdit | undefined;
+}>;
+
+export type ArchDesignInspectorModel = Readonly<{
+    kind: 'design' | 'instance' | 'port' | 'network' | 'multiple';
+    title: string;
+    fields: readonly ArchDesignInspectorField[];
+    deleteEdit?: ArchDesignEdit;
 }>;
 
 const MAX_INSPECTOR_ENDPOINT_PREVIEW = 8;
@@ -291,6 +322,316 @@ export function projectSchematicInspector(
         readOnly: true,
         rows: [],
     };
+}
+
+function textField(
+    id: string,
+    label: string,
+    value: string,
+    commit: (value: string) => ArchDesignEdit | undefined,
+    placeholder?: string
+): ArchDesignInspectorField {
+    return {
+        id,
+        label,
+        control: 'text',
+        value,
+        ...(placeholder === undefined ? {} : { placeholder }),
+        commit,
+    };
+}
+
+function readonlyField(
+    id: string,
+    label: string,
+    value: string
+): ArchDesignInspectorField {
+    return { id, label, control: 'readonly', value };
+}
+
+function normalizedWidth(value: string): ArchDesignPort['width'] {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return undefined;
+    if (/^[1-9][0-9]*$/.test(trimmed)) return Number(trimmed);
+    return { expression: trimmed };
+}
+
+function displayedWidth(width: ArchDesignPort['width']): string {
+    if (width === undefined) return '1';
+    return typeof width === 'number' ? String(width) : width.expression;
+}
+
+function endpointLabel(endpoint: ArchDesignEndpoint): string {
+    if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    return endpoint.signal === undefined
+        ? endpoint.port
+        : `${endpoint.port}.${endpoint.signal}`;
+}
+
+function endpointIdentity(endpoint: ArchDesignEndpoint): string {
+    if (endpoint.kind === 'instance') {
+        return `instance:${endpoint.instance}:${endpoint.port}`;
+    }
+    return `port:${endpoint.port}:${endpoint.signal ?? 'value'}`;
+}
+
+function endpointDefaultKey(endpoint: ArchDesignEndpoint): string {
+    if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    return `${endpoint.port}.${endpoint.signal ?? 'value'}`;
+}
+
+function matchingDefinition(
+    catalog: readonly ArchDesignModuleDefinition[],
+    module: string
+): ArchDesignModuleDefinition | undefined {
+    const matches = catalog.filter(candidate => candidate.name === module);
+    return matches.length === 1 ? matches[0] : undefined;
+}
+
+function projectDesignInspector(
+    snapshot: ArchDesignAuthoringSnapshot
+): ArchDesignInspectorModel {
+    const { design } = snapshot;
+    const language = design.export.language ?? 'verilog';
+    const output = design.export.output ?? '';
+    const languageOptions = [{ value: 'verilog', label: 'Verilog (.v)' }, {
+        value: 'systemverilog',
+        label: 'SystemVerilog (.sv)',
+    }] as const;
+    return {
+        kind: 'design',
+        title: design.module,
+        fields: [
+            readonlyField('design-module', 'Module', design.module),
+            {
+                id: 'export-language',
+                label: 'RTL language',
+                control: 'select',
+                value: language,
+                options: languageOptions,
+                commit: value => value === 'verilog' || value === 'systemverilog'
+                    ? {
+                        type: 'setExport',
+                        language: value,
+                        ...(output.length === 0 ? {} : { output }),
+                    }
+                    : undefined,
+            },
+            textField('export-output', 'Output path', output, value => ({
+                type: 'setExport',
+                language,
+                ...(value.trim().length === 0 ? {} : { output: value.trim() }),
+            }), 'Sibling .v or .sv'),
+        ],
+    };
+}
+
+function projectInstanceInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    name: string
+): ArchDesignInspectorModel | undefined {
+    const instance = snapshot.design.instances.find(candidate => candidate.name === name);
+    if (!instance) return undefined;
+    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const fields: ArchDesignInspectorField[] = [
+        textField('instance-name', 'Name', instance.name, value => value.trim().length > 0
+            ? { type: 'renameInstance', name: instance.name, nextName: value.trim() }
+            : undefined),
+        readonlyField('instance-module', 'Module', instance.module),
+    ];
+    const parameterNames = new Set([
+        ...(definition?.parameters.map(parameter => parameter.name) ?? []),
+        ...Object.keys(instance.parameters ?? {}),
+    ]);
+    for (const parameter of parameterNames) {
+        const value = instance.parameters?.[parameter];
+        const defaultExpression = definition?.parameters.find(
+            candidate => candidate.name === parameter
+        )?.defaultExpression;
+        fields.push(textField(
+            `parameter-${parameter}`,
+            parameter,
+            value === undefined ? '' : String(value),
+            next => ({
+                type: 'setInstanceParameter',
+                instance: instance.name,
+                parameter,
+                ...(next.length === 0 ? {} : { value: next }),
+            }),
+            defaultExpression === undefined ? 'No override' : `Default: ${defaultExpression}`
+        ));
+    }
+    return {
+        kind: 'instance',
+        title: instance.name,
+        fields,
+        deleteEdit: { type: 'removeInstance', name: instance.name },
+    };
+}
+
+function portDefaultKeys(port: ArchDesignPort): string[] {
+    if (port.direction === 'output') return [`${port.name}.value`];
+    if (port.direction === 'inout') return [`${port.name}.o`, `${port.name}.t`];
+    return [];
+}
+
+function effectiveDefaultPlaceholder(
+    snapshot: ArchDesignAuthoringSnapshot,
+    endpoint: string,
+    connection?: string
+): string {
+    const effective = snapshot.validation.effectiveDefaults.find(candidate =>
+        candidate.endpoint === endpoint
+        && (connection === undefined || candidate.connection === connection)
+    );
+    if (!effective) return 'No default';
+    const source = effective.origin === 'implicit-inout-t'
+        ? 'Implicit default'
+        : effective.origin === 'design'
+            ? 'Design default'
+            : 'Connection default';
+    return `${source}: ${effective.expression}`;
+}
+
+function projectPortInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    name: string
+): ArchDesignInspectorModel | undefined {
+    const port = snapshot.design.ports.find(candidate => candidate.name === name);
+    if (!port) return undefined;
+    const updatedPort = (
+        next: Partial<Pick<ArchDesignPort, 'name' | 'direction' | 'width'>>
+    ): ArchDesignEdit => ({
+        type: 'updatePort',
+        name: port.name,
+        port: {
+            name: next.name ?? port.name,
+            direction: next.direction ?? port.direction,
+            ...(next.width === undefined
+                && !Object.prototype.hasOwnProperty.call(next, 'width')
+                ? (port.width === undefined ? {} : { width: port.width })
+                : next.width === undefined ? {} : { width: next.width }),
+        },
+    });
+    const fields: ArchDesignInspectorField[] = [
+        textField('port-name', 'Name', port.name, value => value.trim().length > 0
+            ? updatedPort({ name: value.trim() })
+            : undefined),
+        {
+            id: 'port-direction',
+            label: 'Direction',
+            control: 'select',
+            value: port.direction,
+            options: ['input', 'output', 'inout'].map(value => ({ value, label: value })),
+            commit: value => value === 'input' || value === 'output' || value === 'inout'
+                ? updatedPort({ direction: value })
+                : undefined,
+        },
+        textField('port-width', 'Width', displayedWidth(port.width), value =>
+            updatedPort({ width: normalizedWidth(value) })),
+    ];
+    for (const key of portDefaultKeys(port)) {
+        fields.push(textField(
+            `default-${key}`,
+            `Default ${key.slice(port.name.length + 1)}`,
+            snapshot.design.defaults[key] ?? '',
+            value => ({
+                type: 'setDefault',
+                endpoint: key,
+                ...(value.trim().length === 0 ? {} : { expression: value.trim() }),
+            }),
+            effectiveDefaultPlaceholder(snapshot, key)
+        ));
+    }
+    return {
+        kind: 'port',
+        title: port.name,
+        fields,
+        deleteEdit: { type: 'removePort', name: port.name },
+    };
+}
+
+function projectNetworkAuthoringInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    graph: SchematicGraph,
+    networkId: string
+): ArchDesignInspectorModel | undefined {
+    const graphNetwork = graph.networks.find(candidate => candidate.id === networkId);
+    if (!graphNetwork) return undefined;
+    const connection = snapshot.design.connections.find(
+        candidate => candidate.name === graphNetwork.name
+    );
+    if (!connection) return undefined;
+    const roles = new Map(graphNetwork.endpoints.map(endpoint => [endpoint.pinId, endpoint.role]));
+    const fields: ArchDesignInspectorField[] = [
+        textField('connection-name', 'Name', connection.name, value =>
+            value.trim().length > 0 ? {
+                type: 'renameConnection',
+                name: connection.name,
+                nextName: value.trim(),
+            } : undefined),
+        readonlyField(
+            'connection-endpoints',
+            'Endpoints',
+            connection.endpoints.map(endpointLabel).join(', ')
+        ),
+    ];
+    for (const endpoint of connection.endpoints) {
+        if (roles.get(endpointIdentity(endpoint)) !== 'load') continue;
+        const key = endpointDefaultKey(endpoint);
+        fields.push(textField(
+            `default-${key}`,
+            `Default ${key}`,
+            connection.defaults?.[key] ?? '',
+            value => ({
+                type: 'setDefault',
+                connection: connection.name,
+                endpoint: key,
+                ...(value.trim().length === 0 ? {} : { expression: value.trim() }),
+            }),
+            effectiveDefaultPlaceholder(snapshot, key, connection.name)
+        ));
+    }
+    return {
+        kind: 'network',
+        title: connection.name,
+        fields,
+        deleteEdit: { type: 'removeConnection', name: connection.name },
+    };
+}
+
+export function projectArchDesignInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    graph: SchematicGraph,
+    selectedNodeIds: readonly string[],
+    selectedNetworkId: string | undefined
+): ArchDesignInspectorModel {
+    if (selectedNetworkId !== undefined) {
+        const network = projectNetworkAuthoringInspector(
+            snapshot,
+            graph,
+            selectedNetworkId
+        );
+        if (network) return network;
+    }
+    const selected = [...new Set(selectedNodeIds)];
+    if (selected.length > 1) {
+        return {
+            kind: 'multiple',
+            title: `${selected.length} objects selected`,
+            fields: [readonlyField('selection-count', 'Count', String(selected.length))],
+        };
+    }
+    const [nodeId] = selected;
+    if (nodeId?.startsWith('instance:')) {
+        const model = projectInstanceInspector(snapshot, nodeId.slice('instance:'.length));
+        if (model) return model;
+    }
+    if (nodeId?.startsWith('port:')) {
+        const model = projectPortInspector(snapshot, nodeId.slice('port:'.length));
+        if (model) return model;
+    }
+    return projectDesignInspector(snapshot);
 }
 
 export function formatSchematicDiagnosticDetails(

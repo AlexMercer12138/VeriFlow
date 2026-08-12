@@ -389,9 +389,29 @@ async function testSchematicAssets(): Promise<void> {
         'aria-label="Previous search result"',
         'aria-label="Next search result"',
         'data-testid="schematic-shell"',
+        'id="authoring-actions"',
+        'id="add-instance-button"',
+        'id="add-port-button"',
+        'id="connect-button"',
+        'id="export-button"',
+        'id="delete-button"',
+        'title="Add instance"',
+        'title="Add port"',
+        'title="Connect pins"',
+        'title="Export RTL"',
+        'title="Delete selection"',
+        'id="add-instance-dialog"',
+        'id="instance-name-input"',
+        'id="instance-module-select"',
+        'id="add-port-dialog"',
+        'id="port-name-input"',
+        'id="port-direction-select"',
+        'id="port-width-input"',
+        'id="inspector-form"',
     ]) {
         assert.ok(html.includes(expected), `HTML is missing ${expected}`);
     }
+    assert.match(html, /id="authoring-actions"[^>]*\shidden(?:\s|>)/);
     assert.doesNotMatch(html, /<svg\b/i);
 
     const css = fs.readFileSync(path.join(webDistRoot, 'index.css'), 'utf8');
@@ -399,6 +419,8 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(css, /#content-row\s*{[^}]*display:\s*flex/s);
     assert.match(css, /#inspector\s*{[^}]*flex:\s*0\s+0\s+280px/s);
     assert.match(css, /#inspector\[hidden\]\s*{[^}]*display:\s*none/s);
+    assert.match(css, /#authoring-actions\[hidden\]\s*{[^}]*display:\s*none/s);
+    assert.match(css, /\.inspector-field\s+(?:input|select)/);
     assert.match(css, /--vscode-editor-background/);
     assert.match(css, /--vscode-editor-foreground/);
     assert.match(css, /font-size:\s*12px/);
@@ -443,6 +465,25 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /function renderInspector\(/);
     assert.match(webviewSource, /function renderCurrentInspector\(/);
     assert.match(webviewSource, /dom\.inspectorToggleButton\.addEventListener\('click'/);
+    assert.match(webviewSource, /\bAddBox\b/);
+    assert.match(webviewSource, /\bPanelTopOpen\b/);
+    assert.match(webviewSource, /\bCable\b/);
+    assert.match(webviewSource, /\bFileOutput\b/);
+    assert.match(webviewSource, /\bTrash2\b/);
+    assert.match(webviewSource, /function renderArchDesignInspector\(/);
+    assert.match(webviewSource, /case 'archDesignState':/);
+    assert.match(webviewSource, /type === 'archDesignState'/);
+    const editPosting = sourceSection(
+        webviewSource,
+        'function postArchDesignEdit(',
+        '\nfunction renderArchDesignInspector(',
+        'Arch Design edit posting'
+    );
+    assert.match(
+        editPosting,
+        /type:\s*'editArchDesign',[^]*revision:\s*currentArchDesignState\.revision,[^]*edit,/
+    );
+    assert.doesNotMatch(editPosting, /\.design\s*=|design\.[A-Za-z_$][\w$]*\s*=/);
     for (const token of semanticColorTokens.slice(1).filter(
         token => token !== '--schematic-wire-selected'
     )) {

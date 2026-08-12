@@ -6,15 +6,20 @@ import {
     type Node,
 } from '@antv/x6';
 import {
+    SquarePlus as AddBox,
+    Cable,
     ChevronDown,
     ChevronUp,
     createElement,
+    FileOutput,
     Map as MapIcon,
     Maximize2,
+    PanelTopOpen,
     PanelRightClose,
     PanelRightOpen,
     Scan,
     Search as SearchIcon,
+    Trash2,
     Workflow,
     type IconNode,
 } from 'lucide';
@@ -35,6 +40,10 @@ import {
     type SchematicNetwork,
     type TextMeasurementStyle,
 } from '@veriflow/schematic-core';
+import type {
+    ArchDesignEdit,
+    ArchDesignPortDirection,
+} from '@veriflow/schematic-core/arch-design';
 import type { SchematicLayout } from '../../../veriflow-vscode/src/schematic/layoutStore';
 import type { HostEvent, WebviewCommand } from '../../../veriflow-vscode/src/schematic/protocol';
 import {
@@ -43,8 +52,10 @@ import {
     formatSchematicDiagnosticDetails,
     mergeSchematicWebviewLayouts,
     navigationCommandForCell,
+    projectArchDesignInspector,
     projectSchematicInspector,
     summarizeSchematicSelection,
+    type ArchDesignInspectorModel,
     type SchematicInspectorModel,
 } from '../../../veriflow-vscode/src/schematic/webviewSupport';
 
@@ -111,9 +122,26 @@ const dom = {
     minimapButton: requiredElement<HTMLButtonElement>('minimap-button'),
     minimap: requiredElement<HTMLDivElement>('minimap'),
     inspectorToggleButton: requiredElement<HTMLButtonElement>('inspector-toggle-button'),
+    authoringActions: requiredElement<HTMLDivElement>('authoring-actions'),
+    addInstanceButton: requiredElement<HTMLButtonElement>('add-instance-button'),
+    addPortButton: requiredElement<HTMLButtonElement>('add-port-button'),
+    connectButton: requiredElement<HTMLButtonElement>('connect-button'),
+    exportButton: requiredElement<HTMLButtonElement>('export-button'),
+    deleteButton: requiredElement<HTMLButtonElement>('delete-button'),
     inspector: requiredElement<HTMLElement>('inspector'),
     inspectorTitle: requiredElement<HTMLHeadingElement>('inspector-title'),
+    inspectorMode: requiredElement<HTMLSpanElement>('inspector-mode'),
     inspectorProperties: requiredElement<HTMLDListElement>('inspector-properties'),
+    inspectorForm: requiredElement<HTMLFormElement>('inspector-form'),
+    addInstanceDialog: requiredElement<HTMLDialogElement>('add-instance-dialog'),
+    addInstanceForm: requiredElement<HTMLFormElement>('add-instance-form'),
+    instanceNameInput: requiredElement<HTMLInputElement>('instance-name-input'),
+    instanceModuleSelect: requiredElement<HTMLSelectElement>('instance-module-select'),
+    addPortDialog: requiredElement<HTMLDialogElement>('add-port-dialog'),
+    addPortForm: requiredElement<HTMLFormElement>('add-port-form'),
+    portNameInput: requiredElement<HTMLInputElement>('port-name-input'),
+    portDirectionSelect: requiredElement<HTMLSelectElement>('port-direction-select'),
+    portWidthInput: requiredElement<HTMLInputElement>('port-width-input'),
     errorCount: requiredElement<HTMLSpanElement>('error-count'),
     warningCount: requiredElement<HTMLSpanElement>('warning-count'),
     selectionStatus: requiredElement<HTMLSpanElement>('selection-status'),
@@ -607,6 +635,15 @@ let nodeMoveGeneration = 0;
 let scheduledNodeMoveGeneration: number | undefined;
 const pendingNodeMoves = new Map<string, { x: number; y: number }>();
 let selectionBoxOrigins = new Map<string, { x: number; y: number }>();
+type EditableArchDesignState = Extract<
+    HostEvent,
+    { type: 'archDesignState'; status: 'editable' }
+>;
+let archDesignDocument = false;
+let archDesignEditable = false;
+let authoringPending = false;
+let currentArchDesignState: EditableArchDesignState | undefined;
+let currentArchDesignInspector: ArchDesignInspectorModel | undefined;
 
 function post(message: WebviewCommand): void {
     vscode.postMessage(message);
@@ -757,6 +794,9 @@ function renderInspector(model: SchematicInspectorModel): void {
     dom.inspector.dataset.kind = model.kind;
     dom.inspector.dataset.readOnly = String(model.readOnly);
     dom.inspectorTitle.textContent = model.title;
+    dom.inspectorMode.textContent = 'Read only';
+    dom.inspectorProperties.hidden = false;
+    dom.inspectorForm.hidden = true;
     const rows = document.createDocumentFragment();
     for (const row of model.rows) {
         const term = document.createElement('dt');
@@ -766,6 +806,86 @@ function renderInspector(model: SchematicInspectorModel): void {
         rows.append(term, description);
     }
     dom.inspectorProperties.replaceChildren(rows);
+}
+
+function setAuthoringControls(): void {
+    dom.authoringActions.hidden = !archDesignDocument;
+    const disabled = !archDesignEditable || authoringPending;
+    dom.addInstanceButton.disabled = disabled
+        || (currentArchDesignState?.catalog.length ?? 0) === 0;
+    dom.addPortButton.disabled = disabled;
+    dom.connectButton.disabled = disabled || !currentGraph;
+    dom.exportButton.disabled = disabled;
+    dom.deleteButton.disabled = disabled || currentArchDesignInspector?.deleteEdit === undefined;
+    dom.inspectorForm.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        'input, select'
+    ).forEach(control => {
+        control.disabled = disabled || control.dataset.readonly === 'true';
+    });
+}
+
+function postArchDesignEdit(edit: ArchDesignEdit): void {
+    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    authoringPending = true;
+    setAuthoringControls();
+    post({
+        type: 'editArchDesign',
+        revision: currentArchDesignState.revision,
+        edit,
+    });
+}
+
+function renderArchDesignInspector(model: ArchDesignInspectorModel): void {
+    currentArchDesignInspector = model;
+    dom.inspector.dataset.kind = model.kind;
+    dom.inspector.dataset.readOnly = 'false';
+    dom.inspectorTitle.textContent = model.title;
+    dom.inspectorMode.textContent = authoringPending ? 'Applying change' : 'Arch Design';
+    dom.inspectorProperties.hidden = true;
+    dom.inspectorForm.hidden = false;
+    const fields = document.createDocumentFragment();
+    for (const field of model.fields) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'inspector-field';
+        const label = document.createElement('label');
+        label.htmlFor = field.id;
+        label.textContent = field.label;
+        if (field.control === 'readonly') {
+            const output = document.createElement('output');
+            output.id = field.id;
+            output.textContent = field.value;
+            wrapper.append(label, output);
+        } else {
+            const control = field.control === 'select'
+                ? document.createElement('select')
+                : document.createElement('input');
+            control.id = field.id;
+            control.value = field.value;
+            if (control instanceof HTMLInputElement) {
+                control.type = 'text';
+                control.autocomplete = 'off';
+                control.spellcheck = false;
+                control.placeholder = field.placeholder ?? '';
+            }
+            if (control instanceof HTMLSelectElement) {
+                for (const option of field.options ?? []) {
+                    const element = document.createElement('option');
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    control.append(element);
+                }
+                control.value = field.value;
+            }
+            control.addEventListener('change', () => {
+                const edit = field.commit?.(control.value);
+                if (edit) postArchDesignEdit(edit);
+            });
+            wrapper.append(label, control);
+        }
+        fields.append(wrapper);
+    }
+    dom.inspectorForm.replaceChildren(fields);
+    setAuthoringControls();
 }
 
 function selectedNodeIds(cells: readonly Cell[]): string[] {
@@ -785,6 +905,15 @@ function renderCurrentInspector(cells = selection.getSelectedCells()): void {
             readOnly: true,
             rows: [],
         });
+        return;
+    }
+    if (currentArchDesignState) {
+        renderArchDesignInspector(projectArchDesignInspector(
+            currentArchDesignState,
+            currentGraph,
+            selectedNodeIds(cells),
+            selectedNetworkId
+        ));
         return;
     }
     renderInspector(projectSchematicInspector(
@@ -1168,6 +1297,8 @@ function clearSchematicState(): void {
     dom.minimapButton.setAttribute('aria-pressed', 'false');
     setGraphControls(false);
     updateDiagnostics(0, 0, []);
+    currentArchDesignInspector = undefined;
+    setAuthoringControls();
 }
 
 function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
@@ -1182,6 +1313,12 @@ function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
         dom.moduleSelector.append(option);
     }
     selectedModuleKey = event.selectedModuleKey;
+    archDesignDocument = event.documentKind === 'arch-design';
+    archDesignEditable = false;
+    currentArchDesignState = undefined;
+    currentArchDesignInspector = undefined;
+    authoringPending = false;
+    setAuthoringControls();
     dom.moduleSelector.value = event.selectedModuleKey;
     dom.moduleSelector.disabled = event.modules.length === 0;
     if (event.modules.length === 0) {
@@ -1190,6 +1327,44 @@ function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
         return;
     }
     setCanvasState('Loading schematic');
+}
+
+function updateArchDesignState(
+    event: Extract<HostEvent, { type: 'archDesignState' }>
+): void {
+    authoringPending = false;
+    archDesignDocument = true;
+    if (event.status === 'editable') {
+        currentArchDesignState = event;
+        archDesignEditable = true;
+        dom.instanceModuleSelect.replaceChildren();
+        const moduleNames = [...new Set(event.catalog.map(module => module.name))];
+        for (const moduleName of moduleNames) {
+            const option = document.createElement('option');
+            option.value = moduleName;
+            option.textContent = moduleName;
+            dom.instanceModuleSelect.append(option);
+        }
+        renderCurrentInspector();
+    } else {
+        currentArchDesignState = undefined;
+        currentArchDesignInspector = undefined;
+        archDesignEditable = false;
+        renderInspector({
+            kind: 'empty',
+            title: event.status === 'readonly' ? 'Read-only Arch Design' : 'Invalid Arch Design',
+            readOnly: true,
+            rows: [{
+                label: 'Status',
+                value: event.status === 'readonly'
+                    ? event.reason
+                    : `${event.diagnostics.length} error${
+                        event.diagnostics.length === 1 ? '' : 's'
+                    }`,
+            }],
+        });
+    }
+    setAuthoringControls();
 }
 
 function handleHostEvent(event: HostEvent): void {
@@ -1207,6 +1382,9 @@ function handleHostEvent(event: HostEvent): void {
             return;
         case 'diagnostics':
             updateDiagnostics(event.errors, event.warnings);
+            return;
+        case 'archDesignState':
+            updateArchDesignState(event);
             return;
         case 'hostError':
             setGraphControls(false);
@@ -1247,6 +1425,11 @@ function installIcons(): void {
         [dom.minimapButton, MapIcon],
         [dom.searchPreviousButton, ChevronUp],
         [dom.searchNextButton, ChevronDown],
+        [dom.addInstanceButton, AddBox],
+        [dom.addPortButton, PanelTopOpen],
+        [dom.connectButton, Cable],
+        [dom.exportButton, FileOutput],
+        [dom.deleteButton, Trash2],
     ] as const;
     for (const [button, icon] of icons) {
         installIcon(button, icon);
@@ -1331,6 +1514,78 @@ dom.minimapButton.addEventListener('click', () => {
 dom.inspectorToggleButton.addEventListener('click', () => {
     inspectorExpanded = !inspectorExpanded;
     updateInspectorToggle();
+});
+
+function showDialog(dialog: HTMLDialogElement, firstControl: HTMLElement): void {
+    if (!archDesignEditable || authoringPending) return;
+    dialog.showModal();
+    firstControl.focus();
+}
+
+function parsedPortWidth(value: string): number | { expression: string } | undefined {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || trimmed === '1') return undefined;
+    if (/^[1-9][0-9]*$/.test(trimmed)) return Number(trimmed);
+    return { expression: trimmed };
+}
+
+dom.addInstanceButton.addEventListener('click', () => {
+    dom.instanceNameInput.value = '';
+    showDialog(dom.addInstanceDialog, dom.instanceNameInput);
+});
+
+dom.addPortButton.addEventListener('click', () => {
+    dom.portNameInput.value = '';
+    dom.portDirectionSelect.value = 'input';
+    dom.portWidthInput.value = '1';
+    showDialog(dom.addPortDialog, dom.portNameInput);
+});
+
+dom.connectButton.addEventListener('click', () => {
+    const active = dom.connectButton.getAttribute('aria-pressed') !== 'true';
+    dom.connectButton.setAttribute('aria-pressed', String(active));
+});
+
+dom.exportButton.addEventListener('click', () => {
+    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    post({
+        type: 'exportArchDesign',
+        revision: currentArchDesignState.revision,
+    });
+});
+
+dom.deleteButton.addEventListener('click', () => {
+    if (currentArchDesignInspector?.deleteEdit) {
+        postArchDesignEdit(currentArchDesignInspector.deleteEdit);
+    }
+});
+
+dom.addInstanceForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const name = dom.instanceNameInput.value.trim();
+    const module = dom.instanceModuleSelect.value;
+    if (!name || !module) return;
+    dom.addInstanceDialog.close();
+    postArchDesignEdit({ type: 'addInstance', instance: { name, module } });
+});
+
+dom.addPortForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const name = dom.portNameInput.value.trim();
+    const direction = dom.portDirectionSelect.value as ArchDesignPortDirection;
+    if (!name || (direction !== 'input' && direction !== 'output' && direction !== 'inout')) {
+        return;
+    }
+    const width = parsedPortWidth(dom.portWidthInput.value);
+    dom.addPortDialog.close();
+    postArchDesignEdit({
+        type: 'addPort',
+        port: { name, direction, ...(width === undefined ? {} : { width }) },
+    });
+});
+
+document.querySelectorAll<HTMLButtonElement>('[data-dialog-cancel]').forEach(button => {
+    button.addEventListener('click', () => button.closest('dialog')?.close());
 });
 
 dom.canvas.addEventListener('keydown', event => {
@@ -1419,6 +1674,7 @@ window.addEventListener('message', event => {
     if (!event.data || typeof event.data !== 'object') return;
     const type = (event.data as { type?: unknown }).type;
     if (type === 'initialize' || type === 'graph' || type === 'diagnostics'
+        || type === 'archDesignState'
         || type === 'hostError') {
         handleHostEvent(event.data as HostEvent);
     }

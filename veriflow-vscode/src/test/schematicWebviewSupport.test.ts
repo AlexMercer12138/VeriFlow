@@ -1,6 +1,11 @@
 import * as assert from 'assert';
 
 import type { SchematicGraph } from '@veriflow/schematic-core';
+import type {
+    ArchDesign,
+    ArchDesignModuleDefinition,
+    ArchDesignValidationResult,
+} from '@veriflow/schematic-core/arch-design';
 import type { SchematicLayout } from '../schematic/layoutStore';
 import {
     buildSchematicWebviewHtml,
@@ -8,10 +13,20 @@ import {
     formatSchematicDiagnosticDetails,
     mergeSchematicWebviewLayouts,
     navigationCommandForCell,
+    projectArchDesignInspector,
     projectSchematicInspector,
     summarizeSchematicSelection,
     type TimerAdapter,
 } from '../schematic/webviewSupport';
+
+function fieldById(
+    model: ReturnType<typeof projectArchDesignInspector>,
+    id: string
+): ReturnType<typeof projectArchDesignInspector>['fields'][number] {
+    const field = model.fields.find(candidate => candidate.id === id);
+    assert.ok(field, `missing Inspector field ${id}`);
+    return field;
+}
 
 function inspectorGraph(): SchematicGraph {
     return {
@@ -214,6 +229,189 @@ function testSchematicInspectorProjection(): void {
             rows: [],
         }
     );
+}
+
+function testArchDesignInspectorProjection(): void {
+    const graph = inspectorGraph();
+    const design: ArchDesign = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'inspector_top',
+        ports: [{ name: 'clk', direction: 'input' }, {
+            name: 'shared',
+            direction: 'inout',
+            width: 8,
+        }, { name: 'done', direction: 'output' }],
+        instances: [{
+            name: 'u_core',
+            module: 'core',
+            parameters: { WIDTH: 8 },
+        }, { name: 'u_sink', module: 'sink' }],
+        connections: [{
+            name: 'clk',
+            endpoints: [{ kind: 'port', port: 'clk' }, {
+                kind: 'instance',
+                instance: 'u_core',
+                port: 'clk',
+            }],
+        }, {
+            name: 'bus_data',
+            endpoints: [{ kind: 'instance', instance: 'u_core', port: 'data' }, {
+                kind: 'instance',
+                instance: 'u_sink',
+                port: 'data',
+            }, { kind: 'port', port: 'shared', signal: 'i' }],
+            defaults: { 'u_sink.data': "8'h00" },
+        }],
+        interfaceConnections: [],
+        defaults: { 'done.value': "1'b0" },
+        export: { language: 'systemverilog', output: 'rtl/generated_top.sv' },
+        presentation: {},
+    };
+    const catalog: readonly ArchDesignModuleDefinition[] = [{
+        key: 'module:file:///core.sv:0',
+        name: 'core',
+        parameters: [{ name: 'WIDTH', defaultExpression: '32' }, {
+            name: 'MODE',
+            defaultExpression: '0',
+        }],
+        ports: [{
+            name: 'clk',
+            direction: 'input',
+            width: { kind: 'known', bits: 1 },
+        }, {
+            name: 'data',
+            direction: 'output',
+            width: { kind: 'known', bits: 8 },
+        }],
+    }, {
+        key: 'module:file:///sink.sv:0',
+        name: 'sink',
+        parameters: [],
+        ports: [{
+            name: 'data',
+            direction: 'input',
+            width: { kind: 'known', bits: 8 },
+        }],
+    }];
+    const validation: ArchDesignValidationResult = {
+        valid: true,
+        diagnostics: [],
+        effectiveDefaults: [{
+            endpoint: 'u_sink.data',
+            expression: "8'h00",
+            origin: 'connection',
+            connection: 'bus_data',
+        }, {
+            endpoint: 'done.value',
+            expression: "1'b0",
+            origin: 'design',
+        }, {
+            endpoint: 'shared.t',
+            expression: "1'b1",
+            origin: 'implicit-inout-t',
+        }],
+    };
+    const snapshot = { design, catalog, validation };
+
+    const designModel = projectArchDesignInspector(snapshot, graph, [], undefined);
+    assert.strictEqual(designModel.kind, 'design');
+    assert.strictEqual(designModel.title, 'inspector_top');
+    assert.strictEqual(fieldById(designModel, 'design-module').control, 'readonly');
+    assert.deepStrictEqual(fieldById(designModel, 'export-language').options, [{
+        value: 'verilog',
+        label: 'Verilog (.v)',
+    }, {
+        value: 'systemverilog',
+        label: 'SystemVerilog (.sv)',
+    }]);
+    assert.strictEqual(fieldById(designModel, 'export-language').value, 'systemverilog');
+    assert.strictEqual(fieldById(designModel, 'export-output').value, 'rtl/generated_top.sv');
+    assert.deepStrictEqual(
+        fieldById(designModel, 'export-language').commit?.('verilog'),
+        { type: 'setExport', language: 'verilog', output: 'rtl/generated_top.sv' }
+    );
+
+    const instanceModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        ['instance:u_core'],
+        undefined
+    );
+    assert.strictEqual(instanceModel.kind, 'instance');
+    assert.strictEqual(fieldById(instanceModel, 'instance-module').control, 'readonly');
+    assert.deepStrictEqual(
+        fieldById(instanceModel, 'instance-name').commit?.('u_cpu'),
+        { type: 'renameInstance', name: 'u_core', nextName: 'u_cpu' }
+    );
+    assert.strictEqual(fieldById(instanceModel, 'parameter-WIDTH').value, '8');
+    assert.strictEqual(fieldById(instanceModel, 'parameter-MODE').placeholder, 'Default: 0');
+    assert.deepStrictEqual(
+        fieldById(instanceModel, 'parameter-MODE').commit?.('1'),
+        { type: 'setInstanceParameter', instance: 'u_core', parameter: 'MODE', value: '1' }
+    );
+    assert.deepStrictEqual(instanceModel.deleteEdit, {
+        type: 'removeInstance',
+        name: 'u_core',
+    });
+
+    const portModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        ['port:done'],
+        undefined
+    );
+    assert.strictEqual(portModel.kind, 'port');
+    assert.deepStrictEqual(fieldById(portModel, 'port-direction').options?.map(
+        option => option.value
+    ), ['input', 'output', 'inout']);
+    assert.deepStrictEqual(fieldById(portModel, 'port-width').commit?.('DATA_WIDTH'), {
+        type: 'updatePort',
+        name: 'done',
+        port: { name: 'done', direction: 'output', width: { expression: 'DATA_WIDTH' } },
+    });
+    assert.strictEqual(fieldById(portModel, 'default-done.value').value, "1'b0");
+    assert.deepStrictEqual(fieldById(portModel, 'default-done.value').commit?.(''), {
+        type: 'setDefault',
+        endpoint: 'done.value',
+    });
+    const inoutModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        ['port:shared'],
+        undefined
+    );
+    assert.strictEqual(
+        fieldById(inoutModel, 'default-shared.t').placeholder,
+        "Implicit default: 1'b1"
+    );
+
+    const networkModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        [],
+        'network:data'
+    );
+    assert.strictEqual(networkModel.kind, 'network');
+    assert.deepStrictEqual(
+        fieldById(networkModel, 'connection-name').commit?.('payload'),
+        { type: 'renameConnection', name: 'bus_data', nextName: 'payload' }
+    );
+    assert.strictEqual(fieldById(networkModel, 'connection-endpoints').control, 'readonly');
+    assert.strictEqual(fieldById(networkModel, 'default-u_sink.data').value, "8'h00");
+    assert.deepStrictEqual(
+        fieldById(networkModel, 'default-u_sink.data').commit?.("8'hff"),
+        {
+            type: 'setDefault',
+            connection: 'bus_data',
+            endpoint: 'u_sink.data',
+            expression: "8'hff",
+        }
+    );
+    assert.deepStrictEqual(networkModel.deleteEdit, {
+        type: 'removeConnection',
+        name: 'bus_data',
+    });
 }
 
 function testLargeFanoutInspectorUsesBoundedIndexedPreview(): void {
@@ -537,6 +735,7 @@ void Promise.resolve()
     .then(testSecureSchematicWebviewHtml)
     .then(testDiagnosticDetailFormatting)
     .then(testSchematicInspectorProjection)
+    .then(testArchDesignInspectorProjection)
     .then(testLargeFanoutInspectorUsesBoundedIndexedPreview)
     .then(testSynchronousWebviewLayoutSnapshot)
     .then(testSelectionStatusSummary)
