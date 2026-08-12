@@ -160,3 +160,39 @@ and atomically replace only files with a valid VeriFlow generation marker.
 **Tags:** #architecture #cli #arch-design #code-generation #filesystem
 
 ---
+
+## 2026-08-12: Host writable Arch Designs separately while sharing the schematic webview
+
+**Context:** `.v` and `.sv` schematics are read-only inspection views whose
+provider owns HDL parsing, source navigation, include watching, and separate
+layout persistence. A writable `.ad` design needs native VS Code undo/save,
+schema-aware edits, semantic diagnostics, and failure-safe RTL publication,
+while retaining the same visual layout and routing behavior.
+
+**Decision:** Register a separate `veriflow.archDesignEditor` custom text
+editor for `.ad` documents and reuse the existing schematic webview. Keep all
+deterministic edits, validation, graph projection, and RTL generation in
+`@veriflow/schematic-core/arch-design`. The provider accepts revision-bound
+commands, applies full-document `WorkspaceEdit` operations, persists layout in
+the `.ad` document, and atomically replaces only RTL carrying a valid VeriFlow
+generation marker. This phase supports scalar authoring only; interface
+recognition, collapsed AXI/APB/AHB buses, and project-defined protocols remain
+a separate follow-up.
+
+**Why not:**
+- Make the HDL provider writable: source rewriting across macros, includes,
+  and arbitrary coding styles would couple unrelated document lifecycles.
+- Create a second frontend: duplicate rendering and interaction code would let
+  HDL inspection and Arch Design editing drift visually.
+- Add interface recognition to schema-v1 scalar editing: it would expand the
+  protocol and validation surface before the basic design-to-export workflow
+  is stable.
+- Allow forced RTL overwrite: an incorrect output path must never destroy
+  hand-written source.
+
+**Affects:** `packages/schematic-core/`, `packages/schematic-webview/`,
+`veriflow-vscode/src/archDesign/`, `veriflow-vscode/src/schematic/`
+
+**Tags:** #architecture #vscode #schematic #arch-design #code-generation
+
+---

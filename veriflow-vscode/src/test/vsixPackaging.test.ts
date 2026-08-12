@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { inflateRawSync } from 'zlib';
 
 import {
     assertRepositoryPathsUnchanged,
@@ -28,7 +29,15 @@ const expectedRuntimeEntries = [
     'extension/media/waveform/viewer-transport.js',
 ];
 
-function zipCentralDirectoryEntries(archive: Buffer): string[] {
+type ZipEntry = Readonly<{
+    name: string;
+    compressionMethod: number;
+    compressedSize: number;
+    uncompressedSize: number;
+    localHeaderOffset: number;
+}>;
+
+function zipCentralDirectoryEntries(archive: Buffer): ZipEntry[] {
     const endOfCentralDirectorySignature = 0x06054b50;
     const centralDirectorySignature = 0x02014b50;
     const minimumEndRecordSize = 22;
@@ -62,7 +71,7 @@ function zipCentralDirectoryEntries(archive: Buffer): string[] {
         'VSIX central directory extends past its end record'
     );
 
-    const entries: string[] = [];
+    const entries: ZipEntry[] = [];
     let offset = directoryOffset;
     for (let index = 0; index < entryCount; index += 1) {
         assert.strictEqual(
@@ -77,7 +86,13 @@ function zipCentralDirectoryEntries(archive: Buffer): string[] {
         assert.ok(entryEnd <= archive.length, `truncated VSIX central directory entry ${index}`);
         const name = archive.subarray(offset + 46, offset + 46 + nameLength).toString('utf8');
         assert.ok(!name.includes('\\'), `VSIX entry is not slash-normalized: ${name}`);
-        entries.push(name);
+        entries.push({
+            name,
+            compressionMethod: archive.readUInt16LE(offset + 10),
+            compressedSize: archive.readUInt32LE(offset + 20),
+            uncompressedSize: archive.readUInt32LE(offset + 24),
+            localHeaderOffset: archive.readUInt32LE(offset + 42),
+        });
         offset = entryEnd;
     }
     assert.strictEqual(
@@ -86,6 +101,34 @@ function zipCentralDirectoryEntries(archive: Buffer): string[] {
         'VSIX central directory size does not match its entries'
     );
     return entries;
+}
+
+function zipEntryContents(archive: Buffer, entry: ZipEntry): Buffer {
+    const localHeaderSignature = 0x04034b50;
+    assert.strictEqual(
+        archive.readUInt32LE(entry.localHeaderOffset),
+        localHeaderSignature,
+        `invalid local header for ${entry.name}`
+    );
+    const nameLength = archive.readUInt16LE(entry.localHeaderOffset + 26);
+    const extraLength = archive.readUInt16LE(entry.localHeaderOffset + 28);
+    const dataStart = entry.localHeaderOffset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + entry.compressedSize;
+    assert.ok(dataEnd <= archive.length, `truncated ZIP data for ${entry.name}`);
+    const compressed = archive.subarray(dataStart, dataEnd);
+    const contents = entry.compressionMethod === 0
+        ? compressed
+        : entry.compressionMethod === 8
+            ? inflateRawSync(compressed)
+            : assert.fail(
+                `unsupported ZIP compression method ${entry.compressionMethod} for ${entry.name}`
+            );
+    assert.strictEqual(
+        contents.length,
+        entry.uncompressedSize,
+        `uncompressed size mismatch for ${entry.name}`
+    );
+    return contents;
 }
 
 function packageFailure(result: ReturnType<typeof spawnSync>): string {
@@ -152,11 +195,78 @@ function run(): void {
             assert.ok(fs.existsSync(target), `${target} was not generated in the fixture`);
         }
 
-        const entries = zipCentralDirectoryEntries(fs.readFileSync(vsixPath));
+        const archive = fs.readFileSync(vsixPath);
+        const zipEntries = zipCentralDirectoryEntries(archive);
+        const entries = zipEntries.map(entry => entry.name);
+        const entryText = (name: string): string => {
+            const entry = zipEntries.find(candidate => candidate.name === name);
+            assert.ok(entry, `VSIX is missing ${name}`);
+            return zipEntryContents(archive, entry).toString('utf8');
+        };
         assert.ok(
             entries.includes('extension/dist/extension.js'),
             'VSIX is missing the extension/dist/extension.js main bundle'
         );
+        const packagedManifest = JSON.parse(entryText('extension/package.json'));
+        const archDesignEditor = packagedManifest.contributes.customEditors.find(
+            (item: { viewType?: string }) => item.viewType === 'veriflow.archDesignEditor'
+        );
+        assert.deepStrictEqual(archDesignEditor, {
+            viewType: 'veriflow.archDesignEditor',
+            displayName: 'VeriFlow Arch Design Editor',
+            selector: [{ filenamePattern: '*.ad' }],
+            priority: 'default',
+        });
+        assert.ok(
+            packagedManifest.activationEvents.includes(
+                'onCustomEditor:veriflow.archDesignEditor'
+            ),
+            'VSIX manifest does not activate the Arch Design editor'
+        );
+        for (const command of [
+            'veriflow.validateArchDesign',
+            'veriflow.exportArchDesign',
+        ]) {
+            assert.ok(
+                packagedManifest.contributes.commands.some(
+                    (item: { command?: string }) => item.command === command
+                ),
+                `VSIX manifest is missing ${command}`
+            );
+        }
+
+        const extensionBundle = entryText('extension/dist/extension.js');
+        for (const marker of [
+            'vik-veriflow.arch-design',
+            'veriflow.archDesignEditor',
+            'applyArchDesignEdit',
+            'exportArchDesignRtl',
+            'Arch Design RTL exported',
+        ]) {
+            assert.ok(
+                extensionBundle.includes(marker),
+                `VSIX extension bundle is missing Arch Design runtime marker: ${marker}`
+            );
+        }
+        const schematicHtml = entryText('extension/media/schematic/index.html');
+        for (const controlId of [
+            'add-instance-button',
+            'add-port-button',
+            'connect-button',
+            'export-button',
+        ]) {
+            assert.ok(
+                schematicHtml.includes(`id="${controlId}"`),
+                `VSIX schematic HTML is missing ${controlId}`
+            );
+        }
+        const schematicBundle = entryText('extension/media/schematic/index.js');
+        for (const marker of ['editArchDesign', 'exportArchDesign', 'archDesignState']) {
+            assert.ok(
+                schematicBundle.includes(marker),
+                `VSIX schematic bundle is missing authoring marker: ${marker}`
+            );
+        }
         const runtimeEntries = entries.filter(entry => (
             entry.startsWith('extension/dist/')
             || entry.startsWith('extension/media/parsers/')
@@ -197,6 +307,14 @@ function run(): void {
             )),
             [],
             'VSIX must not contain schematic-core source or test build output'
+        );
+        assert.deepStrictEqual(
+            entries.filter(entry => (
+                /(^|\/)(__pycache__|python)(\/|$)/i.test(entry)
+                || /\.(py|pyc|pyo|pyd|whl)$/i.test(entry)
+            )),
+            [],
+            'VSIX must not contain Python source, bytecode, packages, or runtime directories'
         );
     } finally {
         try {

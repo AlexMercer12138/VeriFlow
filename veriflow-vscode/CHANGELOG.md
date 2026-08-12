@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- 新增 `.ad` Arch Design 可视化编辑器，可添加模块实例、顶层端口、参数、标量连接和默认值。
+- 新增 Arch Design 校验和 Verilog/SystemVerilog RTL 导出，默认生成同名 `.v`，并拒绝覆盖手写 RTL。
+- Arch Design 与只读 HDL 原理图共享列布局、正交布线、网络选择和右侧属性栏。
+- 改善原理图端口标注、网络选择效果和明暗主题对比度。
+
 ## [1.4.0] - 2026-08-09
 
 - 发布共享 TypeScript 核心、Node CLI 和 context-isolated Electron 波形窗口。

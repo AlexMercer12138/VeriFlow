@@ -2,30 +2,49 @@
 
 [简体中文](https://github.com/AlexMercer12138/Vik-VeriFlow/blob/main/veriflow-vscode/README_zh-CN.md)
 
-Verilog Design Flow brings a focused Verilog/SystemVerilog workflow into VS Code: scan modules, analyze dependencies, compile and simulate, inspect schematics, open VCD waveforms, instantiate modules, and generate testbenches.
+Verilog Design Flow brings module discovery, dependency analysis, simulation, waveform inspection, schematic browsing, and visual Arch Design editing into VS Code.
 
 ![VeriFlow preview](https://img.cdn1.vip/i/6a0a6a9964326_1779067545.webp)
 
 ## Requirements
 
 - VS Code 1.82 or newer
-- A simulator: Icarus Verilog, VCS, XSim, or custom commands
-- A waveform viewer only when not using the built-in VCD viewer
+- Icarus Verilog, VCS, XSim, or custom simulator commands for simulation
+- No external waveform tool is required when using the built-in VCD viewer
 
-## Quick Start
+## HDL Workflow
 
 1. Open a workspace containing `.v` or `.sv` files.
 2. Open **VeriFlow** from the Activity Bar and select the top module.
 3. Run **Analyze Dependencies** or **Compile & Simulate**.
 4. Run **Open Waveform** to inspect the generated VCD.
 
-You can also open `.vcd` files directly with **VeriFlow Waveform Viewer**.
+Open a `.vcd` file directly with **VeriFlow Waveform Viewer**. Run **Open as VeriFlow Schematic** on `.v` or `.sv` to inspect a read-only schematic with deterministic columns, orthogonal routing, search, zoom, minimap, network selection, and layout controls.
 
-## Schematic View
+## Arch Design Editor
 
-Run **Open as VeriFlow Schematic** on a `.v` or `.sv` file. VeriFlow places inputs on the left, outputs on the right, and module pins on their matching side. Modules are arranged in deterministic columns; networks use orthogonal channel routing and top/bottom outer lanes for feedback.
+Create a valid `.ad` file, then open it to use the visual architecture editor. This is the minimal document; replace `soc_top` with the generated top-level module name:
 
-The view supports search, zoom, minimap, whole-network selection, column-snapped dragging, and **Relayout schematic**. Layout changes are stored separately and do not rewrite HDL source.
+```json
+{
+  "format": "vik-veriflow.arch-design",
+  "schemaVersion": 1,
+  "module": "soc_top",
+  "ports": [],
+  "instances": [],
+  "connections": [],
+  "interfaceConnections": [],
+  "defaults": {},
+  "export": {},
+  "presentation": {}
+}
+```
+
+Add module instances and top-level ports from the toolbar, enable connection mode, then drag from an output pin to an input pin. Select an instance, port, or network to edit its name, parameters, defaults, and export settings in the Inspector.
+
+Use **Validate Arch Design** to check the current design and **Export Arch Design RTL** to generate RTL. Verilog is exported to a sibling `.v` file by default; SystemVerilog and a relative `.sv` output can be selected in the Inspector. Existing hand-written RTL is never overwritten.
+
+`.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility. The current editor authors scalar connections. AXI/APB/AHB recognition, collapsed interfaces, and project-defined protocols are planned separately.
 
 ## Other Commands
 
@@ -44,9 +63,9 @@ The view supports search, zoom, minimap, whole-network selection, column-snapped
 | `veriflow.simulator` | `iverilog`, `vcs`, `xsim`, or `custom` |
 | `veriflow.waveViewer` | `builtin`, `surfer`, `gtkwave`, or `custom` |
 | `veriflow.waveFileTemplate` | Generated waveform path template |
-| `veriflow.testbenchOutputDir` | Workspace-relative testbench output directory |
+| `veriflow.testbenchOutputDir` | Workspace-relative Testbench output directory |
 
-Custom simulator and viewer command templates are available in VS Code settings.
+Custom simulator and waveform viewer commands are available in VS Code settings.
 
 ## License
 

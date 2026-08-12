@@ -515,6 +515,13 @@ function createExtensionHarness(
         './waveformEditorProvider': {
             WaveformEditorProvider: class { static readonly viewType = 'veriflow.waveformEditor'; },
         },
+        './archDesign/archDesignEditorProvider': {
+            ArchDesignEditorProvider: class {
+                static readonly viewType = 'veriflow.archDesignEditor';
+                async validate(): Promise<void> {}
+                async exportRtl(): Promise<void> {}
+            },
+        },
         './output': {
             appendError(): void {}, appendInfo(): void {}, appendLine(): void {},
             appendSuccess(): void {}, appendWarning(): void {}, clear(): void {},

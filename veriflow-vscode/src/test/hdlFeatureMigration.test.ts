@@ -1155,6 +1155,13 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         './waveformEditorProvider': {
             WaveformEditorProvider: class { static readonly viewType = 'veriflow.waveformEditor'; },
         },
+        './archDesign/archDesignEditorProvider': {
+            ArchDesignEditorProvider: class {
+                static readonly viewType = 'veriflow.archDesignEditor';
+                async validate(): Promise<void> {}
+                async exportRtl(): Promise<void> {}
+            },
+        },
         './schematic': {
             SchematicNavigationRegistry: class {},
             SchematicEditorProvider: class {

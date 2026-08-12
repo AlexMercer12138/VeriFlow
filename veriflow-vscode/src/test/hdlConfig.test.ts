@@ -141,6 +141,13 @@ async function testExtensionLifecycle(): Promise<void> {
                 static readonly viewType = 'veriflow.waveformEditor';
             },
         },
+        './archDesign/archDesignEditorProvider': {
+            ArchDesignEditorProvider: class {
+                static readonly viewType = 'veriflow.archDesignEditor';
+                async validate(): Promise<void> {}
+                async exportRtl(): Promise<void> {}
+            },
+        },
         './output': outputStub,
     };
 
