@@ -225,3 +225,40 @@ once per webview without dirtying the document.
 **Tags:** #architecture #lesson-learned #vscode #schematic #arch-design
 
 ---
+
+## 2026-08-12: Drive every interface workflow from protocol JSON
+
+**Context:** Arch Design needs automatic bus recognition, collapsed authoring,
+explicit defaults, and RTL export for built-in and project-defined protocols.
+Protocol-specific TypeScript paths would make custom protocols less capable
+than built-ins and duplicate semantics across recognition, rendering, and
+export.
+
+**Decision:** Define built-in and project interfaces with the same versioned
+JSON schema and resolve them through one host-neutral pipeline. Recognize
+interfaces by case-insensitive longest member suffix and protocol-defined
+signature groups, infer roles only from HDL directions, require one-to-one
+Master-Slave connections, and expand the same resolved member bindings into
+validation, rendering, defaults, and scalar Verilog/SystemVerilog output.
+Project definitions replace built-ins by stable ID, and AXI4-Lite is treated as
+an incomplete AXI4 interface.
+
+**Why not:**
+- Hard-code AXI/APB/AHB recognizers: built-ins and user protocols would have
+  different abilities and fixes would need to be repeated.
+- Infer Master/Slave from `m_` or `s_`: port naming is not a reliable semantic
+  source; unresolved directional evidence must remain explicit.
+- Permit implicit interface fan-out or width adapters: arbitration and width
+  conversion require visible modules, while ordinary Verilog width conversion
+  remains allowed with a warning.
+- Store recognized members in `.ad`: module declarations and protocol files
+  already own that data, so persistence would become stale.
+
+**Affects:** `packages/schematic-core/`, `packages/flow-core/`,
+`packages/cli/`, `packages/schematic-webview/`, `veriflow-vscode/`
+
+**Related:** `docs/plans/2026-08-12-ad-interface-protocols-design.md`
+
+**Tags:** #architecture #schematic #arch-design #interfaces #code-generation
+
+---
