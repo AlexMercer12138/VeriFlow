@@ -72,6 +72,14 @@ test('shared package public imports compile for a host consumer', () => {
                 assert.deepEqual(manifest.typesVersions['*']['arch-design'], [
                     'dist/archDesign/index.d.ts',
                 ]);
+                assert.deepEqual(manifest.exports['./interfaces'], {
+                    types: './dist/interfaces/index.d.ts',
+                    require: './dist/interfaces/index.js',
+                    default: './dist/interfaces/index.js',
+                });
+                assert.deepEqual(manifest.typesVersions['*'].interfaces, [
+                    'dist/interfaces/index.d.ts',
+                ]);
                 assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
                     '@veriflow/hdl-core',
                 ]);
@@ -105,6 +113,11 @@ test('shared package public imports compile for a host consumer', () => {
             "    type ArchDesignRtlMarker,",
             "    type ArchDesignValidationResult,",
             "} from '@veriflow/schematic-core/arch-design';",
+            "import {",
+            "    INTERFACE_PROTOCOL_FORMAT,",
+            "    parseInterfaceProtocolText,",
+            "    type InterfaceProtocol,",
+            "} from '@veriflow/schematic-core/interfaces';",
             "import * as schematicModel from '@veriflow/schematic-core/model';",
             "export type SchematicGraph = import('@veriflow/schematic-core/model').SchematicGraph;",
             "export type ArchDesignPublicTypes = [",
@@ -151,6 +164,17 @@ test('shared package public imports compile for a host consumer', () => {
             "    validation,",
             "};",
             'export const schematicModelRuntime = schematicModel;',
+            "const parsedProtocol = parseInterfaceProtocolText(JSON.stringify({",
+            "    format: INTERFACE_PROTOCOL_FORMAT,",
+            "    schemaVersion: 1,",
+            "    id: 'consumer.protocol',",
+            "    name: 'Consumer',",
+            "    separator: '_',",
+            "    members: [{ name: 'data', direction: 'master-to-slave' }],",
+            "    recognitionGroups: [['data']],",
+            "}));",
+            "export const interfaceProtocolRuntime: InterfaceProtocol | undefined =",
+            "    parsedProtocol.status === 'editable' ? parsedProtocol.protocol : undefined;",
             '',
         ].join('\n'));
         writeFileSync(path.join(consumerRoot, 'tsconfig.json'), JSON.stringify({

@@ -37,12 +37,20 @@
       "types": "./dist/archDesign/index.d.ts",
       "require": "./dist/archDesign/index.js",
       "default": "./dist/archDesign/index.js"
+    },
+    "./interfaces": {
+      "types": "./dist/interfaces/index.d.ts",
+      "require": "./dist/interfaces/index.js",
+      "default": "./dist/interfaces/index.js"
     }
   },
   "typesVersions": {
     "*": {
       "arch-design": [
         "dist/archDesign/index.d.ts"
+      ],
+      "interfaces": [
+        "dist/interfaces/index.d.ts"
       ],
       "model": [
         "dist/model.d.ts"
