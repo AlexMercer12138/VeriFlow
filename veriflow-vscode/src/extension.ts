@@ -16,6 +16,9 @@ import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
 import { ArchDesignEditorProvider } from './archDesign/archDesignEditorProvider';
 import {
+    WorkspaceInterfaceProtocolLoader,
+} from './archDesign/interfaceProtocolLoader';
+import {
     SchematicEditorProvider,
     SchematicNavigationRegistry,
 } from './schematic';
@@ -259,6 +262,44 @@ export function activate(context: vscode.ExtensionContext): void {
             }
         )
     );
+    const interfaceProtocolLoader = new WorkspaceInterfaceProtocolLoader({
+        workspaceFolder(documentUri): string | undefined {
+            return vscode.workspace.getWorkspaceFolder(
+                vscode.Uri.parse(documentUri)
+            )?.uri.toString();
+        },
+        resolve(baseUri, relativePath): string {
+            const base = vscode.Uri.parse(baseUri);
+            const normalized = relativePath.replace(/\\/g, '/');
+            const targetPath = path.posix.isAbsolute(normalized)
+                ? path.posix.normalize(normalized)
+                : path.posix.resolve(base.path, normalized);
+            return base.with({ path: targetPath }).toString();
+        },
+        async readFile(uri): Promise<string> {
+            return Buffer.from(await vscode.workspace.fs.readFile(
+                vscode.Uri.parse(uri)
+            )).toString('utf8');
+        },
+        watch(uri, listener): vscode.Disposable {
+            const target = vscode.Uri.parse(uri);
+            const filename = path.posix.basename(target.path);
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(
+                    target.with({ path: path.posix.dirname(target.path) }),
+                    filename.replace(/([*?{}[\]])/g, '[$1]')
+                )
+            );
+            const subscriptions = [
+                watcher.onDidCreate(listener),
+                watcher.onDidChange(listener),
+                watcher.onDidDelete(listener),
+                watcher,
+            ];
+            return vscode.Disposable.from(...subscriptions);
+        },
+    });
+    context.subscriptions.push(interfaceProtocolLoader);
     const archDesignEditorProvider = new ArchDesignEditorProvider(context, {
         getIndex: (document, owner) => _getSchematicIndex(
             context,
@@ -272,6 +313,11 @@ export function activate(context: vscode.ExtensionContext): void {
                 dispose: () => schematicIndexInvalidationListeners.delete(listener),
             };
         },
+        getInterfaceProtocols: document => interfaceProtocolLoader.load(
+            document.uri.toString()
+        ),
+        onDidInvalidateInterfaceProtocols: listener =>
+            interfaceProtocolLoader.onDidInvalidate(listener),
     });
     context.subscriptions.push(
         vscode.window.registerCustomEditorProvider(

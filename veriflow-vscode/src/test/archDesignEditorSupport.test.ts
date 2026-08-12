@@ -11,6 +11,7 @@ import {
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import {
     archDesignEndpointForPin,
+    archDesignGraphsEqual,
     archDesignLayout,
     archDesignPresentationFromLayout,
     toArchDesignModuleDefinitions,
@@ -196,10 +197,23 @@ function testEndpointProjection(): void {
     );
 }
 
+function testGraphEqualityForLightweightProtocolRefresh(): void {
+    const projected = projectArchDesignGraph(
+        designOf({ instances: [{ name: 'u_core', module: 'core' }] }),
+        [definition()],
+        { fileUri: 'file:///workspace/soc.ad' }
+    ).graph;
+    const equal = structuredClone(projected);
+    assert.strictEqual(archDesignGraphsEqual(projected, equal), true);
+    equal.nodes[0].label = 'changed';
+    assert.strictEqual(archDesignGraphsEqual(projected, equal), false);
+}
+
 function main(): void {
     testCatalogProjection();
     testLayoutProjection();
     testEndpointProjection();
+    testGraphEqualityForLightweightProtocolRefresh();
     console.log('Arch Design editor support tests passed');
 }
 

@@ -9,6 +9,10 @@ import {
     serializeArchDesign,
     type ArchDesign,
 } from '@veriflow/schematic-core/arch-design';
+import {
+    createInterfaceProtocolCatalog,
+    type InterfaceProtocolCatalog,
+} from '@veriflow/schematic-core/interfaces';
 
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import type { HostEvent } from '../schematic/protocol';
@@ -59,7 +63,9 @@ type ProviderHarness = {
         designPath: string;
         design: ArchDesign;
         definitions: HdlDefinitionSummary[];
+        interfaceCatalog: InterfaceProtocolCatalog;
     }>;
+    protocolCatalog: InterfaceProtocolCatalog;
     validate(): Promise<void>;
     exportRtl(): Promise<void>;
     validateWithoutUri(): Promise<void>;
@@ -68,6 +74,8 @@ type ProviderHarness = {
     failNextExport(error: Error): void;
     setDefinitions(definitions: HdlDefinitionSummary[]): void;
     invalidateIndex(): void;
+    setProtocolGeneration(generation: number): void;
+    invalidateProtocols(): void;
     send(message: unknown): void;
     changeDocument(text: string, version: number): void;
     signalDocumentStateChange(): void;
@@ -112,7 +120,8 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 
 async function createHarness(
     initialText: string,
-    initialDefinitions: HdlDefinitionSummary[] = []
+    initialDefinitions: HdlDefinitionSummary[] = [],
+    initialProtocolGeneration = 0
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
     const resource = FakeUri.parse('file:///workspace/soc.ad');
@@ -125,7 +134,10 @@ async function createHarness(
     }) => void) | undefined;
     let disposeListener: (() => void) | undefined;
     let invalidationListener: ((index?: object) => void) | undefined;
+    let protocolInvalidationListener: (() => void) | undefined;
     let definitions = [...initialDefinitions];
+    let protocolGeneration = initialProtocolGeneration;
+    const interfaceCatalog = createInterfaceProtocolCatalog();
     const messages: HostEvent[] = [];
     const diagnostics: ProviderHarness['diagnostics'] = [];
     const informationMessages: string[] = [];
@@ -292,15 +304,34 @@ async function createHarness(
                 },
             };
         },
+        async getInterfaceProtocols() {
+            return {
+                catalog: interfaceCatalog,
+                diagnostics: [],
+                generation: protocolGeneration,
+            };
+        },
+        onDidInvalidateInterfaceProtocols(listener: () => void) {
+            protocolInvalidationListener = listener;
+            return {
+                dispose(): void {
+                    if (protocolInvalidationListener === listener) {
+                        protocolInvalidationListener = undefined;
+                    }
+                },
+            };
+        },
         async exportDesign(
             designPath: string,
             selectedDesign: ArchDesign,
-            selectedDefinitions: HdlDefinitionSummary[]
+            selectedDefinitions: HdlDefinitionSummary[],
+            selectedInterfaceCatalog: InterfaceProtocolCatalog
         ) {
             exportRequests.push({
                 designPath,
                 design: selectedDesign,
                 definitions: selectedDefinitions,
+                interfaceCatalog: selectedInterfaceCatalog,
             });
             await exportGate;
             if (nextExportError) {
@@ -331,6 +362,7 @@ async function createHarness(
         replacements,
         releasedOwners,
         exportRequests,
+        protocolCatalog: interfaceCatalog,
         validate(): Promise<void> {
             return provider.validate(resource as never);
         },
@@ -350,6 +382,8 @@ async function createHarness(
         failNextExport(error: Error): void { nextExportError = error; },
         setDefinitions(next): void { definitions = [...next]; },
         invalidateIndex(): void { invalidationListener?.(index); },
+        setProtocolGeneration(generation): void { protocolGeneration = generation; },
+        invalidateProtocols(): void { protocolInvalidationListener?.(); },
         send(message): void { messageListener?.(message); },
         changeDocument(text, version): void {
             documentText = text;
@@ -374,6 +408,60 @@ async function createHarness(
             delete require.cache[require.resolve('../archDesign/archDesignEditorProvider')];
         },
     };
+}
+
+async function testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), [], 3);
+    try {
+        const initialState = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(initialState?.type === 'archDesignState'
+            && initialState.status === 'editable');
+        if (initialState?.type !== 'archDesignState'
+            || initialState.status !== 'editable') return;
+        assert.match(initialState.revision, /:3:/);
+        const initialGraphCount = harness.messages.filter(
+            event => event.type === 'graph'
+        ).length;
+
+        harness.setProtocolGeneration(4);
+        harness.invalidateProtocols();
+        await waitFor(
+            () => harness.messages.filter(
+                event => event.type === 'archDesignState' && event.status === 'editable'
+            ).length === 2,
+            'protocol generation refresh'
+        );
+        const refreshedState = harness.messages.filter(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        ).at(-1);
+        assert.ok(refreshedState?.type === 'archDesignState'
+            && refreshedState.status === 'editable');
+        if (refreshedState?.type !== 'archDesignState'
+            || refreshedState.status !== 'editable') return;
+        assert.match(refreshedState.revision, /:4:/);
+        assert.strictEqual(
+            harness.messages.filter(event => event.type === 'graph').length,
+            initialGraphCount
+        );
+
+        harness.send({
+            type: 'editArchDesign',
+            revision: initialState.revision,
+            edit: { type: 'addPort', port: { name: 'stale', direction: 'input' } },
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.deepStrictEqual(harness.replacements, []);
+        harness.send({ type: 'exportArchDesign', revision: refreshedState.revision });
+        await waitFor(() => harness.exportRequests.length === 1, 'protocol snapshot export');
+        assert.strictEqual(
+            harness.exportRequests[0].interfaceCatalog,
+            harness.protocolCatalog
+        );
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testValidateReportsLatestDiagnosticCount(): Promise<void> {
@@ -1201,6 +1289,7 @@ async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    await testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands();
     await testEditableLifecycleAndNativeEdit();
     await testRejectedDocumentEditRepublishesEditableState();
     await testAcceptedNoOpEditRepublishesEditableState();

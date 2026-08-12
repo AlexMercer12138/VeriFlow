@@ -18,6 +18,7 @@ import {
     type ArchDesignDiagnostic,
     type ArchDesignLanguage,
 } from '@veriflow/schematic-core/arch-design';
+import type { InterfaceProtocolCatalog } from '@veriflow/schematic-core/interfaces';
 
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { canonicalizeSourceUri } from '../core/hdl/preprocessor';
@@ -30,6 +31,10 @@ export type ArchDesignExportFileOperations = Readonly<{
     link(source: string, target: string): Promise<void>;
     rename(source: string, target: string): Promise<void>;
     remove(filepath: string): Promise<void>;
+}>;
+
+export type ArchDesignFileExportOptions = Partial<ArchDesignExportFileOperations> & Readonly<{
+    interfaceCatalog?: InterfaceProtocolCatalog;
 }>;
 
 export type ArchDesignFileExportResult =
@@ -241,8 +246,9 @@ export async function exportArchDesignToFile(
     designPath: string,
     design: ArchDesign,
     definitions: readonly HdlDefinitionSummary[],
-    operationOverrides: Partial<ArchDesignExportFileOperations> = {}
+    options: ArchDesignFileExportOptions = {}
 ): Promise<ArchDesignFileExportResult> {
+    const { interfaceCatalog, ...operationOverrides } = options;
     const resolvedDesignPath = path.resolve(designPath);
     const { language, outputPath } = outputPathFor(resolvedDesignPath, design);
     const selectedDefinitions = await excludeOutputDefinitions(definitions, outputPath);
@@ -252,6 +258,7 @@ export async function exportArchDesignToFile(
     const generated = exportArchDesignRtl(design, exportDefinitions, {
         language,
         sourcePath: portableSourcePath(resolvedDesignPath, outputPath),
+        ...(interfaceCatalog === undefined ? {} : { interfaceCatalog }),
     });
     if (generated.status === 'invalid') {
         return Object.freeze({

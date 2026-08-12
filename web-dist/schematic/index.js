@@ -4851,6 +4851,7 @@
         const direction = record.direction;
         const widthValue = record.width;
         const readOnly = record.readOnly;
+        const interfaceValue = record.interface;
         const sourceSpanValue = record.sourceSpan;
         if (typeof id !== "string" || typeof name !== "string" || !PIN_DIRECTIONS.has(direction) || typeof readOnly !== "boolean") {
           throw new RangeError(`node ${nodeId} pin ${pinIndex} is invalid`);
@@ -4861,7 +4862,39 @@
           direction,
           width: snapshotWidth(widthValue, `node ${nodeId} pin ${id}`),
           readOnly,
+          interface: snapshotPinInterface(interfaceValue, `node ${nodeId} pin ${id}`),
           sourceSpan: snapshotSourceSpan(sourceSpanValue, `node ${nodeId} pin ${id}`)
+        };
+      }
+      function snapshotPinInterface(value, label) {
+        if (value === void 0)
+          return void 0;
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`${label} interface metadata must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const protocol = record.protocol;
+        const protocolName = record.protocolName;
+        const role = record.role;
+        const roleSource = record.roleSource;
+        const kind = record.kind;
+        const topLevel = record.topLevel;
+        const collapsed = record.collapsed;
+        const member = record.member;
+        if (typeof id !== "string" || typeof protocol !== "string" || typeof protocolName !== "string" || !["master", "slave", "unknown"].includes(role) || !["inferred", "override", "declared", "unknown"].includes(roleSource) || !["aggregate", "member"].includes(kind) || typeof topLevel !== "boolean" || typeof collapsed !== "boolean" || member !== void 0 && typeof member !== "string") {
+          throw new RangeError(`${label} has invalid interface metadata`);
+        }
+        return {
+          id,
+          protocol,
+          protocolName,
+          role,
+          roleSource,
+          kind,
+          topLevel,
+          collapsed,
+          ...member === void 0 ? {} : { member }
         };
       }
       function snapshotNode(value, nodeIndex, seenNodeIds) {
@@ -4915,11 +4948,13 @@
         const endpointsValue = record.endpoints;
         const sourceSpanValue = record.sourceSpan;
         const adapterLabel = record.adapterLabel;
+        const renderWidth = record.renderWidth;
+        const interfaceValue = record.interface;
         if (typeof id !== "string" || seenNetworkIds.has(id)) {
           throw new RangeError("graph network IDs must be unique strings");
         }
         seenNetworkIds.add(id);
-        if (typeof name !== "string" || adapterLabel !== void 0 && typeof adapterLabel !== "string") {
+        if (typeof name !== "string" || adapterLabel !== void 0 && typeof adapterLabel !== "string" || renderWidth !== void 0 && (typeof renderWidth !== "number" || !Number.isFinite(renderWidth) || renderWidth <= 0)) {
           throw new RangeError(`graph network ${id} is invalid`);
         }
         const seenTerminals = /* @__PURE__ */ new Set();
@@ -4962,8 +4997,35 @@
           name,
           width: snapshotWidth(widthValue, `network ${id}`),
           endpoints,
+          renderWidth,
+          interface: snapshotNetworkInterface(interfaceValue, `network ${id}`),
           sourceSpan: snapshotSourceSpan(sourceSpanValue, `network ${id}`),
           adapterLabel
+        };
+      }
+      function snapshotNetworkInterface(value, label) {
+        if (value === void 0)
+          return void 0;
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new RangeError(`${label} interface metadata must be an object`);
+        }
+        const record = value;
+        const id = record.id;
+        const connection2 = record.connection;
+        const protocol = record.protocol;
+        const protocolName = record.protocolName;
+        const collapsed = record.collapsed;
+        const member = record.member;
+        if (typeof id !== "string" || typeof connection2 !== "string" || typeof protocol !== "string" || typeof protocolName !== "string" || typeof collapsed !== "boolean" || member !== void 0 && typeof member !== "string") {
+          throw new RangeError(`${label} has invalid interface metadata`);
+        }
+        return {
+          id,
+          connection: connection2,
+          protocol,
+          protocolName,
+          collapsed,
+          ...member === void 0 ? {} : { member }
         };
       }
       function snapshotGraph(value) {
@@ -5078,7 +5140,8 @@
           fullLabel: pin2.fullLabel,
           visibleLabel: pin2.visibleLabel,
           truncated: pin2.truncated,
-          clipBounds: translateRectangle(pin2.clipBounds, offset4)
+          clipBounds: translateRectangle(pin2.clipBounds, offset4),
+          ...pin2.source.interface === void 0 ? {} : { interface: Object.freeze({ ...pin2.source.interface }) }
         });
       }
       function freezeSegment(segment) {
@@ -5203,6 +5266,8 @@
             displayName,
             selectionDescription: network.name,
             feedback: route.feedback,
+            ...network.renderWidth === void 0 ? {} : { renderWidth: network.renderWidth },
+            ...network.interface === void 0 ? {} : { interface: Object.freeze({ ...network.interface }) },
             terminals,
             segments
           });
@@ -46873,6 +46938,20 @@
         setAuthoringControls();
         drainArchDesignWrites();
         return;
+      case "archDesignRevisionChanged":
+        currentRevision = event.revision;
+        if (currentGraph) {
+          layoutSaveScheduler.rebaseRevision(currentGraph.moduleKey, event.revision);
+        }
+        if (currentArchDesignState) {
+          currentArchDesignState = {
+            ...currentArchDesignState,
+            revision: event.revision
+          };
+        }
+        setAuthoringControls();
+        drainArchDesignWrites();
+        return;
       case "hostError":
         setGraphControls(false);
         setCanvasState(event.message || "Unable to render schematic");
@@ -47151,7 +47230,7 @@
   window.addEventListener("message", (event) => {
     if (!event.data || typeof event.data !== "object") return;
     const type = event.data.type;
-    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "archDesignState" || type === "archDesignLayoutSaved" || type === "hostError") {
+    if (type === "initialize" || type === "graph" || type === "diagnostics" || type === "archDesignState" || type === "archDesignLayoutSaved" || type === "archDesignRevisionChanged" || type === "hostError") {
       handleHostEvent(event.data);
     }
   });

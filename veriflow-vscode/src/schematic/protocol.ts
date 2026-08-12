@@ -60,6 +60,7 @@ export type HostEvent =
     | { type: 'diagnostics'; errors: number; warnings: number }
     | { type: 'hostError'; message: string }
     | { type: 'archDesignLayoutSaved'; revision: string }
+    | { type: 'archDesignRevisionChanged'; revision: string }
     | {
         type: 'archDesignState';
         status: 'editable';

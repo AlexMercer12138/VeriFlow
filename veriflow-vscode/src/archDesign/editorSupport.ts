@@ -12,6 +12,13 @@ import type { SchematicLayout } from '../schematic/layoutStore';
 
 export { archDesignEndpointForPin } from '../schematic/webviewSupport';
 
+export function archDesignGraphsEqual(
+    left: SchematicGraph,
+    right: SchematicGraph
+): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function cloneWidth(
     width: ArchDesignModuleDefinition['ports'][number]['width']
 ): ArchDesignModuleDefinition['ports'][number]['width'] {

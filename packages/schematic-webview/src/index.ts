@@ -1652,6 +1652,20 @@ function handleHostEvent(event: HostEvent): void {
             setAuthoringControls();
             drainArchDesignWrites();
             return;
+        case 'archDesignRevisionChanged':
+            currentRevision = event.revision;
+            if (currentGraph) {
+                layoutSaveScheduler.rebaseRevision(currentGraph.moduleKey, event.revision);
+            }
+            if (currentArchDesignState) {
+                currentArchDesignState = {
+                    ...currentArchDesignState,
+                    revision: event.revision,
+                };
+            }
+            setAuthoringControls();
+            drainArchDesignWrites();
+            return;
         case 'hostError':
             setGraphControls(false);
             setCanvasState(event.message || 'Unable to render schematic');
@@ -1974,6 +1988,7 @@ window.addEventListener('message', event => {
     const type = (event.data as { type?: unknown }).type;
     if (type === 'initialize' || type === 'graph' || type === 'diagnostics'
         || type === 'archDesignState' || type === 'archDesignLayoutSaved'
+        || type === 'archDesignRevisionChanged'
         || type === 'hostError') {
         handleHostEvent(event.data as HostEvent);
     }

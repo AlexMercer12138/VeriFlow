@@ -20,6 +20,7 @@ import {
     parseArchDesignRtlMarker,
     type ArchDesign,
 } from '@veriflow/schematic-core/arch-design';
+import { createInterfaceProtocolCatalog } from '@veriflow/schematic-core/interfaces';
 
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import {
@@ -257,12 +258,77 @@ async function testPublicationFailuresPreserveTarget(): Promise<void> {
     });
 }
 
+async function testExportUsesProvidedInterfaceCatalog(): Promise<void> {
+    await withTemporaryDirectory(async directory => {
+        const designPath = path.join(directory, 'soc.ad');
+        const catalog = createInterfaceProtocolCatalog([{
+            source: path.join(directory, 'protocol.json'),
+            value: {
+                format: 'veriflow-interface-protocol',
+                schemaVersion: 1,
+                id: 'test.link',
+                name: 'Link',
+                separator: '_',
+                priority: 100,
+                members: [
+                    {
+                        name: 'data',
+                        direction: 'master-to-slave',
+                        default: "4'ha",
+                    },
+                    { name: 'ready', direction: 'slave-to-master' },
+                    {
+                        name: 'tag',
+                        direction: 'master-to-slave',
+                        default: "4'ha",
+                    },
+                ],
+                recognitionGroups: [['data', 'ready']],
+            },
+        }]);
+        const selectedDesign = design({
+            instances: [
+                { name: 'u_source', module: 'source' },
+                { name: 'u_sink', module: 'sink' },
+            ],
+            interfaceConnections: [{
+                name: 'link',
+                master: { kind: 'instance', instance: 'u_source', interface: 'm' },
+                slave: { kind: 'instance', instance: 'u_sink', interface: 's' },
+            }],
+        });
+        const source = definition('source', path.join(directory, 'source.sv'));
+        source.ports = [
+            { name: 'm_data', direction: 'output', width: { kind: 'known', bits: 4 } },
+            { name: 'm_ready', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ];
+        const sink = definition('sink', path.join(directory, 'sink.sv'));
+        sink.ports = [
+            { name: 's_data', direction: 'input', width: { kind: 'known', bits: 4 } },
+            { name: 's_ready', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 's_tag', direction: 'input', width: { kind: 'known', bits: 4 } },
+        ];
+
+        const result = await exportArchDesignToFile(
+            designPath,
+            selectedDesign,
+            [source, sink],
+            { interfaceCatalog: catalog }
+        );
+
+        assert.strictEqual(result.status, 'published');
+        if (result.status !== 'published') return;
+        assert.match(await readFile(result.outputPath, 'utf8'), /\.s_tag\s*\(4'ha\)/);
+    });
+}
+
 async function main(): Promise<void> {
     await testDefaultAndConfiguredTargets();
     await testExtensionValidationAndOutputExclusion();
     await testPhysicalOutputDefinitionExclusion();
     await testOwnershipAndReplacement();
     await testPublicationFailuresPreserveTarget();
+    await testExportUsesProvidedInterfaceCatalog();
     console.log('Arch Design export tests passed');
 }
 

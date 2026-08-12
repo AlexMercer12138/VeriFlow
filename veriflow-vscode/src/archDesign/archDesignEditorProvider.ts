@@ -13,6 +13,10 @@ import {
     type ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
 import type { SchematicGraph } from '@veriflow/schematic-core';
+import {
+    createInterfaceProtocolCatalog,
+    type InterfaceProtocolCatalog,
+} from '@veriflow/schematic-core/interfaces';
 
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
@@ -21,6 +25,7 @@ import { relayoutAll, type SchematicLayout } from '../schematic/layoutStore';
 import { buildSchematicWebviewHtml } from '../schematic/webviewSupport';
 import {
     archDesignLayout,
+    archDesignGraphsEqual,
     archDesignPresentationFromLayout,
     toArchDesignModuleDefinitions,
 } from './editorSupport';
@@ -28,6 +33,9 @@ import {
     exportArchDesignToFile,
     type ArchDesignFileExportResult,
 } from './archDesignExport';
+import type {
+    InterfaceProtocolCatalogSnapshot,
+} from './interfaceProtocolLoader';
 
 export type ArchDesignEditorServices = {
     getIndex(
@@ -38,10 +46,17 @@ export type ArchDesignEditorServices = {
     onDidInvalidate?(
         listener: (index?: WorkspaceHdlIndex) => void
     ): { dispose(): void };
+    getInterfaceProtocols?(
+        document: vscode.TextDocument
+    ): InterfaceProtocolCatalogSnapshot | Promise<InterfaceProtocolCatalogSnapshot>;
+    onDidInvalidateInterfaceProtocols?(
+        listener: () => void
+    ): { dispose(): void };
     exportDesign?(
         designPath: string,
         design: ArchDesign,
-        definitions: readonly HdlDefinitionSummary[]
+        definitions: readonly HdlDefinitionSummary[],
+        interfaceCatalog: InterfaceProtocolCatalog
     ): Promise<ArchDesignFileExportResult>;
 };
 
@@ -50,6 +65,8 @@ type EditableSnapshot = Readonly<{
     design: ArchDesign;
     definitions: readonly ArchDesignModuleDefinition[];
     sourceDefinitions: readonly HdlDefinitionSummary[];
+    interfaceCatalog: InterfaceProtocolCatalog;
+    interfaceProtocolGeneration: number;
     validation: ArchDesignValidationResult;
     graph: SchematicGraph;
     index?: WorkspaceHdlIndex;
@@ -153,11 +170,19 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             return;
         }
         try {
-            const result = await (this.services.exportDesign ?? exportArchDesignToFile)(
-                uri.fsPath,
-                snapshot.design,
-                snapshot.sourceDefinitions
-            );
+            const result = this.services.exportDesign
+                ? await this.services.exportDesign(
+                    uri.fsPath,
+                    snapshot.design,
+                    snapshot.sourceDefinitions,
+                    snapshot.interfaceCatalog
+                )
+                : await exportArchDesignToFile(
+                    uri.fsPath,
+                    snapshot.design,
+                    snapshot.sourceDefinitions,
+                    { interfaceCatalog: snapshot.interfaceCatalog }
+                );
             if (result.status === 'invalid') {
                 const count = result.diagnostics.length;
                 await vscode.window.showErrorMessage(
@@ -205,9 +230,10 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
         const post = async (event: HostEvent): Promise<void> => {
             if (!state.disposed) await panel.webview.postMessage(event);
         };
-        const revision = (): string => {
+        const revision = (interfaceProtocolGeneration = 0): string => {
             revisionSequence += 1;
-            return `${revisionNamespace}:${document.version}:${revisionSequence.toString(36)}`;
+            return `${revisionNamespace}:${document.version}:${interfaceProtocolGeneration}:`
+                + revisionSequence.toString(36);
         };
         const fullRange = (): vscode.Range => new vscode.Range(
             document.positionAt(0),
@@ -258,9 +284,10 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 editable,
             });
         };
-        const refresh = async (): Promise<void> => {
+        const refresh = async (preserveEqualGraph = false): Promise<void> => {
             if (!state.ready || state.disposed || token.isCancellationRequested) return;
             const generation = ++state.refreshGeneration;
+            const previousSnapshot = state.snapshot;
             state.pendingPresentationWrite = undefined;
             state.pendingSemanticWrite = undefined;
             state.queuedPresentationLayout = undefined;
@@ -299,7 +326,14 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             }
 
             const design = parsed.design;
-            const index = await this.services.getIndex(document, indexOwner);
+            const [index, interfaceProtocols] = await Promise.all([
+                this.services.getIndex(document, indexOwner),
+                this.services.getInterfaceProtocols?.(document) ?? Promise.resolve({
+                    catalog: createInterfaceProtocolCatalog(),
+                    diagnostics: [],
+                    generation: 0,
+                }),
+            ]);
             if (generation !== state.refreshGeneration
                 || state.disposed
                 || token.isCancellationRequested) return;
@@ -308,45 +342,69 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             const definitions = toArchDesignModuleDefinitions(sourceDefinitions);
             const projection = projectArchDesignGraph(design, definitions, {
                 fileUri: document.uri.toString(),
+                interfaceCatalog: interfaceProtocols.catalog,
             });
-            const nextRevision = revision();
+            const protocolDiagnostics: ArchDesignDiagnostic[] =
+                interfaceProtocols.diagnostics.map(item => ({
+                    path: `${item.source}:${item.path}`,
+                    code: item.code,
+                    message: item.message,
+                }));
+            const validation: ArchDesignValidationResult = Object.freeze({
+                ...projection.validation,
+                valid: projection.validation.valid && protocolDiagnostics.length === 0,
+                diagnostics: Object.freeze([
+                    ...protocolDiagnostics,
+                    ...projection.validation.diagnostics,
+                ]),
+            });
+            const nextRevision = revision(interfaceProtocols.generation);
             const snapshot: EditableSnapshot = {
                 revision: nextRevision,
                 design,
                 definitions,
                 sourceDefinitions,
-                validation: projection.validation,
+                interfaceCatalog: interfaceProtocols.catalog,
+                interfaceProtocolGeneration: interfaceProtocols.generation,
+                validation,
                 graph: projection.graph,
                 ...(index === undefined ? {} : { index }),
             };
             state.snapshot = snapshot;
-            await publishDiagnostics(projection.validation.diagnostics);
+            await publishDiagnostics(validation.diagnostics);
             if (generation !== state.refreshGeneration || state.disposed) return;
-            await post({
-                type: 'initialize',
-                fileUri: document.uri.toString(),
-                modules: [{
-                    key: projection.graph.moduleKey,
-                    name: projection.graph.moduleName,
-                }],
-                selectedModuleKey: projection.graph.moduleKey,
-                documentKind: 'arch-design',
-                editable: true,
-            });
-            await post({
-                type: 'graph',
-                revision: nextRevision,
-                graph: projection.graph,
-                layout: archDesignLayout(design, projection.graph),
-                fitOnFirstRender: design.presentation.viewport === undefined,
-            });
+            const graphUnchanged = preserveEqualGraph
+                && previousSnapshot !== undefined
+                && archDesignGraphsEqual(previousSnapshot.graph, projection.graph);
+            if (graphUnchanged) {
+                await post({ type: 'archDesignRevisionChanged', revision: nextRevision });
+            } else {
+                await post({
+                    type: 'initialize',
+                    fileUri: document.uri.toString(),
+                    modules: [{
+                        key: projection.graph.moduleKey,
+                        name: projection.graph.moduleName,
+                    }],
+                    selectedModuleKey: projection.graph.moduleKey,
+                    documentKind: 'arch-design',
+                    editable: true,
+                });
+                await post({
+                    type: 'graph',
+                    revision: nextRevision,
+                    graph: projection.graph,
+                    layout: archDesignLayout(design, projection.graph),
+                    fitOnFirstRender: design.presentation.viewport === undefined,
+                });
+            }
             await post({
                 type: 'archDesignState',
                 status: 'editable',
                 revision: nextRevision,
                 design,
                 catalog: definitions,
-                validation: projection.validation,
+                validation,
             });
         };
         const applyDocumentEdit = async (
@@ -509,7 +567,9 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 if (pendingWrite && document.getText() === pendingWrite.expectedText) {
                     state.pendingPresentationWrite = undefined;
                     state.refreshGeneration += 1;
-                    const nextRevision = revision();
+                    const nextRevision = revision(
+                        pendingWrite.sourceSnapshot.interfaceProtocolGeneration
+                    );
                     const nextSnapshot: EditableSnapshot = {
                         ...pendingWrite.sourceSnapshot,
                         revision: nextRevision,
@@ -539,7 +599,9 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                     && document.getText() === pendingSemanticWrite.expectedText) {
                     state.pendingSemanticWrite = undefined;
                     state.refreshGeneration += 1;
-                    const nextRevision = revision();
+                    const nextRevision = revision(
+                        pendingSemanticWrite.sourceSnapshot.interfaceProtocolGeneration
+                    );
                     const nextSnapshot: EditableSnapshot = {
                         ...pendingSemanticWrite.sourceSnapshot,
                         revision: nextRevision,
@@ -567,6 +629,10 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             if (index !== undefined && index !== state.lastIndex) return;
             void refresh().catch(error => { void reportError(error); });
         });
+        const protocolInvalidationSubscription =
+            this.services.onDidInvalidateInterfaceProtocols?.(() => {
+                void refresh(true).catch(error => { void reportError(error); });
+            });
         const tokenSubscription = token.onCancellationRequested(() => {
             state.refreshGeneration += 1;
             state.snapshot = undefined;
@@ -590,6 +656,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             this.services.releaseIndex?.(indexOwner);
             messageSubscription.dispose();
             indexInvalidationSubscription?.dispose();
+            protocolInvalidationSubscription?.dispose();
             tokenSubscription.dispose();
             panelSubscription.dispose();
             finishClosedPanelPresentationWrites();
