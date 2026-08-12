@@ -64,6 +64,106 @@ function testCommandsRemainStable(): void {
     ]) assertRejected(value);
 }
 
+function testArchDesignCommands(): void {
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'addInstance',
+            instance: {
+                name: 'u_core',
+                module: 'core',
+                parameters: { WIDTH: 8 },
+                ignored: true,
+            },
+            ignored: true,
+        },
+        ignored: true,
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'addInstance',
+            instance: { name: 'u_core', module: 'core', parameters: { WIDTH: 8 } },
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'connect',
+            source: { kind: 'port', port: 'clk', ignored: true },
+            target: { kind: 'instance', instance: 'u_core', port: 'clk' },
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'connect',
+            source: { kind: 'port', port: 'clk' },
+            target: { kind: 'instance', instance: 'u_core', port: 'clk' },
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'setPresentation',
+            presentation: {
+                nodes: {
+                    'instance:u_core': {
+                        column: 2,
+                        order: 1,
+                        offset: -8,
+                        userPositioned: true,
+                    },
+                },
+                viewport: { x: 1, y: 2, zoom: 1.5 },
+            },
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'setPresentation',
+            presentation: {
+                nodes: {
+                    'instance:u_core': {
+                        column: 2,
+                        order: 1,
+                        offset: -8,
+                        userPositioned: true,
+                    },
+                },
+                viewport: { x: 1, y: 2, zoom: 1.5 },
+            },
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'exportArchDesign', revision: 'ad:4', ignored: true,
+    }), { type: 'exportArchDesign', revision: 'ad:4' });
+
+    for (const value of [
+        { type: 'editArchDesign', revision: '', edit: { type: 'removePort', name: 'clk' } },
+        { type: 'editArchDesign', revision: 'ad:4', edit: null },
+        { type: 'editArchDesign', revision: 'ad:4', edit: { type: 'unknown' } },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: { type: 'addPort', port: { name: 'clk', direction: 'sideways' } },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'setInstanceParameter',
+                instance: 'u_core',
+                parameter: 'WIDTH',
+                value: { object: true },
+            },
+        },
+        { type: 'exportArchDesign', revision: 4 },
+    ]) assertRejected(value);
+}
+
 function testSemanticPlacementPayload(): void {
     const parsed = parseWebviewCommand(saveCommand({
         placement: {
@@ -249,6 +349,7 @@ function testHostileInputs(): void {
 
 async function main(): Promise<void> {
     testCommandsRemainStable();
+    testArchDesignCommands();
     testSemanticPlacementPayload();
     testPlacementBounds();
     testBreadthAndPrototypeSafety();
