@@ -12,12 +12,15 @@ import {
     type ArchDesignModuleDefinition,
     type ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
+import type { SchematicGraph } from '@veriflow/schematic-core';
 
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import { parseWebviewCommand, type HostEvent } from '../schematic/protocol';
+import { relayoutAll } from '../schematic/layoutStore';
 import { buildSchematicWebviewHtml } from '../schematic/webviewSupport';
 import {
     archDesignLayout,
+    archDesignPresentationFromLayout,
     toArchDesignModuleDefinitions,
 } from './editorSupport';
 
@@ -37,6 +40,7 @@ type EditableSnapshot = Readonly<{
     design: ArchDesign;
     definitions: readonly ArchDesignModuleDefinition[];
     validation: ArchDesignValidationResult;
+    graph: SchematicGraph;
     index?: WorkspaceHdlIndex;
 }>;
 
@@ -188,6 +192,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 design,
                 definitions,
                 validation: projection.validation,
+                graph: projection.graph,
                 ...(index === undefined ? {} : { index }),
             };
             state.snapshot = snapshot;
@@ -247,9 +252,39 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                         await applyDocumentEdit(snapshot, command.edit);
                         return;
                     }
+                    case 'saveLayout': {
+                        const snapshot = state.snapshot;
+                        if (!snapshot
+                            || command.revision !== snapshot.revision
+                            || command.moduleKey !== snapshot.graph.moduleKey) return;
+                        await applyDocumentEdit(snapshot, {
+                            type: 'setPresentation',
+                            presentation: archDesignPresentationFromLayout(
+                                snapshot.design,
+                                snapshot.graph,
+                                command.layout
+                            ),
+                        });
+                        return;
+                    }
+                    case 'relayoutAll': {
+                        const snapshot = state.snapshot;
+                        if (!snapshot || command.moduleKey !== snapshot.graph.moduleKey) return;
+                        const layout = relayoutAll(
+                            snapshot.graph,
+                            archDesignLayout(snapshot.design, snapshot.graph)
+                        );
+                        await applyDocumentEdit(snapshot, {
+                            type: 'setPresentation',
+                            presentation: archDesignPresentationFromLayout(
+                                snapshot.design,
+                                snapshot.graph,
+                                layout
+                            ),
+                        });
+                        return;
+                    }
                     case 'exportArchDesign':
-                    case 'saveLayout':
-                    case 'relayoutAll':
                     case 'selectModule':
                     case 'revealSource':
                     case 'openDefinition':

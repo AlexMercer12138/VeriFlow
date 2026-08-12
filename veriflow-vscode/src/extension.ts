@@ -14,6 +14,7 @@ import { ModuleTreeProvider } from './moduleTreeProvider';
 import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
+import { ArchDesignEditorProvider } from './archDesign/archDesignEditorProvider';
 import {
     SchematicEditorProvider,
     SchematicNavigationRegistry,
@@ -252,6 +253,30 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.registerCustomEditorProvider(
             WaveformEditorProvider.viewType,
             new WaveformEditorProvider(context),
+            {
+                webviewOptions: { retainContextWhenHidden: true },
+                supportsMultipleEditorsPerDocument: false,
+            }
+        )
+    );
+    const archDesignEditorProvider = new ArchDesignEditorProvider(context, {
+        getIndex: (document, owner) => _getSchematicIndex(
+            context,
+            document.uri,
+            owner
+        ),
+        releaseIndex: owner => _releaseSchematicIndex(owner),
+        onDidInvalidate: listener => {
+            schematicIndexInvalidationListeners.add(listener);
+            return {
+                dispose: () => schematicIndexInvalidationListeners.delete(listener),
+            };
+        },
+    });
+    context.subscriptions.push(
+        vscode.window.registerCustomEditorProvider(
+            ArchDesignEditorProvider.viewType,
+            archDesignEditorProvider,
             {
                 webviewOptions: { retainContextWhenHidden: true },
                 supportsMultipleEditorsPerDocument: false,

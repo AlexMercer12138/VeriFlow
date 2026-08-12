@@ -420,11 +420,84 @@ async function testCatalogInvalidationAndDisposal(): Promise<void> {
     assert.deepStrictEqual(harness.diagnostics, []);
 }
 
+async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> {
+    const source = sourceDesign({
+        ports: [
+            { name: 'clk', direction: 'input' },
+            { name: 'result', direction: 'output' },
+        ],
+        instances: [{ name: 'u_core', module: 'core' }],
+        connections: [{
+            name: 'clock',
+            endpoints: [
+                { kind: 'port', port: 'clk' },
+                { kind: 'instance', instance: 'u_core', port: 'clk' },
+            ],
+        }],
+        defaults: { 'result.value': "1'b0" },
+    });
+    const harness = await createHarness(source, [moduleDefinition()]);
+    try {
+        const graphEvent = harness.messages.find(event => event.type === 'graph');
+        assert.ok(graphEvent?.type === 'graph');
+        if (graphEvent?.type !== 'graph') return;
+        const layout = structuredClone(graphEvent.layout);
+        layout.placement.nodes['instance:u_core'] = {
+            column: 1,
+            order: 0,
+            yOffset: 24,
+            fixed: true,
+        };
+        const constantNode = graphEvent.graph.nodes.find(node => node.kind === 'constant');
+        assert.ok(constantNode);
+        layout.placement.nodes[constantNode!.id] = {
+            column: 1,
+            order: 9,
+            yOffset: 40,
+            fixed: true,
+        };
+        layout.viewport = { x: -16, y: 32, zoom: 1.25 };
+
+        harness.send({
+            type: 'saveLayout',
+            moduleKey: graphEvent.graph.moduleKey,
+            revision: graphEvent.revision,
+            layout,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'layout document edit');
+        const parsed = parseArchDesignText(harness.replacements[0].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(
+            Object.keys(parsed.design.presentation.nodes ?? {}).sort(),
+            ['instance:u_core', 'port:clk', 'port:result']
+        );
+        assert.deepStrictEqual(
+            parsed.design.presentation.nodes?.['instance:u_core'],
+            { column: 1, order: 0, offset: 24, userPositioned: true }
+        );
+        assert.deepStrictEqual(
+            parsed.design.presentation.viewport,
+            { x: -16, y: 32, zoom: 1.25 }
+        );
+        assert.strictEqual(
+            Object.prototype.hasOwnProperty.call(
+                parsed.design.presentation.nodes ?? {},
+                constantNode!.id
+            ),
+            false
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function main(): Promise<void> {
     await testEditableLifecycleAndNativeEdit();
     await testInvalidTextRetainsLastValidGraph();
     await testUnsupportedSchemaIsReadOnly();
     await testCatalogInvalidationAndDisposal();
+    await testLayoutSavePersistsOnlyStableArchDesignNodes();
     console.log('Arch Design editor provider tests passed');
 }
 

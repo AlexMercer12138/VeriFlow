@@ -9,6 +9,9 @@ const manifest = JSON.parse(
 const editor = manifest.contributes.customEditors.find(
     (item: any) => item.viewType === 'veriflow.schematicEditor'
 );
+const archDesignEditor = manifest.contributes.customEditors.find(
+    (item: any) => item.viewType === 'veriflow.archDesignEditor'
+);
 const explorerCommand = (manifest.contributes.menus['explorer/context'] ?? []).find(
     (item: any) => item.command === 'veriflow.openSchematicFromExplorer'
 );
@@ -28,6 +31,33 @@ assert.deepStrictEqual(
     editor.selector.map((item: any) => item.filenamePattern),
     ['*.v', '*.sv']
 );
+assert.ok(archDesignEditor, 'Arch Design custom editor contribution is missing');
+assert.strictEqual(archDesignEditor.priority, 'default');
+assert.deepStrictEqual(
+    archDesignEditor.selector.map((item: any) => item.filenamePattern),
+    ['*.ad']
+);
+assert.ok(
+    manifest.activationEvents.includes('onCustomEditor:veriflow.archDesignEditor'),
+    'Arch Design custom editor activation is missing'
+);
+const archDesignLanguage = (manifest.contributes.languages ?? []).find(
+    (item: any) => item.id === 'arch-design'
+);
+assert.ok(archDesignLanguage, 'Arch Design language contribution is missing');
+assert.deepStrictEqual(archDesignLanguage.extensions, ['.ad']);
+for (const id of ['veriflow.validateArchDesign', 'veriflow.exportArchDesign']) {
+    assert.ok(
+        manifest.contributes.commands.some((item: any) => item.command === id),
+        `${id} command contribution is missing`
+    );
+    assert.ok(
+        (manifest.contributes.menus['editor/title'] ?? []).some(
+            (item: any) => item.command === id && /resourceExtname\s*==\s*\.ad/.test(item.when)
+        ),
+        `${id} editor-title contribution is missing`
+    );
+}
 for (const id of ['veriflow.openSchematic', 'veriflow.openSchematicFromExplorer']) {
     assert.ok(
         manifest.contributes.commands.some((item: any) => item.command === id),

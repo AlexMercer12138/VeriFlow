@@ -34,7 +34,8 @@
     "workspaceContains:**/*.v",
     "workspaceContains:**/*.sv",
     "onCustomEditor:veriflow.waveformEditor",
-    "onCustomEditor:veriflow.schematicEditor"
+    "onCustomEditor:veriflow.schematicEditor",
+    "onCustomEditor:veriflow.archDesignEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -61,6 +62,27 @@
           }
         ],
         "priority": "option"
+      },
+      {
+        "viewType": "veriflow.archDesignEditor",
+        "displayName": "VeriFlow Arch Design Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.ad"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "languages": [
+      {
+        "id": "arch-design",
+        "aliases": [
+          "Arch Design"
+        ],
+        "extensions": [
+          ".ad"
+        ]
       }
     ],
     "views": {
@@ -142,6 +164,18 @@
         "command": "veriflow.showOutput",
         "title": "Show Output Panel",
         "icon": "$(output)"
+      },
+      {
+        "command": "veriflow.validateArchDesign",
+        "title": "Validate Arch Design",
+        "category": "VeriFlow",
+        "icon": "$(check)"
+      },
+      {
+        "command": "veriflow.exportArchDesign",
+        "title": "Export Arch Design RTL",
+        "category": "VeriFlow",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -169,6 +203,16 @@
           "command": "veriflow.openSchematic",
           "when": "editorLangId == verilog || editorLangId == systemverilog",
           "group": "navigation@10"
+        },
+        {
+          "command": "veriflow.validateArchDesign",
+          "when": "resourceExtname == .ad",
+          "group": "navigation@10"
+        },
+        {
+          "command": "veriflow.exportArchDesign",
+          "when": "resourceExtname == .ad",
+          "group": "navigation@11"
         }
       ],
       "view/title": [
