@@ -241,7 +241,10 @@ signature groups, infer roles only from HDL directions, require one-to-one
 Master-Slave connections, and expand the same resolved member bindings into
 validation, rendering, defaults, and scalar Verilog/SystemVerilog output.
 Project definitions replace built-ins by stable ID, and AXI4-Lite is treated as
-an incomplete AXI4 interface.
+an incomplete AXI4 interface. Protocols do not define widths: top-level
+interfaces are promoted from real module interfaces and persist the promoted
+members and actual HDL widths. Individual module pins remain selectable and
+may be promoted as scalar top-level ports instead.
 
 **Why not:**
 - Hard-code AXI/APB/AHB recognizers: built-ins and user protocols would have
@@ -253,6 +256,8 @@ an incomplete AXI4 interface.
   remains allowed with a warning.
 - Store recognized members in `.ad`: module declarations and protocol files
   already own that data, so persistence would become stale.
+- Create protocol interfaces from the generic Add Port dialog: without a real
+  module peer there is no authoritative member set or width source.
 
 **Affects:** `packages/schematic-core/`, `packages/flow-core/`,
 `packages/cli/`, `packages/schematic-webview/`, `veriflow-vscode/`

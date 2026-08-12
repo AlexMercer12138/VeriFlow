@@ -121,7 +121,12 @@ connections:
       "name": "s_axi",
       "protocol": "amba.axi4",
       "role": "slave",
-      "memberPrefix": "s_axi"
+      "memberPrefix": "s_axi",
+      "members": [
+        { "member": "awaddr", "width": 32 },
+        { "member": "awvalid", "width": 1 },
+        { "member": "awready", "width": 1 }
+      ]
     }
   ],
   "interfaceOverrides": {
@@ -155,6 +160,15 @@ uses the external design meaning: a top-level Slave receives Master-to-Slave
 members as RTL inputs and sends Slave-to-Master members as RTL outputs. The
 resolver treats the boundary as the external peer's proxy when connecting it
 inside the graph.
+
+Protocols do not declare widths or width parameters. Instance interface
+members always use the actual widths parsed from HDL. A top-level interface is
+created only by promoting a recognized module interface, which snapshots that
+interface's currently present members, declaration order, and concrete widths
+into the Arch Design. Disconnecting it keeps the snapshot stable. Reconnecting
+to a different interface reports ordinary member and width diagnostics rather
+than silently changing the public RTL. The Inspector provides an explicit
+resynchronize action that replaces the snapshot from the current peer.
 
 Each interface connection has exactly one Master and one Slave. Fan-out,
 address decoding, and arbitration require an explicit interconnect module.
@@ -240,9 +254,28 @@ protocol-and-role label distinguishes them without inventing a second boundary
 symbol. Top-level Slave interfaces remain on the left and Master interfaces on
 the right, matching their external meaning.
 
+Every module pin is independently selectable. Its Inspector shows instance,
+original port name, direction, actual width, recognized interface membership,
+and connection state. `Expose as top-level port` creates a scalar top-level
+port with the same direction and width and connects it in one reducer edit.
+The original port name is the proposed public name; a collision requires an
+explicit replacement name. Existing scalar inout `_i`, `_o`, and `_t`
+semantics remain unchanged.
+
+A collapsed interface provides `Expose as top-level interface`. The operation
+snapshots its actual members and widths, creates a same-role top-level
+interface, and connects it atomically. When expanded, an individual member pin
+may instead be exposed as an ordinary scalar top-level port. That member then
+participates in scalar occupancy and prevents a whole-interface connection
+until the conflict is removed. The generic Add Port dialog remains scalar-only;
+AXI, APB, AHB, and custom top-level interfaces cannot be created without a real
+module interface to define their concrete shape.
+
 The Inspector exposes protocol, role and source, matched and absent members,
 original HDL port names, peer connection, effective defaults and sources,
 width warnings, collapsed state, role/protocol overrides, and restore actions.
+Top-level interface selection also exposes the locked member list and an
+explicit `Resynchronize from current connection` action.
 Collapsed views hide constant nodes and member branches. Expanded views reveal
 the real member networks and default constants so that the visible details
 agree with exported RTL.
