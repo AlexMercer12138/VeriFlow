@@ -263,6 +263,8 @@ function testArchDesignInspectorProjection(): void {
             }, { kind: 'port', port: 'shared', signal: 'i' }],
             defaults: { 'u_sink.data': "8'h00" },
         }],
+        interfacePorts: [],
+        interfaceOverrides: {},
         interfaceConnections: [],
         defaults: { 'done.value': "1'b0" },
         export: { language: 'systemverilog', output: 'rtl/generated_top.sv' },

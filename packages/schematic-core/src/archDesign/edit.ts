@@ -3,6 +3,11 @@ import type {
     ArchDesignEndpoint,
     ArchDesignExportOptions,
     ArchDesignInstance,
+    ArchDesignInterfaceConnection,
+    ArchDesignInterfaceEndpoint,
+    ArchDesignInterfaceOverride,
+    ArchDesignInterfacePort,
+    ArchDesignInterfaceRole,
     ArchDesignLanguage,
     ArchDesignParameterValue,
     ArchDesignPort,
@@ -10,6 +15,19 @@ import type {
 } from './model';
 import { parseArchDesignValue } from './parser';
 import { serializeArchDesign } from './serializer';
+
+export type ArchDesignInterfaceSnapshotMember = Readonly<{
+    member: string;
+    port: string;
+    width: ArchDesignInterfacePort['members'][number]['width'];
+}>;
+
+export type ArchDesignInterfaceSnapshot = Readonly<{
+    endpoint: Extract<ArchDesignInterfaceEndpoint, Readonly<{ kind: 'instance' }>>;
+    protocol: string;
+    role: ArchDesignInterfaceRole;
+    members: readonly ArchDesignInterfaceSnapshotMember[];
+}>;
 
 export type ArchDesignEdit =
     | Readonly<{ type: 'addInstance'; instance: ArchDesignInstance }>
@@ -25,6 +43,12 @@ export type ArchDesignEdit =
     | Readonly<{ type: 'updatePort'; name: string; port: ArchDesignPort }>
     | Readonly<{ type: 'removePort'; name: string }>
     | Readonly<{
+        type: 'promotePort';
+        source: Extract<ArchDesignEndpoint, Readonly<{ kind: 'instance' }>>;
+        port: ArchDesignPort;
+        connection: string;
+    }>
+    | Readonly<{
         type: 'connect';
         source: ArchDesignEndpoint;
         target: ArchDesignEndpoint;
@@ -36,6 +60,48 @@ export type ArchDesignEdit =
     }>
     | Readonly<{ type: 'renameConnection'; name: string; nextName: string }>
     | Readonly<{ type: 'removeConnection'; name: string }>
+    | Readonly<{
+        type: 'setInterfaceOverride';
+        instance: string;
+        interface: string;
+        protocol?: string;
+        role?: ArchDesignInterfaceRole;
+    }>
+    | Readonly<{
+        type: 'clearInterfaceOverride';
+        instance: string;
+        interface: string;
+    }>
+    | Readonly<{
+        type: 'connectInterface';
+        connection: ArchDesignInterfaceConnection;
+    }>
+    | Readonly<{ type: 'removeInterfaceConnection'; name: string }>
+    | Readonly<{
+        type: 'setInterfaceDefault';
+        connection: string;
+        member: string;
+        expression?: string;
+    }>
+    | Readonly<{
+        type: 'promoteInterface';
+        source: ArchDesignInterfaceSnapshot;
+        port: string;
+        memberPrefix: string;
+        connection: string;
+    }>
+    | Readonly<{
+        type: 'resyncInterfacePort';
+        port: string;
+        source: ArchDesignInterfaceSnapshot;
+    }>
+    | Readonly<{
+        type: 'renameInterfacePort';
+        name: string;
+        nextName: string;
+        nextMemberPrefix?: string;
+    }>
+    | Readonly<{ type: 'removeInterfacePort'; name: string }>
     | Readonly<{
         type: 'setDefault';
         endpoint: string;
@@ -74,6 +140,25 @@ type MutableConnection = {
     defaults?: Record<string, string>;
 };
 
+type MutableInterfaceEndpoint =
+    | { kind: 'instance'; instance: string; interface: string }
+    | { kind: 'port'; port: string };
+
+type MutableInterfacePort = {
+    name: string;
+    protocol: string;
+    role: ArchDesignInterfaceRole;
+    memberPrefix: string;
+    members: Array<{ member: string; width: number | { expression: string } }>;
+};
+
+type MutableInterfaceConnection = {
+    name: string;
+    master: MutableInterfaceEndpoint;
+    slave: MutableInterfaceEndpoint;
+    defaults?: Record<string, string>;
+};
+
 type MutableDesign = {
     format: string;
     schemaVersion: number;
@@ -89,13 +174,9 @@ type MutableDesign = {
         parameters?: Record<string, ArchDesignParameterValue>;
     }>;
     connections: MutableConnection[];
-    interfaceConnections: Array<{
-        name: string;
-        protocol?: string;
-        master: { instance: string; interface: string };
-        slave: { instance: string; interface: string };
-        defaults?: Record<string, string>;
-    }>;
+    interfacePorts: MutableInterfacePort[];
+    interfaceOverrides: Record<string, ArchDesignInterfaceOverride>;
+    interfaceConnections: MutableInterfaceConnection[];
     defaults: Record<string, string>;
     export: ArchDesignExportOptions;
     presentation: ArchDesignPresentation;
@@ -256,6 +337,129 @@ function removePresentationNode(
     };
 }
 
+function renamePresentationKey(
+    presentation: ArchDesignPresentation,
+    oldId: string,
+    nextId: string
+): ArchDesignPresentation {
+    const collapsed = presentation.collapsedInterfaces;
+    if (!collapsed || !Object.prototype.hasOwnProperty.call(collapsed, oldId)) {
+        return presentation;
+    }
+    if (oldId !== nextId && Object.prototype.hasOwnProperty.call(collapsed, nextId)) {
+        throw new ArchDesignEditError(`Collapsed interface already exists: ${nextId}`);
+    }
+    const nextCollapsed: Record<string, boolean> = Object.create(null);
+    for (const key of Object.keys(collapsed)) {
+        setOwn(nextCollapsed, key === oldId ? nextId : key, collapsed[key]);
+    }
+    return { ...presentation, collapsedInterfaces: nextCollapsed };
+}
+
+function removePresentationKey(
+    presentation: ArchDesignPresentation,
+    id: string
+): ArchDesignPresentation {
+    const collapsed = presentation.collapsedInterfaces;
+    if (!collapsed || !Object.prototype.hasOwnProperty.call(collapsed, id)) {
+        return presentation;
+    }
+    const nextCollapsed: Record<string, boolean> = Object.create(null);
+    for (const key of Object.keys(collapsed)) {
+        if (key !== id) setOwn(nextCollapsed, key, collapsed[key]);
+    }
+    return {
+        ...presentation,
+        ...(Object.keys(nextCollapsed).length === 0
+            ? { collapsedInterfaces: undefined }
+            : { collapsedInterfaces: nextCollapsed }),
+    };
+}
+
+function renameInterfaceOverrideInstance(
+    source: Record<string, ArchDesignInterfaceOverride>,
+    oldName: string,
+    nextName: string
+): Record<string, ArchDesignInterfaceOverride> {
+    const result: Record<string, ArchDesignInterfaceOverride> = Object.create(null);
+    const prefix = `${oldName}.`;
+    for (const key of Object.keys(source)) {
+        const nextKey = key.startsWith(prefix) ? `${nextName}.${key.slice(prefix.length)}` : key;
+        if (Object.prototype.hasOwnProperty.call(result, nextKey)) {
+            throw new ArchDesignEditError(`Interface override already exists: ${nextKey}`);
+        }
+        setOwn(result, nextKey, source[key]);
+    }
+    return result;
+}
+
+function removeInterfaceOverrideInstance(
+    source: Record<string, ArchDesignInterfaceOverride>,
+    instance: string
+): Record<string, ArchDesignInterfaceOverride> {
+    const result: Record<string, ArchDesignInterfaceOverride> = Object.create(null);
+    const prefix = `${instance}.`;
+    for (const key of Object.keys(source)) {
+        if (!key.startsWith(prefix)) setOwn(result, key, source[key]);
+    }
+    return result;
+}
+
+function interfaceEndpointEquals(
+    left: MutableInterfaceEndpoint,
+    right: ArchDesignInterfaceEndpoint
+): boolean {
+    if (left.kind !== right.kind) return false;
+    return left.kind === 'port' && right.kind === 'port'
+        ? left.port === right.port
+        : left.kind === 'instance' && right.kind === 'instance'
+            && left.instance === right.instance
+            && left.interface === right.interface;
+}
+
+function cloneInterfaceEndpoint(endpoint: ArchDesignInterfaceEndpoint): MutableInterfaceEndpoint {
+    return endpoint.kind === 'port'
+        ? { kind: 'port', port: endpoint.port }
+        : { kind: 'instance', instance: endpoint.instance, interface: endpoint.interface };
+}
+
+function interfaceEndpointOccupied(
+    connections: readonly MutableInterfaceConnection[],
+    endpoint: ArchDesignInterfaceEndpoint
+): boolean {
+    return connections.some(connection =>
+        interfaceEndpointEquals(connection.master, endpoint)
+        || interfaceEndpointEquals(connection.slave, endpoint));
+}
+
+function scalarInstancePortOccupied(
+    connections: readonly MutableConnection[],
+    instance: string,
+    port: string
+): boolean {
+    return connections.some(connection => connection.endpoints.some(endpoint =>
+        endpoint.kind === 'instance'
+        && endpoint.instance === instance
+        && endpoint.port === port));
+}
+
+function snapshotInterfacePort(
+    name: string,
+    memberPrefix: string,
+    source: ArchDesignInterfaceSnapshot
+): MutableInterfacePort {
+    return {
+        name,
+        protocol: source.protocol,
+        role: source.role,
+        memberPrefix,
+        members: source.members.map(member => ({
+            member: member.member,
+            width: JSON.parse(JSON.stringify(member.width)),
+        })),
+    };
+}
+
 function endpointMemberships(
     connections: readonly MutableConnection[],
     endpoint: ArchDesignEndpoint
@@ -383,13 +587,20 @@ export function applyArchDesignEdit(
                 );
             }
             for (const connection of mutable.interfaceConnections) {
-                if (connection.master.instance === edit.name) {
+                if (connection.master.kind === 'instance'
+                    && connection.master.instance === edit.name) {
                     connection.master.instance = edit.nextName;
                 }
-                if (connection.slave.instance === edit.name) {
+                if (connection.slave.kind === 'instance'
+                    && connection.slave.instance === edit.name) {
                     connection.slave.instance = edit.nextName;
                 }
             }
+            mutable.interfaceOverrides = renameInterfaceOverrideInstance(
+                mutable.interfaceOverrides,
+                edit.name,
+                edit.nextName
+            );
             mutable.defaults = renameDictionaryPrefix(
                 mutable.defaults,
                 `${edit.name}.`,
@@ -400,6 +611,16 @@ export function applyArchDesignEdit(
                 `instance:${edit.name}`,
                 `instance:${edit.nextName}`
             );
+            for (const key of Object.keys(mutable.presentation.collapsedInterfaces ?? {})) {
+                const prefix = `interface:instance:${edit.name}:`;
+                if (key.startsWith(prefix)) {
+                    mutable.presentation = renamePresentationKey(
+                        mutable.presentation,
+                        key,
+                        `interface:instance:${edit.nextName}:${key.slice(prefix.length)}`
+                    );
+                }
+            }
             break;
         }
         case 'removeInstance': {
@@ -420,8 +641,14 @@ export function applyArchDesignEdit(
                 return connection.endpoints.length === 0 ? [] : [connection];
             });
             mutable.interfaceConnections = mutable.interfaceConnections.filter(connection =>
-                connection.master.instance !== edit.name
-                && connection.slave.instance !== edit.name);
+                !(connection.master.kind === 'instance'
+                    && connection.master.instance === edit.name)
+                && !(connection.slave.kind === 'instance'
+                    && connection.slave.instance === edit.name));
+            mutable.interfaceOverrides = removeInterfaceOverrideInstance(
+                mutable.interfaceOverrides,
+                edit.name
+            );
             mutable.defaults = removeDictionaryPrefix(
                 mutable.defaults,
                 `${edit.name}.`
@@ -430,6 +657,11 @@ export function applyArchDesignEdit(
                 mutable.presentation,
                 `instance:${edit.name}`
             );
+            for (const key of Object.keys(mutable.presentation.collapsedInterfaces ?? {})) {
+                if (key.startsWith(`interface:instance:${edit.name}:`)) {
+                    mutable.presentation = removePresentationKey(mutable.presentation, key);
+                }
+            }
             break;
         }
         case 'setInstanceParameter': {
@@ -528,6 +760,40 @@ export function applyArchDesignEdit(
             );
             break;
         }
+        case 'promotePort':
+            assertUnused(
+                mutable.ports,
+                port => port.name === edit.port.name,
+                'Port',
+                edit.port.name
+            );
+            assertUnused(
+                mutable.interfacePorts,
+                port => port.name === edit.port.name,
+                'Port',
+                edit.port.name
+            );
+            assertUnused(
+                mutable.connections,
+                connection => connection.name === edit.connection,
+                'Connection',
+                edit.connection
+            );
+            if (scalarInstancePortOccupied(
+                mutable.connections,
+                edit.source.instance,
+                edit.source.port
+            )) {
+                throw new ArchDesignEditError(
+                    `Source port is already occupied: ${edit.source.instance}.${edit.source.port}`
+                );
+            }
+            mutable.ports.push(JSON.parse(JSON.stringify(edit.port)));
+            mutable.connections.push({
+                name: edit.connection,
+                endpoints: [cloneEndpoint(edit.source), { kind: 'port', port: edit.port.name }],
+            });
+            break;
         case 'connect':
             applyConnect(mutable, edit.source, edit.target);
             break;
@@ -580,6 +846,201 @@ export function applyArchDesignEdit(
                 edit.name
             );
             mutable.connections.splice(index, 1);
+            break;
+        }
+        case 'setInterfaceOverride': {
+            if (edit.protocol === undefined && edit.role === undefined) {
+                throw new ArchDesignEditError('Interface override must set protocol or role');
+            }
+            setOwn(mutable.interfaceOverrides, `${edit.instance}.${edit.interface}`, {
+                ...(edit.protocol === undefined ? {} : { protocol: edit.protocol }),
+                ...(edit.role === undefined ? {} : { role: edit.role }),
+            });
+            break;
+        }
+        case 'clearInterfaceOverride':
+            delete mutable.interfaceOverrides[`${edit.instance}.${edit.interface}`];
+            break;
+        case 'connectInterface':
+            assertUnused(
+                mutable.interfaceConnections,
+                connection => connection.name === edit.connection.name,
+                'Interface connection',
+                edit.connection.name
+            );
+            if (interfaceEndpointEquals(
+                cloneInterfaceEndpoint(edit.connection.master),
+                edit.connection.slave
+            )) {
+                throw new ArchDesignEditError('Cannot connect an interface to itself');
+            }
+            for (const endpoint of [edit.connection.master, edit.connection.slave]) {
+                if (interfaceEndpointOccupied(mutable.interfaceConnections, endpoint)) {
+                    throw new ArchDesignEditError('Interface endpoint is already occupied');
+                }
+            }
+            mutable.interfaceConnections.push({
+                name: edit.connection.name,
+                master: cloneInterfaceEndpoint(edit.connection.master),
+                slave: cloneInterfaceEndpoint(edit.connection.slave),
+                ...(edit.connection.defaults
+                    ? { defaults: JSON.parse(JSON.stringify(edit.connection.defaults)) }
+                    : {}),
+            });
+            break;
+        case 'removeInterfaceConnection': {
+            const index = exactIndex(
+                mutable.interfaceConnections,
+                connection => connection.name === edit.name,
+                'Interface connection',
+                edit.name
+            );
+            mutable.interfaceConnections.splice(index, 1);
+            break;
+        }
+        case 'setInterfaceDefault': {
+            const index = exactIndex(
+                mutable.interfaceConnections,
+                connection => connection.name === edit.connection,
+                'Interface connection',
+                edit.connection
+            );
+            const defaults: Record<string, string> = Object.create(null);
+            for (const key of Object.keys(mutable.interfaceConnections[index].defaults ?? {})) {
+                setOwn(defaults, key, mutable.interfaceConnections[index].defaults![key]);
+            }
+            setDefault(defaults, edit.member, edit.expression);
+            mutable.interfaceConnections[index].defaults = Object.keys(defaults).length === 0
+                ? undefined
+                : defaults;
+            break;
+        }
+        case 'promoteInterface': {
+            assertUnused(
+                mutable.ports,
+                port => port.name === edit.port,
+                'Port',
+                edit.port
+            );
+            assertUnused(
+                mutable.interfacePorts,
+                port => port.name === edit.port,
+                'Port',
+                edit.port
+            );
+            assertUnused(
+                mutable.interfaceConnections,
+                connection => connection.name === edit.connection,
+                'Interface connection',
+                edit.connection
+            );
+            if (interfaceEndpointOccupied(mutable.interfaceConnections, edit.source.endpoint)) {
+                throw new ArchDesignEditError('Source interface is already occupied');
+            }
+            for (const member of edit.source.members) {
+                if (scalarInstancePortOccupied(
+                    mutable.connections,
+                    edit.source.endpoint.instance,
+                    member.port
+                )) {
+                    throw new ArchDesignEditError(
+                        `Source interface member is already occupied: ${member.port}`
+                    );
+                }
+            }
+            mutable.interfacePorts.push(snapshotInterfacePort(
+                edit.port,
+                edit.memberPrefix,
+                edit.source
+            ));
+            const sourceEndpoint = cloneInterfaceEndpoint(edit.source.endpoint);
+            const boundary: MutableInterfaceEndpoint = { kind: 'port', port: edit.port };
+            mutable.interfaceConnections.push({
+                name: edit.connection,
+                master: edit.source.role === 'master' ? sourceEndpoint : boundary,
+                slave: edit.source.role === 'master' ? boundary : sourceEndpoint,
+            });
+            break;
+        }
+        case 'resyncInterfacePort': {
+            const index = exactIndex(
+                mutable.interfacePorts,
+                port => port.name === edit.port,
+                'Interface port',
+                edit.port
+            );
+            const boundary: ArchDesignInterfaceEndpoint = { kind: 'port', port: edit.port };
+            const peers = mutable.interfaceConnections.flatMap(connection => {
+                if (interfaceEndpointEquals(connection.master, boundary)) {
+                    return [connection.slave];
+                }
+                if (interfaceEndpointEquals(connection.slave, boundary)) {
+                    return [connection.master];
+                }
+                return [];
+            });
+            if (peers.length !== 1
+                || !interfaceEndpointEquals(peers[0], edit.source.endpoint)) {
+                throw new ArchDesignEditError(
+                    `Interface port current peer does not match: ${edit.port}`
+                );
+            }
+            mutable.interfacePorts[index] = snapshotInterfacePort(
+                edit.port,
+                edit.source.endpoint.interface,
+                edit.source
+            );
+            break;
+        }
+        case 'renameInterfacePort': {
+            const index = exactIndex(
+                mutable.interfacePorts,
+                port => port.name === edit.name,
+                'Interface port',
+                edit.name
+            );
+            assertUnused(mutable.ports, port => port.name === edit.nextName, 'Port', edit.nextName);
+            assertUnused(
+                mutable.interfacePorts,
+                port => port.name === edit.nextName,
+                'Port',
+                edit.nextName,
+                index
+            );
+            mutable.interfacePorts[index].name = edit.nextName;
+            if (edit.nextMemberPrefix !== undefined) {
+                mutable.interfacePorts[index].memberPrefix = edit.nextMemberPrefix;
+            }
+            for (const connection of mutable.interfaceConnections) {
+                if (connection.master.kind === 'port' && connection.master.port === edit.name) {
+                    connection.master.port = edit.nextName;
+                }
+                if (connection.slave.kind === 'port' && connection.slave.port === edit.name) {
+                    connection.slave.port = edit.nextName;
+                }
+            }
+            mutable.presentation = renamePresentationKey(
+                mutable.presentation,
+                `interface:port:${edit.name}`,
+                `interface:port:${edit.nextName}`
+            );
+            break;
+        }
+        case 'removeInterfacePort': {
+            const index = exactIndex(
+                mutable.interfacePorts,
+                port => port.name === edit.name,
+                'Interface port',
+                edit.name
+            );
+            mutable.interfacePorts.splice(index, 1);
+            mutable.interfaceConnections = mutable.interfaceConnections.filter(connection =>
+                !(connection.master.kind === 'port' && connection.master.port === edit.name)
+                && !(connection.slave.kind === 'port' && connection.slave.port === edit.name));
+            mutable.presentation = removePresentationKey(
+                mutable.presentation,
+                `interface:port:${edit.name}`
+            );
             break;
         }
         case 'setDefault':

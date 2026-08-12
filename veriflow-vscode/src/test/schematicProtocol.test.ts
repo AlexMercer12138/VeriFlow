@@ -142,6 +142,69 @@ function testArchDesignCommands(): void {
         },
     });
     assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'promoteInterface',
+            source: {
+                endpoint: {
+                    kind: 'instance',
+                    instance: 'u_dma',
+                    interface: 'M_AXI',
+                    ignored: true,
+                },
+                protocol: 'amba.axi4',
+                role: 'master',
+                members: [{
+                    member: 'awaddr',
+                    port: 'M_AXI_AWADDR',
+                    width: 32,
+                    ignored: true,
+                }],
+            },
+            port: 'm_axi',
+            memberPrefix: 'M_AXI',
+            connection: 'm_axi_boundary',
+            ignored: true,
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'promoteInterface',
+            source: {
+                endpoint: { kind: 'instance', instance: 'u_dma', interface: 'M_AXI' },
+                protocol: 'amba.axi4',
+                role: 'master',
+                members: [{ member: 'awaddr', port: 'M_AXI_AWADDR', width: 32 }],
+            },
+            port: 'm_axi',
+            memberPrefix: 'M_AXI',
+            connection: 'm_axi_boundary',
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'setInterfaceOverride',
+            instance: 'u_dma',
+            interface: 'M_AXI',
+            protocol: 'amba.axi4',
+            role: 'master',
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'setInterfaceOverride',
+            instance: 'u_dma',
+            interface: 'M_AXI',
+            protocol: 'amba.axi4',
+            role: 'master',
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
         type: 'exportArchDesign', revision: 'ad:4', ignored: true,
     }), { type: 'exportArchDesign', revision: 'ad:4' });
 
@@ -160,6 +223,30 @@ function testArchDesignCommands(): void {
                 instance: 'u_core',
                 parameter: 'WIDTH',
                 value: { object: true },
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'promoteInterface',
+                source: {
+                    endpoint: { kind: 'instance', instance: 'u_dma', interface: 'M_AXI' },
+                    protocol: 'amba.axi4',
+                    role: 'master',
+                    members: [{ member: 'awaddr', port: 'M_AXI_AWADDR', width: 0 }],
+                },
+                port: 'm_axi',
+                memberPrefix: 'M_AXI',
+                connection: 'boundary',
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'setInterfaceOverride',
+                instance: 'u_dma',
+                interface: 'M_AXI',
+                role: 'unknown',
             },
         },
         { type: 'exportArchDesign', revision: 4 },

@@ -7,6 +7,9 @@ import type {
     ArchDesignEdit,
     ArchDesignEndpoint,
     ArchDesignInstance,
+    ArchDesignInterfaceConnection,
+    ArchDesignInterfaceEndpoint,
+    ArchDesignInterfaceSnapshot,
     ArchDesignModuleDefinition,
     ArchDesignPort,
     ArchDesignPresentation,
@@ -219,6 +222,61 @@ function normalizeEndpoint(value: unknown): ArchDesignEndpoint | undefined {
             : undefined;
 }
 
+function normalizeInterfaceEndpoint(value: unknown): ArchDesignInterfaceEndpoint | undefined {
+    if (!isRecord(value)) return undefined;
+    const kind = ownValue(value, 'kind');
+    if (kind === 'port') {
+        const port = ownValue(value, 'port');
+        return identifier(port) ? { kind, port } : undefined;
+    }
+    if (kind === 'instance') {
+        const instance = ownValue(value, 'instance');
+        const interfaceName = ownValue(value, 'interface');
+        return identifier(instance) && identifier(interfaceName)
+            ? { kind, instance, interface: interfaceName }
+            : undefined;
+    }
+    return undefined;
+}
+
+function normalizeInterfaceConnection(
+    value: unknown
+): ArchDesignInterfaceConnection | undefined {
+    if (!isRecord(value)) return undefined;
+    const name = ownValue(value, 'name');
+    const master = normalizeInterfaceEndpoint(ownValue(value, 'master'));
+    const slave = normalizeInterfaceEndpoint(ownValue(value, 'slave'));
+    if (!identifier(name) || !master || !slave) return undefined;
+    return { name, master, slave };
+}
+
+function normalizeInterfaceSnapshot(value: unknown): ArchDesignInterfaceSnapshot | undefined {
+    if (!isRecord(value)) return undefined;
+    const endpoint = normalizeInterfaceEndpoint(ownValue(value, 'endpoint'));
+    const protocol = ownValue(value, 'protocol');
+    const role = ownValue(value, 'role');
+    const membersValue = ownValue(value, 'members');
+    if (endpoint?.kind !== 'instance'
+        || !nonEmptyString(protocol)
+        || (role !== 'master' && role !== 'slave')
+        || !Array.isArray(membersValue)
+        || membersValue.length > MAX_AD_DICTIONARY_ENTRIES) return undefined;
+    const members: ArchDesignInterfaceSnapshot['members'][number][] = [];
+    for (let index = 0; index < membersValue.length; index += 1) {
+        if (!Object.prototype.propertyIsEnumerable.call(membersValue, index)) return undefined;
+        const item = membersValue[index];
+        if (!isRecord(item)) return undefined;
+        const member = ownValue(item, 'member');
+        const port = ownValue(item, 'port');
+        const width = normalizeWidth(ownValue(item, 'width'));
+        if (!identifier(member) || !identifier(port) || width === false || width === undefined) {
+            return undefined;
+        }
+        members.push({ member, port, width });
+    }
+    return { endpoint, protocol, role, members };
+}
+
 function normalizePresentationNodes(
     value: unknown
 ): ArchDesignPresentation['nodes'] | undefined | false {
@@ -344,6 +402,14 @@ function normalizeArchDesignEdit(value: unknown): ArchDesignEdit | undefined {
             const port = normalizePort(ownValue(value, 'port'));
             return port ? { type, port } : undefined;
         }
+        case 'promotePort': {
+            const source = normalizeEndpoint(ownValue(value, 'source'));
+            const port = normalizePort(ownValue(value, 'port'));
+            const connection = ownValue(value, 'connection');
+            return source?.kind === 'instance' && port && identifier(connection)
+                ? { type, source, port, connection }
+                : undefined;
+        }
         case 'updatePort': {
             const name = ownValue(value, 'name');
             const port = normalizePort(ownValue(value, 'port'));
@@ -360,6 +426,84 @@ function normalizeArchDesignEdit(value: unknown): ArchDesignEdit | undefined {
             return identifier(connection) && endpoint
                 ? { type, connection, endpoint }
                 : undefined;
+        }
+        case 'setInterfaceOverride': {
+            const instance = ownValue(value, 'instance');
+            const interfaceName = ownValue(value, 'interface');
+            const protocol = ownValue(value, 'protocol');
+            const role = ownValue(value, 'role');
+            if (!identifier(instance)
+                || !identifier(interfaceName)
+                || (protocol !== undefined && !nonEmptyString(protocol))
+                || (role !== undefined && role !== 'master' && role !== 'slave')
+                || (protocol === undefined && role === undefined)) return undefined;
+            return {
+                type,
+                instance,
+                interface: interfaceName,
+                ...(protocol === undefined ? {} : { protocol }),
+                ...(role === undefined ? {} : { role }),
+            };
+        }
+        case 'clearInterfaceOverride': {
+            const instance = ownValue(value, 'instance');
+            const interfaceName = ownValue(value, 'interface');
+            return identifier(instance) && identifier(interfaceName)
+                ? { type, instance, interface: interfaceName }
+                : undefined;
+        }
+        case 'connectInterface': {
+            const connection = normalizeInterfaceConnection(ownValue(value, 'connection'));
+            return connection ? { type, connection } : undefined;
+        }
+        case 'removeInterfaceConnection':
+        case 'removeInterfacePort': {
+            const name = ownValue(value, 'name');
+            return identifier(name) ? { type, name } : undefined;
+        }
+        case 'setInterfaceDefault': {
+            const connection = ownValue(value, 'connection');
+            const member = ownValue(value, 'member');
+            const expression = ownValue(value, 'expression');
+            if (!identifier(connection)
+                || !identifier(member)
+                || (expression !== undefined && !nonEmptyString(expression))) return undefined;
+            return {
+                type,
+                connection,
+                member,
+                ...(expression === undefined ? {} : { expression }),
+            };
+        }
+        case 'promoteInterface': {
+            const source = normalizeInterfaceSnapshot(ownValue(value, 'source'));
+            const port = ownValue(value, 'port');
+            const memberPrefix = ownValue(value, 'memberPrefix');
+            const connection = ownValue(value, 'connection');
+            return source && identifier(port) && identifier(memberPrefix) && identifier(connection)
+                ? { type, source, port, memberPrefix, connection }
+                : undefined;
+        }
+        case 'resyncInterfacePort': {
+            const port = ownValue(value, 'port');
+            const source = normalizeInterfaceSnapshot(ownValue(value, 'source'));
+            return identifier(port) && source ? { type, port, source } : undefined;
+        }
+        case 'renameInterfacePort': {
+            const name = ownValue(value, 'name');
+            const nextName = ownValue(value, 'nextName');
+            const nextMemberPrefix = ownValue(value, 'nextMemberPrefix');
+            if (!identifier(name)
+                || !identifier(nextName)
+                || (nextMemberPrefix !== undefined && !identifier(nextMemberPrefix))) {
+                return undefined;
+            }
+            return {
+                type,
+                name,
+                nextName,
+                ...(nextMemberPrefix === undefined ? {} : { nextMemberPrefix }),
+            };
         }
         case 'setDefault': {
             const endpoint = ownValue(value, 'endpoint');
