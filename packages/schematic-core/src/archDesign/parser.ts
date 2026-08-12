@@ -8,12 +8,16 @@ import {
     type ArchDesignInstance,
     type ArchDesignInterfaceConnection,
     type ArchDesignInterfaceEndpoint,
+    type ArchDesignInterfaceOverride,
+    type ArchDesignInterfacePort,
+    type ArchDesignInterfaceRole,
     type ArchDesignNodePlacement,
     type ArchDesignPort,
     type ArchDesignPresentation,
     type ArchDesignViewport,
     type ArchDesignWidth,
 } from './model';
+import { isSafeDefaultExpression } from './defaults';
 import { compareCodeUnits } from './ordering';
 
 export type ArchDesignDiagnostic = Readonly<{
@@ -40,6 +44,7 @@ const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 const PORT_DIRECTIONS = new Set(['input', 'output', 'inout']);
 const INOUT_SIGNALS = new Set(['value', 'i', 'o', 't']);
 const EXPORT_LANGUAGES = new Set(['verilog', 'systemverilog']);
+const INTERFACE_ROLES = new Set<ArchDesignInterfaceRole>(['master', 'slave']);
 
 function isRecord(value: unknown): value is MutableRecord {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -232,6 +237,27 @@ function normalizeStringDictionary(
     return result;
 }
 
+function normalizeSafeDefaultDictionary(
+    value: unknown,
+    path: string,
+    diagnostics: ArchDesignDiagnostic[]
+): Record<string, string> {
+    const result = dictionary<string>();
+    for (const [key, valueAtKey] of dictionaryEntries(value, path, diagnostics)) {
+        if (typeof valueAtKey !== 'string' || !isSafeDefaultExpression(valueAtKey)) {
+            diagnostic(
+                diagnostics,
+                `${path}.${key}`,
+                'AD_DEFAULT_EXPRESSION',
+                'Default must be a safe Verilog constant expression'
+            );
+            continue;
+        }
+        result[key] = valueAtKey;
+    }
+    return result;
+}
+
 function normalizeParameters(
     value: unknown,
     path: string,
@@ -329,6 +355,102 @@ function normalizeInstances(
     return result;
 }
 
+function normalizeInterfaceRole(
+    value: unknown,
+    path: string,
+    diagnostics: ArchDesignDiagnostic[]
+): ArchDesignInterfaceRole | undefined {
+    if (typeof value === 'string' && INTERFACE_ROLES.has(value as ArchDesignInterfaceRole)) {
+        return value as ArchDesignInterfaceRole;
+    }
+    diagnostic(diagnostics, path, 'AD_VALUE', 'Interface role must be master or slave');
+    return undefined;
+}
+
+function normalizeInterfacePorts(
+    value: unknown,
+    scalarPortNames: ReadonlySet<string>,
+    diagnostics: ArchDesignDiagnostic[]
+): ArchDesignInterfacePort[] {
+    const source = value === undefined ? [] : arrayValue(value, '$.interfacePorts', diagnostics);
+    const result: ArchDesignInterfacePort[] = [];
+    const names = new Set<string>(scalarPortNames);
+    visitArray(source, (item, index) => {
+        const path = `$.interfacePorts[${index}]`;
+        const record = recordValue(item, path, diagnostics);
+        const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
+        duplicateName(name, `${path}.name`, names, diagnostics);
+        const protocol = nonEmptyString(
+            ownValue(record, 'protocol'),
+            `${path}.protocol`,
+            diagnostics
+        );
+        const role = normalizeInterfaceRole(ownValue(record, 'role'), `${path}.role`, diagnostics);
+        const memberPrefix = validIdentifier(
+            ownValue(record, 'memberPrefix'),
+            `${path}.memberPrefix`,
+            diagnostics
+        );
+        const memberValues = arrayValue(ownValue(record, 'members'), `${path}.members`, diagnostics);
+        const members: ArchDesignInterfacePort['members'][number][] = [];
+        const memberNames = new Set<string>();
+        visitArray(memberValues, (memberValue, memberIndex) => {
+            const memberPath = `${path}.members[${memberIndex}]`;
+            const memberRecord = recordValue(memberValue, memberPath, diagnostics);
+            const member = validIdentifier(
+                ownValue(memberRecord, 'member'),
+                `${memberPath}.member`,
+                diagnostics
+            );
+            duplicateName(member, `${memberPath}.member`, memberNames, diagnostics);
+            const width = normalizeWidth(
+                ownValue(memberRecord, 'width'),
+                `${memberPath}.width`,
+                diagnostics
+            );
+            if (member && width) members.push({ member, width });
+        });
+        if (name && protocol && role && memberPrefix) {
+            result.push({ name, protocol, role, memberPrefix, members });
+        }
+    });
+    return result;
+}
+
+function normalizeInterfaceOverrides(
+    value: unknown,
+    diagnostics: ArchDesignDiagnostic[]
+): Record<string, ArchDesignInterfaceOverride> {
+    const result = dictionary<ArchDesignInterfaceOverride>();
+    if (value === undefined) return result;
+    for (const [key, item] of dictionaryEntries(value, '$.interfaceOverrides', diagnostics)) {
+        const path = `$.interfaceOverrides.${key}`;
+        const record = recordValue(item, path, diagnostics);
+        const protocolValue = ownValue(record, 'protocol');
+        const protocol = protocolValue === undefined
+            ? undefined
+            : nonEmptyString(protocolValue, `${path}.protocol`, diagnostics);
+        const roleValue = ownValue(record, 'role');
+        const role = roleValue === undefined
+            ? undefined
+            : normalizeInterfaceRole(roleValue, `${path}.role`, diagnostics);
+        if (protocolValue === undefined && roleValue === undefined) {
+            diagnostic(diagnostics, path, 'AD_VALUE', 'Interface override must set protocol or role');
+            continue;
+        }
+        if (
+            (protocolValue === undefined || protocol)
+            && (roleValue === undefined || role)
+        ) {
+            result[key] = {
+                ...(protocol ? { protocol } : {}),
+                ...(role ? { role } : {}),
+            };
+        }
+    }
+    return result;
+}
+
 function normalizeEndpoint(
     value: unknown,
     path: string,
@@ -413,17 +535,33 @@ function normalizeInterfaceEndpoint(
     diagnostics: ArchDesignDiagnostic[]
 ): ArchDesignInterfaceEndpoint | undefined {
     const record = recordValue(value, path, diagnostics);
-    const instance = validIdentifier(
-        ownValue(record, 'instance'),
-        `${path}.instance`,
-        diagnostics
+    const kind = ownValue(record, 'kind');
+    if (kind === 'instance') {
+        const instance = validIdentifier(
+            ownValue(record, 'instance'),
+            `${path}.instance`,
+            diagnostics
+        );
+        const interfaceName = validIdentifier(
+            ownValue(record, 'interface'),
+            `${path}.interface`,
+            diagnostics
+        );
+        return instance && interfaceName
+            ? { kind, instance, interface: interfaceName }
+            : undefined;
+    }
+    if (kind === 'port') {
+        const port = validIdentifier(ownValue(record, 'port'), `${path}.port`, diagnostics);
+        return port ? { kind, port } : undefined;
+    }
+    diagnostic(
+        diagnostics,
+        `${path}.kind`,
+        'AD_VALUE',
+        'Interface endpoint kind must be instance or port'
     );
-    const interfaceName = validIdentifier(
-        ownValue(record, 'interface'),
-        `${path}.interface`,
-        diagnostics
-    );
-    return instance && interfaceName ? { instance, interface: interfaceName } : undefined;
+    return undefined;
 }
 
 function normalizeInterfaceConnections(
@@ -438,10 +576,6 @@ function normalizeInterfaceConnections(
         const record = recordValue(item, path, diagnostics);
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
         duplicateName(name, `${path}.name`, names, diagnostics);
-        const protocolValue = ownValue(record, 'protocol');
-        const protocol = protocolValue === undefined
-            ? undefined
-            : nonEmptyString(protocolValue, `${path}.protocol`, diagnostics);
         const master = normalizeInterfaceEndpoint(
             ownValue(record, 'master'),
             `${path}.master`,
@@ -455,11 +589,10 @@ function normalizeInterfaceConnections(
         const defaultsValue = ownValue(record, 'defaults');
         const defaults = defaultsValue === undefined
             ? undefined
-            : normalizeStringDictionary(defaultsValue, `${path}.defaults`, diagnostics);
+            : normalizeSafeDefaultDictionary(defaultsValue, `${path}.defaults`, diagnostics);
         if (name && master && slave) {
             result.push({
                 name,
-                ...(protocol ? { protocol } : {}),
                 master,
                 slave,
                 ...(defaults ? { defaults } : {}),
@@ -740,6 +873,15 @@ function parseValue(input: unknown): ArchDesignReadResult {
     const ports = normalizePorts(ownValue(input, 'ports'), diagnostics);
     const instances = normalizeInstances(ownValue(input, 'instances'), diagnostics);
     const connections = normalizeConnections(ownValue(input, 'connections'), diagnostics);
+    const interfacePorts = normalizeInterfacePorts(
+        ownValue(input, 'interfacePorts'),
+        new Set(ports.map(port => port.name)),
+        diagnostics
+    );
+    const interfaceOverrides = normalizeInterfaceOverrides(
+        ownValue(input, 'interfaceOverrides'),
+        diagnostics
+    );
     const interfaceConnections = normalizeInterfaceConnections(
         ownValue(input, 'interfaceConnections'),
         diagnostics
@@ -756,6 +898,8 @@ function parseValue(input: unknown): ArchDesignReadResult {
         ports,
         instances,
         connections,
+        interfacePorts,
+        interfaceOverrides,
         interfaceConnections,
         defaults,
         export: exportOptions,

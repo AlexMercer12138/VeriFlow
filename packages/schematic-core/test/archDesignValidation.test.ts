@@ -414,12 +414,12 @@ test('reports each interface connection as unsupported without protocol inspecti
         ],
         interfaceConnections: [{
             name: 'first',
-            master: { instance: 'left', interface: 'bus' },
-            slave: { instance: 'right', interface: 'bus' },
+            master: { kind: 'instance', instance: 'left', interface: 'bus' },
+            slave: { kind: 'instance', instance: 'right', interface: 'bus' },
         }, {
             name: 'second',
-            master: { instance: 'right', interface: 'missing' },
-            slave: { instance: 'left', interface: 'also_missing' },
+            master: { kind: 'instance', instance: 'right', interface: 'missing' },
+            slave: { kind: 'instance', instance: 'left', interface: 'also_missing' },
         }],
     });
 
@@ -1304,8 +1304,8 @@ test('owns the complete resolved design snapshot after caller mutation', () => {
     }];
     const interfaceConnections = [{
         name: 'unsupported',
-        master: { instance: 'u_consumer', interface: 'left' },
-        slave: { instance: 'u_consumer', interface: 'right' },
+        master: { kind: 'instance', instance: 'u_consumer', interface: 'left' },
+        slave: { kind: 'instance', instance: 'u_consumer', interface: 'right' },
     }];
     const defaults = { 'fallback.value': "8'h5a" };
     const design = {
@@ -1344,8 +1344,8 @@ test('owns the complete resolved design snapshot after caller mutation', () => {
     interfaceConnections[0].name = 'mutated_interface';
     interfaceConnections.push({
         name: 'added',
-        master: { instance: 'u_consumer', interface: 'left' },
-        slave: { instance: 'u_consumer', interface: 'right' },
+        master: { kind: 'instance', instance: 'u_consumer', interface: 'left' },
+        slave: { kind: 'instance', instance: 'u_consumer', interface: 'right' },
     });
     defaults['fallback.value'] = "8'hff";
 

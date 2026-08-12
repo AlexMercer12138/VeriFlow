@@ -5,6 +5,8 @@ import type {
     ArchDesignInstance,
     ArchDesignInterfaceConnection,
     ArchDesignInterfaceEndpoint,
+    ArchDesignInterfaceOverride,
+    ArchDesignInterfacePort,
     ArchDesignNodePlacement,
     ArchDesignPort,
     ArchDesignPresentation,
@@ -69,16 +71,39 @@ function connectionValue(connection: ArchDesignConnection): unknown {
 }
 
 function interfaceEndpointValue(endpoint: ArchDesignInterfaceEndpoint): unknown {
+    if (endpoint.kind === 'port') {
+        return { kind: endpoint.kind, port: endpoint.port };
+    }
     return {
+        kind: endpoint.kind,
         instance: endpoint.instance,
         interface: endpoint.interface,
+    };
+}
+
+function interfacePortValue(port: ArchDesignInterfacePort): unknown {
+    return {
+        name: port.name,
+        protocol: port.protocol,
+        role: port.role,
+        memberPrefix: port.memberPrefix,
+        members: port.members.map(member => ({
+            member: member.member,
+            width: widthValue(member.width),
+        })),
+    };
+}
+
+function interfaceOverrideValue(value: ArchDesignInterfaceOverride): unknown {
+    return {
+        ...(value.protocol ? { protocol: value.protocol } : {}),
+        ...(value.role ? { role: value.role } : {}),
     };
 }
 
 function interfaceConnectionValue(connection: ArchDesignInterfaceConnection): unknown {
     return {
         name: connection.name,
-        ...(connection.protocol ? { protocol: connection.protocol } : {}),
         master: interfaceEndpointValue(connection.master),
         slave: interfaceEndpointValue(connection.slave),
         ...(connection.defaults ? { defaults: sortedRecord(connection.defaults) } : {}),
@@ -124,6 +149,8 @@ function serializableArchDesign(design: ArchDesign): unknown {
         ports: design.ports.map(portValue),
         instances: design.instances.map(instanceValue),
         connections: design.connections.map(connectionValue),
+        interfacePorts: design.interfacePorts.map(interfacePortValue),
+        interfaceOverrides: sortedRecord(design.interfaceOverrides, interfaceOverrideValue),
         interfaceConnections: design.interfaceConnections.map(interfaceConnectionValue),
         defaults: sortedRecord(design.defaults),
         export: {

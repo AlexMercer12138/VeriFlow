@@ -353,8 +353,8 @@ test('blocks unsupported interface connections with frozen diagnostics only', ()
     const design = designOf({
         interfaceConnections: [{
             name: 'axi',
-            master: { instance: 'u_master', interface: 'm_axi' },
-            slave: { instance: 'u_slave', interface: 's_axi' },
+            master: { kind: 'instance', instance: 'u_master', interface: 'm_axi' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 's_axi' },
         }],
     });
 

@@ -31,11 +31,24 @@ function sourceDesign(overrides: Record<string, unknown> = {}): Record<string, u
             ],
             defaults: { 'u_core.enable': "1'b1" },
         }],
+        interfacePorts: [{
+            name: 's_axi',
+            protocol: 'amba.axi4',
+            role: 'slave',
+            memberPrefix: 'S_AXI',
+            members: [
+                { member: 'awaddr', width: 32 },
+                { member: 'wdata', width: { expression: 'DATA_WIDTH' } },
+            ],
+        }],
+        interfaceOverrides: {
+            'u_core.z_axi': { role: 'slave' },
+            'u_core.M_AXI': { protocol: 'amba.axi4', role: 'master' },
+        },
         interfaceConnections: [{
             name: 'control',
-            protocol: 'axi4-lite',
-            master: { instance: 'u_core', interface: 'm_axi_00' },
-            slave: { instance: 'u_regs', interface: 's_axi' },
+            master: { kind: 'instance', instance: 'u_core', interface: 'M_AXI' },
+            slave: { kind: 'port', port: 's_axi' },
             defaults: { wlast: "1'b1", awlen: "8'b0" },
         }],
         defaults: { 'u_core.reset': "1'b0", 'u_core.enable': "1'b1" },
@@ -77,6 +90,8 @@ test('serializes normalized designs in fixed schema order and round trips', () =
         'ports',
         'instances',
         'connections',
+        'interfacePorts',
+        'interfaceOverrides',
         'interfaceConnections',
         'defaults',
         'export',
@@ -85,6 +100,7 @@ test('serializes normalized designs in fixed schema order and round trips', () =
     assert.ok(source.indexOf('"ENABLED"') < source.indexOf('"WIDTH"'));
     assert.ok(source.indexOf('"u_core.enable"') < source.indexOf('"u_core.reset"'));
     assert.ok(source.indexOf('"awlen"') < source.indexOf('"wlast"'));
+    assert.ok(source.indexOf('"u_core.M_AXI"') < source.indexOf('"u_core.z_axi"'));
 
     const reparsed = parseArchDesignText(source);
     assert.equal(reparsed.status, 'editable');
@@ -186,10 +202,24 @@ test('fingerprints every RTL-relevant semantic section and export language', () 
             }],
         }),
         sourceDesign({
+            interfacePorts: [{
+                name: 'm_axi',
+                protocol: 'amba.axi4',
+                role: 'master',
+                memberPrefix: 'M_AXI',
+                members: [{ member: 'awaddr', width: 64 }],
+            }],
+        }),
+        sourceDesign({
+            interfaceOverrides: {
+                'u_core.M_AXI': { protocol: 'amba.axi4', role: 'slave' },
+            },
+        }),
+        sourceDesign({
             interfaceConnections: [{
                 name: 'control',
-                master: { instance: 'u_core', interface: 'm_axi_01' },
-                slave: { instance: 'u_regs', interface: 's_axi' },
+                master: { kind: 'instance', instance: 'u_core', interface: 'm_axi_01' },
+                slave: { kind: 'port', port: 's_axi' },
             }],
         }),
         sourceDesign({ defaults: { 'u_core.enable': "1'b0" } }),

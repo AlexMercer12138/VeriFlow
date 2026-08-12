@@ -37,14 +37,39 @@ export type ArchDesignConnection = Readonly<{
     defaults?: Readonly<Record<string, string>>;
 }>;
 
-export type ArchDesignInterfaceEndpoint = Readonly<{
-    instance: string;
-    interface: string;
+export type ArchDesignInterfaceRole = 'master' | 'slave';
+
+export type ArchDesignInterfacePortMember = Readonly<{
+    member: string;
+    width: ArchDesignWidth;
 }>;
+
+export type ArchDesignInterfacePort = Readonly<{
+    name: string;
+    protocol: string;
+    role: ArchDesignInterfaceRole;
+    memberPrefix: string;
+    members: readonly ArchDesignInterfacePortMember[];
+}>;
+
+export type ArchDesignInterfaceOverride = Readonly<{
+    protocol?: string;
+    role?: ArchDesignInterfaceRole;
+}>;
+
+export type ArchDesignInterfaceEndpoint =
+    | Readonly<{
+        kind: 'instance';
+        instance: string;
+        interface: string;
+    }>
+    | Readonly<{
+        kind: 'port';
+        port: string;
+    }>;
 
 export type ArchDesignInterfaceConnection = Readonly<{
     name: string;
-    protocol?: string;
     master: ArchDesignInterfaceEndpoint;
     slave: ArchDesignInterfaceEndpoint;
     defaults?: Readonly<Record<string, string>>;
@@ -81,6 +106,8 @@ export type ArchDesign = Readonly<{
     ports: readonly ArchDesignPort[];
     instances: readonly ArchDesignInstance[];
     connections: readonly ArchDesignConnection[];
+    interfacePorts: readonly ArchDesignInterfacePort[];
+    interfaceOverrides: Readonly<Record<string, ArchDesignInterfaceOverride>>;
     interfaceConnections: readonly ArchDesignInterfaceConnection[];
     defaults: Readonly<Record<string, string>>;
     export: ArchDesignExportOptions;
@@ -110,6 +137,8 @@ export function createEmptyArchDesign(module: string): ArchDesign {
         ports: [],
         instances: [],
         connections: [],
+        interfacePorts: [],
+        interfaceOverrides: {},
         interfaceConnections: [],
         defaults: {},
         export: {},

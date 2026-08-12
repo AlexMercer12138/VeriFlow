@@ -22,6 +22,8 @@ test('creates a deeply frozen minimal schema-v1 Arch Design', () => {
         ports: [],
         instances: [],
         connections: [],
+        interfacePorts: [],
+        interfaceOverrides: {},
         interfaceConnections: [],
         defaults: {},
         export: {},
@@ -71,11 +73,23 @@ test('models the complete schema-v1 document surface', () => {
                 { kind: 'instance', instance: 'u_core', port: 'gpio_i' },
             ],
         }],
+        interfacePorts: [{
+            name: 's_axi',
+            protocol: 'amba.axi4',
+            role: 'slave',
+            memberPrefix: 'S_AXI',
+            members: [
+                { member: 'awaddr', width: 32 },
+                { member: 'wdata', width: { expression: 'DATA_WIDTH' } },
+            ],
+        }],
+        interfaceOverrides: {
+            'u_core.M_AXI': { protocol: 'amba.axi4', role: 'master' },
+        },
         interfaceConnections: [{
             name: 'control',
-            protocol: 'axi4-lite',
-            master: { instance: 'u_core', interface: 'm_axi_00' },
-            slave: { instance: 'u_regs', interface: 's_axi' },
+            master: { kind: 'instance', instance: 'u_core', interface: 'M_AXI' },
+            slave: { kind: 'port', port: 's_axi' },
             defaults: {
                 wlast: "1'b1",
             },
@@ -113,7 +127,13 @@ test('models the complete schema-v1 document surface', () => {
         port: 'gpio',
         signal: 'i',
     });
-    assert.equal(design.interfaceConnections[0].master.interface, 'm_axi_00');
+    assert.equal(design.interfacePorts[0].members[1].member, 'wdata');
+    assert.equal(design.interfaceOverrides['u_core.M_AXI'].role, 'master');
+    assert.deepEqual(design.interfaceConnections[0].master, {
+        kind: 'instance',
+        instance: 'u_core',
+        interface: 'M_AXI',
+    });
 });
 
 test('rejects an empty or non-plain module identifier', () => {

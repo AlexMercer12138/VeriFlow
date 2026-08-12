@@ -15,6 +15,8 @@ function minimalDesign(overrides: Record<string, unknown> = {}): Record<string, 
         ports: [],
         instances: [],
         connections: [],
+        interfacePorts: [],
+        interfaceOverrides: {},
         interfaceConnections: [],
         defaults: {},
         export: {},
@@ -48,11 +50,24 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
             ],
             defaults: { 'u_core.enable': "1'b1" },
         }],
+        interfacePorts: [{
+            name: 's_axi',
+            protocol: 'amba.axi4',
+            role: 'slave',
+            memberPrefix: 'S_AXI',
+            members: [
+                { member: 'awaddr', width: 32 },
+                { member: 'wdata', width: { expression: 'DATA_WIDTH' } },
+            ],
+        }],
+        interfaceOverrides: {
+            'u_core.M_AXI': { protocol: 'amba.axi4', role: 'master' },
+            'u_core.m_axi': { protocol: 'amba.axi4', role: 'slave' },
+        },
         interfaceConnections: [{
             name: 'control',
-            protocol: 'axi4-lite',
-            master: { instance: 'u_core', interface: 'm_axi_00' },
-            slave: { instance: 'u_regs', interface: 's_axi' },
+            master: { kind: 'instance', instance: 'u_core', interface: 'M_AXI' },
+            slave: { kind: 'port', port: 's_axi' },
             defaults: { wlast: "1'b1" },
         }],
         defaults: { 'u_core.enable': "1'b1" },
@@ -81,7 +96,117 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
     assert.ok(Object.isFrozen(result.design));
     assert.ok(Object.isFrozen(result.design.connections));
     assert.ok(Object.isFrozen(result.design.connections[0].endpoints));
+    assert.ok(Object.isFrozen(result.design.interfacePorts[0].members));
+    assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
+    assert.equal(result.design.interfaceOverrides['u_core.M_AXI'].role, 'master');
+    assert.equal(result.design.interfaceOverrides['u_core.m_axi'].role, 'slave');
     assert.ok(Object.isFrozen(result.design.presentation.viewport));
+});
+
+test('normalizes omitted interface sections for legacy schema-v1 documents', () => {
+    const value = minimalDesign();
+    delete value.interfacePorts;
+    delete value.interfaceOverrides;
+
+    const result = parseArchDesignValue(value);
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.deepEqual(result.design.interfacePorts, []);
+    assert.deepEqual(Object.keys(result.design.interfaceOverrides), []);
+    assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
+});
+
+test('rejects malformed interface declarations, overrides, endpoints, and unsafe defaults', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        interfacePorts: [{
+            name: 's_axi',
+            protocol: '',
+            role: 'unknown',
+            memberPrefix: '',
+            members: [
+                { member: '', width: 0 },
+                { member: 'awaddr', width: 32 },
+                { member: 'awaddr', width: 64 },
+            ],
+        }],
+        interfaceOverrides: {
+            valid: { protocol: '', role: 'unknown' },
+            broken: null,
+        },
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'module', instance: 'u_core', interface: 'm_axi' },
+            slave: { kind: 'port', port: '' },
+            defaults: { wlast: "1'b1; injected = 1'b1" },
+        }],
+    }));
+
+    const paths = invalidDiagnostics(result).map(item => item.path);
+    for (const path of [
+        '$.interfacePorts[0].protocol',
+        '$.interfacePorts[0].role',
+        '$.interfacePorts[0].memberPrefix',
+        '$.interfacePorts[0].members[0].member',
+        '$.interfacePorts[0].members[0].width',
+        '$.interfacePorts[0].members[2].member',
+        '$.interfaceOverrides.valid.protocol',
+        '$.interfaceOverrides.valid.role',
+        '$.interfaceOverrides.broken',
+        '$.interfaceConnections[0].master.kind',
+        '$.interfaceConnections[0].slave.port',
+        '$.interfaceConnections[0].defaults.wlast',
+    ]) {
+        assert.ok(paths.includes(path), `missing diagnostic for ${path}`);
+    }
+});
+
+test('rejects duplicate top-level interface names and names shared with scalar ports', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        ports: [{ name: 's_axi', direction: 'input' }],
+        interfacePorts: [
+            {
+                name: 's_axi',
+                protocol: 'amba.axi4',
+                role: 'slave',
+                memberPrefix: 's_axi',
+                members: [{ member: 'awaddr', width: 32 }],
+            },
+            {
+                name: 's_axi',
+                protocol: 'amba.axi4',
+                role: 'slave',
+                memberPrefix: 's_axi_2',
+                members: [{ member: 'awaddr', width: 32 }],
+            },
+        ],
+    }));
+
+    assert.deepEqual(invalidDiagnostics(result).map(item => [item.path, item.code]), [
+        ['$.interfacePorts[0].name', 'AD_DUPLICATE_NAME'],
+        ['$.interfacePorts[1].name', 'AD_DUPLICATE_NAME'],
+    ]);
+});
+
+test('owns and freezes interface dictionaries containing prototype-hostile keys', () => {
+    const source = JSON.parse('{"format":"vik-veriflow.arch-design","schemaVersion":1,'
+        + '"module":"soc_top","ports":[],"instances":[],"connections":[],'
+        + '"interfacePorts":[],"interfaceOverrides":{'
+        + '"__proto__":{"protocol":"amba.axi4","role":"master"},'
+        + '"constructor":{"protocol":"amba.apb","role":"slave"}},'
+        + '"interfaceConnections":[],"defaults":{},"export":{},"presentation":{}}');
+    const result = parseArchDesignValue(source);
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
+    assert.equal(result.design.interfaceOverrides.__proto__.role, 'master');
+    assert.equal(
+        (Reflect.get(result.design.interfaceOverrides, 'constructor') as { role: string }).role,
+        'slave'
+    );
+    assert.ok(Object.isFrozen(result.design.interfaceOverrides.__proto__));
+    assert.equal(({} as { polluted?: unknown }).polluted, undefined);
 });
 
 test('reports invalid JSON and the wrong format without throwing', () => {
@@ -131,8 +256,7 @@ test('collects deterministic path diagnostics for malformed current fields', () 
         }],
         interfaceConnections: [{
             name: 'control',
-            protocol: '',
-            master: { instance: 'u_core' },
+            master: { kind: 'instance', instance: 'u_core' },
             slave: null,
         }],
         defaults: { target: false },
@@ -163,7 +287,6 @@ test('collects deterministic path diagnostics for malformed current fields', () 
         '$.connections[0].endpoints[0].signal',
         '$.connections[0].endpoints[1].kind',
         '$.connections[0].defaults.target',
-        '$.interfaceConnections[0].protocol',
         '$.interfaceConnections[0].master.interface',
         '$.interfaceConnections[0].slave',
         '$.defaults.target',
@@ -199,13 +322,13 @@ test('rejects duplicate named semantic objects at the duplicate declaration', ()
         interfaceConnections: [
             {
                 name: 'control',
-                master: { instance: 'u_core', interface: 'm_axi' },
-                slave: { instance: 'u_regs', interface: 's_axi' },
+                master: { kind: 'instance', instance: 'u_core', interface: 'm_axi' },
+                slave: { kind: 'instance', instance: 'u_regs', interface: 's_axi' },
             },
             {
                 name: 'control',
-                master: { instance: 'u_core', interface: 'm_axi_01' },
-                slave: { instance: 'u_regs', interface: 's_axi_01' },
+                master: { kind: 'instance', instance: 'u_core', interface: 'm_axi_01' },
+                slave: { kind: 'instance', instance: 'u_regs', interface: 's_axi_01' },
             },
         ],
     }));
