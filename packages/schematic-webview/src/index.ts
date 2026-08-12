@@ -17,6 +17,7 @@ import {
     PanelTopOpen,
     PanelRightClose,
     PanelRightOpen,
+    RefreshCw,
     Scan,
     Search as SearchIcon,
     Trash2,
@@ -44,6 +45,8 @@ import {
 } from '@veriflow/schematic-core';
 import type {
     ArchDesignEdit,
+    ArchDesignInterfaceEndpoint,
+    ArchDesignPresentation,
     ArchDesignPortDirection,
 } from '@veriflow/schematic-core/arch-design';
 import type { SchematicLayout } from '../../../veriflow-vscode/src/schematic/layoutStore';
@@ -84,6 +87,22 @@ type CellData = {
     junction?: boolean;
 };
 
+type ScalarConnectionTerminal = Readonly<{
+    kind: 'scalar';
+    endpoint: NonNullable<ReturnType<typeof archDesignEndpointForPin>>;
+    pin: GraphNode['pins'][number];
+}>;
+
+type InterfaceConnectionTerminal = Readonly<{
+    kind: 'interface';
+    endpoint: ArchDesignInterfaceEndpoint;
+    effectiveRole: 'master' | 'slave';
+    protocol: string;
+    pin: GraphNode['pins'][number];
+}>;
+
+type ConnectionTerminal = ScalarConnectionTerminal | InterfaceConnectionTerminal;
+
 type SearchMatch = { cell: Cell; objectId: string; description: string };
 
 const MIN_ZOOM = 0.1;
@@ -109,6 +128,7 @@ const shapeAccents: Record<GraphNodeKind, string> = {
 };
 
 const dom = {
+    shell: requiredElement<HTMLElement>('schematic-shell'),
     canvas: requiredElement<HTMLDivElement>('canvas'),
     canvasRegion: requiredElement<HTMLElement>('canvas-region'),
     canvasState: requiredElement<HTMLDivElement>('canvas-state'),
@@ -211,6 +231,8 @@ function registerShapes(): void {
             markup: [
                 { tagName: 'rect', selector: 'body' },
                 { tagName: 'rect', selector: 'accent' },
+                { tagName: 'rect', selector: 'interfaceTag' },
+                { tagName: 'text', selector: 'interfaceTagText' },
                 {
                     tagName: 'svg',
                     selector: 'labelClip',
@@ -255,6 +277,22 @@ function registerShapes(): void {
                     height: '100%',
                     fill: shapeAccents[kind],
                     stroke: 'none',
+                },
+                interfaceTag: {
+                    visibility: 'hidden',
+                    stroke: 'none',
+                    rx: 2,
+                    ry: 2,
+                },
+                interfaceTagText: {
+                    visibility: 'hidden',
+                    fill: '#ffffff',
+                    fontFamily: 'var(--vscode-font-family, sans-serif)',
+                    fontSize: 9,
+                    fontWeight: 600,
+                    textAnchor: 'middle',
+                    textVerticalAnchor: 'middle',
+                    pointerEvents: 'none',
                 },
                 label: {
                     refX: 0,
@@ -332,6 +370,12 @@ function portGroups() {
     };
 }
 
+function interfaceColor(role: 'master' | 'slave' | 'unknown'): string {
+    if (role === 'master') return 'var(--schematic-interface-master)';
+    if (role === 'slave') return 'var(--schematic-interface-slave)';
+    return 'var(--schematic-interface-unknown)';
+}
+
 function pinItems(
     model: GraphNode,
     rendered: RenderedNodeGeometry
@@ -348,8 +392,22 @@ function pinItems(
             },
             attrs: {
                 portBody: {
-                    magnet: connectionAuthoringEnabled() && source?.readOnly !== true,
+                    magnet: source !== undefined && pinConnectable(source),
                     strokeDasharray: source?.readOnly ? '2 1' : undefined,
+                    ...(source?.interface === undefined ? {} : { class: [
+                            'x6-port-body',
+                            'veriflow-interface-pin',
+                            `veriflow-interface-${source.interface.role}`,
+                            `veriflow-interface-${source.interface.kind}`,
+                        ].join(' ') }),
+                    r: source?.interface?.kind === 'aggregate' ? 4 : 3,
+                    fill: source?.interface === undefined
+                        ? 'var(--schematic-node-fill)'
+                        : 'var(--schematic-interface-pin-fill)',
+                    stroke: source?.interface === undefined
+                        ? 'var(--schematic-pin)'
+                        : interfaceColor(source.interface.role),
+                    strokeWidth: source?.interface?.kind === 'aggregate' ? 2 : 1.5,
                 },
                 portLabelClip: {
                     x: pin.side === 'left' ? 0 : -pin.clipBounds.width,
@@ -362,7 +420,12 @@ function pinItems(
                     title: pin.name,
                     x: pin.side === 'left' ? 0 : pin.clipBounds.width,
                     y: pin.clipBounds.height / 2,
-                    fill: 'var(--schematic-text)',
+                    fill: source?.interface === undefined
+                        ? 'var(--schematic-text)'
+                        : interfaceColor(source.interface.role),
+                    class: source?.interface === undefined
+                        ? undefined
+                        : 'veriflow-interface-label',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.pin.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -392,6 +455,8 @@ function createRenderedNode(
     rendered: RenderedNodeGeometry
 ): Node {
     const { width, height } = rendered.bounds;
+    const topInterface = model.pins.find(pin => pin.interface?.topLevel)?.interface;
+    const titleBounds = relativeBounds(rendered.title.bounds, rendered.bounds);
     const cell = graph.addNode({
         id: model.id,
         shape: shapeNames[model.kind],
@@ -413,9 +478,34 @@ function createRenderedNode(
             },
             body: {
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
+                ...(topInterface === undefined ? {} : {
+                    stroke: interfaceColor(topInterface.role),
+                    strokeWidth: 2,
+                }),
             },
-            accent: { height },
-            labelClip: relativeBounds(rendered.title.bounds, rendered.bounds),
+            accent: {
+                height,
+            },
+            interfaceTag: topInterface === undefined ? {} : {
+                x: width - 22,
+                y: 6,
+                width: 16,
+                height: 14,
+                visibility: 'visible',
+                fill: interfaceColor(topInterface.role),
+                class: 'veriflow-interface-tag',
+            },
+            interfaceTagText: topInterface === undefined ? {} : {
+                x: width - 14,
+                y: 13,
+                visibility: 'visible',
+                class: 'veriflow-interface-tag-text',
+                text: topInterface.role === 'master'
+                    ? 'M' : topInterface.role === 'slave' ? 'S' : '?',
+            },
+            labelClip: topInterface === undefined
+                ? titleBounds
+                : { ...titleBounds, width: Math.max(0, titleBounds.width - 18) },
             label: {
                 text: rendered.title.visibleText,
                 title: rendered.title.fullText,
@@ -477,6 +567,7 @@ function terminatesAtLoad(
 }
 
 function networkStrokeWidth(network: SchematicNetwork): number {
+    if (network.renderWidth !== undefined) return network.renderWidth;
     return network.width.kind === 'known' && network.width.bits > 1 ? 2 : 1;
 }
 
@@ -511,6 +602,12 @@ function renderNetworks(
                     },
                     line: {
                         strokeWidth: networkStrokeWidth(network),
+                        stroke: network.interface === undefined
+                            ? 'var(--schematic-wire)'
+                            : 'var(--schematic-interface-wire)',
+                        class: network.interface === undefined
+                            ? undefined
+                            : 'veriflow-interface-route',
                         sourceMarker: terminatesAtLoad(networkRoute, source)
                             ? { name: 'block', width: 6, height: 6 }
                             : null,
@@ -631,8 +728,7 @@ const graph = new Graph({
         validateConnection({ sourceCell, targetCell, sourcePort, targetPort }): boolean {
             const source = connectionSourceFor(sourceCell, sourcePort);
             const target = connectionTargetFor(targetCell, targetPort);
-            return source !== undefined && target !== undefined
-                && source.pin.id !== target.pin.id;
+            return connectionTerminalsCompatible(source, target);
         },
         createEdge() {
             return this.createEdge({
@@ -661,6 +757,7 @@ let selectedModuleKey = '';
 let applyingLayout = false;
 let syncingSelection = false;
 let selectedNetworkId: string | undefined;
+let selectedPinId: string | undefined;
 let inspectorExpanded = true;
 let minimapPlugin: MiniMap | undefined;
 let minimapAvailable = false;
@@ -702,10 +799,47 @@ function connectionAuthoringEnabled(): boolean {
         && dom.connectButton.getAttribute('aria-pressed') === 'true';
 }
 
+function interfaceInspectorForPin(pin: GraphNode['pins'][number]) {
+    const identity = pin.interface?.id;
+    return identity === undefined
+        ? undefined
+        : currentArchDesignState?.inspector?.interfaces.find(
+            item => item.identity === identity
+        );
+}
+
+function interfaceEffectiveRole(
+    pin: GraphNode['pins'][number]
+): 'master' | 'slave' | undefined {
+    if (pin.interface?.kind !== 'aggregate' || pin.interface.role === 'unknown') {
+        return undefined;
+    }
+    return pin.direction === 'driver'
+        ? 'master'
+        : pin.direction === 'load' ? 'slave' : undefined;
+}
+
+function pinConnectable(pin: GraphNode['pins'][number]): boolean {
+    if (!connectionAuthoringEnabled() || pin.readOnly) return false;
+    if (pin.interface === undefined) return true;
+    if (pin.interface.kind === 'member') {
+        const item = interfaceInspectorForPin(pin);
+        const member = item?.members.find(candidate => candidate.port === pin.name);
+        return item?.connection === undefined
+            && member !== undefined
+            && member.occupancy === undefined;
+    }
+    const item = interfaceInspectorForPin(pin);
+    return interfaceEffectiveRole(pin) !== undefined
+        && item !== undefined
+        && item.connection === undefined
+        && item.members.every(member => member.occupancy === undefined);
+}
+
 function connectionTerminal(
     cell: Cell | null | undefined,
     portId: string | null | undefined
-) {
+): ConnectionTerminal | undefined {
     if (!connectionAuthoringEnabled()
         || !currentArchDesignState
         || !currentGraph
@@ -714,13 +848,36 @@ function connectionTerminal(
     const data = cellData(cell);
     const node = data?.objectType === 'node' ? data.node : undefined;
     const pin = node?.pins.find(candidate => candidate.id === portId);
-    if (!node || !pin || pin.readOnly) return undefined;
+    if (!node || !pin || !pinConnectable(pin)) return undefined;
+    if (pin.interface?.kind === 'aggregate') {
+        const item = interfaceInspectorForPin(pin);
+        const effectiveRole = interfaceEffectiveRole(pin);
+        return item && effectiveRole
+            ? {
+                kind: 'interface',
+                endpoint: item.endpoint,
+                effectiveRole,
+                protocol: item.protocol,
+                pin,
+            }
+            : undefined;
+    }
     const endpoint = archDesignEndpointForPin(
         currentArchDesignState.design,
         node,
         pin
     );
-    return endpoint ? { endpoint, pin } : undefined;
+    return endpoint ? { kind: 'scalar', endpoint, pin } : undefined;
+}
+
+function connectionTerminalsCompatible(
+    source: ConnectionTerminal | undefined,
+    target: ConnectionTerminal | undefined
+): boolean {
+    if (!source || !target || source.pin.id === target.pin.id
+        || source.kind !== target.kind) return false;
+    return source.kind === 'scalar'
+        || (target.kind === 'interface' && source.protocol === target.protocol);
 }
 
 function connectionSourceFor(
@@ -728,11 +885,11 @@ function connectionSourceFor(
     portId: string | null | undefined
 ) {
     const terminal = connectionTerminal(cell, portId);
-    return terminal
-        && (terminal.pin.direction === 'driver'
-            || terminal.pin.direction === 'bidirectional')
-        ? terminal
-        : undefined;
+    if (terminal?.kind === 'interface') {
+        return terminal.effectiveRole === 'master' ? terminal : undefined;
+    }
+    return terminal && (terminal.pin.direction === 'driver'
+        || terminal.pin.direction === 'bidirectional') ? terminal : undefined;
 }
 
 function connectionTargetFor(
@@ -740,11 +897,11 @@ function connectionTargetFor(
     portId: string | null | undefined
 ) {
     const terminal = connectionTerminal(cell, portId);
-    return terminal
-        && (terminal.pin.direction === 'load'
-            || terminal.pin.direction === 'bidirectional')
-        ? terminal
-        : undefined;
+    if (terminal?.kind === 'interface') {
+        return terminal.effectiveRole === 'slave' ? terminal : undefined;
+    }
+    return terminal && (terminal.pin.direction === 'load'
+        || terminal.pin.direction === 'bidirectional') ? terminal : undefined;
 }
 
 function refreshConnectionMagnets(): void {
@@ -757,7 +914,7 @@ function refreshConnectionMagnets(): void {
         view?.container.querySelectorAll<SVGGElement>('.x6-port-body[port]').forEach(
             port => {
                 const pin = pinsById.get(port.getAttribute('port') ?? '');
-                const magnet = String(enabled && pin?.readOnly !== true);
+                const magnet = String(enabled && pin !== undefined && pinConnectable(pin));
                 port.setAttribute('magnet', magnet);
                 port.querySelector('[data-selector="portBody"]')
                     ?.setAttribute('magnet', magnet);
@@ -894,6 +1051,23 @@ function refreshNetworkSelectionStyles(): void {
     }
 }
 
+function refreshPinSelectionStyles(): void {
+    dom.canvas.querySelectorAll<SVGElement>('.veriflow-pin-selected').forEach(element => {
+        element.classList.remove('veriflow-pin-selected');
+    });
+    if (selectedPinId === undefined) return;
+    for (const node of graph.getNodes()) {
+        const data = cellData(node);
+        if (!data?.node?.pins.some(pin => pin.id === selectedPinId)) continue;
+        const view = graph.findViewByCell(node);
+        view?.container.querySelectorAll<SVGGElement>('.x6-port-body[port]').forEach(port => {
+            if (port.getAttribute('port') === selectedPinId) {
+                port.classList.add('veriflow-pin-selected');
+            }
+        });
+    }
+}
+
 function descriptionFor(data: CellData): string {
     if (data.node) return `${data.node.kind}: ${data.node.label}`;
     if (data.networkRoute) {
@@ -909,6 +1083,31 @@ function updateSelectionStatus(cells: Cell[], persist = true): void {
         objectId: string;
         description: string;
     }>();
+    if (selectedPinId !== undefined) {
+        const selectedPin = currentGraph?.nodes.flatMap(node => node.pins.map(pin => ({
+            node,
+            pin,
+        }))).find(item => item.pin.id === selectedPinId);
+        const selectedInterface = currentArchDesignState?.inspector?.interfaces.find(
+            item => item.identity === selectedPinId
+        );
+        if (selectedPin) {
+            itemsByObjectId.set(selectedPinId, {
+                objectId: selectedPinId,
+                description: selectedPin.pin.interface?.kind === 'aggregate'
+                    ? `interface: ${selectedPin.node.label}.${selectedPin.pin.name}`
+                    : `pin: ${selectedPin.node.label}.${selectedPin.pin.name}`,
+            });
+        } else if (selectedInterface) {
+            itemsByObjectId.set(selectedPinId, {
+                objectId: selectedPinId,
+                description: `interface: ${selectedInterface.endpoint.kind === 'port'
+                    ? selectedInterface.endpoint.port
+                    : `${selectedInterface.endpoint.instance}.${
+                        selectedInterface.endpoint.interface}`}`,
+            });
+        }
+    }
     if (selectedNetworkId !== undefined) {
         const selectedNetworkCell = graph.getCells().find(cell => {
             const data = cellData(cell);
@@ -939,6 +1138,7 @@ function updateSelectionStatus(cells: Cell[], persist = true): void {
         currentLayout.selectedObjectId = summary.selectedObjectId;
     }
     dom.selectionStatus.textContent = summary.statusText;
+    refreshPinSelectionStyles();
     renderCurrentInspector(cells);
     if (persist) {
         if (archDesignDocument) {
@@ -981,16 +1181,57 @@ function setAuthoringControls(): void {
     ).forEach(control => {
         control.disabled = disabled || control.dataset.readonly === 'true';
     });
+    dom.inspectorForm.querySelectorAll<HTMLButtonElement>('.inspector-action').forEach(button => {
+        button.disabled = disabled || button.dataset.actionAvailable !== 'true';
+    });
     refreshConnectionMagnets();
 }
 
-function postArchDesignEdit(edit: ArchDesignEdit): void {
+function postArchDesignEdit(requestedEdit: ArchDesignEdit): void {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    const edit = requestedEdit.type === 'setPresentation' && currentGraph && currentLayout
+        ? {
+            ...requestedEdit,
+            presentation: {
+                ...archDesignPresentationForCurrentLayout(currentGraph, currentLayout),
+                ...(requestedEdit.presentation.collapsedInterfaces === undefined
+                    ? {}
+                    : { collapsedInterfaces: requestedEdit.presentation.collapsedInterfaces }),
+            },
+        } satisfies ArchDesignEdit
+        : requestedEdit;
     authoringPending = true;
     queuedArchDesignCommand = { type: 'edit', edit };
     setAuthoringControls();
     if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
     drainArchDesignWrites();
+}
+
+function archDesignPresentationForCurrentLayout(
+    model: SchematicGraph,
+    layout: SchematicLayout
+): ArchDesignPresentation {
+    const nodes = Object.fromEntries(model.nodes.flatMap(node => {
+        if (node.kind !== 'instance' && node.kind !== 'port') return [];
+        const placement = layout.placement.nodes[node.id];
+        return placement === undefined ? [] : [[node.id, {
+            column: placement.column,
+            order: placement.order,
+            ...(placement.yOffset === 0 ? {} : { offset: placement.yOffset }),
+            ...(placement.fixed ? { userPositioned: true } : {}),
+        }]];
+    }));
+    return {
+        ...(Object.keys(nodes).length === 0 ? {} : { nodes }),
+        ...(currentArchDesignState?.design.presentation.collapsedInterfaces === undefined
+            ? {}
+            : {
+                collapsedInterfaces: {
+                    ...currentArchDesignState.design.presentation.collapsedInterfaces,
+                },
+            }),
+        viewport: { ...layout.viewport },
+    };
 }
 
 function drainArchDesignWrites(): void {
@@ -1075,6 +1316,34 @@ function renderArchDesignInspector(model: ArchDesignInspectorModel): void {
         }
         fields.append(wrapper);
     }
+    if (model.actions && model.actions.length > 0) {
+        const actions = document.createElement('div');
+        actions.className = 'inspector-actions';
+        for (const action of model.actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'inspector-action';
+            button.dataset.inspectorAction = action.id;
+            button.dataset.actionAvailable = String(action.edit !== undefined);
+            button.disabled = action.edit === undefined;
+            button.title = action.disabledReason ?? action.label;
+            button.setAttribute('aria-label', action.label);
+            button.append(createElement(
+                action.id === 'resync-interface' ? RefreshCw : PanelTopOpen,
+                {
+                    width: 15,
+                    height: 15,
+                    'stroke-width': 1.75,
+                    'aria-hidden': 'true',
+                }
+            ), document.createTextNode(action.label));
+            if (action.edit) {
+                button.addEventListener('click', () => postArchDesignEdit(action.edit!));
+            }
+            actions.append(button);
+        }
+        fields.append(actions);
+    }
     dom.inspectorForm.replaceChildren(fields);
     setAuthoringControls();
 }
@@ -1103,7 +1372,8 @@ function renderCurrentInspector(cells = selection.getSelectedCells()): void {
             currentArchDesignState,
             currentGraph,
             selectedNodeIds(cells),
-            selectedNetworkId
+            selectedNetworkId,
+            selectedPinId
         ));
         return;
     }
@@ -1122,6 +1392,7 @@ function selectNetwork(networkId: string | undefined, persist = true): void {
             return data?.objectType === 'network' && data.objectId === networkId;
         });
     selectedNetworkId = matchingCell ? networkId : undefined;
+    selectedPinId = undefined;
     syncingSelection = true;
     selection.clean();
     syncingSelection = false;
@@ -1191,6 +1462,7 @@ function applyViewport(layout: SchematicLayout): void {
 }
 
 function selectedObjectIds(cells: readonly Cell[]): string[] {
+    if (selectedPinId !== undefined) return [selectedPinId];
     if (selectedNetworkId !== undefined) return [selectedNetworkId];
     return [...new Set(cells.flatMap(cell => {
         const data = cellData(cell);
@@ -1203,17 +1475,26 @@ function restoreSelection(
     preservedObjectIds?: readonly string[]
 ): void {
     selectedNetworkId = undefined;
+    selectedPinId = undefined;
     syncingSelection = true;
     selection.clean();
     const wantedObjectIds = preservedObjectIds === undefined
         ? new Set(layout.selectedObjectId ? [layout.selectedObjectId] : [])
         : new Set(preservedObjectIds);
+    const matchingPinId = [...wantedObjectIds].find(id =>
+        currentGraph?.nodes.some(node => node.pins.some(pin =>
+            pin.id === id || pin.interface?.id === id
+        ))
+    );
+    if (matchingPinId !== undefined) selectedPinId = matchingPinId;
     const matchingNodeCells = graph.getCells().filter(cell => {
         const data = cellData(cell);
         return data?.objectType === 'node'
             && wantedObjectIds.has(data.objectId);
     });
-    if (matchingNodeCells.length > 0) {
+    if (selectedPinId !== undefined) {
+        // Pin selections do not select or move their owning nodes.
+    } else if (matchingNodeCells.length > 0) {
         selection.select(matchingNodeCells);
     } else {
         const matchingNetwork = graph.getCells().find(cell => {
@@ -1227,7 +1508,15 @@ function restoreSelection(
     }
     syncingSelection = false;
     refreshNetworkSelectionStyles();
+    refreshPinSelectionStyles();
     updateSelectionStatus(selection.getSelectedCells(), false);
+}
+
+function layoutDisplaySchematic(
+    model: SchematicGraph,
+    layout: SchematicLayout
+): SchematicRenderModel {
+    return layoutSchematic(model, layout.placement, measureNodeText);
 }
 
 function renderSchematic(
@@ -1244,7 +1533,16 @@ function renderSchematic(
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const renderModel = layoutSchematic(model, layout.placement, measureNodeText);
+    const displayModel: SchematicGraph = {
+        ...model,
+        nodes: model.nodes.map(node => ({
+            ...node,
+            pins: node.pins.map(pin => pin.interface?.kind === 'aggregate'
+                ? { ...pin, name: `${pin.name} · ${pin.interface.protocolName}` }
+                : pin),
+        })),
+    };
+    const renderModel = layoutDisplaySchematic(displayModel, layout);
     currentRenderModel = renderModel;
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {
@@ -1475,6 +1773,7 @@ function clearSchematicState(): void {
     clearPendingNodeMoves();
     applyingLayout = true;
     selectedNetworkId = undefined;
+    selectedPinId = undefined;
     selection.clean();
     graph.resetCells([]);
     graph.zoomTo(1);
@@ -1563,7 +1862,7 @@ function updateArchDesignState(
             option.textContent = moduleName;
             dom.instanceModuleSelect.append(option);
         }
-        renderCurrentInspector();
+        updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
         archDesignSemanticEditInFlight = false;
         queuedArchDesignCommand = undefined;
@@ -1925,7 +2224,29 @@ graph.on('edge:connected', ({ edge, isNew }) => {
         edge.getTargetPortId()
     );
     graph.removeCell(edge);
-    if (!source || !target) return;
+    if (!source || !target || source.pin.id === target.pin.id) return;
+    if (source.kind === 'interface') {
+        if (target.kind !== 'interface' || source.protocol !== target.protocol) return;
+        const endpointName = (endpoint: ArchDesignInterfaceEndpoint): string =>
+            endpoint.kind === 'port' ? endpoint.port : endpoint.interface;
+        const baseName = `${endpointName(source.endpoint)}_to_${endpointName(target.endpoint)}`;
+        const names = new Set([
+            ...(currentArchDesignState?.design.connections.map(item => item.name) ?? []),
+            ...(currentArchDesignState?.design.interfaceConnections.map(item => item.name) ?? []),
+        ]);
+        let name = baseName;
+        for (let suffix = 2; names.has(name); suffix += 1) name = `${baseName}_${suffix}`;
+        postArchDesignEdit({
+            type: 'connectInterface',
+            connection: {
+                name,
+                master: source.endpoint,
+                slave: target.endpoint,
+            },
+        });
+        return;
+    }
+    if (target.kind !== 'scalar') return;
     postArchDesignEdit({
         type: 'connect',
         source: source.endpoint,
@@ -1943,6 +2264,18 @@ graph.on('node:click', ({ node }) => {
     if (data?.junction) selectNetwork(data.objectId);
 });
 
+graph.on('node:port:click', ({ node, port }) => {
+    const data = cellData(node);
+    if (!data?.node || !port || !data.node.pins.some(pin => pin.id === port)) return;
+    selectedNetworkId = undefined;
+    selectedPinId = port;
+    syncingSelection = true;
+    selection.clean();
+    syncingSelection = false;
+    refreshNetworkSelectionStyles();
+    updateSelectionStatus([]);
+});
+
 graph.on('blank:click', () => {
     selectNetwork(undefined);
 });
@@ -1950,6 +2283,7 @@ graph.on('blank:click', () => {
 selection.on('selection:changed', ({ selected }) => {
     if (applyingLayout || syncingSelection) return;
     selectedNetworkId = undefined;
+    selectedPinId = undefined;
     refreshNetworkSelectionStyles();
     updateSelectionStatus(selected);
 });
@@ -1994,4 +2328,5 @@ window.addEventListener('message', event => {
     }
 });
 
+dom.shell.dataset.runtimeReady = 'true';
 post({ type: 'ready' });

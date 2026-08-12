@@ -26,6 +26,11 @@
     --schematic-selection: var(--vscode-editor-selectionBackground, #add6ff);
     --schematic-error: var(--vscode-errorForeground, #c72e0f);
     --schematic-warning: var(--vscode-editorWarning-foreground, #9a6700);
+    --schematic-interface-master: var(--vscode-charts-blue, #2472c8);
+    --schematic-interface-slave: var(--vscode-charts-green, #16825d);
+    --schematic-interface-unknown: var(--vscode-descriptionForeground, #6e7781);
+    --schematic-interface-wire: var(--vscode-charts-purple, #8b5cf6);
+    --schematic-interface-pin-fill: var(--schematic-node-fill);
 }
 
 * {
@@ -340,6 +345,43 @@ button {
     user-select: text;
 }
 
+.inspector-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+    padding: 8px 10px;
+    gap: 6px;
+}
+
+.inspector-action {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 8px;
+    gap: 7px;
+    overflow-wrap: anywhere;
+    color: var(--vscode-button-foreground, inherit);
+    text-align: left;
+    background: var(--vscode-button-background, var(--schematic-active));
+    border: 1px solid var(--vscode-button-border, var(--schematic-border));
+    border-radius: 2px;
+}
+
+.inspector-action:hover:not(:disabled) {
+    background: var(--vscode-button-hoverBackground, var(--schematic-hover));
+}
+
+.inspector-action:disabled {
+    opacity: 0.55;
+}
+
+.inspector-action svg {
+    flex: 0 0 15px;
+}
+
 dialog {
     width: min(360px, calc(100vw - 32px));
     max-height: calc(100vh - 32px);
@@ -468,6 +510,26 @@ dialog::backdrop {
 .x6-edge.veriflow-network-selected > path:nth-child(2) {
     stroke: var(--schematic-wire-selected) !important;
     stroke-width: 2.5px !important;
+}
+
+.x6-edge.veriflow-network-selected > path.veriflow-interface-route {
+    stroke-width: 5px !important;
+}
+
+.veriflow-interface-pin {
+    cursor: crosshair;
+    vector-effect: non-scaling-stroke;
+}
+
+.veriflow-interface-label {
+    font-weight: 600;
+}
+
+.x6-port-body.veriflow-pin-selected [data-selector="portBody"],
+.x6-port-body.veriflow-pin-selected {
+    fill: var(--schematic-selection) !important;
+    stroke: var(--schematic-focus) !important;
+    stroke-width: 3px !important;
 }
 
 .x6-node.veriflow-network-selected .veriflow-junction-dot {

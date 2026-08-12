@@ -271,17 +271,12 @@ export function archDesignPresentationFromLayout(
     graph: SchematicGraph,
     layout: SchematicLayout
 ): ArchDesignPresentation {
-    const graphNodeIds = new Set(graph.nodes.map(node => node.id));
-    const nodeIds = [
-        ...design.ports.map(port => `port:${port.name}`),
-        ...design.instances.map(instance => `instance:${instance.name}`),
-    ];
     const nodes: Record<string, ArchDesignNodePlacement> = Object.create(null);
-    for (const nodeId of nodeIds) {
-        if (!graphNodeIds.has(nodeId)) continue;
-        const placement = persistedPlacement(layout, nodeId);
+    for (const node of graph.nodes) {
+        if (node.kind !== 'port' && node.kind !== 'instance') continue;
+        const placement = persistedPlacement(layout, node.id);
         if (placement) {
-            Object.defineProperty(nodes, nodeId, {
+            Object.defineProperty(nodes, node.id, {
                 value: placement,
                 enumerable: true,
                 configurable: true,

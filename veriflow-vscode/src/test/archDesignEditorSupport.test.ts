@@ -125,6 +125,20 @@ function testLayoutProjection(): void {
         yOffset: -8,
         fixed: true,
     };
+    projection.graph.nodes.push({
+        id: 'interface:port:m_link',
+        kind: 'port',
+        label: 'm_link',
+        subtitle: 'Project Link master',
+        pins: [],
+        readOnly: false,
+    });
+    layout.placement.nodes['interface:port:m_link'] = {
+        column: 4,
+        order: 0,
+        yOffset: 6,
+        fixed: true,
+    };
     const constantNode = projection.graph.nodes.find(node => node.kind === 'constant');
     assert.ok(constantNode);
     layout.placement.nodes[constantNode!.id] = {
@@ -147,6 +161,12 @@ function testLayoutProjection(): void {
             column: 3,
             order: 1,
             offset: -8,
+            userPositioned: true,
+        },
+        'interface:port:m_link': {
+            column: 4,
+            order: 0,
+            offset: 6,
             userPositioned: true,
         },
     });

@@ -5,13 +5,22 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { _electron as electron, type Locator, type Page } from 'playwright';
+import type { SchematicGraph } from '@veriflow/schematic-core';
 
 const repositoryRoot = path.resolve(__dirname, '../../../..');
 const schematicHtml = process.env.VERIFLOW_SCHEMATIC_HTML
     ?? path.join(repositoryRoot, 'web-dist', 'schematic', 'index.html');
 const screenshotRoot = process.env.VERIFLOW_SCHEMATIC_SCREENSHOT_DIR
     ?? path.join(os.tmpdir(), 'veriflow-schematic-visual');
+const interfaceScreenshotRoot = process.env.VERIFLOW_SCHEMATIC_INTERFACE_SCREENSHOT_DIR
+    ?? path.join(os.tmpdir(), 'veriflow-schematic-interface-visual');
 const pageTimeoutMs = 10_000;
+
+async function waitForSchematicRuntime(page: Page): Promise<void> {
+    await page.locator(
+        '[data-testid="schematic-shell"][data-runtime-ready="true"]'
+    ).waitFor();
+}
 
 function electronEnvironment(schematicPath: string): Record<string, string> {
     return {
@@ -109,11 +118,20 @@ async function dragElement(
     await page.mouse.up();
 }
 
-async function dragBetween(page: Page, source: Locator, target: Locator): Promise<void> {
+async function dragBetween(
+    page: Page,
+    source: Locator,
+    target: Locator,
+    expectTemporaryEdge = true
+): Promise<void> {
     await source.waitFor({ state: 'visible' });
     await target.waitFor({ state: 'visible' });
-    const sourceBounds = await source.boundingBox();
-    const targetBounds = await target.boundingBox();
+    const sourceMagnet = source.locator('[data-selector="portBody"]');
+    const targetMagnet = target.locator('[data-selector="portBody"]');
+    const sourceBounds = await (await sourceMagnet.count() > 0
+        ? sourceMagnet : source).boundingBox();
+    const targetBounds = await (await targetMagnet.count() > 0
+        ? targetMagnet : target).boundingBox();
     assert.ok(sourceBounds && targetBounds);
     const sourcePoint = {
         x: sourceBounds.x + sourceBounds.width / 2,
@@ -123,6 +141,7 @@ async function dragBetween(page: Page, source: Locator, target: Locator): Promis
         x: targetBounds.x + targetBounds.width / 2,
         y: targetBounds.y + targetBounds.height / 2,
     };
+    const existingEdges = await page.locator('#canvas .x6-edge').count();
     await page.mouse.move(sourcePoint.x, sourcePoint.y);
     await page.mouse.down();
     await page.mouse.move(
@@ -130,7 +149,10 @@ async function dragBetween(page: Page, source: Locator, target: Locator): Promis
         (sourcePoint.y + targetPoint.y) / 2,
         { steps: 5 }
     );
-    assert.equal(await page.locator('#canvas .x6-edge').count(), 1);
+    assert.equal(
+        await page.locator('#canvas .x6-edge').count(),
+        existingEdges + (expectTemporaryEdge ? 1 : 0)
+    );
     await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 5 });
     await page.mouse.up();
 }
@@ -1279,6 +1301,1449 @@ async function publishArchDesignFixture(
     }, { revision, fixture, graphOptions });
 }
 
+function archDesignInterfaceFixture(expanded = false) {
+    const interfacePin = (
+        id: string,
+        name: string,
+        direction: 'driver' | 'load' | 'bidirectional',
+        role: 'master' | 'slave' | 'unknown',
+        topLevel = false
+    ) => ({
+        id,
+        name,
+        direction,
+        width: { kind: 'unknown' },
+        readOnly: false,
+        interface: {
+            id,
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            role,
+            roleSource: role === 'unknown' ? 'unknown' : topLevel ? 'declared' : 'inferred',
+            kind: 'aggregate',
+            topLevel,
+            collapsed: true,
+        },
+    });
+    const memberPin = (
+        interfaceId: string,
+        nodeId: string,
+        name: string,
+        member: string,
+        direction: 'driver' | 'load',
+        role: 'master' | 'slave'
+    ) => ({
+        id: `${nodeId}:${name}`,
+        name,
+        direction,
+        width: { kind: 'known', bits: member === 'request' ? 32 : 1 },
+        readOnly: false,
+        interface: {
+            id: interfaceId,
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            role,
+            roleSource: 'inferred',
+            kind: 'member',
+            topLevel: false,
+            collapsed: false,
+            member,
+        },
+    });
+    const interfaceIds = {
+        masterFree: 'interface:instance:u_master_free:M_FREE',
+        slaveFree: 'interface:instance:u_slave_free:S_FREE',
+        slaveOtherProtocol: 'interface:instance:u_slave_other:S_OTHER',
+        slaveMemberOccupied: 'interface:instance:u_slave_occupied:S_OCCUPIED',
+        unknown: 'interface:instance:u_unknown:BUS',
+        masterConnected: 'interface:instance:u_master_connected:M_LINK',
+        slaveConnected: 'interface:instance:u_slave_connected:S_LINK',
+        boundaryMaster: 'interface:instance:u_boundary_master:M_BOUNDARY',
+        top: 'interface:port:m_link',
+        topFree: 'interface:port:m_free',
+    };
+    const node = (
+        id: string,
+        label: string,
+        subtitle: string,
+        pins: unknown[],
+        kind: 'instance' | 'port' = 'instance'
+    ) => ({ id, kind, label, subtitle, pins, readOnly: false });
+    const masterFreeNode = 'instance:u_master_free';
+    const nodes = [
+        node(masterFreeNode, 'u_master_free', 'master', [
+            {
+                id: `${masterFreeNode}:irq`,
+                name: 'irq',
+                direction: 'driver',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            },
+            ...(expanded ? [
+                memberPin(
+                    interfaceIds.masterFree,
+                    masterFreeNode,
+                    'M_FREE_REQUEST',
+                    'request',
+                    'driver',
+                    'master'
+                ),
+                memberPin(
+                    interfaceIds.masterFree,
+                    masterFreeNode,
+                    'M_FREE_ACCEPT',
+                    'accept',
+                    'load',
+                    'master'
+                ),
+            ] : [interfacePin(
+                interfaceIds.masterFree,
+                'M_FREE',
+                'driver',
+                'master'
+            )]),
+        ]),
+        node('instance:u_slave_free', 'u_slave_free', 'slave', [interfacePin(
+            interfaceIds.slaveFree,
+            'S_FREE',
+            'load',
+            'slave'
+        )]),
+        node('instance:u_slave_other', 'u_slave_other', 'slave', [{
+            ...interfacePin(
+                interfaceIds.slaveOtherProtocol,
+                'S_OTHER',
+                'load',
+                'slave'
+            ),
+            interface: {
+                ...interfacePin(
+                    interfaceIds.slaveOtherProtocol,
+                    'S_OTHER',
+                    'load',
+                    'slave'
+                ).interface,
+                protocol: 'project.other',
+                protocolName: 'Project Other',
+            },
+        }]),
+        node('instance:u_slave_occupied', 'u_slave_occupied', 'slave', [interfacePin(
+            interfaceIds.slaveMemberOccupied,
+            'S_OCCUPIED',
+            'load',
+            'slave'
+        )]),
+        node('instance:u_unknown', 'u_unknown', 'unknown', [interfacePin(
+            interfaceIds.unknown,
+            'BUS',
+            'bidirectional',
+            'unknown'
+        )]),
+        node('instance:u_master_connected', 'u_master_connected', 'master', [interfacePin(
+            interfaceIds.masterConnected,
+            'M_LINK',
+            'driver',
+            'master'
+        )]),
+        node('instance:u_slave_connected', 'u_slave_connected', 'slave', [interfacePin(
+            interfaceIds.slaveConnected,
+            'S_LINK',
+            'load',
+            'slave'
+        )]),
+        node('instance:u_boundary_master', 'u_boundary_master', 'master', [interfacePin(
+            interfaceIds.boundaryMaster,
+            'M_BOUNDARY',
+            'driver',
+            'master'
+        )]),
+        node('interface:port:m_link', 'm_link', 'Project Link master', [interfacePin(
+            interfaceIds.top,
+            'm_link',
+            'load',
+            'master',
+            true
+        )], 'port'),
+        node('interface:port:m_free', 'm_free', 'Project Link master', [interfacePin(
+            interfaceIds.topFree,
+            'm_free',
+            'load',
+            'master',
+            true
+        )], 'port'),
+    ];
+    const networks: SchematicGraph['networks'] = [{
+        id: 'network:interface:control',
+        name: 'control',
+        width: { kind: 'unknown' },
+        renderWidth: 4,
+        endpoints: [
+            {
+                nodeId: 'instance:u_master_connected',
+                pinId: interfaceIds.masterConnected,
+                role: 'driver',
+            },
+            {
+                nodeId: 'instance:u_slave_connected',
+                pinId: interfaceIds.slaveConnected,
+                role: 'load',
+            },
+        ],
+        interface: {
+            id: 'interface-connection:control',
+            connection: 'control',
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            collapsed: true,
+        },
+    }, {
+        id: 'network:interface:boundary',
+        name: 'boundary',
+        width: { kind: 'unknown' },
+        renderWidth: 4,
+        endpoints: [
+            {
+                nodeId: 'instance:u_boundary_master',
+                pinId: interfaceIds.boundaryMaster,
+                role: 'driver',
+            },
+            {
+                nodeId: 'interface:port:m_link',
+                pinId: interfaceIds.top,
+                role: 'load',
+            },
+        ],
+        interface: {
+            id: 'interface-connection:boundary',
+            connection: 'boundary',
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            collapsed: true,
+        },
+    }];
+    const graph = {
+        fileUri: 'file:///interface-authoring.ad',
+        moduleKey: 'arch-design:interface_authoring',
+        moduleName: 'interface_authoring',
+        nodes,
+        networks,
+        diagnostics: [],
+    };
+    const layout = {
+        placement: { nodes: Object.fromEntries(nodes.map((item, index) => [item.id, {
+            column: item.id === 'interface:port:m_link' ? 2 : index % 3,
+            order: Math.floor(index / 3),
+            yOffset: 0,
+            fixed: false,
+        }])) },
+        viewport: { x: 24, y: 20, zoom: 0.85 },
+        minimap: false,
+    };
+    const interfaceItem = (
+        identity: string,
+        endpoint: Record<string, string>,
+        role: 'master' | 'slave' | 'unknown',
+        options: Record<string, unknown> = {}
+    ) => ({
+        identity,
+        endpoint,
+        protocol: 'project.link',
+        protocolName: 'Project Link',
+        role,
+        roleSource: role === 'unknown' ? 'unknown' : endpoint.kind === 'port'
+            ? 'declared' : 'inferred',
+        topLevel: endpoint.kind === 'port',
+        collapsed: !expanded,
+        members: [
+            {
+                member: 'request',
+                port: `${endpoint.interface ?? endpoint.port}_REQUEST`,
+                direction: 'master-to-slave',
+                portDirection: role === 'slave' ? 'input' : 'output',
+                width: { kind: 'known', bits: 32 },
+            },
+            {
+                member: 'accept',
+                port: `${endpoint.interface ?? endpoint.port}_ACCEPT`,
+                direction: 'slave-to-master',
+                portDirection: role === 'slave' ? 'output' : 'input',
+                width: { kind: 'known', bits: 1 },
+            },
+        ],
+        missingMembers: ['tag'],
+        ...(endpoint.kind === 'instance' && role !== 'unknown' ? {
+            snapshot: {
+                endpoint,
+                protocol: 'project.link',
+                role,
+                members: [
+                    {
+                        member: 'request',
+                        port: `${endpoint.interface}_REQUEST`,
+                        width: 32,
+                    },
+                    {
+                        member: 'accept',
+                        port: `${endpoint.interface}_ACCEPT`,
+                        width: 1,
+                    },
+                ],
+            },
+        } : {}),
+        ...options,
+    });
+    const inspector = {
+        protocols: [{
+            id: 'project.link',
+            name: 'Project Link',
+            source: '/workspace/protocols/link.json',
+        }],
+        interfaces: [
+            interfaceItem(interfaceIds.masterFree, {
+                kind: 'instance', instance: 'u_master_free', interface: 'M_FREE',
+            }, 'master'),
+            interfaceItem(interfaceIds.slaveFree, {
+                kind: 'instance', instance: 'u_slave_free', interface: 'S_FREE',
+            }, 'slave'),
+            {
+                ...interfaceItem(interfaceIds.slaveOtherProtocol, {
+                    kind: 'instance', instance: 'u_slave_other', interface: 'S_OTHER',
+                }, 'slave'),
+                protocol: 'project.other',
+                protocolName: 'Project Other',
+            },
+            interfaceItem(interfaceIds.slaveMemberOccupied, {
+                kind: 'instance', instance: 'u_slave_occupied', interface: 'S_OCCUPIED',
+            }, 'slave', {
+                members: [{
+                    member: 'request',
+                    port: 'S_OCCUPIED_REQUEST',
+                    direction: 'master-to-slave',
+                    portDirection: 'input',
+                    width: { kind: 'known', bits: 32 },
+                    occupancy: 'scalar_request',
+                }, {
+                    member: 'accept',
+                    port: 'S_OCCUPIED_ACCEPT',
+                    direction: 'slave-to-master',
+                    portDirection: 'output',
+                    width: { kind: 'known', bits: 1 },
+                }],
+            }),
+            interfaceItem(interfaceIds.unknown, {
+                kind: 'instance', instance: 'u_unknown', interface: 'BUS',
+            }, 'unknown'),
+            interfaceItem(interfaceIds.masterConnected, {
+                kind: 'instance', instance: 'u_master_connected', interface: 'M_LINK',
+            }, 'master', {
+                connection: {
+                    name: 'control',
+                    peer: 'u_slave_connected.S_LINK',
+                    peerIdentity: interfaceIds.slaveConnected,
+                    defaults: [{
+                        member: 'tag',
+                        expression: "4'h0",
+                        origin: 'protocol',
+                        source: 'protocol:project.link:tag',
+                        protocolExpression: "4'h0",
+                    }],
+                    diagnostics: [],
+                    warnings: [{
+                        path: '$.interfaceConnections[0]',
+                        code: 'AD_INTERFACE_WIDTH',
+                        message: 'Interface member request connects 32 bits to 16 bits',
+                    }],
+                },
+            }),
+            interfaceItem(interfaceIds.slaveConnected, {
+                kind: 'instance', instance: 'u_slave_connected', interface: 'S_LINK',
+            }, 'slave', {
+                connection: {
+                    name: 'control',
+                    peer: 'u_master_connected.M_LINK',
+                    peerIdentity: interfaceIds.masterConnected,
+                    defaults: [{
+                        member: 'tag',
+                        expression: "4'h0",
+                        origin: 'protocol',
+                        source: 'protocol:project.link:tag',
+                        protocolExpression: "4'h0",
+                    }],
+                    diagnostics: [],
+                    warnings: [],
+                },
+            }),
+            interfaceItem(interfaceIds.boundaryMaster, {
+                kind: 'instance', instance: 'u_boundary_master', interface: 'M_BOUNDARY',
+            }, 'master', {
+                connection: {
+                    name: 'boundary',
+                    peer: 'm_link',
+                    peerIdentity: interfaceIds.top,
+                    defaults: [],
+                    diagnostics: [],
+                    warnings: [],
+                },
+            }),
+            interfaceItem(interfaceIds.top, { kind: 'port', port: 'm_link' }, 'master', {
+                connection: {
+                    name: 'boundary',
+                    peer: 'u_boundary_master.M_BOUNDARY',
+                    peerIdentity: interfaceIds.boundaryMaster,
+                    defaults: [],
+                    diagnostics: [],
+                    warnings: [],
+                },
+            }),
+            interfaceItem(interfaceIds.topFree, { kind: 'port', port: 'm_free' }, 'master'),
+        ],
+    };
+    const design = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'interface_authoring',
+        ports: [],
+        instances: nodes.filter(item => item.kind === 'instance').map(item => ({
+            name: item.label,
+            module: item.subtitle,
+        })),
+        connections: [],
+        interfacePorts: [{
+            name: 'm_link',
+            protocol: 'project.link',
+            role: 'master',
+            memberPrefix: 'M_LINK',
+            members: [{ member: 'request', width: 8 }],
+        }, {
+            name: 'm_free',
+            protocol: 'project.link',
+            role: 'master',
+            memberPrefix: 'M_FREE',
+            members: [{ member: 'request', width: 32 }, { member: 'accept', width: 1 }],
+        }],
+        interfaceOverrides: {},
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master_connected', interface: 'M_LINK' },
+            slave: { kind: 'instance', instance: 'u_slave_connected', interface: 'S_LINK' },
+        }, {
+            name: 'boundary',
+            master: { kind: 'instance', instance: 'u_boundary_master', interface: 'M_BOUNDARY' },
+            slave: { kind: 'port', port: 'm_link' },
+        }],
+        defaults: {},
+        export: {},
+        presentation: {
+            collapsedInterfaces: {
+                [interfaceIds.masterFree]: !expanded,
+            },
+            viewport: layout.viewport,
+        },
+    };
+    const catalog = nodes.filter(item => item.kind === 'instance').map(item => ({
+        key: `module:file:///${item.subtitle}.sv:0`,
+        name: item.subtitle,
+        parameters: [],
+        ports: item.label === 'u_master_free' ? [
+            { name: 'irq', direction: 'output', width: { kind: 'known', bits: 1 } },
+            { name: 'M_FREE_REQUEST', direction: 'output', width: { kind: 'known', bits: 32 } },
+            { name: 'M_FREE_ACCEPT', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ] : [],
+    }));
+    return { graph, layout, design, catalog, inspector, interfaceIds };
+}
+
+function archDesignExpandedConnectedInterfaceFixture() {
+    const fixture = archDesignInterfaceFixture(true);
+    const connectedPin = (
+        interfaceId: string,
+        nodeId: string,
+        name: string,
+        member: 'request' | 'accept',
+        direction: 'driver' | 'load',
+        role: 'master' | 'slave'
+    ) => ({
+        id: `${nodeId}:${name}`,
+        name,
+        direction,
+        width: { kind: 'known', bits: member === 'request' ? 32 : 1 },
+        readOnly: false,
+        interface: {
+            id: interfaceId,
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            role,
+            roleSource: 'inferred',
+            kind: 'member',
+            topLevel: false,
+            collapsed: false,
+            member,
+        },
+    });
+    const masterNodeId = 'instance:u_master_connected';
+    const slaveNodeId = 'instance:u_slave_connected';
+    const masterPins = [
+        connectedPin(
+            fixture.interfaceIds.masterConnected,
+            masterNodeId,
+            'M_LINK_REQUEST',
+            'request',
+            'driver',
+            'master'
+        ),
+        connectedPin(
+            fixture.interfaceIds.masterConnected,
+            masterNodeId,
+            'M_LINK_ACCEPT',
+            'accept',
+            'load',
+            'master'
+        ),
+    ];
+    const slavePins = [
+        connectedPin(
+            fixture.interfaceIds.slaveConnected,
+            slaveNodeId,
+            'S_LINK_REQUEST',
+            'request',
+            'load',
+            'slave'
+        ),
+        connectedPin(
+            fixture.interfaceIds.slaveConnected,
+            slaveNodeId,
+            'S_LINK_ACCEPT',
+            'accept',
+            'driver',
+            'slave'
+        ),
+    ];
+    fixture.graph.nodes = fixture.graph.nodes.map(node => {
+        if (node.id === masterNodeId) return { ...node, pins: masterPins };
+        if (node.id === slaveNodeId) return { ...node, pins: slavePins };
+        return node;
+    });
+    fixture.graph.networks = [
+        ...fixture.graph.networks.filter(network => network.id !== 'network:interface:control'),
+        {
+            id: 'network:interface:control:request',
+            name: 'control_request',
+            width: { kind: 'known', bits: 32 },
+            endpoints: [
+                { nodeId: masterNodeId, pinId: masterPins[0].id, role: 'driver' },
+                { nodeId: slaveNodeId, pinId: slavePins[0].id, role: 'load' },
+            ],
+            interface: {
+                id: 'interface-connection:control',
+                connection: 'control',
+                protocol: 'project.link',
+                protocolName: 'Project Link',
+                collapsed: false,
+                member: 'request',
+            },
+        },
+        {
+            id: 'network:interface:control:accept',
+            name: 'control_accept',
+            width: { kind: 'known', bits: 1 },
+            endpoints: [
+                { nodeId: slaveNodeId, pinId: slavePins[1].id, role: 'driver' },
+                { nodeId: masterNodeId, pinId: masterPins[1].id, role: 'load' },
+            ],
+            interface: {
+                id: 'interface-connection:control',
+                connection: 'control',
+                protocol: 'project.link',
+                protocolName: 'Project Link',
+                collapsed: false,
+                member: 'accept',
+            },
+        },
+    ];
+    fixture.inspector.interfaces = fixture.inspector.interfaces.map(item => {
+        if (item.identity === fixture.interfaceIds.masterConnected) {
+            return {
+                ...item,
+                collapsed: false,
+                members: item.members.map(member => ({ ...member, occupancy: 'control' })),
+            };
+        }
+        if (item.identity === fixture.interfaceIds.slaveConnected) {
+            return { ...item, collapsed: false };
+        }
+        return item;
+    });
+    fixture.design.presentation.collapsedInterfaces = {
+        ...fixture.design.presentation.collapsedInterfaces,
+        [fixture.interfaceIds.masterConnected]: false,
+        [fixture.interfaceIds.slaveConnected]: false,
+    };
+    return fixture;
+}
+
+async function publishArchDesignInterfaceFixture(
+    page: Page,
+    revision: string,
+    expanded = false,
+    initialize = true
+): Promise<void> {
+    const fixture = archDesignInterfaceFixture(expanded);
+    await page.evaluate(({ revision, fixture, initialize }) => {
+        const events = [{
+            type: 'graph',
+            revision,
+            graph: fixture.graph,
+            layout: fixture.layout,
+            fitOnFirstRender: false,
+        }, {
+            type: 'archDesignState',
+            status: 'editable',
+            revision,
+            design: fixture.design,
+            catalog: fixture.catalog,
+            validation: { valid: true, diagnostics: [], warnings: [], effectiveDefaults: [] },
+            inspector: fixture.inspector,
+        }];
+        if (initialize) events.unshift({
+            type: 'initialize',
+            fileUri: fixture.graph.fileUri,
+            modules: [{ key: fixture.graph.moduleKey, name: fixture.graph.moduleName }],
+            selectedModuleKey: fixture.graph.moduleKey,
+            documentKind: 'arch-design',
+            editable: true,
+        } as never);
+        for (const data of events) {
+            window.dispatchEvent(new MessageEvent('message', { data }));
+        }
+    }, { revision, fixture, initialize });
+}
+
+async function captureWebviewMessages(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const state = window as unknown as { __veriflowMessages: unknown[] };
+        state.__veriflowMessages = [];
+        window.addEventListener('veriflow:webview-message', event => {
+            state.__veriflowMessages.push((event as CustomEvent).detail);
+        });
+    });
+}
+
+async function archDesignEditMessages(page: Page): Promise<Array<{
+    type?: string;
+    revision?: string;
+    edit?: Record<string, unknown>;
+}>> {
+    return page.evaluate(() => (window as unknown as {
+        __veriflowMessages: Array<{
+            type?: string;
+            revision?: string;
+            edit?: Record<string, unknown>;
+        }>;
+    }).__veriflowMessages.filter(message => message.type === 'editArchDesign'));
+}
+
+function lastItem<T>(items: readonly T[]): T | undefined {
+    return items[items.length - 1];
+}
+
+test('Arch Design interface pins drive Inspector actions and survive graph refreshes', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:inspect');
+        await page.waitForTimeout(100);
+        assert.deepEqual(rendererErrors, []);
+
+        const irq = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"] '
+            + '.x6-port-body[port="instance:u_master_free:irq"]'
+        );
+        await irq.click();
+        await page.locator('#inspector[data-kind="pin"]').waitFor();
+        assert.equal(await irq.evaluate(element =>
+            element.classList.contains('veriflow-pin-selected')
+        ), true);
+        assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.irq');
+        assert.deepEqual(await page.locator('#inspector-form output').evaluateAll(outputs =>
+            Object.fromEntries(outputs.map(output => [
+                output.previousElementSibling?.textContent ?? '',
+                output.textContent ?? '',
+            ]))
+        ), {
+            Instance: 'u_master_free',
+            Port: 'irq',
+            Direction: 'output',
+            Width: '1 bit',
+            Interface: 'None',
+            Occupancy: 'Unconnected',
+        });
+        await page.locator('[data-inspector-action="expose-port"]').click();
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'promotePort'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page)), {
+            type: 'editArchDesign',
+            revision: 'fixture:interfaces:inspect',
+            edit: {
+                type: 'promotePort',
+                source: { kind: 'instance', instance: 'u_master_free', port: 'irq' },
+                port: { name: 'irq', direction: 'output', width: 1 },
+                connection: 'irq',
+            },
+        });
+
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:promotion-ack',
+            false,
+            false
+        );
+        await page.locator('#inspector[data-kind="pin"]').waitFor();
+        assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.irq');
+
+        const aggregate = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"] '
+            + `.x6-port-body[port="${fixture.interfaceIds.masterFree}"]`
+        );
+        await aggregate.click();
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.M_FREE');
+        assert.equal(await page.locator('#interface-protocol').textContent(), 'Project Link');
+        assert.equal(await page.locator('#interface-role').textContent(), 'master');
+        assert.equal(await page.locator('#interface-missing').textContent(), 'tag');
+        assert.equal(
+            await page.locator('[data-inspector-action="expose-interface"]').isEnabled(),
+            true
+        );
+        await page.locator('[data-inspector-action="expose-interface"]').click();
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'promoteInterface'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'promoteInterface',
+            source: {
+                endpoint: {
+                    kind: 'instance',
+                    instance: 'u_master_free',
+                    interface: 'M_FREE',
+                },
+                protocol: 'project.link',
+                role: 'master',
+                members: [{ member: 'request', port: 'M_FREE_REQUEST', width: 32 }, {
+                    member: 'accept', port: 'M_FREE_ACCEPT', width: 1,
+                }],
+            },
+            port: 'M_FREE',
+            memberPrefix: 'M_FREE',
+            connection: 'M_FREE',
+        });
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:interface-promotion-ack',
+            false,
+            false
+        );
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.M_FREE');
+        const beforeViewport = await page.evaluate(() => {
+            const canvas = document.querySelector(
+                '#canvas .x6-graph-svg-viewport'
+            ) as SVGElement;
+            return canvas.getAttribute('transform');
+        });
+        await page.locator('#interface-collapse').selectOption('expanded');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'setPresentation'));
+        const collapseEdit = lastItem(await archDesignEditMessages(page))?.edit;
+        assert.equal(collapseEdit?.type, 'setPresentation');
+        const collapsePresentation = collapseEdit?.presentation as {
+            nodes?: Record<string, unknown>;
+            collapsedInterfaces?: Record<string, boolean>;
+            viewport?: unknown;
+        } | undefined;
+        assert.ok(collapsePresentation?.nodes?.['instance:u_master_free']);
+        assert.equal(
+            collapsePresentation?.collapsedInterfaces?.[fixture.interfaceIds.masterFree],
+            false
+        );
+        assert.deepEqual(collapsePresentation?.viewport, { x: 24, y: 20, zoom: 0.85 });
+
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:expanded',
+            true
+        );
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.M_FREE');
+        assert.equal(await page.locator('#interface-collapse').inputValue(), 'expanded');
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'interface: u_master_free.M_FREE'
+        );
+        assert.equal(await page.evaluate(() => {
+            const canvas = document.querySelector(
+                '#canvas .x6-graph-svg-viewport'
+            ) as SVGElement;
+            return canvas.getAttribute('transform');
+        }), beforeViewport);
+
+        const requestMember = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"] '
+            + '.x6-port-body[port="instance:u_master_free:M_FREE_REQUEST"]'
+        );
+        await requestMember.click();
+        await page.locator('#inspector[data-kind="pin"]').waitFor();
+        assert.equal(
+            await page.locator('#inspector-title').textContent(),
+            'u_master_free.M_FREE_REQUEST'
+        );
+        assert.match(await page.locator('#pin-interface').textContent() ?? '', /Project Link/);
+        assert.equal(
+            await page.locator('[data-inspector-action="expose-port"]').isEnabled(),
+            true
+        );
+        await page.locator('[data-inspector-action="expose-port"]').click();
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { source?: { port?: string } } }>;
+        }).__veriflowMessages.some(message =>
+            message.edit?.source?.port === 'M_FREE_REQUEST'
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'promotePort',
+            source: {
+                kind: 'instance',
+                instance: 'u_master_free',
+                port: 'M_FREE_REQUEST',
+            },
+            port: { name: 'M_FREE_REQUEST', direction: 'output', width: 32 },
+            connection: 'M_FREE_REQUEST',
+        });
+
+        const refreshed = archDesignInterfaceFixture(true);
+        refreshed.graph.nodes = refreshed.graph.nodes.map(item => item.id === 'instance:u_master_free'
+            ? { ...item, pins: item.pins.filter(pin => (
+                pin as { interface?: { id?: string } }
+            ).interface?.id !== fixture.interfaceIds.masterFree) }
+            : item);
+        refreshed.inspector.interfaces = refreshed.inspector.interfaces.filter(item =>
+            item.identity !== fixture.interfaceIds.masterFree
+        );
+        await page.evaluate(({ refreshed }) => {
+            const revision = 'fixture:interfaces:removed';
+            for (const data of [{
+                type: 'initialize',
+                fileUri: refreshed.graph.fileUri,
+                modules: [{ key: refreshed.graph.moduleKey, name: refreshed.graph.moduleName }],
+                selectedModuleKey: refreshed.graph.moduleKey,
+                documentKind: 'arch-design',
+                editable: true,
+            }, {
+                type: 'graph',
+                revision,
+                graph: refreshed.graph,
+                layout: refreshed.layout,
+                fitOnFirstRender: false,
+            }, {
+                type: 'archDesignState',
+                status: 'editable',
+                revision,
+                design: refreshed.design,
+                catalog: refreshed.catalog,
+                validation: {
+                    valid: true, diagnostics: [], warnings: [], effectiveDefaults: [],
+                },
+                inspector: refreshed.inspector,
+            }]) {
+                window.dispatchEvent(new MessageEvent('message', { data }));
+            }
+        }, { refreshed });
+        await page.locator('#inspector[data-kind="design"]').waitFor();
+        assert.equal(await page.locator('#selection-status').textContent(), 'No selection');
+        assert.equal(await page.locator('#canvas .veriflow-pin-selected').count(), 0);
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design collapse edits retain the latest acknowledged layout presentation', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:layout-before-collapse');
+        await page.locator('#zoom-reset-button').click();
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ type?: string }>;
+        }).__veriflowMessages.some(message => message.type === 'saveLayout'));
+        const latestLayout = lastItem(await capturedSaves(page))?.layout;
+        assert.ok(latestLayout?.placement?.nodes?.['instance:u_slave_free']);
+        assert.ok(latestLayout?.placement?.nodes?.['interface:port:m_free']);
+        assert.ok(latestLayout.viewport);
+        await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', {
+            data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:interfaces:layout-saved',
+            },
+        })));
+
+        const aggregate = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"] '
+            + `.x6-port-body[port="${fixture.interfaceIds.masterFree}"]`
+        );
+        await aggregate.click();
+        await page.locator('#interface-collapse').selectOption('expanded');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'setPresentation'));
+        const presentation = lastItem(await archDesignEditMessages(page))?.edit?.presentation as {
+            nodes?: Record<string, {
+                column: number;
+                order: number;
+                offset?: number;
+                userPositioned?: boolean;
+            }>;
+            viewport?: unknown;
+            collapsedInterfaces?: Record<string, boolean>;
+        } | undefined;
+        const latestPlacement = latestLayout.placement?.nodes?.['instance:u_slave_free'];
+        assert.ok(latestPlacement);
+        assert.deepEqual(presentation?.nodes?.['instance:u_slave_free'], {
+            column: latestPlacement.column,
+            order: latestPlacement.order,
+            ...(latestPlacement.yOffset === 0 ? {} : { offset: latestPlacement.yOffset }),
+            ...(latestPlacement.fixed ? { userPositioned: true } : {}),
+        });
+        assert.ok(presentation?.nodes?.['interface:port:m_free']);
+        assert.deepEqual(presentation?.viewport, latestLayout.viewport);
+        assert.equal(presentation?.collapsedInterfaces?.[fixture.interfaceIds.masterFree], false);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design interface Inspector edits defaults, overrides, and top-level snapshots', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:forms');
+        await page.waitForTimeout(100);
+        assert.deepEqual(rendererErrors, []);
+        const pin = (nodeId: string, pinId: string) => page.locator(
+            `.x6-node[data-cell-id="${nodeId}"] .x6-port-body[port="${pinId}"]`
+        );
+
+        await pin('instance:u_master_connected', fixture.interfaceIds.masterConnected).click();
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(await page.locator('#interface-peer').textContent(), 'u_slave_connected.S_LINK');
+        assert.match(
+            await page.locator('#interface-warnings').textContent() ?? '',
+            /connects 32 bits to 16 bits/
+        );
+        assert.equal(
+            await page.locator('[data-inspector-action="expose-interface"]').isDisabled(),
+            true
+        );
+        assert.match(
+            await page.locator('[data-inspector-action="expose-interface"]').getAttribute('title')
+                ?? '',
+            /connected by control/
+        );
+        await page.locator('#interface-default-tag').fill("4'hf");
+        await page.locator('#interface-default-tag').press('Tab');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'setInterfaceDefault'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'setInterfaceDefault',
+            connection: 'control',
+            member: 'tag',
+            expression: "4'hf",
+        });
+
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:override', false, false);
+        await pin('instance:u_master_free', fixture.interfaceIds.masterFree).click();
+        await page.locator('#interface-protocol-override').selectOption('project.link');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { protocol?: string } }>;
+        }).__veriflowMessages.some(message =>
+            message.edit?.protocol === 'project.link'
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'setInterfaceOverride',
+            instance: 'u_master_free',
+            interface: 'M_FREE',
+            protocol: 'project.link',
+        });
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:role-override',
+            false,
+            false
+        );
+        await page.locator('#interface-role-override').selectOption('slave');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'setInterfaceOverride'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'setInterfaceOverride',
+            instance: 'u_master_free',
+            interface: 'M_FREE',
+            role: 'slave',
+        });
+
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:resync', false, false);
+        await pin('interface:port:m_link', fixture.interfaceIds.top).click();
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(await page.locator('#interface-top-level').textContent(), 'Yes');
+        await page.locator('[data-inspector-action="resync-interface"]').click();
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'resyncInterfacePort'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'resyncInterfacePort',
+            port: 'm_link',
+            source: {
+                endpoint: {
+                    kind: 'instance',
+                    instance: 'u_boundary_master',
+                    interface: 'M_BOUNDARY',
+                },
+                protocol: 'project.link',
+                role: 'master',
+                members: [{ member: 'request', port: 'M_BOUNDARY_REQUEST', width: 32 }, {
+                    member: 'accept', port: 'M_BOUNDARY_ACCEPT', width: 1,
+                }],
+            },
+        });
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design top-level Master acts as a Slave at the inner connection boundary', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:top-role');
+        await page.locator('#connect-button').click();
+        const master = page.locator(
+            `.x6-node[data-cell-id="instance:u_master_free"] `
+            + `.x6-port-body[port="${fixture.interfaceIds.masterFree}"]`
+        );
+        const topLevelMaster = page.locator(
+            `.x6-node[data-cell-id="interface:port:m_free"] `
+            + `.x6-port-body[port="${fixture.interfaceIds.topFree}"]`
+        );
+        assert.equal(await master.getAttribute('magnet'), 'true');
+        assert.equal(await topLevelMaster.getAttribute('magnet'), 'true');
+        await dragBetween(page, master, topLevelMaster);
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'connectInterface'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page)), {
+            type: 'editArchDesign',
+            revision: 'fixture:interfaces:top-role',
+            edit: {
+                type: 'connectInterface',
+                connection: {
+                    name: 'M_FREE_to_m_free',
+                    master: {
+                        kind: 'instance', instance: 'u_master_free', interface: 'M_FREE',
+                    },
+                    slave: { kind: 'port', port: 'm_free' },
+                },
+            },
+        });
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design rejects incompatible and occupied interface connection targets', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:reject');
+        await page.locator('#connect-button').click();
+        const pin = (nodeId: string, pinId: string) => page.locator(
+            `.x6-node[data-cell-id="${nodeId}"] .x6-port-body[port="${pinId}"]`
+        );
+        const master = pin('instance:u_master_free', fixture.interfaceIds.masterFree);
+        const slave = pin('instance:u_slave_free', fixture.interfaceIds.slaveFree);
+        const otherProtocol = pin(
+            'instance:u_slave_other',
+            fixture.interfaceIds.slaveOtherProtocol
+        );
+        const memberOccupied = pin(
+            'instance:u_slave_occupied',
+            fixture.interfaceIds.slaveMemberOccupied
+        );
+        const scalar = pin('instance:u_master_free', 'instance:u_master_free:irq');
+        assert.equal(await memberOccupied.getAttribute('magnet'), 'false');
+        const editsBefore = (await archDesignEditMessages(page)).length;
+        await dragBetween(page, scalar, slave);
+        await page.waitForFunction(() => document.querySelectorAll('#canvas .x6-edge').length === 8);
+        await dragBetween(page, master, otherProtocol);
+        assert.equal((await archDesignEditMessages(page)).length, editsBefore);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design rejects scalar connections to occupied expanded interface members', {
+    timeout: 40_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignExpandedConnectedInterfaceFixture();
+        fixture.graph.nodes = fixture.graph.nodes.map(node => (
+            node.id === 'instance:u_slave_free'
+                ? {
+                    ...node,
+                    pins: [...node.pins, {
+                        id: 'instance:u_slave_free:scalar_sink',
+                        name: 'scalar_sink',
+                        direction: 'load',
+                        width: { kind: 'known', bits: 32 },
+                        readOnly: false,
+                    }],
+                }
+                : node
+        ));
+        await page.evaluate(({ fixture }) => {
+            const revision = 'fixture:interfaces:expanded-occupied';
+            for (const data of [{
+                type: 'initialize',
+                fileUri: fixture.graph.fileUri,
+                modules: [{ key: fixture.graph.moduleKey, name: fixture.graph.moduleName }],
+                selectedModuleKey: fixture.graph.moduleKey,
+                documentKind: 'arch-design',
+                editable: true,
+            }, {
+                type: 'graph',
+                revision,
+                graph: fixture.graph,
+                layout: fixture.layout,
+                fitOnFirstRender: false,
+            }, {
+                type: 'archDesignState',
+                status: 'editable',
+                revision,
+                design: fixture.design,
+                catalog: fixture.catalog,
+                validation: {
+                    valid: true, diagnostics: [], warnings: [], effectiveDefaults: [],
+                },
+                inspector: fixture.inspector,
+            }]) {
+                window.dispatchEvent(new MessageEvent('message', { data }));
+            }
+        }, { fixture });
+        await page.locator('#connect-button').click();
+        const pin = (nodeId: string, pinId: string) => page.locator(
+            `.x6-node[data-cell-id="${nodeId}"] .x6-port-body[port="${pinId}"]`
+        );
+        const freeRequest = pin(
+            'instance:u_master_free',
+            'instance:u_master_free:M_FREE_REQUEST'
+        );
+        const scalarSink = pin(
+            'instance:u_slave_free',
+            'instance:u_slave_free:scalar_sink'
+        );
+        const occupiedMembers = [
+            pin('instance:u_master_connected', 'instance:u_master_connected:M_LINK_REQUEST'),
+            pin('instance:u_master_connected', 'instance:u_master_connected:M_LINK_ACCEPT'),
+            pin('instance:u_slave_connected', 'instance:u_slave_connected:S_LINK_REQUEST'),
+            pin('instance:u_slave_connected', 'instance:u_slave_connected:S_LINK_ACCEPT'),
+        ];
+        assert.equal(await freeRequest.getAttribute('magnet'), 'true');
+        assert.equal(await scalarSink.getAttribute('magnet'), 'true');
+        for (const member of occupiedMembers) {
+            assert.equal(await member.getAttribute('magnet'), 'false');
+        }
+        const editsBefore = (await archDesignEditMessages(page)).length;
+        await dragBetween(page, freeRequest, occupiedMembers[2]);
+        assert.equal((await archDesignEditMessages(page)).length, editsBefore);
+        await page.locator('#connect-button').click();
+        await page.locator('#connect-button').click();
+        await dragBetween(page, freeRequest, scalarSink);
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'connect',
+            source: {
+                kind: 'instance',
+                instance: 'u_master_free',
+                port: 'M_FREE_REQUEST',
+            },
+            target: {
+                kind: 'instance',
+                instance: 'u_slave_free',
+                port: 'scalar_sink',
+            },
+        });
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design interfaces render distinct routes and only connect Master to Slave', {
+    timeout: 40_000,
+}, async () => {
+    rmSync(interfaceScreenshotRoot, { recursive: true, force: true });
+    mkdirSync(interfaceScreenshotRoot, { recursive: true });
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        const fixture = archDesignInterfaceFixture();
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:connect');
+        await page.waitForTimeout(100);
+        assert.deepEqual(rendererErrors, []);
+        await page.locator('#connect-button').click();
+        const pin = (nodeId: string, pinId: string) => page.locator(
+            `.x6-node[data-cell-id="${nodeId}"] .x6-port-body[port="${pinId}"]`
+        );
+        const master = pin('instance:u_master_free', fixture.interfaceIds.masterFree);
+        const slave = pin('instance:u_slave_free', fixture.interfaceIds.slaveFree);
+        const memberOccupied = pin(
+            'instance:u_slave_occupied',
+            fixture.interfaceIds.slaveMemberOccupied
+        );
+        const unknown = pin('instance:u_unknown', fixture.interfaceIds.unknown);
+        assert.equal(await master.getAttribute('magnet'), 'true');
+        assert.equal(await slave.getAttribute('magnet'), 'true');
+        assert.equal(await memberOccupied.getAttribute('magnet'), 'false');
+        assert.equal(await unknown.getAttribute('magnet'), 'false');
+        await dragBetween(page, master, slave);
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{
+                revision?: string;
+                edit?: { connection?: { slave?: { interface?: string } } };
+            }>;
+        }).__veriflowMessages.some(message =>
+            message.revision === 'fixture:interfaces:connect'
+            && message.edit?.connection?.slave?.interface === 'S_FREE'
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page)), {
+            type: 'editArchDesign',
+            revision: 'fixture:interfaces:connect',
+            edit: {
+                type: 'connectInterface',
+                connection: {
+                    name: 'M_FREE_to_S_FREE',
+                    master: {
+                        kind: 'instance', instance: 'u_master_free', interface: 'M_FREE',
+                    },
+                    slave: {
+                        kind: 'instance', instance: 'u_slave_free', interface: 'S_FREE',
+                    },
+                },
+            },
+        });
+
+        await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:visual');
+        if (await page.locator('#connect-button').getAttribute('aria-pressed') !== 'true') {
+            await page.locator('#connect-button').click();
+        }
+        const editsBeforeUnknownDrag = (await archDesignEditMessages(page)).length;
+        await dragBetween(page, master, unknown, false);
+        assert.equal((await archDesignEditMessages(page)).length, editsBeforeUnknownDrag);
+        const route = page.locator(
+            '#canvas .x6-edge[data-cell-id^="network:interface:control:segment:"] '
+            + '> path:nth-child(2)'
+        ).first();
+        assert.equal(Number(await route.getAttribute('stroke-width')), 4);
+        assert.ok(await page.locator('#canvas .veriflow-interface-pin').count() >= 7);
+        const topTag = page.locator(
+            '#canvas .x6-node[data-cell-id="interface:port:m_link"] .veriflow-interface-tag'
+        );
+        await topTag.waitFor({ state: 'visible' });
+        assert.notEqual(await topTag.getAttribute('fill'), 'none');
+        assert.equal(await page.locator(
+            '#canvas .x6-node[data-cell-id="interface:port:m_link"] '
+            + '.veriflow-interface-tag-text'
+        ).textContent(), 'M');
+        const aggregateLabel = page.locator(
+            '#canvas .x6-node[data-cell-id="instance:u_master_free"] '
+            + '.veriflow-interface-label'
+        );
+        assert.equal(
+            (await aggregateLabel.locator('tspan').first().textContent())?.replace(/\u00a0/g, ' '),
+            'M_FREE · Project Link'
+        );
+        await page.locator('#fit-button').click();
+        await pin(
+            'instance:u_master_connected',
+            fixture.interfaceIds.masterConnected
+        ).click();
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+
+        const checkViewport = async (name: 'interface-desktop' | 'interface-narrow') => {
+            const layout = await page.evaluate(() => {
+                const inspector = document.querySelector<HTMLElement>('#inspector')!;
+                const actions = [...document.querySelectorAll<HTMLElement>(
+                    '#inspector-form .inspector-action'
+                )];
+                const interfacePins = [...document.querySelectorAll<SVGGraphicsElement>(
+                    '#canvas .veriflow-interface-pin'
+                )];
+                const geometryIssues = interfacePins.flatMap(pin => {
+                    const pinBounds = pin.getBoundingClientRect();
+                    const group = pin.parentElement;
+                    const node = pin.closest<SVGGraphicsElement>('.x6-node');
+                    const label = group?.querySelector<SVGGraphicsElement>('text');
+                    if (!node || !label) return [{ reason: 'missing geometry' }];
+                    const nodeBounds = node.getBoundingClientRect();
+                    const labelBounds = label.getBoundingClientRect();
+                    if (labelBounds.width === 0 || labelBounds.height === 0) return [];
+                    const withinNode = labelBounds.left >= nodeBounds.left - 0.5
+                        && labelBounds.right <= nodeBounds.right + 0.5
+                        && labelBounds.top >= nodeBounds.top - 0.5
+                        && labelBounds.bottom <= nodeBounds.bottom + 0.5;
+                    const separated = labelBounds.right <= pinBounds.left + 0.5
+                        || labelBounds.left >= pinBounds.right - 0.5;
+                    return withinNode && separated ? [] : [{
+                        reason: !withinNode ? 'outside node' : 'overlaps pin',
+                        port: pin.getAttribute('port'),
+                        node: node.getAttribute('data-cell-id'),
+                        pinBounds: { ...pinBounds.toJSON() },
+                        labelBounds: { ...labelBounds.toJSON() },
+                        nodeBounds: { ...nodeBounds.toJSON() },
+                    }];
+                });
+                return {
+                    overflow: document.documentElement.scrollWidth
+                        > document.documentElement.clientWidth,
+                    fieldOverflow: [...document.querySelectorAll<HTMLElement>(
+                        '#inspector-form .inspector-field, #inspector-form .inspector-action'
+                    )].some(item => item.scrollWidth > item.clientWidth),
+                    actionOutsideInspector: actions.some(action =>
+                        action.getBoundingClientRect().right
+                            > inspector.getBoundingClientRect().right + 0.5
+                    ),
+                    actionCount: actions.length,
+                    interfaceGeometryIssues: geometryIssues,
+                };
+            });
+            assert.deepEqual(layout, {
+                overflow: false,
+                fieldOverflow: false,
+                actionOutsideInspector: false,
+                actionCount: 1,
+                interfaceGeometryIssues: [],
+            });
+            const pixels = await actualCanvasPixelStats(page);
+            assert.ok(pixels.nonBackgroundPixels > 1_000, JSON.stringify(pixels));
+            assert.ok(pixels.coloredPixels > 50, JSON.stringify(pixels));
+            await page.screenshot({
+                path: path.join(interfaceScreenshotRoot, `${name}.png`),
+                fullPage: true,
+            });
+        };
+        await checkViewport('interface-desktop');
+        await electronApp.evaluate(({ BrowserWindow }) => {
+            BrowserWindow.getAllWindows()[0].setSize(440, 640);
+        });
+        await page.waitForFunction(() => window.innerWidth <= 440 && window.innerHeight <= 640);
+        await checkViewport('interface-narrow');
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
 test('schematic runtime renders every visible pin label in a local clip viewport', {
     timeout: 20_000,
 }, async () => {
@@ -1293,7 +2758,7 @@ test('schematic runtime renders every visible pin label in a local clip viewport
         page.setDefaultTimeout(pageTimeoutMs);
         const rendererErrors: string[] = [];
         page.on('pageerror', error => rendererErrors.push(error.message));
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
 
         const nodeId = 'instance:u_runtime';
         const pins = [
@@ -1401,7 +2866,7 @@ test('schematic runtime separates wide adjacent-column nodes and clips labels', 
     try {
         const page = await electronApp.firstWindow();
         page.setDefaultTimeout(pageTimeoutMs);
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
 
         const firstId = 'instance:wide-source';
         const secondId = 'instance:wide-sink';
@@ -1543,7 +3008,7 @@ test('schematic minimap keeps clipping local to each graph view', {
     try {
         const page = await electronApp.firstWindow();
         page.setDefaultTimeout(pageTimeoutMs);
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
 
         const firstId = 'instance:minimap-source';
         const secondId = 'instance:minimap-sink';
@@ -1692,7 +3157,7 @@ test('schematic drag preserves active search selection and viewport', {
         page.setDefaultTimeout(pageTimeoutMs);
         const rendererErrors: string[] = [];
         page.on('pageerror', error => rendererErrors.push(error.message));
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -1901,7 +3366,7 @@ test('schematic selection boxes persist single and rubberband batch moves once',
         page.setDefaultTimeout(pageTimeoutMs);
         const rendererErrors: string[] = [];
         page.on('pageerror', error => rendererErrors.push(error.message));
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -2265,7 +3730,7 @@ test('Arch Design selection stays local and layout acknowledgement preserves cel
         page.setDefaultTimeout(pageTimeoutMs);
         const rendererErrors: string[] = [];
         page.on('pageerror', error => rendererErrors.push(error.message));
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -2444,7 +3909,7 @@ test('Arch Design serializes layout saves with semantic edits', {
     try {
         const page = await electronApp.firstWindow();
         page.setDefaultTimeout(pageTimeoutMs);
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -2538,7 +4003,7 @@ test('Arch Design pagehide forwards the latest queued layout', {
     try {
         const page = await electronApp.firstWindow();
         page.setDefaultTimeout(pageTimeoutMs);
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -2586,7 +4051,7 @@ test('Arch Design first render fits once without persisting an automatic viewpor
     try {
         const page = await electronApp.firstWindow();
         page.setDefaultTimeout(pageTimeoutMs);
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
@@ -2729,7 +4194,7 @@ test('schematic runtime paints responsive geometry and authors Arch Design conne
         page.on('console', message => {
             if (message.type() === 'error') rendererErrors.push(message.text());
         });
-        await page.locator('[data-testid="schematic-shell"]').waitFor();
+        await waitForSchematicRuntime(page);
         await page.evaluate(() => {
             const state = window as unknown as {
                 __veriflowMessages: CapturedSaveMessage[];

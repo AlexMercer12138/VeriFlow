@@ -45065,6 +45065,14 @@
     ["path", { d: "m15 14-3 3-3-3" }]
   ];
 
+  // node_modules/lucide/dist/esm/icons/refresh-cw.mjs
+  var RefreshCw = [
+    ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }],
+    ["path", { d: "M21 3v5h-5" }],
+    ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }],
+    ["path", { d: "M8 16H3v5" }]
+  ];
+
   // node_modules/lucide/dist/esm/icons/scan.mjs
   var Scan = [
     ["path", { d: "M3 7V5a2 2 0 0 1 2-2h2" }],
@@ -45285,6 +45293,14 @@
     if (width2 === void 0) return "1";
     return typeof width2 === "number" ? String(width2) : width2.expression;
   }
+  function promotedWidth(width2) {
+    if (width2.kind === "known") return width2.bits;
+    if (width2.kind === "symbolic") return { expression: width2.expression };
+    return void 0;
+  }
+  function promotedDirection(pin2) {
+    return pin2.direction === "driver" ? "output" : pin2.direction === "load" ? "input" : "inout";
+  }
   function endpointLabel(endpoint) {
     if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
     return endpoint.signal === void 0 ? endpoint.port : `${endpoint.port}.${endpoint.signal}`;
@@ -45473,7 +45489,255 @@
       deleteEdit: { type: "removeConnection", name: connection2.name }
     };
   }
-  function projectArchDesignInspector(snapshot, graph2, selectedNodeIds2, selectedNetworkId2) {
+  function findPin(graph2, pinId) {
+    for (const node of graph2.nodes) {
+      const pin2 = node.pins.find((candidate) => candidate.id === pinId);
+      if (pin2) return { node, pin: pin2 };
+    }
+    return void 0;
+  }
+  function scalarConnectionForPin(snapshot, node, pin2) {
+    if (node.kind !== "instance") return void 0;
+    return snapshot.design.connections.find((connection2) => connection2.endpoints.some(
+      (endpoint) => endpoint.kind === "instance" && endpoint.instance === node.label && endpoint.port === pin2.name
+    ))?.name;
+  }
+  function projectPinAuthoringInspector(snapshot, node, pin2) {
+    if (node.kind !== "instance") return void 0;
+    if (pin2.interface?.kind === "aggregate") {
+      return projectInterfaceAuthoringInspector(snapshot, pin2.interface.id);
+    }
+    const instance = snapshot.design.instances.find((candidate) => candidate.name === node.label);
+    if (!instance) return void 0;
+    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definitionPort = definition?.ports.find((candidate) => candidate.name === pin2.name);
+    const interfaceItem = pin2.interface === void 0 ? void 0 : snapshot.inspector?.interfaces.find((item) => item.identity === pin2.interface?.id);
+    const occupancy = scalarConnectionForPin(snapshot, node, pin2) ?? interfaceItem?.members.find((member) => member.port === pin2.name)?.occupancy;
+    const width2 = promotedWidth(pin2.width);
+    const direction = definitionPort?.direction ?? promotedDirection(pin2);
+    const port2 = {
+      name: pin2.name,
+      direction,
+      ...width2 === void 0 ? {} : { width: width2 }
+    };
+    return {
+      kind: "pin",
+      title: `${instance.name}.${pin2.name}`,
+      fields: [
+        readonlyField("pin-instance", "Instance", instance.name),
+        readonlyField("pin-name", "Port", pin2.name),
+        readonlyField("pin-direction", "Direction", direction),
+        readonlyField("pin-width", "Width", formatWidth(pin2.width)),
+        readonlyField(
+          "pin-interface",
+          "Interface",
+          interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
+            interfaceItem.endpoint
+          )}` : "None"
+        ),
+        readonlyField("pin-occupancy", "Occupancy", occupancy ?? "Unconnected")
+      ],
+      actions: [{
+        id: "expose-port",
+        label: "Expose as top-level port",
+        ...occupancy ? { disabledReason: `Port is connected by ${occupancy}` } : {
+          edit: {
+            type: "promotePort",
+            source: { kind: "instance", instance: instance.name, port: pin2.name },
+            port: port2,
+            connection: pin2.name
+          }
+        }
+      }]
+    };
+  }
+  function interfaceEndpointName(endpoint) {
+    return endpoint.kind === "port" ? endpoint.port : `${endpoint.instance}.${endpoint.interface}`;
+  }
+  function interfaceCollapseEdit(snapshot, identity2, collapsed) {
+    return {
+      type: "setPresentation",
+      presentation: {
+        ...snapshot.design.presentation,
+        collapsedInterfaces: {
+          ...snapshot.design.presentation.collapsedInterfaces,
+          [identity2]: collapsed
+        }
+      }
+    };
+  }
+  function projectInterfaceAuthoringInspector(snapshot, identity2) {
+    const item = snapshot.inspector?.interfaces.find((candidate) => candidate.identity === identity2);
+    if (!item) return void 0;
+    const override = item.endpoint.kind === "instance" ? snapshot.design.interfaceOverrides[`${item.endpoint.instance}.${item.endpoint.interface}`] : void 0;
+    const fields = [
+      readonlyField("interface-protocol", "Protocol", item.protocolName),
+      readonlyField("interface-role", "Role", item.role),
+      readonlyField("interface-role-source", "Role source", item.roleSource),
+      readonlyField("interface-top-level", "Top-level", item.topLevel ? "Yes" : "No"),
+      readonlyField(
+        "interface-members",
+        "Members",
+        item.members.length === 0 ? "None" : item.members.map((member) => `${member.member} (${member.port})`).join(", ")
+      ),
+      readonlyField(
+        "interface-missing",
+        "Missing members",
+        item.missingMembers.length === 0 ? "None" : item.missingMembers.join(", ")
+      ),
+      readonlyField(
+        "interface-peer",
+        "Peer",
+        item.connection?.peer ?? "Unconnected"
+      ),
+      readonlyField(
+        "interface-warnings",
+        "Warnings",
+        item.connection?.warnings.map((warning) => warning.message).join("; ") || "None"
+      ),
+      {
+        id: "interface-collapse",
+        label: "Display",
+        control: "select",
+        value: item.collapsed ? "collapsed" : "expanded",
+        options: [
+          { value: "collapsed", label: "Collapsed" },
+          { value: "expanded", label: "Expanded" }
+        ],
+        commit: (value) => value === "collapsed" || value === "expanded" ? interfaceCollapseEdit(snapshot, item.identity, value === "collapsed") : void 0
+      }
+    ];
+    if (item.endpoint.kind === "instance") {
+      const endpoint = item.endpoint;
+      fields.push({
+        id: "interface-protocol-override",
+        label: "Protocol override",
+        control: "select",
+        value: override?.protocol ?? "",
+        options: [
+          { value: "", label: "Automatic" },
+          ...snapshot.inspector?.protocols.map((protocol) => ({
+            value: protocol.id,
+            label: protocol.name
+          })) ?? []
+        ],
+        commit: (value) => value === "" && override?.role === void 0 ? {
+          type: "clearInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface
+        } : value === "" ? {
+          type: "setInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface,
+          role: override.role
+        } : snapshot.inspector?.protocols.some((protocol) => protocol.id === value) ? {
+          type: "setInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface,
+          protocol: value,
+          ...override?.role === void 0 ? {} : { role: override.role }
+        } : void 0
+      });
+      fields.push({
+        id: "interface-role-override",
+        label: "Role override",
+        control: "select",
+        value: override?.role ?? "",
+        options: [
+          { value: "", label: "Automatic" },
+          { value: "master", label: "Master" },
+          { value: "slave", label: "Slave" }
+        ],
+        commit: (value) => value === "master" || value === "slave" ? {
+          type: "setInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface,
+          role: value,
+          ...override?.protocol === void 0 ? {} : { protocol: override.protocol }
+        } : value === "" && override?.protocol === void 0 ? {
+          type: "clearInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface
+        } : value === "" ? {
+          type: "setInterfaceOverride",
+          instance: endpoint.instance,
+          interface: endpoint.interface,
+          protocol: override.protocol
+        } : void 0
+      });
+    }
+    for (const value of item.connection?.defaults ?? []) {
+      fields.push(textField(
+        `interface-default-${value.member}`,
+        `Default ${value.member}`,
+        value.origin === "connection" ? value.expression : "",
+        (expression) => ({
+          type: "setInterfaceDefault",
+          connection: item.connection.name,
+          member: value.member,
+          ...expression.trim().length === 0 ? {} : { expression: expression.trim() }
+        }),
+        value.protocolExpression === void 0 ? "No protocol default" : `Protocol default: ${value.protocolExpression}`
+      ));
+    }
+    const actions = [];
+    if (item.topLevel) {
+      const peer = item.connection?.peerIdentity === void 0 ? void 0 : snapshot.inspector?.interfaces.find(
+        (candidate) => candidate.identity === item.connection?.peerIdentity
+      );
+      actions.push({
+        id: "resync-interface",
+        label: "Resynchronize from current connection",
+        ...peer?.snapshot === void 0 ? {
+          disabledReason: "No connected module interface is available"
+        } : {
+          edit: {
+            type: "resyncInterfacePort",
+            port: item.endpoint.kind === "port" ? item.endpoint.port : "",
+            source: peer.snapshot
+          }
+        }
+      });
+    } else {
+      actions.push({
+        id: "expose-interface",
+        label: "Expose as top-level interface",
+        ...item.connection ? {
+          disabledReason: `Interface is connected by ${item.connection.name}`
+        } : item.snapshot === void 0 ? {
+          disabledReason: "Resolve the interface role and member widths first"
+        } : {
+          edit: {
+            type: "promoteInterface",
+            source: item.snapshot,
+            port: item.endpoint.kind === "instance" ? item.endpoint.interface : "",
+            memberPrefix: item.endpoint.kind === "instance" ? item.endpoint.interface : "",
+            connection: item.endpoint.kind === "instance" ? item.endpoint.interface : ""
+          }
+        }
+      });
+    }
+    return {
+      kind: "interface",
+      title: interfaceEndpointName(item.endpoint),
+      fields,
+      actions
+    };
+  }
+  function projectArchDesignInspector(snapshot, graph2, selectedNodeIds2, selectedNetworkId2, selectedPinId2) {
+    if (selectedPinId2 !== void 0) {
+      const selectedPin = findPin(graph2, selectedPinId2);
+      if (selectedPin) {
+        const pin2 = projectPinAuthoringInspector(
+          snapshot,
+          selectedPin.node,
+          selectedPin.pin
+        );
+        if (pin2) return pin2;
+      }
+      const interfaceModel = projectInterfaceAuthoringInspector(snapshot, selectedPinId2);
+      if (interfaceModel) return interfaceModel;
+    }
     if (selectedNetworkId2 !== void 0) {
       const network = projectNetworkAuthoringInspector(
         snapshot,
@@ -45626,6 +45890,7 @@
     generateArray: "var(--vscode-charts-orange, #c76b29)"
   };
   var dom = {
+    shell: requiredElement("schematic-shell"),
     canvas: requiredElement("canvas"),
     canvasRegion: requiredElement("canvas-region"),
     canvasState: requiredElement("canvas-state"),
@@ -45712,6 +45977,8 @@
         markup: [
           { tagName: "rect", selector: "body" },
           { tagName: "rect", selector: "accent" },
+          { tagName: "rect", selector: "interfaceTag" },
+          { tagName: "text", selector: "interfaceTagText" },
           {
             tagName: "svg",
             selector: "labelClip",
@@ -45756,6 +46023,22 @@
             height: "100%",
             fill: shapeAccents[kind],
             stroke: "none"
+          },
+          interfaceTag: {
+            visibility: "hidden",
+            stroke: "none",
+            rx: 2,
+            ry: 2
+          },
+          interfaceTagText: {
+            visibility: "hidden",
+            fill: "#ffffff",
+            fontFamily: "var(--vscode-font-family, sans-serif)",
+            fontSize: 9,
+            fontWeight: 600,
+            textAnchor: "middle",
+            textVerticalAnchor: "middle",
+            pointerEvents: "none"
           },
           label: {
             refX: 0,
@@ -45829,6 +46112,11 @@
       }
     };
   }
+  function interfaceColor(role) {
+    if (role === "master") return "var(--schematic-interface-master)";
+    if (role === "slave") return "var(--schematic-interface-slave)";
+    return "var(--schematic-interface-unknown)";
+  }
   function pinItems(model, rendered) {
     const pinsById = new Map(model.pins.map((pin2) => [pin2.id, pin2]));
     return rendered.pins.map((pin2) => {
@@ -45842,8 +46130,18 @@
         },
         attrs: {
           portBody: {
-            magnet: connectionAuthoringEnabled() && source?.readOnly !== true,
-            strokeDasharray: source?.readOnly ? "2 1" : void 0
+            magnet: source !== void 0 && pinConnectable(source),
+            strokeDasharray: source?.readOnly ? "2 1" : void 0,
+            ...source?.interface === void 0 ? {} : { class: [
+              "x6-port-body",
+              "veriflow-interface-pin",
+              `veriflow-interface-${source.interface.role}`,
+              `veriflow-interface-${source.interface.kind}`
+            ].join(" ") },
+            r: source?.interface?.kind === "aggregate" ? 4 : 3,
+            fill: source?.interface === void 0 ? "var(--schematic-node-fill)" : "var(--schematic-interface-pin-fill)",
+            stroke: source?.interface === void 0 ? "var(--schematic-pin)" : interfaceColor(source.interface.role),
+            strokeWidth: source?.interface?.kind === "aggregate" ? 2 : 1.5
           },
           portLabelClip: {
             x: pin2.side === "left" ? 0 : -pin2.clipBounds.width,
@@ -45856,7 +46154,8 @@
             title: pin2.name,
             x: pin2.side === "left" ? 0 : pin2.clipBounds.width,
             y: pin2.clipBounds.height / 2,
-            fill: "var(--schematic-text)",
+            fill: source?.interface === void 0 ? "var(--schematic-text)" : interfaceColor(source.interface.role),
+            class: source?.interface === void 0 ? void 0 : "veriflow-interface-label",
             fontFamily: "var(--vscode-font-family, sans-serif)",
             fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontSize,
             fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -45878,6 +46177,8 @@
   }
   function createRenderedNode(model, rendered) {
     const { width: width2, height: height2 } = rendered.bounds;
+    const topInterface = model.pins.find((pin2) => pin2.interface?.topLevel)?.interface;
+    const titleBounds = relativeBounds(rendered.title.bounds, rendered.bounds);
     const cell = graph.addNode({
       id: model.id,
       shape: shapeNames[model.kind],
@@ -45898,10 +46199,32 @@
           "aria-keyshortcuts": model.definitionKey ? "Enter Shift+Enter" : "Enter"
         },
         body: {
-          strokeDasharray: model.readOnly ? "4 2" : void 0
+          strokeDasharray: model.readOnly ? "4 2" : void 0,
+          ...topInterface === void 0 ? {} : {
+            stroke: interfaceColor(topInterface.role),
+            strokeWidth: 2
+          }
         },
-        accent: { height: height2 },
-        labelClip: relativeBounds(rendered.title.bounds, rendered.bounds),
+        accent: {
+          height: height2
+        },
+        interfaceTag: topInterface === void 0 ? {} : {
+          x: width2 - 22,
+          y: 6,
+          width: 16,
+          height: 14,
+          visibility: "visible",
+          fill: interfaceColor(topInterface.role),
+          class: "veriflow-interface-tag"
+        },
+        interfaceTagText: topInterface === void 0 ? {} : {
+          x: width2 - 14,
+          y: 13,
+          visibility: "visible",
+          class: "veriflow-interface-tag-text",
+          text: topInterface.role === "master" ? "M" : topInterface.role === "slave" ? "S" : "?"
+        },
+        labelClip: topInterface === void 0 ? titleBounds : { ...titleBounds, width: Math.max(0, titleBounds.width - 18) },
         label: {
           text: rendered.title.visibleText,
           title: rendered.title.fullText
@@ -45940,6 +46263,7 @@
     );
   }
   function networkStrokeWidth(network) {
+    if (network.renderWidth !== void 0) return network.renderWidth;
     return network.width.kind === "known" && network.width.bits > 1 ? 2 : 1;
   }
   function renderNetworks(model, renderModel) {
@@ -45970,6 +46294,8 @@
             },
             line: {
               strokeWidth: networkStrokeWidth(network),
+              stroke: network.interface === void 0 ? "var(--schematic-wire)" : "var(--schematic-interface-wire)",
+              class: network.interface === void 0 ? void 0 : "veriflow-interface-route",
               sourceMarker: terminatesAtLoad(networkRoute, source) ? { name: "block", width: 6, height: 6 } : null,
               targetMarker: terminatesAtLoad(networkRoute, target) ? { name: "block", width: 6, height: 6 } : null
             }
@@ -46082,7 +46408,7 @@
       validateConnection({ sourceCell, targetCell, sourcePort, targetPort }) {
         const source = connectionSourceFor(sourceCell, sourcePort);
         const target = connectionTargetFor(targetCell, targetPort);
-        return source !== void 0 && target !== void 0 && source.pin.id !== target.pin.id;
+        return connectionTerminalsCompatible(source, target);
       },
       createEdge() {
         return this.createEdge({
@@ -46110,6 +46436,7 @@
   var applyingLayout = false;
   var syncingSelection = false;
   var selectedNetworkId;
+  var selectedPinId;
   var inspectorExpanded = true;
   var minimapPlugin;
   var minimapAvailable = false;
@@ -46136,25 +46463,69 @@
   function connectionAuthoringEnabled() {
     return archDesignEditable && !authoringPending && currentArchDesignState !== void 0 && dom.connectButton.getAttribute("aria-pressed") === "true";
   }
+  function interfaceInspectorForPin(pin2) {
+    const identity2 = pin2.interface?.id;
+    return identity2 === void 0 ? void 0 : currentArchDesignState?.inspector?.interfaces.find(
+      (item) => item.identity === identity2
+    );
+  }
+  function interfaceEffectiveRole(pin2) {
+    if (pin2.interface?.kind !== "aggregate" || pin2.interface.role === "unknown") {
+      return void 0;
+    }
+    return pin2.direction === "driver" ? "master" : pin2.direction === "load" ? "slave" : void 0;
+  }
+  function pinConnectable(pin2) {
+    if (!connectionAuthoringEnabled() || pin2.readOnly) return false;
+    if (pin2.interface === void 0) return true;
+    if (pin2.interface.kind === "member") {
+      const item2 = interfaceInspectorForPin(pin2);
+      const member = item2?.members.find((candidate) => candidate.port === pin2.name);
+      return item2?.connection === void 0 && member !== void 0 && member.occupancy === void 0;
+    }
+    const item = interfaceInspectorForPin(pin2);
+    return interfaceEffectiveRole(pin2) !== void 0 && item !== void 0 && item.connection === void 0 && item.members.every((member) => member.occupancy === void 0);
+  }
   function connectionTerminal(cell, portId) {
     if (!connectionAuthoringEnabled() || !currentArchDesignState || !currentGraph || !cell || !portId) return void 0;
     const data2 = cellData(cell);
     const node = data2?.objectType === "node" ? data2.node : void 0;
     const pin2 = node?.pins.find((candidate) => candidate.id === portId);
-    if (!node || !pin2 || pin2.readOnly) return void 0;
+    if (!node || !pin2 || !pinConnectable(pin2)) return void 0;
+    if (pin2.interface?.kind === "aggregate") {
+      const item = interfaceInspectorForPin(pin2);
+      const effectiveRole = interfaceEffectiveRole(pin2);
+      return item && effectiveRole ? {
+        kind: "interface",
+        endpoint: item.endpoint,
+        effectiveRole,
+        protocol: item.protocol,
+        pin: pin2
+      } : void 0;
+    }
     const endpoint = archDesignEndpointForPin(
       currentArchDesignState.design,
       node,
       pin2
     );
-    return endpoint ? { endpoint, pin: pin2 } : void 0;
+    return endpoint ? { kind: "scalar", endpoint, pin: pin2 } : void 0;
+  }
+  function connectionTerminalsCompatible(source, target) {
+    if (!source || !target || source.pin.id === target.pin.id || source.kind !== target.kind) return false;
+    return source.kind === "scalar" || target.kind === "interface" && source.protocol === target.protocol;
   }
   function connectionSourceFor(cell, portId) {
     const terminal = connectionTerminal(cell, portId);
+    if (terminal?.kind === "interface") {
+      return terminal.effectiveRole === "master" ? terminal : void 0;
+    }
     return terminal && (terminal.pin.direction === "driver" || terminal.pin.direction === "bidirectional") ? terminal : void 0;
   }
   function connectionTargetFor(cell, portId) {
     const terminal = connectionTerminal(cell, portId);
+    if (terminal?.kind === "interface") {
+      return terminal.effectiveRole === "slave" ? terminal : void 0;
+    }
     return terminal && (terminal.pin.direction === "load" || terminal.pin.direction === "bidirectional") ? terminal : void 0;
   }
   function refreshConnectionMagnets() {
@@ -46167,7 +46538,7 @@
       view?.container.querySelectorAll(".x6-port-body[port]").forEach(
         (port2) => {
           const pin2 = pinsById.get(port2.getAttribute("port") ?? "");
-          const magnet = String(enabled && pin2?.readOnly !== true);
+          const magnet = String(enabled && pin2 !== void 0 && pinConnectable(pin2));
           port2.setAttribute("magnet", magnet);
           port2.querySelector('[data-selector="portBody"]')?.setAttribute("magnet", magnet);
         }
@@ -46279,6 +46650,22 @@
       if (searched) view?.addClass("veriflow-network-search-match");
     }
   }
+  function refreshPinSelectionStyles() {
+    dom.canvas.querySelectorAll(".veriflow-pin-selected").forEach((element) => {
+      element.classList.remove("veriflow-pin-selected");
+    });
+    if (selectedPinId === void 0) return;
+    for (const node of graph.getNodes()) {
+      const data2 = cellData(node);
+      if (!data2?.node?.pins.some((pin2) => pin2.id === selectedPinId)) continue;
+      const view = graph.findViewByCell(node);
+      view?.container.querySelectorAll(".x6-port-body[port]").forEach((port2) => {
+        if (port2.getAttribute("port") === selectedPinId) {
+          port2.classList.add("veriflow-pin-selected");
+        }
+      });
+    }
+  }
   function descriptionFor(data2) {
     if (data2.node) return `${data2.node.kind}: ${data2.node.label}`;
     if (data2.networkRoute) {
@@ -46290,6 +46677,26 @@
   function updateSelectionStatus(cells, persist = true) {
     if (!currentLayout) return;
     const itemsByObjectId = /* @__PURE__ */ new Map();
+    if (selectedPinId !== void 0) {
+      const selectedPin = currentGraph?.nodes.flatMap((node) => node.pins.map((pin2) => ({
+        node,
+        pin: pin2
+      }))).find((item) => item.pin.id === selectedPinId);
+      const selectedInterface = currentArchDesignState?.inspector?.interfaces.find(
+        (item) => item.identity === selectedPinId
+      );
+      if (selectedPin) {
+        itemsByObjectId.set(selectedPinId, {
+          objectId: selectedPinId,
+          description: selectedPin.pin.interface?.kind === "aggregate" ? `interface: ${selectedPin.node.label}.${selectedPin.pin.name}` : `pin: ${selectedPin.node.label}.${selectedPin.pin.name}`
+        });
+      } else if (selectedInterface) {
+        itemsByObjectId.set(selectedPinId, {
+          objectId: selectedPinId,
+          description: `interface: ${selectedInterface.endpoint.kind === "port" ? selectedInterface.endpoint.port : `${selectedInterface.endpoint.instance}.${selectedInterface.endpoint.interface}`}`
+        });
+      }
+    }
     if (selectedNetworkId !== void 0) {
       const selectedNetworkCell = graph.getCells().find((cell) => {
         const data3 = cellData(cell);
@@ -46319,6 +46726,7 @@
       currentLayout.selectedObjectId = summary.selectedObjectId;
     }
     dom.selectionStatus.textContent = summary.statusText;
+    refreshPinSelectionStyles();
     renderCurrentInspector(cells);
     if (persist) {
       if (archDesignDocument) {
@@ -46358,15 +46766,46 @@
     ).forEach((control) => {
       control.disabled = disabled || control.dataset.readonly === "true";
     });
+    dom.inspectorForm.querySelectorAll(".inspector-action").forEach((button) => {
+      button.disabled = disabled || button.dataset.actionAvailable !== "true";
+    });
     refreshConnectionMagnets();
   }
-  function postArchDesignEdit(edit) {
+  function postArchDesignEdit(requestedEdit) {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    const edit = requestedEdit.type === "setPresentation" && currentGraph && currentLayout ? {
+      ...requestedEdit,
+      presentation: {
+        ...archDesignPresentationForCurrentLayout(currentGraph, currentLayout),
+        ...requestedEdit.presentation.collapsedInterfaces === void 0 ? {} : { collapsedInterfaces: requestedEdit.presentation.collapsedInterfaces }
+      }
+    } : requestedEdit;
     authoringPending = true;
     queuedArchDesignCommand = { type: "edit", edit };
     setAuthoringControls();
     if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
     drainArchDesignWrites();
+  }
+  function archDesignPresentationForCurrentLayout(model, layout) {
+    const nodes = Object.fromEntries(model.nodes.flatMap((node) => {
+      if (node.kind !== "instance" && node.kind !== "port") return [];
+      const placement = layout.placement.nodes[node.id];
+      return placement === void 0 ? [] : [[node.id, {
+        column: placement.column,
+        order: placement.order,
+        ...placement.yOffset === 0 ? {} : { offset: placement.yOffset },
+        ...placement.fixed ? { userPositioned: true } : {}
+      }]];
+    }));
+    return {
+      ...Object.keys(nodes).length === 0 ? {} : { nodes },
+      ...currentArchDesignState?.design.presentation.collapsedInterfaces === void 0 ? {} : {
+        collapsedInterfaces: {
+          ...currentArchDesignState.design.presentation.collapsedInterfaces
+        }
+      },
+      viewport: { ...layout.viewport }
+    };
   }
   function drainArchDesignWrites() {
     if (!archDesignDocument || archDesignLayoutSaveInFlight || archDesignSemanticEditInFlight || !currentRevision) return;
@@ -46446,6 +46885,34 @@
       }
       fields.append(wrapper);
     }
+    if (model.actions && model.actions.length > 0) {
+      const actions = document.createElement("div");
+      actions.className = "inspector-actions";
+      for (const action of model.actions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "inspector-action";
+        button.dataset.inspectorAction = action.id;
+        button.dataset.actionAvailable = String(action.edit !== void 0);
+        button.disabled = action.edit === void 0;
+        button.title = action.disabledReason ?? action.label;
+        button.setAttribute("aria-label", action.label);
+        button.append(createElement2(
+          action.id === "resync-interface" ? RefreshCw : PanelTopOpen,
+          {
+            width: 15,
+            height: 15,
+            "stroke-width": 1.75,
+            "aria-hidden": "true"
+          }
+        ), document.createTextNode(action.label));
+        if (action.edit) {
+          button.addEventListener("click", () => postArchDesignEdit(action.edit));
+        }
+        actions.append(button);
+      }
+      fields.append(actions);
+    }
     dom.inspectorForm.replaceChildren(fields);
     setAuthoringControls();
   }
@@ -46470,7 +46937,8 @@
         currentArchDesignState,
         currentGraph,
         selectedNodeIds(cells),
-        selectedNetworkId
+        selectedNetworkId,
+        selectedPinId
       ));
       return;
     }
@@ -46486,6 +46954,7 @@
       return data2?.objectType === "network" && data2.objectId === networkId;
     });
     selectedNetworkId = matchingCell ? networkId : void 0;
+    selectedPinId = void 0;
     syncingSelection = true;
     selection.clean();
     syncingSelection = false;
@@ -46545,6 +47014,7 @@
     graph.translate(layout.viewport.x, layout.viewport.y);
   }
   function selectedObjectIds(cells) {
+    if (selectedPinId !== void 0) return [selectedPinId];
     if (selectedNetworkId !== void 0) return [selectedNetworkId];
     return [...new Set(cells.flatMap((cell) => {
       const data2 = cellData(cell);
@@ -46553,14 +47023,22 @@
   }
   function restoreSelection(layout, preservedObjectIds) {
     selectedNetworkId = void 0;
+    selectedPinId = void 0;
     syncingSelection = true;
     selection.clean();
     const wantedObjectIds = preservedObjectIds === void 0 ? new Set(layout.selectedObjectId ? [layout.selectedObjectId] : []) : new Set(preservedObjectIds);
+    const matchingPinId = [...wantedObjectIds].find(
+      (id) => currentGraph?.nodes.some((node) => node.pins.some(
+        (pin2) => pin2.id === id || pin2.interface?.id === id
+      ))
+    );
+    if (matchingPinId !== void 0) selectedPinId = matchingPinId;
     const matchingNodeCells = graph.getCells().filter((cell) => {
       const data2 = cellData(cell);
       return data2?.objectType === "node" && wantedObjectIds.has(data2.objectId);
     });
-    if (matchingNodeCells.length > 0) {
+    if (selectedPinId !== void 0) {
+    } else if (matchingNodeCells.length > 0) {
       selection.select(matchingNodeCells);
     } else {
       const matchingNetwork = graph.getCells().find((cell) => {
@@ -46571,7 +47049,11 @@
     }
     syncingSelection = false;
     refreshNetworkSelectionStyles();
+    refreshPinSelectionStyles();
     updateSelectionStatus(selection.getSelectedCells(), false);
+  }
+  function layoutDisplaySchematic(model, layout) {
+    return (0, import_schematic_core.layoutSchematic)(model, layout.placement, measureNodeText);
   }
   function renderSchematic(model, layout, preservedSelection, fitOnFirstRender = false) {
     const searchQuery = dom.searchInput.value;
@@ -46582,7 +47064,14 @@
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const renderModel = (0, import_schematic_core.layoutSchematic)(model, layout.placement, measureNodeText);
+    const displayModel = {
+      ...model,
+      nodes: model.nodes.map((node) => ({
+        ...node,
+        pins: node.pins.map((pin2) => pin2.interface?.kind === "aggregate" ? { ...pin2, name: `${pin2.name} · ${pin2.interface.protocolName}` } : pin2)
+      }))
+    };
+    const renderModel = layoutDisplaySchematic(displayModel, layout);
     currentRenderModel = renderModel;
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
@@ -46781,6 +47270,7 @@
     clearPendingNodeMoves();
     applyingLayout = true;
     selectedNetworkId = void 0;
+    selectedPinId = void 0;
     selection.clean();
     graph.resetCells([]);
     graph.zoomTo(1);
@@ -46865,7 +47355,7 @@
         option.textContent = moduleName;
         dom.instanceModuleSelect.append(option);
       }
-      renderCurrentInspector();
+      updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
       archDesignSemanticEditInFlight = false;
       queuedArchDesignCommand = void 0;
@@ -47180,7 +47670,28 @@
       edge.getTargetPortId()
     );
     graph.removeCell(edge);
-    if (!source || !target) return;
+    if (!source || !target || source.pin.id === target.pin.id) return;
+    if (source.kind === "interface") {
+      if (target.kind !== "interface" || source.protocol !== target.protocol) return;
+      const endpointName2 = (endpoint) => endpoint.kind === "port" ? endpoint.port : endpoint.interface;
+      const baseName = `${endpointName2(source.endpoint)}_to_${endpointName2(target.endpoint)}`;
+      const names = /* @__PURE__ */ new Set([
+        ...currentArchDesignState?.design.connections.map((item) => item.name) ?? [],
+        ...currentArchDesignState?.design.interfaceConnections.map((item) => item.name) ?? []
+      ]);
+      let name = baseName;
+      for (let suffix = 2; names.has(name); suffix += 1) name = `${baseName}_${suffix}`;
+      postArchDesignEdit({
+        type: "connectInterface",
+        connection: {
+          name,
+          master: source.endpoint,
+          slave: target.endpoint
+        }
+      });
+      return;
+    }
+    if (target.kind !== "scalar") return;
     postArchDesignEdit({
       type: "connect",
       source: source.endpoint,
@@ -47195,12 +47706,24 @@
     const data2 = cellData(node);
     if (data2?.junction) selectNetwork(data2.objectId);
   });
+  graph.on("node:port:click", ({ node, port: port2 }) => {
+    const data2 = cellData(node);
+    if (!data2?.node || !port2 || !data2.node.pins.some((pin2) => pin2.id === port2)) return;
+    selectedNetworkId = void 0;
+    selectedPinId = port2;
+    syncingSelection = true;
+    selection.clean();
+    syncingSelection = false;
+    refreshNetworkSelectionStyles();
+    updateSelectionStatus([]);
+  });
   graph.on("blank:click", () => {
     selectNetwork(void 0);
   });
   selection.on("selection:changed", ({ selected }) => {
     if (applyingLayout || syncingSelection) return;
     selectedNetworkId = void 0;
+    selectedPinId = void 0;
     refreshNetworkSelectionStyles();
     updateSelectionStatus(selected);
   });
@@ -47234,5 +47757,6 @@
       handleHostEvent(event.data);
     }
   });
+  dom.shell.dataset.runtimeReady = "true";
   post({ type: "ready" });
 })();
