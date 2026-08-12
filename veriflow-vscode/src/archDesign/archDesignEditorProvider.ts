@@ -321,12 +321,23 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             edit: Parameters<typeof applyArchDesignEdit>[1]
         ): Promise<void> => {
             if (state.snapshot !== snapshot || state.disposed) return;
-            const next = applyArchDesignEdit(snapshot.design, edit);
-            const workspaceEdit = new vscode.WorkspaceEdit();
-            workspaceEdit.replace(document.uri, fullRange(), serializeArchDesign(next));
-            state.snapshot = undefined;
-            const applied = await vscode.workspace.applyEdit(workspaceEdit);
-            if (!applied) throw new Error('Unable to apply Arch Design edit');
+            try {
+                const next = applyArchDesignEdit(snapshot.design, edit);
+                const nextText = serializeArchDesign(next);
+                if (nextText === document.getText()) {
+                    await refresh();
+                    return;
+                }
+                const workspaceEdit = new vscode.WorkspaceEdit();
+                workspaceEdit.replace(document.uri, fullRange(), nextText);
+                state.snapshot = undefined;
+                const applied = await vscode.workspace.applyEdit(workspaceEdit);
+                if (!applied) throw new Error('Unable to apply Arch Design edit');
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (!state.disposed) await vscode.window.showErrorMessage(message);
+                await refresh();
+            }
         };
 
         const messageSubscription = panel.webview.onDidReceiveMessage(value => {
@@ -361,7 +372,9 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                     }
                     case 'relayoutAll': {
                         const snapshot = state.snapshot;
-                        if (!snapshot || command.moduleKey !== snapshot.graph.moduleKey) return;
+                        if (!snapshot
+                            || command.revision !== snapshot.revision
+                            || command.moduleKey !== snapshot.graph.moduleKey) return;
                         const layout = relayoutAll(
                             snapshot.graph,
                             archDesignLayout(snapshot.design, snapshot.graph)

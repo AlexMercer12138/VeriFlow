@@ -261,6 +261,7 @@ test('disconnects endpoints and removes only empty networks', () => {
                 { kind: 'port', port: 'source' },
                 { kind: 'port', port: 'sink' },
             ],
+            defaults: { 'sink.value': "1'b0" },
         }],
     });
     const one = applyArchDesignEdit(source, {
@@ -271,6 +272,7 @@ test('disconnects endpoints and removes only empty networks', () => {
     });
 
     assert.deepEqual(one.connections[0].endpoints, [{ kind: 'port', port: 'source' }]);
+    assert.equal(one.connections[0].defaults, undefined);
     assert.deepEqual(empty.connections, []);
 });
 

@@ -53,7 +53,8 @@ function testCommandsRemainStable(): void {
     assert.deepStrictEqual(parseWebviewCommand({
         type: 'relayoutAll',
         moduleKey: 'module:top',
-    }), { type: 'relayoutAll', moduleKey: 'module:top' });
+        revision: 'graph:4',
+    }), { type: 'relayoutAll', moduleKey: 'module:top', revision: 'graph:4' });
     for (const value of [
         null,
         {},
@@ -61,6 +62,7 @@ function testCommandsRemainStable(): void {
         { type: 'openDefinition', definitionKey: '' },
         { type: 'search', query: 4 },
         { type: 'relayoutAll', moduleKey: '' },
+        { type: 'relayoutAll', moduleKey: 'module:top', revision: '' },
     ]) assertRejected(value);
 }
 

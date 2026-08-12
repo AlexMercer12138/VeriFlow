@@ -180,6 +180,11 @@ function cloneEndpoint(endpoint: ArchDesignEndpoint): MutableEndpoint {
         };
 }
 
+function endpointDefaultKey(endpoint: ArchDesignEndpoint): string {
+    if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    return `${endpoint.port}.${endpoint.signal ?? 'value'}`;
+}
+
 function renameDictionaryPrefix(
     source: Record<string, string> | undefined,
     oldPrefix: string,
@@ -541,6 +546,12 @@ export function applyArchDesignEdit(
                 edit.connection
             );
             connection.endpoints.splice(endpointIndex, 1);
+            if (connection.defaults !== undefined) {
+                delete connection.defaults[endpointDefaultKey(edit.endpoint)];
+                if (Object.keys(connection.defaults).length === 0) {
+                    connection.defaults = undefined;
+                }
+            }
             if (connection.endpoints.length === 0) mutable.connections.splice(index, 1);
             break;
         }

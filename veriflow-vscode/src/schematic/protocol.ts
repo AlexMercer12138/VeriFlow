@@ -34,7 +34,7 @@ export type WebviewCommand =
     | { type: 'revealSource'; span: SourceSpan }
     | { type: 'openDefinition'; definitionKey: string }
     | { type: 'search'; query: string }
-    | { type: 'relayoutAll'; moduleKey: string }
+    | { type: 'relayoutAll'; moduleKey: string; revision: string }
     | { type: 'editArchDesign'; revision: string; edit: ArchDesignEdit }
     | { type: 'exportArchDesign'; revision: string };
 
@@ -504,8 +504,9 @@ export function parseWebviewCommand(value: unknown): WebviewCommand | undefined 
             }
             case 'relayoutAll': {
                 const moduleKey = ownValue(value, 'moduleKey');
-                return nonEmptyString(moduleKey)
-                    ? { type: 'relayoutAll', moduleKey }
+                const revision = ownValue(value, 'revision');
+                return nonEmptyString(moduleKey) && nonEmptyString(revision)
+                    ? { type: 'relayoutAll', moduleKey, revision }
                     : undefined;
             }
             case 'editArchDesign': {

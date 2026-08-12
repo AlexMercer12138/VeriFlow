@@ -1349,7 +1349,15 @@ async function testLayoutIntentRemainsScopedToItsModuleWhileSaveIsPending(): Pro
             () => graphModuleKeys(harness.messages).at(-1) === secondKey,
             'second module selection'
         );
-        harness.send({ type: 'relayoutAll', moduleKey: secondKey });
+        const secondGraph = harness.messages.filter(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.graph.moduleKey === secondKey
+        ).at(-1)!;
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: secondKey,
+            revision: secondGraph.revision,
+        });
 
         const start = harness.messages.length;
         harness.send({ type: 'selectModule', moduleKey: firstKey });
@@ -1554,7 +1562,11 @@ async function testRelayoutDuringRefreshPublishesRefreshedGraph(): Promise<void>
         await parseGate.started;
         relayoutSaveGate = createGate();
         harness.setSaveGate(relayoutSaveGate);
-        harness.send({ type: 'relayoutAll', moduleKey });
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey,
+            revision: initialGraph.revision,
+        });
         await relayoutSaveGate.started;
         parseGate.allow();
 
@@ -1949,7 +1961,15 @@ async function testRelayoutSaveCannotPublishNewerMutableState(): Promise<void> {
         const gate = createGate();
         harness.setSaveGate(gate);
         const start = harness.messages.length;
-        harness.send({ type: 'relayoutAll', moduleKey: firstKey });
+        const firstGraph = harness.messages.find(
+            (event): event is Extract<HostEvent, { type: 'graph' }> =>
+                event.type === 'graph' && event.graph.moduleKey === firstKey
+        )!;
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: firstKey,
+            revision: firstGraph.revision,
+        });
         await gate.started;
         harness.send({ type: 'selectModule', moduleKey: secondKey });
         await waitFor(
@@ -1982,7 +2002,11 @@ async function testRelayoutRejectsDelayedSaveFromPreviousRevision(): Promise<voi
         };
         const start = harness.messages.length;
 
-        harness.send({ type: 'relayoutAll', moduleKey: initial.graph.moduleKey });
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: initial.graph.moduleKey,
+            revision: initial.revision,
+        });
         await waitFor(
             () => harness.messages.slice(start).some(event => event.type === 'graph'),
             'relayout graph publication'
@@ -1992,6 +2016,16 @@ async function testRelayoutRejectsDelayedSaveFromPreviousRevision(): Promise<voi
         )!;
         assert.notStrictEqual(relayout.revision, initial.revision);
         const storedAfterRelayout = JSON.stringify(harness.storedValues());
+
+        const staleRelayoutStart = harness.messages.length;
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: initial.graph.moduleKey,
+            revision: initial.revision,
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(JSON.stringify(harness.storedValues()), storedAfterRelayout);
+        assert.deepStrictEqual(harness.messages.slice(staleRelayoutStart), []);
 
         harness.send({
             type: 'saveLayout',

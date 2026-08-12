@@ -46808,7 +46808,11 @@
   });
   dom.relayoutButton.addEventListener("click", () => {
     if (currentGraph) {
-      post({ type: "relayoutAll", moduleKey: currentGraph.moduleKey });
+      post({
+        type: "relayoutAll",
+        moduleKey: currentGraph.moduleKey,
+        revision: currentRevision
+      });
     }
   });
   dom.searchButton.addEventListener("click", () => {

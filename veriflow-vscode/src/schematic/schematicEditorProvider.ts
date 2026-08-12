@@ -642,6 +642,7 @@ export class SchematicEditorProvider implements vscode.CustomTextEditorProvider 
                         return;
                     case 'relayoutAll': {
                         if (command.moduleKey !== state.selectedModuleKey
+                            || command.revision !== state.graphRevision
                             || !state.graph) {
                             return;
                         }

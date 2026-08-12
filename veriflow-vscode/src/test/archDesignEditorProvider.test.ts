@@ -64,6 +64,7 @@ type ProviderHarness = {
     exportRtl(): Promise<void>;
     validateWithoutUri(): Promise<void>;
     pauseExports(): () => void;
+    rejectNextDocumentEdit(): void;
     failNextExport(error: Error): void;
     setDefinitions(definitions: HdlDefinitionSummary[]): void;
     invalidateIndex(): void;
@@ -129,6 +130,7 @@ async function createHarness(
     let exportGate: Promise<void> | undefined;
     let releaseExport: (() => void) | undefined;
     let nextExportError: Error | undefined;
+    let nextDocumentEditAccepted = true;
     const disposable = { dispose(): void {} };
     const document = {
         uri: resource,
@@ -221,7 +223,9 @@ async function createHarness(
             },
             async applyEdit(edit: WorkspaceEdit): Promise<boolean> {
                 replacements.push(...edit.replacements);
-                return true;
+                const accepted = nextDocumentEditAccepted;
+                nextDocumentEditAccepted = true;
+                return accepted;
             },
         },
         window: {
@@ -336,6 +340,7 @@ async function createHarness(
                 exportGate = undefined;
             };
         },
+        rejectNextDocumentEdit(): void { nextDocumentEditAccepted = false; },
         failNextExport(error: Error): void { nextExportError = error; },
         setDefinitions(next): void { definitions = [...next]; },
         invalidateIndex(): void { invalidationListener?.(index); },
@@ -544,6 +549,106 @@ async function testEditableLifecycleAndNativeEdit(): Promise<void> {
     }
 }
 
+async function testRejectedDocumentEditRepublishesEditableState(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), []);
+    try {
+        const initialState = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(initialState?.type === 'archDesignState'
+            && initialState.status === 'editable');
+        if (initialState?.type !== 'archDesignState'
+            || initialState.status !== 'editable') return;
+
+        harness.rejectNextDocumentEdit();
+        harness.send({
+            type: 'editArchDesign',
+            revision: initialState.revision,
+            edit: { type: 'addPort', port: { name: 'clk', direction: 'input' } },
+        });
+        await waitFor(
+            () => harness.errorMessages.includes('Unable to apply Arch Design edit'),
+            'rejected document edit error'
+        );
+        await waitFor(
+            () => harness.messages.filter(
+                event => event.type === 'archDesignState' && event.status === 'editable'
+            ).length === 2,
+            'editable state recovery'
+        );
+
+        const recoveredState = harness.messages.filter(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        ).at(-1);
+        assert.ok(recoveredState?.type === 'archDesignState'
+            && recoveredState.status === 'editable');
+        if (recoveredState?.type !== 'archDesignState'
+            || recoveredState.status !== 'editable') return;
+        assert.notStrictEqual(recoveredState.revision, initialState.revision);
+        harness.send({
+            type: 'editArchDesign',
+            revision: recoveredState.revision,
+            edit: { type: 'addPort', port: { name: 'reset_n', direction: 'input' } },
+        });
+        await waitFor(() => harness.replacements.length === 2, 'edit after recovery');
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testAcceptedNoOpEditRepublishesEditableState(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        ports: [
+            { name: 'source', direction: 'input' },
+            { name: 'sink', direction: 'output' },
+        ],
+        connections: [{
+            name: 'data',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'port', port: 'sink' },
+            ],
+        }],
+    }), []);
+    try {
+        const initialState = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(initialState?.type === 'archDesignState'
+            && initialState.status === 'editable');
+        if (initialState?.type !== 'archDesignState'
+            || initialState.status !== 'editable') return;
+
+        harness.send({
+            type: 'editArchDesign',
+            revision: initialState.revision,
+            edit: {
+                type: 'connect',
+                source: { kind: 'port', port: 'source' },
+                target: { kind: 'port', port: 'sink' },
+            },
+        });
+        await waitFor(
+            () => harness.messages.filter(
+                event => event.type === 'archDesignState' && event.status === 'editable'
+            ).length === 2,
+            'no-op editable state recovery'
+        );
+        assert.deepStrictEqual(harness.replacements, []);
+        const recoveredState = harness.messages.filter(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        ).at(-1);
+        assert.ok(recoveredState?.type === 'archDesignState'
+            && recoveredState.status === 'editable');
+        if (recoveredState?.type === 'archDesignState'
+            && recoveredState.status === 'editable') {
+            assert.notStrictEqual(recoveredState.revision, initialState.revision);
+        }
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testInvalidTextRetainsLastValidGraph(): Promise<void> {
     const harness = await createHarness(sourceDesign(), []);
     try {
@@ -697,12 +802,47 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
     }
 }
 
+async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), []);
+    try {
+        const state = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        const graph = harness.messages.find(event => event.type === 'graph');
+        assert.ok(state?.type === 'archDesignState' && state.status === 'editable');
+        assert.ok(graph?.type === 'graph');
+        if (state?.type !== 'archDesignState'
+            || state.status !== 'editable'
+            || graph?.type !== 'graph') return;
+
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: graph.graph.moduleKey,
+            revision: 'stale',
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.deepStrictEqual(harness.replacements, []);
+
+        harness.send({
+            type: 'relayoutAll',
+            moduleKey: graph.graph.moduleKey,
+            revision: state.revision,
+        });
+        await waitFor(() => harness.replacements.length === 1, 'current AD relayout');
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function main(): Promise<void> {
     await testEditableLifecycleAndNativeEdit();
+    await testRejectedDocumentEditRepublishesEditableState();
+    await testAcceptedNoOpEditRepublishesEditableState();
     await testInvalidTextRetainsLastValidGraph();
     await testUnsupportedSchemaIsReadOnly();
     await testCatalogInvalidationAndDisposal();
     await testLayoutSavePersistsOnlyStableArchDesignNodes();
+    await testRelayoutRejectsStaleArchDesignRevision();
     await testValidateReportsLatestDiagnosticCount();
     await testExportUsesLatestSnapshotAndReportsAfterPublication();
     await testExportBlocksSemanticErrorsAndReportsPublicationFailure();
