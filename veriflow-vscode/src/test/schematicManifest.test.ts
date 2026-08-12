@@ -6,6 +6,10 @@ const extensionRoot = path.resolve(__dirname, '..', '..');
 const manifest = JSON.parse(
     fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')
 );
+const extensionSource = fs.readFileSync(
+    path.join(extensionRoot, 'src', 'extension.ts'),
+    'utf8'
+);
 const editor = manifest.contributes.customEditors.find(
     (item: any) => item.viewType === 'veriflow.schematicEditor'
 );
@@ -58,6 +62,14 @@ for (const id of ['veriflow.validateArchDesign', 'veriflow.exportArchDesign']) {
         `${id} editor-title contribution is missing`
     );
 }
+assert.match(
+    extensionSource,
+    /\['veriflow\.validateArchDesign',[\s\S]*?archDesignEditorProvider\.validate/
+);
+assert.match(
+    extensionSource,
+    /\['veriflow\.exportArchDesign',[\s\S]*?archDesignEditorProvider\.exportRtl/
+);
 for (const id of ['veriflow.openSchematic', 'veriflow.openSchematicFromExplorer']) {
     assert.ok(
         manifest.contributes.commands.some((item: any) => item.command === id),

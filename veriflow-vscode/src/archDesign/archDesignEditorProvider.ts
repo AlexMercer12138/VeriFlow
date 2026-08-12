@@ -15,6 +15,7 @@ import {
 import type { SchematicGraph } from '@veriflow/schematic-core';
 
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
+import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import { parseWebviewCommand, type HostEvent } from '../schematic/protocol';
 import { relayoutAll } from '../schematic/layoutStore';
 import { buildSchematicWebviewHtml } from '../schematic/webviewSupport';
@@ -23,6 +24,10 @@ import {
     archDesignPresentationFromLayout,
     toArchDesignModuleDefinitions,
 } from './editorSupport';
+import {
+    exportArchDesignToFile,
+    type ArchDesignFileExportResult,
+} from './archDesignExport';
 
 export type ArchDesignEditorServices = {
     getIndex(
@@ -33,12 +38,18 @@ export type ArchDesignEditorServices = {
     onDidInvalidate?(
         listener: (index?: WorkspaceHdlIndex) => void
     ): { dispose(): void };
+    exportDesign?(
+        designPath: string,
+        design: ArchDesign,
+        definitions: readonly HdlDefinitionSummary[]
+    ): Promise<ArchDesignFileExportResult>;
 };
 
 type EditableSnapshot = Readonly<{
     revision: string;
     design: ArchDesign;
     definitions: readonly ArchDesignModuleDefinition[];
+    sourceDefinitions: readonly HdlDefinitionSummary[];
     validation: ArchDesignValidationResult;
     graph: SchematicGraph;
     index?: WorkspaceHdlIndex;
@@ -52,10 +63,16 @@ type PanelState = {
     lastIndex?: WorkspaceHdlIndex;
 };
 
+type EditorSession = Readonly<{
+    uri: vscode.Uri;
+    state: PanelState;
+}>;
+
 export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider {
     static readonly viewType = 'veriflow.archDesignEditor';
 
     private readonly diagnostics: vscode.DiagnosticCollection;
+    private readonly sessions = new Map<string, EditorSession>();
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -65,6 +82,78 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             'veriflow-arch-design'
         );
         context.subscriptions.push(this.diagnostics);
+    }
+
+    async validate(uri?: vscode.Uri): Promise<void> {
+        const snapshot = this.snapshotFor(uri);
+        if (!snapshot) {
+            await vscode.window.showErrorMessage('No editable Arch Design is active');
+            return;
+        }
+        const count = snapshot.validation.diagnostics.length;
+        if (snapshot.validation.valid) {
+            await vscode.window.showInformationMessage(
+                `Arch Design validation passed: ${count} errors`
+            );
+        } else {
+            await vscode.window.showErrorMessage(
+                `Arch Design validation failed: ${count} ${count === 1 ? 'error' : 'errors'}`
+            );
+        }
+    }
+
+    async exportRtl(uri?: vscode.Uri): Promise<void> {
+        const session = this.sessionFor(uri);
+        const snapshot = session?.state.snapshot;
+        if (!session || !snapshot) {
+            await vscode.window.showErrorMessage('No editable Arch Design is active');
+            return;
+        }
+        await this.exportSnapshot(session.uri, snapshot);
+    }
+
+    private sessionFor(uri?: vscode.Uri): EditorSession | undefined {
+        if (uri) return this.sessions.get(uri.toString());
+        return this.sessions.size === 1 ? this.sessions.values().next().value : undefined;
+    }
+
+    private snapshotFor(uri?: vscode.Uri): EditableSnapshot | undefined {
+        return this.sessionFor(uri)?.state.snapshot;
+    }
+
+    private async exportSnapshot(
+        uri: vscode.Uri,
+        snapshot: EditableSnapshot
+    ): Promise<void> {
+        const errorCount = snapshot.validation.diagnostics.length;
+        if (!snapshot.validation.valid) {
+            await vscode.window.showErrorMessage(
+                `Arch Design RTL export blocked: ${errorCount} `
+                + `${errorCount === 1 ? 'error' : 'errors'}`
+            );
+            return;
+        }
+        try {
+            const result = await (this.services.exportDesign ?? exportArchDesignToFile)(
+                uri.fsPath,
+                snapshot.design,
+                snapshot.sourceDefinitions
+            );
+            if (result.status === 'invalid') {
+                const count = result.diagnostics.length;
+                await vscode.window.showErrorMessage(
+                    `Arch Design RTL export blocked: ${count} `
+                    + `${count === 1 ? 'error' : 'errors'}`
+                );
+                return;
+            }
+            await vscode.window.showInformationMessage(
+                `Arch Design RTL exported: ${result.outputPath}`
+            );
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await vscode.window.showErrorMessage(message);
+        }
     }
 
     async resolveCustomTextEditor(
@@ -88,6 +177,9 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             ready: false,
             refreshGeneration: 0,
         };
+        const sessionKey = document.uri.toString();
+        const session: EditorSession = { uri: document.uri, state };
+        this.sessions.set(sessionKey, session);
         const indexOwner = {};
         const revisionNamespace = crypto.randomBytes(12).toString('hex');
         let revisionSequence = 0;
@@ -180,9 +272,8 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 || state.disposed
                 || token.isCancellationRequested) return;
             state.lastIndex = index;
-            const definitions = toArchDesignModuleDefinitions(
-                index?.getAllDefinitions('module') ?? []
-            );
+            const sourceDefinitions = index?.getAllDefinitions('module') ?? [];
+            const definitions = toArchDesignModuleDefinitions(sourceDefinitions);
             const projection = projectArchDesignGraph(design, definitions, {
                 fileUri: document.uri.toString(),
             });
@@ -191,6 +282,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 revision: nextRevision,
                 design,
                 definitions,
+                sourceDefinitions,
                 validation: projection.validation,
                 graph: projection.graph,
                 ...(index === undefined ? {} : { index }),
@@ -284,7 +376,12 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                         });
                         return;
                     }
-                    case 'exportArchDesign':
+                    case 'exportArchDesign': {
+                        const snapshot = state.snapshot;
+                        if (!snapshot || command.revision !== snapshot.revision) return;
+                        await this.exportSnapshot(document.uri, snapshot);
+                        return;
+                    }
                     case 'selectModule':
                     case 'revealSource':
                     case 'openDefinition':
@@ -304,12 +401,18 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
         const tokenSubscription = token.onCancellationRequested(() => {
             state.refreshGeneration += 1;
             state.snapshot = undefined;
+            if (this.sessions.get(sessionKey) === session) {
+                this.sessions.delete(sessionKey);
+            }
         });
         const panelSubscription = panel.onDidDispose(() => {
             if (state.disposed) return;
             state.disposed = true;
             state.refreshGeneration += 1;
             state.snapshot = undefined;
+            if (this.sessions.get(sessionKey) === session) {
+                this.sessions.delete(sessionKey);
+            }
             this.diagnostics.delete(document.uri);
             this.services.releaseIndex?.(indexOwner);
             messageSubscription.dispose();

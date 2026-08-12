@@ -340,6 +340,10 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
         ['veriflow.showOutput', () => { if (!hdlStopping) { output.show(); } }],
+        ['veriflow.validateArchDesign', (uri?: unknown) =>
+            archDesignEditorProvider.validate(commandUri(uri))],
+        ['veriflow.exportArchDesign', (uri?: unknown) =>
+            archDesignEditorProvider.exportRtl(commandUri(uri))],
     ];
     for (const [name, fn] of cmds) {
         context.subscriptions.push(vscode.commands.registerCommand(name, fn));

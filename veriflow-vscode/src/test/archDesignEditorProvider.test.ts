@@ -51,8 +51,20 @@ type AppliedReplacement = {
 type ProviderHarness = {
     messages: HostEvent[];
     diagnostics: Array<{ uri: string; count: number }>;
+    informationMessages: string[];
+    errorMessages: string[];
     replacements: AppliedReplacement[];
     releasedOwners: object[];
+    exportRequests: Array<{
+        designPath: string;
+        design: ArchDesign;
+        definitions: HdlDefinitionSummary[];
+    }>;
+    validate(): Promise<void>;
+    exportRtl(): Promise<void>;
+    validateWithoutUri(): Promise<void>;
+    pauseExports(): () => void;
+    failNextExport(error: Error): void;
     setDefinitions(definitions: HdlDefinitionSummary[]): void;
     invalidateIndex(): void;
     send(message: unknown): void;
@@ -109,8 +121,14 @@ async function createHarness(
     let definitions = [...initialDefinitions];
     const messages: HostEvent[] = [];
     const diagnostics: ProviderHarness['diagnostics'] = [];
+    const informationMessages: string[] = [];
+    const errorMessages: string[] = [];
     const replacements: AppliedReplacement[] = [];
     const releasedOwners: object[] = [];
+    const exportRequests: ProviderHarness['exportRequests'] = [];
+    let exportGate: Promise<void> | undefined;
+    let releaseExport: (() => void) | undefined;
+    let nextExportError: Error | undefined;
     const disposable = { dispose(): void {} };
     const document = {
         uri: resource,
@@ -207,7 +225,14 @@ async function createHarness(
             },
         },
         window: {
-            showErrorMessage(): Promise<undefined> { return Promise.resolve(undefined); },
+            showErrorMessage(message: string): Promise<undefined> {
+                errorMessages.push(message);
+                return Promise.resolve(undefined);
+            },
+            showInformationMessage(message: string): Promise<undefined> {
+                informationMessages.push(message);
+                return Promise.resolve(undefined);
+            },
         },
     };
     const moduleLoader = Module as typeof Module & {
@@ -233,6 +258,8 @@ async function createHarness(
                 panel: unknown,
                 token: unknown
             ): Promise<void>;
+            validate(uri?: unknown): Promise<void>;
+            exportRtl(uri?: unknown): Promise<void>;
         };
     };
     const context = {
@@ -255,6 +282,28 @@ async function createHarness(
                 },
             };
         },
+        async exportDesign(
+            designPath: string,
+            selectedDesign: ArchDesign,
+            selectedDefinitions: HdlDefinitionSummary[]
+        ) {
+            exportRequests.push({
+                designPath,
+                design: selectedDesign,
+                definitions: selectedDefinitions,
+            });
+            await exportGate;
+            if (nextExportError) {
+                const error = nextExportError;
+                nextExportError = undefined;
+                throw error;
+            }
+            return {
+                status: 'published' as const,
+                outputPath: '/workspace/soc.v',
+                language: 'verilog' as const,
+            };
+        },
     });
     await provider.resolveCustomTextEditor(document, panel, token);
     assert.ok(messageListener);
@@ -267,8 +316,27 @@ async function createHarness(
     return {
         messages,
         diagnostics,
+        informationMessages,
+        errorMessages,
         replacements,
         releasedOwners,
+        exportRequests,
+        validate(): Promise<void> {
+            return provider.validate(resource as never);
+        },
+        exportRtl(): Promise<void> {
+            return provider.exportRtl(resource as never);
+        },
+        validateWithoutUri(): Promise<void> { return provider.validate(); },
+        pauseExports(): () => void {
+            exportGate = new Promise<void>(resolve => { releaseExport = resolve; });
+            return () => {
+                releaseExport?.();
+                releaseExport = undefined;
+                exportGate = undefined;
+            };
+        },
+        failNextExport(error: Error): void { nextExportError = error; },
         setDefinitions(next): void { definitions = [...next]; },
         invalidateIndex(): void { invalidationListener?.(index); },
         send(message): void { messageListener?.(message); },
@@ -284,6 +352,143 @@ async function createHarness(
             delete require.cache[require.resolve('../archDesign/archDesignEditorProvider')];
         },
     };
+}
+
+async function testValidateReportsLatestDiagnosticCount(): Promise<void> {
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }));
+    try {
+        await harness.validate();
+        assert.deepStrictEqual(harness.informationMessages, []);
+        assert.deepStrictEqual(harness.errorMessages, [
+            'Arch Design validation failed: 1 error',
+        ]);
+
+        harness.setDefinitions([{
+            ...moduleDefinition(),
+            ports: [],
+        }]);
+        const previousStates = harness.messages.filter(
+            event => event.type === 'archDesignState'
+        ).length;
+        harness.invalidateIndex();
+        await waitFor(
+            () => harness.messages.filter(event => event.type === 'archDesignState').length
+                > previousStates,
+            'validated catalog refresh'
+        );
+        await harness.validate();
+        assert.deepStrictEqual(harness.informationMessages, [
+            'Arch Design validation passed: 0 errors',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testExportUsesLatestSnapshotAndReportsAfterPublication(): Promise<void> {
+    const initialDefinition = {
+        ...moduleDefinition(),
+        ports: [],
+    };
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }), [initialDefinition]);
+    try {
+        const initialState = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(initialState?.type === 'archDesignState');
+        harness.changeDocument(sourceDesign({
+            module: 'latest_soc',
+            instances: [{ name: 'u_core', module: 'core' }],
+        }), 2);
+        const latestDefinition = {
+            ...initialDefinition,
+            modelFingerprint: 'core-v2',
+        };
+        harness.setDefinitions([latestDefinition]);
+        harness.invalidateIndex();
+        await waitFor(
+            () => harness.messages.some(event =>
+                event.type === 'archDesignState'
+                && event.status === 'editable'
+                && event.design.module === 'latest_soc'
+            ),
+            'latest export snapshot'
+        );
+        const latestState = harness.messages.filter(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        ).at(-1);
+        assert.ok(latestState?.type === 'archDesignState' && latestState.status === 'editable');
+        if (latestState?.type !== 'archDesignState' || latestState.status !== 'editable') return;
+
+        harness.send({
+            type: 'exportArchDesign',
+            revision: initialState?.type === 'archDesignState'
+                ? initialState.revision
+                : 'stale',
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(harness.exportRequests.length, 0);
+
+        const release = harness.pauseExports();
+        harness.send({ type: 'exportArchDesign', revision: latestState.revision });
+        await waitFor(() => harness.exportRequests.length === 1, 'webview export request');
+        assert.deepStrictEqual(harness.informationMessages, []);
+        assert.strictEqual(harness.exportRequests[0].designPath, '/workspace/soc.ad');
+        assert.strictEqual(harness.exportRequests[0].design.module, 'latest_soc');
+        assert.deepStrictEqual(
+            harness.exportRequests[0].definitions.map(item => item.modelFingerprint),
+            ['core-v2']
+        );
+        release();
+        await waitFor(
+            () => harness.informationMessages.length === 1,
+            'successful export notification'
+        );
+        assert.deepStrictEqual(harness.informationMessages, [
+            'Arch Design RTL exported: /workspace/soc.v',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testExportBlocksSemanticErrorsAndReportsPublicationFailure(): Promise<void> {
+    const invalid = await createHarness(sourceDesign({
+        instances: [{ name: 'u_missing', module: 'missing' }],
+    }));
+    try {
+        await invalid.exportRtl();
+        assert.strictEqual(invalid.exportRequests.length, 0);
+        assert.deepStrictEqual(invalid.errorMessages, [
+            'Arch Design RTL export blocked: 1 error',
+        ]);
+    } finally {
+        await invalid.dispose();
+    }
+
+    const failing = await createHarness(sourceDesign(), []);
+    try {
+        failing.failNextExport(new Error('publication failed'));
+        await failing.exportRtl();
+        assert.strictEqual(failing.exportRequests.length, 1);
+        assert.deepStrictEqual(failing.informationMessages, []);
+        assert.deepStrictEqual(failing.errorMessages, ['publication failed']);
+    } finally {
+        await failing.dispose();
+    }
+}
+
+async function testDisposedPanelIsNotAnActiveSession(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), []);
+    await harness.dispose();
+    await harness.validateWithoutUri();
+    assert.deepStrictEqual(harness.errorMessages, [
+        'No editable Arch Design is active',
+    ]);
 }
 
 async function testEditableLifecycleAndNativeEdit(): Promise<void> {
@@ -498,6 +703,10 @@ async function main(): Promise<void> {
     await testUnsupportedSchemaIsReadOnly();
     await testCatalogInvalidationAndDisposal();
     await testLayoutSavePersistsOnlyStableArchDesignNodes();
+    await testValidateReportsLatestDiagnosticCount();
+    await testExportUsesLatestSnapshotAndReportsAfterPublication();
+    await testExportBlocksSemanticErrorsAndReportsPublicationFailure();
+    await testDisposedPanelIsNotAnActiveSession();
     console.log('Arch Design editor provider tests passed');
 }
 
