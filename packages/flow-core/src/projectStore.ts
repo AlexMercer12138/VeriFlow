@@ -20,6 +20,7 @@ const PROJECT_KEYS = new Set([
     'dependency_result',
     'analyze_status',
     'simulate_status',
+    'schematic',
 ]);
 
 export interface ProjectSaveOptions {
@@ -91,6 +92,20 @@ function parseWaveViewers(value: unknown): Record<string, WaveViewerConfig> {
     }));
 }
 
+function parseInterfaceProtocolFiles(value: unknown): string[] {
+    if (value === undefined) return [];
+    const schematic = requireObject(value, 'schematic');
+    return stringArrayField(schematic, 'interface_protocols');
+}
+
+function parseSchematicExtra(value: unknown): JsonObject {
+    if (value === undefined) return {};
+    const schematic = requireObject(value, 'schematic');
+    return Object.fromEntries(Object.entries(schematic).filter(
+        ([key]) => key !== 'interface_protocols'
+    ));
+}
+
 function withDefaults<T extends { name: string }>(
     configured: Record<string, T>,
     defaults: Readonly<Record<string, T>>
@@ -142,6 +157,18 @@ function serializeProject(project: Project, base: string): JsonObject {
     if (project.dependencyResult !== undefined && project.dependencyResult !== null) {
         serialized.dependency_result = project.dependencyResult;
     }
+    if (project.interfaceProtocolFiles.length > 0
+        || Object.keys(project.schematicExtra).length > 0) {
+        serialized.schematic = {
+            ...project.schematicExtra,
+            interface_protocols: project.interfaceProtocolFiles.map(filepath =>
+                storedPath(filepath, base)
+            ),
+        };
+        if (project.interfaceProtocolFiles.length === 0) {
+            delete (serialized.schematic as JsonObject).interface_protocols;
+        }
+    }
     return serialized;
 }
 
@@ -159,6 +186,8 @@ export class ProjectStore {
             fileOrder: [],
             simulators: withDefaults({}, DEFAULT_SIMULATORS),
             waveViewers: withDefaults({}, DEFAULT_WAVE_VIEWERS),
+            interfaceProtocolFiles: [],
+            schematicExtra: {},
             analyzeStatus: 'idle',
             simulateStatus: 'idle',
             extra: {},
@@ -199,6 +228,10 @@ export class ProjectStore {
             fileOrder: stringArrayField(data, 'file_order'),
             simulators,
             waveViewers,
+            interfaceProtocolFiles: parseInterfaceProtocolFiles(data.schematic).map(value =>
+                absolutePath(value, base)
+            ),
+            schematicExtra: parseSchematicExtra(data.schematic),
             dependencyResult: data.dependency_result,
             analyzeStatus: stringField(data, 'analyze_status', 'idle'),
             simulateStatus: stringField(data, 'simulate_status', 'idle'),

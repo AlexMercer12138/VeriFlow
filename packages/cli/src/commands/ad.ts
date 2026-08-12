@@ -3,7 +3,11 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { GlobalConfigStore, ProjectStore } from '@veriflow/flow-core';
+import {
+    GlobalConfigStore,
+    ProjectStore,
+    type Project,
+} from '@veriflow/flow-core';
 import { canonicalizeSourceUri } from '@veriflow/hdl-core/preprocessor';
 import {
     exportArchDesignRtl,
@@ -16,6 +20,10 @@ import {
 
 import type { CommandEnvironment, CommandOptions } from './project';
 import { publishGeneratedFileAtomic } from '../runtime/atomicGeneratedFile';
+import {
+    loadInterfaceProtocolCatalog,
+    type InterfaceProtocolFileDiagnostic,
+} from '../runtime/interfaceProtocolLoader';
 import { NodeWorkspaceHost } from '../runtime/nodeWorkspaceHost';
 
 type LoadedArchDesign = {
@@ -63,6 +71,30 @@ function printDiagnostics(
             `${designPath}:${diagnostic.path} [${diagnostic.code}] ${diagnostic.message}\n`
         );
     }
+}
+
+function printInterfaceProtocolDiagnostics(
+    environment: CommandEnvironment,
+    diagnostics: readonly InterfaceProtocolFileDiagnostic[]
+): void {
+    for (const diagnostic of diagnostics) {
+        environment.stderr(
+            `${displayPath(diagnostic.source, environment.cwd)}:${diagnostic.path} `
+            + `[${diagnostic.code}] ${diagnostic.message}\n`
+        );
+    }
+}
+
+function openProject(
+    options: CommandOptions,
+    environment: CommandEnvironment
+): Project | undefined {
+    if (options.project === undefined) return undefined;
+    const projectPath = path.resolve(environment.cwd, options.project);
+    if (!existsSync(projectPath)) {
+        throw new Error(`Project file not found: ${options.project}`);
+    }
+    return new ProjectStore().open(projectPath);
 }
 
 async function loadArchDesign(
@@ -131,7 +163,8 @@ function existingDirectories(candidates: readonly string[]): string[] {
 function moduleCatalogRoots(
     loaded: LoadedArchDesign,
     options: CommandOptions,
-    environment: CommandEnvironment
+    environment: CommandEnvironment,
+    project: Project | undefined
 ): string[] {
     const globalLibraries = new GlobalConfigStore({
         homeDir: environment.homeDir,
@@ -140,12 +173,7 @@ function moduleCatalogRoots(
         path.resolve(environment.cwd, directory)
     ));
 
-    if (options.project !== undefined) {
-        const projectPath = path.resolve(environment.cwd, options.project);
-        if (!existsSync(projectPath)) {
-            throw new Error(`Project file not found: ${options.project}`);
-        }
-        const project = new ProjectStore().open(projectPath);
+    if (project !== undefined) {
         return existingDirectories([
             project.rootDir,
             ...project.libDirs,
@@ -219,10 +247,23 @@ export async function adValidate(
     const loaded = await loadArchDesign(options, environment);
     if (!loaded) return 1;
 
-    const definitions = await scanModuleDefinitions(
-        moduleCatalogRoots(loaded, options, environment)
+    const project = openProject(options, environment);
+    const protocols = await loadInterfaceProtocolCatalog(
+        project?.interfaceProtocolFiles ?? []
     );
-    const validation = validateArchDesign(loaded.design, definitions);
+    if (protocols.diagnostics.length > 0) {
+        printInterfaceProtocolDiagnostics(environment, protocols.diagnostics);
+        return 1;
+    }
+
+    const definitions = await scanModuleDefinitions(
+        moduleCatalogRoots(loaded, options, environment, project)
+    );
+    const validation = validateArchDesign(
+        loaded.design,
+        definitions,
+        protocols.catalog
+    );
     if (!validation.valid) {
         printDiagnostics(environment, loaded.displayPath, validation.diagnostics);
         return 1;
@@ -238,12 +279,21 @@ export async function adExport(
     const loaded = await loadArchDesign(options, environment);
     if (!loaded) return 1;
 
+    const project = openProject(options, environment);
+    const protocols = await loadInterfaceProtocolCatalog(
+        project?.interfaceProtocolFiles ?? []
+    );
+    if (protocols.diagnostics.length > 0) {
+        printInterfaceProtocolDiagnostics(environment, protocols.diagnostics);
+        return 1;
+    }
+
     const language = options.language as ArchDesignLanguage | undefined
         ?? loaded.design.export.language
         ?? 'verilog';
     const outputPath = outputPathFor(loaded, options, environment, language);
     const definitions = await scanModuleDefinitions(
-        moduleCatalogRoots(loaded, options, environment)
+        moduleCatalogRoots(loaded, options, environment, project)
     );
     const outputUri = canonicalFileUri(outputPath);
     let exportDefinitions = definitions.filter(definition => definition.uri !== outputUri);
@@ -259,6 +309,7 @@ export async function adExport(
     const generated = exportArchDesignRtl(loaded.design, exportDefinitions, {
         language,
         sourcePath: portableSourcePath(loaded.filepath, outputPath),
+        interfaceCatalog: protocols.catalog,
     });
     if (generated.status === 'invalid') {
         printDiagnostics(environment, loaded.displayPath, generated.diagnostics);

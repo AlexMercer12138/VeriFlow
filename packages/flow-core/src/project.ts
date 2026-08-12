@@ -16,6 +16,8 @@ export interface Project {
     fileOrder: string[];
     simulators: Record<string, SimulatorConfig>;
     waveViewers: Record<string, WaveViewerConfig>;
+    interfaceProtocolFiles: string[];
+    schematicExtra: JsonObject;
     dependencyResult?: unknown;
     analyzeStatus: string;
     simulateStatus: string;

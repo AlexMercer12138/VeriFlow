@@ -38,6 +38,57 @@ function archDesign(overrides: Record<string, unknown> = {}): Record<string, unk
     };
 }
 
+function interfaceProtocol(defaultTag = "4'h0"): Record<string, unknown> {
+    return {
+        format: 'veriflow-interface-protocol',
+        schemaVersion: 1,
+        id: 'project.link',
+        name: 'Project Link',
+        separator: '_',
+        priority: 100,
+        members: [
+            { name: 'request', direction: 'master-to-slave' },
+            { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+            { name: 'tag', direction: 'master-to-slave', default: defaultTag },
+        ],
+        recognitionGroups: [['request', 'accept']],
+    };
+}
+
+function interfaceArchDesign(): Record<string, unknown> {
+    return archDesign({
+        instances: [
+            { name: 'u_master', module: 'interface_master' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+    });
+}
+
+function writeInterfaceHdl(cwd: string): void {
+    writeFixture(cwd, 'rtl/interface_master.v', [
+        'module interface_master(',
+        '    output wire [31:0] BUS_REQUEST,',
+        '    input wire BUS_ACCEPT',
+        ');',
+        'endmodule',
+        '',
+    ].join('\n'));
+    writeFixture(cwd, 'rtl/interface_slave.v', [
+        'module interface_slave(',
+        '    input wire [31:0] LINK_REQUEST,',
+        '    output wire LINK_ACCEPT,',
+        '    input wire [3:0] LINK_TAG',
+        ');',
+        'endmodule',
+        '',
+    ].join('\n'));
+}
+
 function writeFixture(cwd: string, relativePath: string, content: string): void {
     const filepath = path.join(cwd, relativePath);
     mkdirSync(path.dirname(filepath), { recursive: true });
@@ -293,6 +344,177 @@ test('reports a missing project before scanning module catalogs', async () => {
             exitCode: 1,
             stdout: '',
             stderr: 'Error: Project file not found: missing/project.json\n',
+        });
+    });
+});
+
+test('loads one project protocol snapshot for validation and RTL export', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, interfaceArchDesign());
+        writeInterfaceHdl(cwd);
+        writeFixture(cwd, 'protocols/link.json', JSON.stringify(
+            interfaceProtocol("4'ha"),
+            null,
+            2
+        ));
+        writeFixture(cwd, 'config/project.json', JSON.stringify({
+            project_name: 'interfaces',
+            project_root: '../rtl',
+            schematic: { interface_protocols: ['../protocols/link.json'] },
+        }));
+
+        const validation = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+        const exported = await invoke([
+            'ad', 'export', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+
+        assert.deepEqual(validation, {
+            exitCode: 0,
+            stdout: 'Arch Design: OK\n',
+            stderr: '',
+        });
+        assert.deepEqual(exported, {
+            exitCode: 0,
+            stdout: 'RTL exported: design/soc.v\n',
+            stderr: '',
+        });
+        const rtl = readFileSync(path.join(cwd, 'design/soc.v'), 'utf8');
+        assert.match(rtl, /\.LINK_TAG\(4'ha\)/);
+    });
+});
+
+test('reports project protocol file and JSON diagnostics before Arch Design semantics', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, interfaceArchDesign());
+        writeInterfaceHdl(cwd);
+        writeFixture(cwd, 'config/project.json', JSON.stringify({
+            project_name: 'interfaces',
+            project_root: '../rtl',
+            schematic: { interface_protocols: ['../protocols/missing.json'] },
+        }));
+
+        const missingValidate = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+        const missingExport = await invoke([
+            'ad', 'export', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+        const expectedMissing = 'protocols/missing.json:$ [IF_PROTOCOL_FILE_NOT_FOUND] '
+            + 'Interface protocol file not found\n';
+        assert.equal(missingValidate.stderr, expectedMissing);
+        assert.equal(missingExport.stderr, expectedMissing);
+        assert.equal(missingValidate.exitCode, 1);
+        assert.equal(missingExport.exitCode, 1);
+
+        writeFixture(cwd, 'protocols/missing.json', '{');
+        const invalidValidate = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+        const invalidExport = await invoke([
+            'ad', 'export', 'design/soc.ad', '--project', 'config/project.json',
+        ], cwd);
+        const expectedInvalid = {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'protocols/missing.json:$ [IF_PROTOCOL_JSON_SYNTAX] '
+                + 'Interface protocol is not valid JSON\n',
+        };
+        assert.deepEqual(invalidValidate, expectedInvalid);
+        assert.deepEqual(invalidExport, expectedInvalid);
+    });
+});
+
+test('replaces a built-in protocol definition by ID for validate and export', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({
+            instances: [
+                { name: 'u_master', module: 'axi_master' },
+                { name: 'u_slave', module: 'axi_slave' },
+            ],
+            interfaceConnections: [{
+                name: 'axi',
+                master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+                slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+            }],
+        }));
+        writeFixture(cwd, 'rtl/axi_master.v', [
+            'module axi_master(output wire BUS_AWADDR, output wire BUS_AWVALID,',
+            'input wire BUS_AWREADY); endmodule',
+            '',
+        ].join('\n'));
+        writeFixture(cwd, 'rtl/axi_slave.v', [
+            'module axi_slave(input wire LINK_AWADDR, input wire LINK_AWVALID,',
+            'output wire LINK_AWREADY, input wire LINK_WLAST); endmodule',
+            '',
+        ].join('\n'));
+        writeFixture(cwd, 'protocols/axi.json', JSON.stringify({
+            format: 'veriflow-interface-protocol',
+            schemaVersion: 1,
+            id: 'amba.axi4',
+            name: 'Project AXI4',
+            separator: '_',
+            priority: 1000,
+            members: [
+                { name: 'awaddr', direction: 'master-to-slave' },
+                { name: 'awvalid', direction: 'master-to-slave' },
+                { name: 'awready', direction: 'slave-to-master', default: "1'b0" },
+                { name: 'wlast', direction: 'master-to-slave', default: "1'b0" },
+            ],
+            recognitionGroups: [['awaddr', 'awvalid']],
+        }));
+        writeFixture(cwd, 'project.json', JSON.stringify({
+            project_name: 'axi-override',
+            project_root: 'rtl',
+            schematic: { interface_protocols: ['protocols/axi.json'] },
+        }));
+
+        const validation = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'project.json',
+        ], cwd);
+        const exported = await invoke([
+            'ad', 'export', 'design/soc.ad', '--project', 'project.json',
+        ], cwd);
+
+        assert.equal(validation.exitCode, 0);
+        assert.equal(exported.exitCode, 0);
+        const rtl = readFileSync(path.join(cwd, 'design/soc.v'), 'utf8');
+        assert.match(rtl, /\.LINK_WLAST\(1'b0\)/);
+        assert.equal(rtl.includes(".LINK_WLAST(1'b1)"), false);
+    });
+});
+
+test('uses built-in protocols when no project is supplied', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({
+            instances: [
+                { name: 'u_master', module: 'axi_master' },
+                { name: 'u_slave', module: 'axi_slave' },
+            ],
+            interfaceConnections: [{
+                name: 'axi',
+                master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+                slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+            }],
+        }));
+        writeFixture(cwd, 'design/axi_master.v', [
+            'module axi_master(output wire BUS_AWADDR, output wire BUS_AWVALID,',
+            'input wire BUS_AWREADY); endmodule',
+            '',
+        ].join('\n'));
+        writeFixture(cwd, 'design/axi_slave.v', [
+            'module axi_slave(input wire LINK_AWADDR, input wire LINK_AWVALID,',
+            'output wire LINK_AWREADY); endmodule',
+            '',
+        ].join('\n'));
+
+        const result = await invoke(['ad', 'validate', 'design/soc.ad'], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design: OK\n',
+            stderr: '',
         });
     });
 });

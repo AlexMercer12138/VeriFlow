@@ -121,6 +121,59 @@ test('project store saves snake case, relative paths, exact JSON, and unknown ke
     }
 });
 
+test('project store resolves and round trips schematic interface protocol paths', () => {
+    const root = temporaryDirectory('veriflow-project-protocols-');
+    try {
+        const sourceFile = path.join(root, 'configs', 'project.json');
+        const savedFile = path.join(root, 'saved', 'project.json');
+        mkdirSync(path.dirname(sourceFile), { recursive: true });
+        writeFileSync(sourceFile, JSON.stringify({
+            project_name: 'interfaces',
+            schematic: {
+                interface_protocols: [
+                    '../protocols/link.json',
+                    '../protocols/vendor/custom.json',
+                ],
+                future_option: { keep: true },
+            },
+            custom_metadata: true,
+        }));
+
+        const store = new ProjectStore();
+        const project = store.open(sourceFile);
+
+        assert.deepEqual(project.interfaceProtocolFiles, [
+            path.join(root, 'protocols', 'link.json'),
+            path.join(root, 'protocols', 'vendor', 'custom.json'),
+        ]);
+        assert.deepEqual(project.extra, { custom_metadata: true });
+        assert.deepEqual(project.schematicExtra, {
+            future_option: { keep: true },
+        });
+
+        store.save(project, savedFile);
+        const saved = JSON.parse(readFileSync(savedFile, 'utf8'));
+        assert.deepEqual(saved.schematic, {
+            interface_protocols: [
+                '../protocols/link.json',
+                '../protocols/vendor/custom.json',
+            ],
+            future_option: { keep: true },
+        });
+        assert.equal('schematic' in project.extra, false);
+
+        const legacy = store.create('legacy', root);
+        assert.deepEqual(legacy.interfaceProtocolFiles, []);
+        assert.deepEqual(legacy.schematicExtra, {});
+        store.save(legacy, path.join(root, 'legacy.json'));
+        assert.equal('schematic' in JSON.parse(
+            readFileSync(path.join(root, 'legacy.json'), 'utf8')
+        ), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('project store safely preserves a __proto__ unknown key', () => {
     const root = temporaryDirectory('veriflow-project-special-key-');
     try {
