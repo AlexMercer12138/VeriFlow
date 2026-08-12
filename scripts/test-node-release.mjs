@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveNpmInvocation } from './lib/npm-command.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,6 +32,10 @@ const publishable = [
         requiredFiles: [
             'dist/index.js',
             'dist/model.js',
+            'dist/archDesign/interfaces.js',
+            'dist/interfaces/index.js',
+            'dist/interfaces/catalog.js',
+            'dist/interfaces/recognition.js',
             'dist/interfaces/builtins/axi4.json',
             'dist/interfaces/builtins/axis.json',
             'dist/interfaces/builtins/apb.json',
@@ -64,7 +68,11 @@ const publishable = [
     {
         name: '@veriflow/cli',
         workspace: 'packages/cli',
-        requiredFiles: ['dist/main.js'],
+        requiredFiles: [
+            'dist/main.js',
+            'dist/commands/ad.js',
+            'dist/runtime/interfaceProtocolLoader.js',
+        ],
     },
 ];
 
@@ -155,6 +163,17 @@ try {
         for (const required of entry.requiredFiles) {
             assert.equal(files.has(required), true, `${entry.name} missing ${required}`);
         }
+        const forbiddenFiles = [...files].filter(file => (
+            /(^|\/)(src|test|tests|dist-test)(\/|$)/i.test(file)
+            || /(^|\/)(__pycache__|python)(\/|$)/i.test(file)
+            || /\.(py|pyc|pyo|pyd|whl|tsx)$/i.test(file)
+            || /(?<!\.d)\.ts$/i.test(file)
+        ));
+        assert.deepEqual(
+            forbiddenFiles,
+            [],
+            `${entry.name} must not contain source, test, or Python artifacts`
+        );
         const created = readdirSync(packRoot).filter(filename => !before.has(filename));
         assert.equal(created.length, 1, `${entry.name} tarball count`);
         tarballs.push(path.join(packRoot, created[0]));
@@ -197,6 +216,43 @@ try {
         rootVersion,
         'installed CLI must depend on the published schematic-core version'
     );
+    const installedInterfaces = await import(pathToFileURL(path.join(
+        installRoot,
+        'node_modules',
+        '@veriflow',
+        'schematic-core',
+        'dist',
+        'interfaces',
+        'index.js'
+    )).href);
+    assert.deepEqual(installedInterfaces.BUILTIN_INTERFACE_PROTOCOL_IDS, [
+        'amba.axi4',
+        'amba.axis',
+        'amba.apb',
+        'amba.ahb-lite',
+    ]);
+    assert.deepEqual(
+        installedInterfaces.createInterfaceProtocolCatalog().entries.map(
+            entry => entry.protocol.id
+        ),
+        installedInterfaces.BUILTIN_INTERFACE_PROTOCOL_IDS
+    );
+    const installedProtocolLoader = readFileSync(path.join(
+        installedPackage,
+        'dist',
+        'runtime',
+        'interfaceProtocolLoader.js'
+    ), 'utf8');
+    for (const marker of [
+        'parseInterfaceProtocolText',
+        'createInterfaceProtocolCatalog',
+        'IF_PROTOCOL_FILE_NOT_FOUND',
+    ]) {
+        assert.ok(
+            installedProtocolLoader.includes(marker),
+            `installed CLI protocol loader is missing ${marker}`
+        );
+    }
     const help = invokeCli(['--help'], installRoot, environment);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /VeriFlow - Lightweight Verilog Simulation Manager/);
@@ -246,6 +302,84 @@ try {
         readFileSync(path.join(projectRoot, 'soc.v'), 'utf8'),
         /^\/\/ vik-veriflow:generated arch-design /
     );
+
+    const interfaceProjectRoot = path.join(installRoot, 'interface-project');
+    mkdirSync(path.join(interfaceProjectRoot, 'rtl'), { recursive: true });
+    mkdirSync(path.join(interfaceProjectRoot, 'protocols'), { recursive: true });
+    writeFileSync(path.join(interfaceProjectRoot, 'rtl', 'interface_master.v'), [
+        'module interface_master(',
+        '    output wire [31:0] BUS_REQUEST,',
+        '    input wire BUS_ACCEPT',
+        ');',
+        'endmodule',
+        '',
+    ].join('\n'), 'utf8');
+    writeFileSync(path.join(interfaceProjectRoot, 'rtl', 'interface_slave.v'), [
+        'module interface_slave(',
+        '    input wire [31:0] LINK_REQUEST,',
+        '    output wire LINK_ACCEPT,',
+        '    input wire [3:0] LINK_TAG',
+        ');',
+        'endmodule',
+        '',
+    ].join('\n'), 'utf8');
+    writeFileSync(
+        path.join(interfaceProjectRoot, 'protocols', 'link.json'),
+        JSON.stringify({
+            format: 'veriflow-interface-protocol',
+            schemaVersion: 1,
+            id: 'project.link',
+            name: 'Project Link',
+            separator: '_',
+            priority: 100,
+            members: [
+                { name: 'request', direction: 'master-to-slave' },
+                { name: 'accept', direction: 'slave-to-master', default: "1'b0" },
+                { name: 'tag', direction: 'master-to-slave', default: "4'ha" },
+            ],
+            recognitionGroups: [['request', 'accept']],
+        }, null, 2),
+        'utf8'
+    );
+    writeFileSync(path.join(interfaceProjectRoot, 'project.json'), JSON.stringify({
+        project_name: 'release-interface-smoke',
+        project_root: 'rtl',
+        top_module: 'interface_top',
+        schematic: { interface_protocols: ['protocols/link.json'] },
+    }, null, 2), 'utf8');
+    writeFileSync(path.join(interfaceProjectRoot, 'interface.ad'), `${JSON.stringify({
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 1,
+        module: 'interface_top',
+        ports: [],
+        instances: [
+            { name: 'u_master', module: 'interface_master' },
+            { name: 'u_slave', module: 'interface_slave' },
+        ],
+        connections: [],
+        interfaceConnections: [{
+            name: 'control',
+            master: { kind: 'instance', instance: 'u_master', interface: 'BUS' },
+            slave: { kind: 'instance', instance: 'u_slave', interface: 'LINK' },
+        }],
+        defaults: {},
+        export: {},
+        presentation: {},
+    }, null, 2)}\n`, 'utf8');
+    const validateInterfaceAd = invokeCli([
+        'ad', 'validate', 'interface.ad', '--project', 'project.json',
+    ], interfaceProjectRoot, environment);
+    assert.equal(validateInterfaceAd.status, 0, validateInterfaceAd.stderr);
+    const exportInterfaceAd = invokeCli([
+        'ad', 'export', 'interface.ad', '--project', 'project.json',
+    ], interfaceProjectRoot, environment);
+    assert.equal(exportInterfaceAd.status, 0, exportInterfaceAd.stderr);
+    const interfaceRtl = readFileSync(
+        path.join(interfaceProjectRoot, 'interface.v'),
+        'utf8'
+    );
+    assert.match(interfaceRtl, /^\/\/ vik-veriflow:generated arch-design /);
+    assert.match(interfaceRtl, /\.LINK_TAG\(4'ha\)/);
 } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
 }

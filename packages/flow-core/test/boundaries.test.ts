@@ -114,7 +114,9 @@ test('shared package public imports compile for a host consumer', () => {
             "    type ArchDesignValidationResult,",
             "} from '@veriflow/schematic-core/arch-design';",
             "import {",
+            "    BUILTIN_INTERFACE_PROTOCOL_IDS,",
             "    INTERFACE_PROTOCOL_FORMAT,",
+            "    createInterfaceProtocolCatalog,",
             "    parseInterfaceProtocolText,",
             "    type InterfaceProtocol,",
             "} from '@veriflow/schematic-core/interfaces';",
@@ -175,6 +177,12 @@ test('shared package public imports compile for a host consumer', () => {
             "}));",
             "export const interfaceProtocolRuntime: InterfaceProtocol | undefined =",
             "    parsedProtocol.status === 'editable' ? parsedProtocol.protocol : undefined;",
+            "const builtInProtocolIds = createInterfaceProtocolCatalog().entries.map(",
+            "    entry => entry.protocol.id",
+            ");",
+            "if (JSON.stringify(builtInProtocolIds) !== JSON.stringify(BUILTIN_INTERFACE_PROTOCOL_IDS)) {",
+            "    throw new Error(`Built-in protocol mismatch: ${JSON.stringify(builtInProtocolIds)}`);",
+            "}",
             '',
         ].join('\n'));
         writeFileSync(path.join(consumerRoot, 'tsconfig.json'), JSON.stringify({

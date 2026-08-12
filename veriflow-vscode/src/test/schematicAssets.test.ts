@@ -474,6 +474,25 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /case 'archDesignState':/);
     assert.match(webviewSource, /type === 'archDesignState'/);
     assert.match(webviewSource, /\barchDesignEndpointForPin\(/);
+    assert.ok(
+        webviewSource.includes("type: 'connectInterface'"),
+        'webview source is missing interface connection authoring'
+    );
+    const webviewSupportSource = fs.readFileSync(
+        path.join(extensionRoot, 'src', 'schematic', 'webviewSupport.ts'),
+        'utf8'
+    );
+    for (const marker of [
+        "type: 'promoteInterface'",
+        "type: 'setInterfaceDefault'",
+        "type: 'setInterfaceOverride'",
+        "id: 'interface-collapse'",
+    ]) {
+        assert.ok(
+            webviewSupportSource.includes(marker),
+            `webview support source is missing ${marker}`
+        );
+    }
     assert.match(
         webviewSource,
         /magnetConnectable:\s*\(\)\s*=>\s*connectionAuthoringEnabled\(\)/
@@ -671,6 +690,18 @@ async function testSchematicAssets(): Promise<void> {
         'utf8'
     );
     assert.match(generatedBundle, /function clearSchematicState\(\)/);
+    for (const marker of [
+        'connectInterface',
+        'promoteInterface',
+        'setInterfaceDefault',
+        'setInterfaceOverride',
+        'interface-collapse',
+    ]) {
+        assert.ok(
+            generatedBundle.includes(marker),
+            `generated schematic bundle is missing interface marker: ${marker}`
+        );
+    }
     const buildConfig = await loadEsmModule<BrowserBuildConfig>(pathToFileURL(
         path.join(repositoryRoot, 'scripts', 'lib', 'build-config.mjs')
     ).href);

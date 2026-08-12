@@ -242,6 +242,12 @@ function run(): void {
             'applyArchDesignEdit',
             'exportArchDesignRtl',
             'Arch Design RTL exported',
+            'createInterfaceProtocolCatalog',
+            'interface_protocols',
+            'amba.axi4',
+            'amba.axis',
+            'amba.apb',
+            'amba.ahb-lite',
         ]) {
             assert.ok(
                 extensionBundle.includes(marker),
@@ -261,7 +267,16 @@ function run(): void {
             );
         }
         const schematicBundle = entryText('extension/media/schematic/index.js');
-        for (const marker of ['editArchDesign', 'exportArchDesign', 'archDesignState']) {
+        for (const marker of [
+            'editArchDesign',
+            'exportArchDesign',
+            'archDesignState',
+            'connectInterface',
+            'promoteInterface',
+            'setInterfaceDefault',
+            'setInterfaceOverride',
+            'interface-collapse',
+        ]) {
             assert.ok(
                 schematicBundle.includes(marker),
                 `VSIX schematic bundle is missing authoring marker: ${marker}`
@@ -286,6 +301,9 @@ function run(): void {
 
         for (const forbiddenPrefix of [
             'extension/src/',
+            'extension/test/',
+            'extension/out/',
+            'extension/dist-test/',
             'extension/webview/',
             'extension/web-dist/',
             'extension/packages/waveform-webview/',
@@ -307,6 +325,14 @@ function run(): void {
             )),
             [],
             'VSIX must not contain schematic-core source or test build output'
+        );
+        assert.deepStrictEqual(
+            entries.filter(entry => (
+                /(^|\/)(src|test|tests|dist-test)(\/|$)/i.test(entry)
+                || /\.(?<!\.d\.)tsx?$/i.test(entry)
+            )),
+            [],
+            'VSIX must not contain TypeScript source or test directories'
         );
         assert.deepStrictEqual(
             entries.filter(entry => (

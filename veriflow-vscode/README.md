@@ -40,11 +40,25 @@ Create a valid `.ad` file, then open it to use the visual architecture editor. T
 }
 ```
 
-Add module instances and top-level ports from the toolbar, enable connection mode, then drag from an output pin to an input pin. Select an instance, port, or network to edit its name, parameters, defaults, and export settings in the Inspector.
+Add module instances and top-level ports from the toolbar, enable connection mode, then drag from an output pin to an input pin. Select an instance, port, pin, network, or recognized interface to inspect and edit it.
 
 Use **Validate Arch Design** to check the current design and **Export Arch Design RTL** to generate RTL. Verilog is exported to a sibling `.v` file by default; SystemVerilog and a relative `.sv` output can be selected in the Inspector. Existing hand-written RTL is never overwritten.
 
-`.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility. The current editor authors scalar connections. AXI/APB/AHB recognition, collapsed interfaces, and project-defined protocols are planned separately.
+`.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility.
+
+The editor recognizes built-in AXI4, AXI-Stream, APB, and AHB-Lite interfaces from HDL port names and directions. AXI4-Lite is handled as an incomplete AXI4 interface. Interfaces can be collapsed, expanded, connected from Master to Slave, or exposed as top-level interfaces. Expanded members remain available as ordinary pins, including individual top-level promotion. Roles that cannot be inferred can be assigned in the Inspector.
+
+Interface connections are intentionally one-to-one; use a dedicated interconnect module for fan-out. An output without a peer input remains open, while an input without a peer output uses the connection override or protocol default shown in the Inspector. Protocol definitions contain no widths: widths always come from HDL ports, and a Master/Slave mismatch produces a warning without blocking RTL export.
+
+Project-defined protocol JSON files use the same recognition and export path as built-ins. Reference workspace-relative files from `project.json`:
+
+```json
+{
+  "schematic": {
+    "interface_protocols": ["protocols/my-bus.json"]
+  }
+}
+```
 
 ## Other Commands
 

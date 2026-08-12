@@ -40,11 +40,25 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 }
 ```
 
-使用工具栏添加模块实例和顶层端口，启用连线模式后从输出引脚拖到输入引脚。选中模块、端口或网络，可在右侧属性栏修改名称、参数、默认值和导出设置。
+使用工具栏添加模块实例和顶层端口，启用连线模式后从输出引脚拖到输入引脚。选中模块、端口、引脚、网络或识别出的接口，可在右侧属性栏查看和修改对应内容。
 
 使用 **Validate Arch Design** 校验当前设计，使用 **Export Arch Design RTL** 生成 RTL。默认导出同目录、同名的 `.v` 文件；可在属性栏选择 SystemVerilog 和相对 `.sv` 输出路径。扩展不会覆盖手写 RTL。
 
-`.ad` 是 VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。当前编辑器提供标量连接；AXI、APB、AHB 总线识别、接口折叠和自定义协议将在后续版本实现。
+`.ad` 是 VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。
+
+编辑器可根据 HDL 端口名称和方向识别内置的 AXI4、AXI-Stream、APB 与 AHB-Lite 接口，AXI4-Lite 按成员不完整的 AXI4 处理。接口可折叠、展开、从 Master 连接到 Slave，或整体提升为顶层接口；展开后的成员仍可作为普通引脚单独提升。无法自动推断角色时，可在属性栏指定 Master 或 Slave。
+
+协议接口固定一对一连接，一对多应使用专门的互联模块。已有输出找不到对端输入时保持悬空；已有输入找不到对端输出时使用属性栏显示的连接自定义值或协议默认值。协议定义不包含位宽，位宽始终取自 HDL 端口；Master 与 Slave 位宽不一致时显示警告，但不阻止 RTL 导出。
+
+项目自定义协议与内置协议使用相同的识别和导出流程。在 `project.json` 中引用相对工作区的协议文件：
+
+```json
+{
+  "schematic": {
+    "interface_protocols": ["protocols/my-bus.json"]
+  }
+}
+```
 
 ## 其他命令
 
