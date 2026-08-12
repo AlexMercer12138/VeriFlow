@@ -30,7 +30,7 @@ ID, display name, separator, member declarations, and recognition groups:
     {
       "name": "awaddr",
       "direction": "master-to-slave",
-      "default": "'0"
+      "default": "0"
     },
     {
       "name": "awready",
@@ -204,6 +204,9 @@ safe-expression validator. A connection-level default overrides the effective
 project or built-in protocol value. The Inspector shows the effective value,
 its source, the inherited protocol value, and a restore action. An unconnected
 interface endpoint may hold endpoint-level overrides for its undriven inputs.
+Built-in defaults use Verilog-2001-compatible expressions because `.v` is the
+default export; project defaults that require SystemVerilog are rejected when
+the effective export language is Verilog.
 
 Generated RTL does not insert opaque width adapters. The internal member net
 uses the actual driver's width, and ordinary Verilog named-port connection
