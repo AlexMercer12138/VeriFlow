@@ -1,0 +1,24 @@
+{
+  "format": "veriflow-interface-protocol",
+  "schemaVersion": 1,
+  "id": "amba.apb",
+  "name": "APB",
+  "separator": "_",
+  "priority": 100,
+  "members": [
+    { "name": "paddr", "direction": "master-to-slave", "default": "0" },
+    { "name": "psel", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "penable", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "pwrite", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "pwdata", "direction": "master-to-slave", "default": "0" },
+    { "name": "pstrb", "direction": "master-to-slave", "default": "0" },
+    { "name": "pprot", "direction": "master-to-slave", "default": "0" },
+    { "name": "prdata", "direction": "slave-to-master", "default": "0" },
+    { "name": "pready", "direction": "slave-to-master", "default": "1'b1" },
+    { "name": "pslverr", "direction": "slave-to-master", "default": "1'b0" }
+  ],
+  "recognitionGroups": [
+    ["paddr", "psel", "penable"],
+    ["pwdata", "pwrite", "psel"]
+  ]
+}

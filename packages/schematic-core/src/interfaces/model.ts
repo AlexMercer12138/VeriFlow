@@ -5,6 +5,7 @@ export type InterfaceMemberDirection = 'master-to-slave' | 'slave-to-master';
 
 export type InterfaceProtocolMember = Readonly<{
     name: string;
+    aliases?: readonly string[];
     direction: InterfaceMemberDirection;
     defaultExpression?: string;
 }>;
@@ -37,3 +38,26 @@ export type InterfaceProtocolReadResult =
         status: 'invalid';
         diagnostics: readonly InterfaceProtocolDiagnostic[];
     }>;
+
+export type InterfaceProtocolSource =
+    | Readonly<{ kind: 'builtin'; source: string }>
+    | Readonly<{ kind: 'project'; source: string; overrides?: string }>;
+
+export type InterfaceProtocolCatalogEntry = Readonly<{
+    protocol: InterfaceProtocol;
+    source: InterfaceProtocolSource;
+}>;
+
+export type InterfaceProtocolCatalogDiagnostic = InterfaceProtocolDiagnostic & Readonly<{
+    source: string;
+}>;
+
+export type InterfaceProtocolCatalog = Readonly<{
+    entries: readonly InterfaceProtocolCatalogEntry[];
+    diagnostics: readonly InterfaceProtocolCatalogDiagnostic[];
+}>;
+
+export type InterfaceProtocolCatalogInput = Readonly<{
+    source: string;
+    value: unknown;
+}>;

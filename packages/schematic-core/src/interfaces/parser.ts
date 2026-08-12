@@ -163,7 +163,7 @@ function normalizeMembers(
 ): InterfaceProtocolMember[] {
     const source = arrayValue(value, '$.members', diagnostics);
     const members: InterfaceProtocolMember[] = [];
-    const seen = new Set<string>();
+    const seenSuffixes = new Set<string>();
     for (let index = 0; index < source.length; index += 1) {
         const path = `$.members[${index}]`;
         const record = recordValue(source[index], path, diagnostics);
@@ -180,7 +180,7 @@ function normalizeMembers(
             );
         }
         const normalizedName = name.toLowerCase();
-        if (name && seen.has(normalizedName)) {
+        if (name && seenSuffixes.has(normalizedName)) {
             diagnostic(
                 diagnostics,
                 `${path}.name`,
@@ -188,7 +188,41 @@ function normalizeMembers(
                 `Duplicate member name: ${name}`
             );
         } else if (name) {
-            seen.add(normalizedName);
+            seenSuffixes.add(normalizedName);
+        }
+
+        const aliasesValue = ownValue(record, 'aliases');
+        const aliasesSource = aliasesValue === undefined
+            ? []
+            : arrayValue(aliasesValue, `${path}.aliases`, diagnostics);
+        const aliases: string[] = [];
+        for (let aliasIndex = 0; aliasIndex < aliasesSource.length; aliasIndex += 1) {
+            const aliasPath = `${path}.aliases[${aliasIndex}]`;
+            const aliasValue = aliasesSource[aliasIndex];
+            const alias = typeof aliasValue === 'string' && MEMBER_NAME.test(aliasValue)
+                ? aliasValue
+                : '';
+            if (!alias) {
+                diagnostic(
+                    diagnostics,
+                    aliasPath,
+                    'IF_PROTOCOL_MEMBER_NAME',
+                    'Expected a plain HDL member suffix'
+                );
+                continue;
+            }
+            const normalizedAlias = alias.toLowerCase();
+            if (seenSuffixes.has(normalizedAlias)) {
+                diagnostic(
+                    diagnostics,
+                    aliasPath,
+                    'IF_PROTOCOL_DUPLICATE_MEMBER_SUFFIX',
+                    `Duplicate member suffix: ${alias}`
+                );
+                continue;
+            }
+            seenSuffixes.add(normalizedAlias);
+            aliases.push(alias);
         }
 
         const directionValue = ownValue(record, 'direction');
@@ -222,6 +256,7 @@ function normalizeMembers(
         if (name && direction) {
             members.push({
                 name,
+                ...(aliases.length === 0 ? {} : { aliases }),
                 direction,
                 ...(defaultExpression === undefined ? {} : { defaultExpression }),
             });

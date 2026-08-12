@@ -134,7 +134,7 @@ four JSON resources.
 npm run build --workspace @veriflow/schematic-core
 npx tsc -p packages/schematic-core/tsconfig.test.json
 node --test packages/schematic-core/dist-test/test/interfaceProtocolCatalog.test.js
-node scripts/test-node-release.mjs
+npm run test:release
 ```
 
 Expected: built-in imports/catalog and packaged JSON assertions fail.
@@ -155,7 +155,7 @@ SystemVerilog-only unbased literal `'0`.
 ```bash
 npm test --workspace @veriflow/schematic-core
 npm pack --dry-run --workspace @veriflow/schematic-core --json
-node scripts/test-node-release.mjs
+npm run test:release
 ```
 
 Expected: all tests pass and packed `dist/interfaces/builtins/*.json` files are
@@ -562,7 +562,7 @@ schematic-core.
 ```bash
 npm test --workspace @veriflow/flow-core
 npm test --workspace @veriflow/cli
-node scripts/test-node-release.mjs
+npm run test:release
 ```
 
 Expected: all tests pass from packed CLI artifacts as well as the workspace.
@@ -760,7 +760,7 @@ that source/test directories and Python artifacts remain absent.
 
 ```bash
 npm pack --dry-run --workspace @veriflow/schematic-core --json
-node scripts/test-node-release.mjs
+npm run test:release
 npm run vscode:prepublish --prefix veriflow-vscode
 node veriflow-vscode/out/test/vsixPackaging.test.js
 ```

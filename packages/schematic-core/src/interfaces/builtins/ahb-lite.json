@@ -1,0 +1,28 @@
+{
+  "format": "veriflow-interface-protocol",
+  "schemaVersion": 1,
+  "id": "amba.ahb-lite",
+  "name": "AHB-Lite",
+  "separator": "_",
+  "priority": 100,
+  "members": [
+    { "name": "haddr", "direction": "master-to-slave", "default": "0" },
+    { "name": "htrans", "direction": "master-to-slave", "default": "0" },
+    { "name": "hwrite", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "hsize", "direction": "master-to-slave", "default": "0" },
+    { "name": "hburst", "direction": "master-to-slave", "default": "0" },
+    { "name": "hprot", "direction": "master-to-slave", "default": "0" },
+    { "name": "hmastlock", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "hwdata", "direction": "master-to-slave", "default": "0" },
+    { "name": "hsel", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "hrdata", "direction": "slave-to-master", "default": "0" },
+    { "name": "hready", "aliases": ["hreadyout"], "direction": "slave-to-master", "default": "1'b1" },
+    { "name": "hresp", "direction": "slave-to-master", "default": "1'b0" },
+    { "name": "hexokay", "direction": "slave-to-master", "default": "1'b0" }
+  ],
+  "recognitionGroups": [
+    ["haddr", "htrans"],
+    ["hwdata", "hwrite"],
+    ["hrdata", "hresp"]
+  ]
+}

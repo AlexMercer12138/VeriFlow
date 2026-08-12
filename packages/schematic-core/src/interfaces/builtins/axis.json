@@ -1,0 +1,22 @@
+{
+  "format": "veriflow-interface-protocol",
+  "schemaVersion": 1,
+  "id": "amba.axis",
+  "name": "AXI-Stream",
+  "separator": "_",
+  "priority": 110,
+  "members": [
+    { "name": "tdata", "direction": "master-to-slave", "default": "0" },
+    { "name": "tstrb", "direction": "master-to-slave", "default": "-1" },
+    { "name": "tkeep", "direction": "master-to-slave", "default": "-1" },
+    { "name": "tlast", "direction": "master-to-slave", "default": "1'b1" },
+    { "name": "tid", "direction": "master-to-slave", "default": "0" },
+    { "name": "tdest", "direction": "master-to-slave", "default": "0" },
+    { "name": "tuser", "direction": "master-to-slave", "default": "0" },
+    { "name": "tvalid", "direction": "master-to-slave", "default": "1'b0" },
+    { "name": "tready", "direction": "slave-to-master", "default": "1'b0" }
+  ],
+  "recognitionGroups": [
+    ["tdata", "tvalid"]
+  ]
+}

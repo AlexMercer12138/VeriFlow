@@ -29,7 +29,14 @@ const publishable = [
     {
         name: '@veriflow/schematic-core',
         workspace: 'packages/schematic-core',
-        requiredFiles: ['dist/index.js', 'dist/model.js'],
+        requiredFiles: [
+            'dist/index.js',
+            'dist/model.js',
+            'dist/interfaces/builtins/axi4.json',
+            'dist/interfaces/builtins/axis.json',
+            'dist/interfaces/builtins/apb.json',
+            'dist/interfaces/builtins/ahb-lite.json',
+        ],
     },
     {
         name: '@veriflow/hdl-runtime',

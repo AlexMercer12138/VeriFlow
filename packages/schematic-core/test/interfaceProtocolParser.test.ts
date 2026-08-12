@@ -149,6 +149,34 @@ test('uses a zero priority when omitted and accepts an empty string separator', 
     assert.equal(result.protocol.separator, '');
 });
 
+test('normalizes unique case-insensitive member aliases', () => {
+    const result = parseInterfaceProtocolValue(protocol({
+        members: [{
+            name: 'hready',
+            aliases: ['hreadyout'],
+            direction: 'slave-to-master',
+        }],
+        recognitionGroups: [['hready']],
+    }));
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.deepEqual(result.protocol.members[0].aliases, ['hreadyout']);
+
+    const invalid = parseInterfaceProtocolValue(protocol({
+        members: [{
+            name: 'hready',
+            aliases: ['HREADY', 'hreadyout', 'HREADYOUT'],
+            direction: 'slave-to-master',
+        }],
+        recognitionGroups: [['hready']],
+    }));
+    assert.deepEqual(invalidDiagnostics(invalid).map(item => [item.path, item.code]), [
+        ['$.members[0].aliases[0]', 'IF_PROTOCOL_DUPLICATE_MEMBER_SUFFIX'],
+        ['$.members[0].aliases[2]', 'IF_PROTOCOL_DUPLICATE_MEMBER_SUFFIX'],
+    ]);
+});
+
 test('does not read inherited fields or invoke caller-controlled array methods', () => {
     const inherited = Object.create({ id: 'inherited' }) as Record<string, unknown>;
     Object.assign(inherited, protocol());
