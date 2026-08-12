@@ -400,7 +400,7 @@ test('reports a required connected load with no definite driver or default', () 
     ]);
 });
 
-test('reports each interface connection as unsupported without protocol inspection', () => {
+test('reports unknown interface endpoints instead of a blanket unsupported error', () => {
     const emptyModule: ArchDesignModuleDefinition = {
         key: 'rtl/empty.sv#empty',
         name: 'empty',
@@ -424,8 +424,10 @@ test('reports each interface connection as unsupported without protocol inspecti
     });
 
     assert.deepEqual(pathCodes(validateArchDesign(design, [emptyModule])), [
-        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
-        ['$.interfaceConnections[1]', 'AD_INTERFACE_UNSUPPORTED'],
+        ['$.interfaceConnections[0].master', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[0].slave', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[1].master', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[1].slave', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
     ]);
 });
 
@@ -875,7 +877,11 @@ test('snapshots every getter-backed design section and used field once during va
     const ports = observedArray('ports', [sourcePort, sinkPort]);
     const instances = observedArray('instances', [instance]);
     const connections = observedArray('connections', [connection]);
-    const interfaceConnections = observedArray('interfaceConnections', [{}]);
+    const interfaceConnections = observedArray('interfaceConnections', [{
+        name: 'missing',
+        master: { kind: 'port' as const, port: 'missing_master' },
+        slave: { kind: 'port' as const, port: 'missing_slave' },
+    }]);
     const designDefaults = entry('designDefaults', 'sink.value', "1'b0");
     const design = {
         format: 'vik-veriflow.arch-design',
@@ -908,7 +914,8 @@ test('snapshots every getter-backed design section and used field once during va
     });
     assert.ok(result);
     assert.deepEqual(pathCodes(result), [
-        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+        ['$.interfaceConnections[0].master', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[0].slave', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
     ]);
     assert.deepEqual(Object.fromEntries(reads), {
         'design.module': 1,
@@ -1378,7 +1385,8 @@ test('owns the complete resolved design snapshot after caller mutation', () => {
         origin: 'design',
     });
     assert.deepEqual(resolution.diagnostics.map(item => [item.path, item.code]), [
-        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+        ['$.interfaceConnections[0].master', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[0].slave', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
     ]);
     assert.ok(Object.isFrozen(resolution.ports));
     assert.ok(Object.isFrozen(resolution.ports[0]));

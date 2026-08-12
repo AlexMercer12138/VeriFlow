@@ -299,6 +299,7 @@ function testArchDesignInspectorProjection(): void {
     const validation: ArchDesignValidationResult = {
         valid: true,
         diagnostics: [],
+        warnings: [],
         effectiveDefaults: [{
             endpoint: 'u_sink.data',
             expression: "8'h00",

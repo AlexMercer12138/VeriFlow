@@ -349,7 +349,7 @@ test('exports per-bit inout control with collision-safe Verilog generate identif
     ].join('\n')));
 });
 
-test('blocks unsupported interface connections with frozen diagnostics only', () => {
+test('blocks invalid interface connections with frozen endpoint diagnostics', () => {
     const design = designOf({
         interfaceConnections: [{
             name: 'axi',
@@ -363,7 +363,8 @@ test('blocks unsupported interface connections with frozen diagnostics only', ()
     assert.equal(result.status, 'invalid');
     if (result.status !== 'invalid') return;
     assert.deepEqual(result.diagnostics.map(item => [item.path, item.code]), [
-        ['$.interfaceConnections[0]', 'AD_INTERFACE_UNSUPPORTED'],
+        ['$.interfaceConnections[0].master', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
+        ['$.interfaceConnections[0].slave', 'AD_INTERFACE_ENDPOINT_UNKNOWN'],
     ]);
     assert.equal(Object.isFrozen(result), true);
     assert.equal(Object.isFrozen(result.diagnostics), true);

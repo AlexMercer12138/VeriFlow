@@ -1,5 +1,9 @@
 import type { WidthValue } from '@veriflow/hdl-core/model';
 
+import {
+    createInterfaceProtocolCatalog,
+    type InterfaceProtocolCatalog,
+} from '../interfaces';
 import { isSafeDefaultExpression } from './defaults';
 import type {
     ArchDesignDefinitionParameter,
@@ -11,12 +15,22 @@ import type {
     ArchDesignConnection,
     ArchDesignEndpoint,
     ArchDesignInstance,
+    ArchDesignInterfaceConnection,
+    ArchDesignInterfaceEndpoint,
+    ArchDesignInterfaceOverride,
+    ArchDesignInterfacePort,
     ArchDesignParameterValue,
     ArchDesignPort,
     ArchDesignWidth,
 } from './model';
+import {
+    resolveArchDesignInterfaces,
+    type ArchDesignInterfacesResolution,
+} from './interfaces';
 import { compareCodeUnits } from './ordering';
 import type { ArchDesignDiagnostic } from './parser';
+
+const DEFAULT_INTERFACE_PROTOCOL_CATALOG = createInterfaceProtocolCatalog();
 
 export type ResolvedArchDesignModuleDefinition = Readonly<{
     key: string;
@@ -111,7 +125,9 @@ export type ArchDesignResolution = Readonly<{
     instances: readonly ResolvedArchDesignInstance[];
     endpointTargets: readonly ResolvedArchDesignEndpointTarget[];
     connections: readonly ResolvedArchDesignConnection[];
+    interfaces: ArchDesignInterfacesResolution;
     diagnostics: readonly ArchDesignDiagnostic[];
+    warnings: readonly ArchDesignDiagnostic[];
     effectiveDefaults: readonly ResolvedArchDesignDefault[];
     connectionDefaultSources: readonly ResolvedArchDesignConnectionDefaultSource[];
 }>;
@@ -133,7 +149,9 @@ type DesignSnapshot = Readonly<{
     ports: readonly ArchDesignPort[];
     instances: readonly ArchDesignInstance[];
     connections: readonly ArchDesignConnection[];
-    interfaceConnectionCount: number;
+    interfacePorts: readonly ArchDesignInterfacePort[];
+    interfaceOverrides: Readonly<Record<string, ArchDesignInterfaceOverride>>;
+    interfaceConnections: readonly ArchDesignInterfaceConnection[];
     defaults: Readonly<Record<string, string>>;
 }>;
 
@@ -143,6 +161,10 @@ type DesignSnapshotContext = Readonly<{
     instances: WeakMap<object, ArchDesignInstance>;
     endpoints: WeakMap<object, ArchDesignEndpoint>;
     connections: WeakMap<object, ArchDesignConnection>;
+    interfaceEndpoints: WeakMap<object, ArchDesignInterfaceEndpoint>;
+    interfacePorts: WeakMap<object, ArchDesignInterfacePort>;
+    interfaceOverrides: WeakMap<object, ArchDesignInterfaceOverride>;
+    interfaceConnections: WeakMap<object, ArchDesignInterfaceConnection>;
     records: WeakMap<object, Readonly<Record<string, unknown>>>;
 }>;
 
@@ -279,16 +301,97 @@ function snapshotDesignConnection(
     return snapshot;
 }
 
+function snapshotInterfaceEndpoint(
+    source: ArchDesignInterfaceEndpoint,
+    context: DesignSnapshotContext
+): ArchDesignInterfaceEndpoint {
+    const cached = context.interfaceEndpoints.get(source);
+    if (cached) return cached;
+    const kind = source.kind;
+    const snapshot = kind === 'port'
+        ? Object.freeze({ kind, port: source.port })
+        : Object.freeze({ kind, instance: source.instance, interface: source.interface });
+    context.interfaceEndpoints.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotInterfacePort(
+    source: ArchDesignInterfacePort,
+    context: DesignSnapshotContext
+): ArchDesignInterfacePort {
+    const cached = context.interfacePorts.get(source);
+    if (cached) return cached;
+    const name = source.name;
+    const protocol = source.protocol;
+    const role = source.role;
+    const memberPrefix = source.memberPrefix;
+    const memberSources = snapshotArray(source.members);
+    const members = memberSources.map(member => Object.freeze({
+        member: member.member,
+        width: snapshotDesignWidth(member.width, context),
+    }));
+    const snapshot = Object.freeze({
+        name,
+        protocol,
+        role,
+        memberPrefix,
+        members: Object.freeze(members),
+    });
+    context.interfacePorts.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotInterfaceOverride(
+    source: ArchDesignInterfaceOverride,
+    context: DesignSnapshotContext
+): ArchDesignInterfaceOverride {
+    const cached = context.interfaceOverrides.get(source);
+    if (cached) return cached;
+    const protocol = source.protocol;
+    const role = source.role;
+    const snapshot = Object.freeze({
+        ...(protocol === undefined ? {} : { protocol }),
+        ...(role === undefined ? {} : { role }),
+    });
+    context.interfaceOverrides.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotInterfaceConnection(
+    source: ArchDesignInterfaceConnection,
+    context: DesignSnapshotContext
+): ArchDesignInterfaceConnection {
+    const cached = context.interfaceConnections.get(source);
+    if (cached) return cached;
+    const name = source.name;
+    const masterSource = source.master;
+    const slaveSource = source.slave;
+    const defaultsSource = source.defaults;
+    const snapshot = Object.freeze({
+        name,
+        master: snapshotInterfaceEndpoint(masterSource, context),
+        slave: snapshotInterfaceEndpoint(slaveSource, context),
+        ...(defaultsSource === undefined
+            ? {}
+            : { defaults: snapshotRecord(defaultsSource, context) }),
+    });
+    context.interfaceConnections.set(source, snapshot);
+    return snapshot;
+}
+
 function snapshotDesign(source: ArchDesign): DesignSnapshot {
     const moduleName = source.module;
     const portSources = source.ports;
     const instanceSources = source.instances;
     const connectionSources = source.connections;
+    const interfacePortSources = source.interfacePorts ?? [];
+    const interfaceOverrideSources = source.interfaceOverrides ?? {};
     const interfaceConnectionSources = source.interfaceConnections;
     const defaultSources = source.defaults;
     const portItems = snapshotArray(portSources);
     const instanceItems = snapshotArray(instanceSources);
     const connectionItems = snapshotArray(connectionSources);
+    const interfacePortItems = snapshotArray(interfacePortSources);
     const interfaceConnectionItems = snapshotArray(interfaceConnectionSources);
     const context: DesignSnapshotContext = {
         widths: new WeakMap(),
@@ -296,6 +399,10 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
         instances: new WeakMap(),
         endpoints: new WeakMap(),
         connections: new WeakMap(),
+        interfaceEndpoints: new WeakMap(),
+        interfacePorts: new WeakMap(),
+        interfaceOverrides: new WeakMap(),
+        interfaceConnections: new WeakMap(),
         records: new WeakMap(),
     };
     const defaults = snapshotRecord(defaultSources, context);
@@ -308,12 +415,29 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
     const connections = connectionItems.map(connection =>
         snapshotDesignConnection(connection, context)
     );
+    const interfacePorts = interfacePortItems.map(port =>
+        snapshotInterfacePort(port, context)
+    );
+    const interfaceOverrides: Record<string, ArchDesignInterfaceOverride> = {};
+    for (const key of Object.keys(interfaceOverrideSources).sort(compareCodeUnits)) {
+        Object.defineProperty(interfaceOverrides, key, {
+            value: snapshotInterfaceOverride(interfaceOverrideSources[key], context),
+            enumerable: true,
+            configurable: false,
+            writable: false,
+        });
+    }
+    const interfaceConnections = interfaceConnectionItems.map(connection =>
+        snapshotInterfaceConnection(connection, context)
+    );
     return Object.freeze({
         moduleName,
         ports: Object.freeze(ports),
         instances: Object.freeze(instances),
         connections: Object.freeze(connections),
-        interfaceConnectionCount: interfaceConnectionItems.length,
+        interfacePorts: Object.freeze(interfacePorts),
+        interfaceOverrides: Object.freeze(interfaceOverrides),
+        interfaceConnections: Object.freeze(interfaceConnections),
         defaults,
     });
 }
@@ -588,7 +712,8 @@ function declarationId(
 
 export function resolveArchDesign(
     design: ArchDesign,
-    definitionSources: readonly ArchDesignModuleDefinition[]
+    definitionSources: readonly ArchDesignModuleDefinition[],
+    interfaceCatalog: InterfaceProtocolCatalog = DEFAULT_INTERFACE_PROTOCOL_CATALOG
 ): ArchDesignResolution {
     const designSnapshot = snapshotDesign(design);
     const moduleName = designSnapshot.moduleName;
@@ -891,13 +1016,19 @@ export function resolveArchDesign(
         }));
     }
 
-    for (let index = 0; index < designSnapshot.interfaceConnectionCount; index += 1) {
-        diagnostics.push(diagnostic(
-            `$.interfaceConnections[${index}]`,
-            'AD_INTERFACE_UNSUPPORTED',
-            'Interface connections are not supported by scalar validation'
-        ));
-    }
+    const interfaces = resolveArchDesignInterfaces({
+        interfacePorts: designSnapshot.interfacePorts,
+        interfaceOverrides: designSnapshot.interfaceOverrides,
+        interfaceConnections: designSnapshot.interfaceConnections,
+        instances: resolvedInstances,
+        endpointTargets: targets,
+        scalarConnections: resolvedConnections,
+        catalog: interfaceCatalog,
+    });
+    diagnostics.push(...interfaces.diagnostics);
+    const interfaceOccupiedTargets = new Set(
+        interfaces.occupancy.map(item => item.targetIdentity)
+    );
 
     const designDefaults = new Map<string, DefaultSelection>();
     for (const key of defaultEntries(designSnapshot.defaults)) {
@@ -936,6 +1067,7 @@ export function resolveArchDesign(
     const effectiveDefaults: ResolvedArchDesignDefault[] = [];
     for (const endpoint of targets) {
         if (endpoint.role !== 'load') continue;
+        if (interfaceOccupiedTargets.has(endpoint.identity)) continue;
         const connected = connectedEndpoints.get(endpoint.identity);
         if (
             connected
@@ -1032,7 +1164,9 @@ export function resolveArchDesign(
         instances: Object.freeze(resolvedInstances),
         endpointTargets: Object.freeze(targets),
         connections: Object.freeze(resolvedConnections),
+        interfaces,
         diagnostics: Object.freeze(diagnostics),
+        warnings: interfaces.warnings,
         effectiveDefaults: Object.freeze(effectiveDefaults),
         connectionDefaultSources: Object.freeze(connectionDefaultSources),
     });

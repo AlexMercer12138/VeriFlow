@@ -816,7 +816,7 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
                 revision,
                 design,
                 catalog,
-                validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+                validation: { valid: true, diagnostics: [], warnings: [], effectiveDefaults: [] },
             }]) {
                 window.dispatchEvent(new MessageEvent('message', { data }));
             }
@@ -1272,7 +1272,7 @@ async function publishArchDesignFixture(
             revision,
             design: fixture.design,
             catalog: fixture.catalog,
-            validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+            validation: { valid: true, diagnostics: [], warnings: [], effectiveDefaults: [] },
         }]) {
             window.dispatchEvent(new MessageEvent('message', { data }));
         }
@@ -2508,7 +2508,7 @@ test('Arch Design serializes layout saves with semantic edits', {
                 revision: 'fixture:serialized:3',
                 design: fixture.design,
                 catalog: fixture.catalog,
-                validation: { valid: true, diagnostics: [], effectiveDefaults: [] },
+                validation: { valid: true, diagnostics: [], warnings: [], effectiveDefaults: [] },
             }]) {
                 window.dispatchEvent(new MessageEvent('message', { data }));
             }

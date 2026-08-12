@@ -1,3 +1,4 @@
+import type { InterfaceProtocolCatalog } from '../interfaces';
 import type { ArchDesignModuleDefinition } from './definitions';
 import type { ArchDesign } from './model';
 import { compareCodeUnits } from './ordering';
@@ -15,14 +16,16 @@ export type {
 export type ArchDesignValidationResult = Readonly<{
     valid: boolean;
     diagnostics: readonly ArchDesignDiagnostic[];
+    warnings: readonly ArchDesignDiagnostic[];
     effectiveDefaults: readonly ArchDesignEffectiveDefault[];
 }>;
 
 export function validateArchDesign(
     design: ArchDesign,
-    definitions: readonly ArchDesignModuleDefinition[]
+    definitions: readonly ArchDesignModuleDefinition[],
+    interfaceCatalog?: InterfaceProtocolCatalog
 ): ArchDesignValidationResult {
-    const resolution = resolveArchDesign(design, definitions);
+    const resolution = resolveArchDesign(design, definitions, interfaceCatalog);
     const diagnostics = resolution.diagnostics
         .map(item => Object.freeze({
             path: item.path,
@@ -39,9 +42,15 @@ export function validateArchDesign(
             ...(item.connection === undefined ? {} : { connection: item.connection }),
         })
     );
+    const warnings = resolution.warnings.map(item => Object.freeze({
+        path: item.path,
+        code: item.code,
+        message: item.message,
+    }));
     return Object.freeze({
         valid: diagnostics.length === 0,
         diagnostics: Object.freeze(diagnostics),
+        warnings: Object.freeze(warnings),
         effectiveDefaults: Object.freeze(effectiveDefaults),
     });
 }

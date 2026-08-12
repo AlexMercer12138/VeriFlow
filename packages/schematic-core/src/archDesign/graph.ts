@@ -56,6 +56,7 @@ function projectValidation(resolution: ArchDesignResolution): ArchDesignValidati
     return Object.freeze({
         valid: diagnostics.length === 0,
         diagnostics: Object.freeze(diagnostics),
+        warnings: resolution.warnings,
         effectiveDefaults: Object.freeze(effectiveDefaults),
     });
 }
@@ -293,11 +294,18 @@ export function projectArchDesignGraph(
         moduleName: resolution.moduleName,
         nodes,
         networks,
-        diagnostics: resolution.diagnostics.map(item => ({
-            severity: 'error',
-            code: item.code,
-            message: `${item.path}: ${item.message}`,
-        })),
+        diagnostics: [
+            ...resolution.diagnostics.map(item => ({
+                severity: 'error' as const,
+                code: item.code,
+                message: `${item.path}: ${item.message}`,
+            })),
+            ...resolution.warnings.map(item => ({
+                severity: 'warning' as const,
+                code: item.code,
+                message: `${item.path}: ${item.message}`,
+            })),
+        ],
     };
     return Object.freeze({ graph, validation });
 }
