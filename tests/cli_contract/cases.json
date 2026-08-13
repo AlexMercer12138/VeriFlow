@@ -27,7 +27,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "VeriFlow 1.4.0\n",
+        "stdout": "VeriFlow 1.4.1\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1069,7 +1069,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "VeriFlow 1.4.0\n",
+        "stdout": "VeriFlow 1.4.1\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},

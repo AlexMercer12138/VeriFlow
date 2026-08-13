@@ -3,7 +3,7 @@
   "displayName": "Verilog Design Flow",
   "description": "Verilog design workflow for VS Code: analyze, compile, simulate, edit schematics, view waveforms, and generate testbenches",
   "icon": "media/icon.png",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "Vikai-mercer",
   "license": "MIT",
   "engines": {
@@ -330,11 +330,11 @@
   },
   "dependencies": {
     "@antv/x6": "3.1.7",
-    "@veriflow/flow-core": "1.4.0",
-    "@veriflow/hdl-core": "1.4.0",
-    "@veriflow/hdl-runtime": "1.4.0",
-    "@veriflow/schematic-core": "1.4.0",
-    "@veriflow/waveform-runtime": "1.4.0",
+    "@veriflow/flow-core": "1.4.1",
+    "@veriflow/hdl-core": "1.4.1",
+    "@veriflow/hdl-runtime": "1.4.1",
+    "@veriflow/schematic-core": "1.4.1",
+    "@veriflow/waveform-runtime": "1.4.1",
     "lucide": "1.28.0",
     "web-tree-sitter": "0.26.11"
   },
