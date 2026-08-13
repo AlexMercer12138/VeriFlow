@@ -670,8 +670,16 @@ function testTopInterfaceResynchronizationProjection(): void {
         undefined,
         'interface:port:m_link'
     );
+    const nodeSelectionModel = projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        ['interface:port:m_link'],
+        undefined
+    );
 
     assert.strictEqual(model.kind, 'interface');
+    assert.strictEqual(nodeSelectionModel.kind, 'interface');
+    assert.strictEqual(fieldById(nodeSelectionModel, 'interface-name').value, 'M_LINK');
     assert.strictEqual(fieldById(model, 'interface-top-level').value, 'Yes');
     assert.strictEqual(fieldById(model, 'interface-name').value, 'M_LINK');
     assert.deepStrictEqual(fieldById(model, 'interface-name').commit?.('ddr3'), {

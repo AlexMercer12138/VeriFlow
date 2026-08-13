@@ -1062,6 +1062,10 @@ export function projectArchDesignInspector(
         const model = projectPortInspector(snapshot, nodeId.slice('port:'.length));
         if (model) return model;
     }
+    if (nodeId?.startsWith('interface:port:')) {
+        const model = projectInterfaceAuthoringInspector(snapshot, nodeId);
+        if (model) return model;
+    }
     return projectDesignInspector(snapshot);
 }
 

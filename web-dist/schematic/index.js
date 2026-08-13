@@ -45847,6 +45847,10 @@
       const model = projectPortInspector(snapshot, nodeId.slice("port:".length));
       if (model) return model;
     }
+    if (nodeId?.startsWith("interface:port:")) {
+      const model = projectInterfaceAuthoringInspector(snapshot, nodeId);
+      if (model) return model;
+    }
     return projectDesignInspector(snapshot);
   }
   function ownsArchDesignPin(node, pin2) {
@@ -47775,18 +47779,56 @@
     refreshNetworkSelectionStyles();
     updateSelectionStatus([]);
   }
-  function selectPinLabel(event) {
+  function eventClientPoint(event) {
+    if (event instanceof MouseEvent) return { x: event.clientX, y: event.clientY };
+    if (event instanceof TouchEvent) {
+      const touch = event.touches[0] ?? event.changedTouches[0];
+      if (touch) return { x: touch.clientX, y: touch.clientY };
+    }
+    return void 0;
+  }
+  function portAtSelectionBoxPoint(box, event) {
+    const point = eventClientPoint(event);
+    const nodeId = box.getAttribute("data-cell-id");
+    const node = nodeId ? graph.getCellById(nodeId) : void 0;
+    const view = node && graph.findViewByCell(node);
+    if (!point || !node || !view) return void 0;
+    const portBodies = view.container.querySelectorAll(".x6-port-body[port]");
+    for (let index2 = 0; index2 < portBodies.length; index2 += 1) {
+      const portBody = portBodies[index2];
+      const port2 = portBody.getAttribute("port");
+      if (!port2) continue;
+      const label = portBody.parentElement?.querySelector(".x6-port-label");
+      const hitTargets = label ? [portBody, label] : [portBody];
+      if (hitTargets.some((target) => {
+        const bounds = target.getBoundingClientRect();
+        return point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
+      })) return { node, port: port2 };
+    }
+    return void 0;
+  }
+  function selectPinTarget(event) {
     if (!(event.target instanceof Element)) return;
     const label = event.target.closest(".x6-port-label");
-    if (!label) return;
+    if (label) {
+      event.stopPropagation();
+      const port2 = label.parentElement?.querySelector(".x6-port-body[port]")?.getAttribute("port");
+      const nodeId = label.closest(".x6-node[data-cell-id]")?.getAttribute("data-cell-id");
+      const node = nodeId ? graph.getCellById(nodeId) : void 0;
+      if (node) selectPin(node, port2);
+      return;
+    }
+    const selectionBox = event.target.closest(
+      ".x6-widget-selection-box[data-cell-id]"
+    );
+    if (!selectionBox) return;
+    const hit = portAtSelectionBoxPoint(selectionBox, event);
+    if (!hit) return;
     event.stopPropagation();
-    const port2 = label.parentElement?.querySelector(".x6-port-body[port]")?.getAttribute("port");
-    const nodeId = label.closest(".x6-node[data-cell-id]")?.getAttribute("data-cell-id");
-    const node = nodeId ? graph.getCellById(nodeId) : void 0;
-    if (node) selectPin(node, port2);
+    selectPin(hit.node, hit.port);
   }
-  document.addEventListener("mousedown", selectPinLabel, true);
-  document.addEventListener("touchstart", selectPinLabel, true);
+  document.addEventListener("mousedown", selectPinTarget, true);
+  document.addEventListener("touchstart", selectPinTarget, true);
   graph.on("node:port:click", ({ node, port: port2 }) => {
     selectPin(node, port2);
   });

@@ -2023,10 +2023,40 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         const irqLabel = irqPort.locator('.x6-port-label');
         const irqLabelText = irqLabel.locator('.veriflow-pin-label');
         const irqLabelHitArea = irqLabel.locator('.veriflow-pin-label-hit-area');
+        const irqLabelWeightBefore = await irqLabelText.evaluate(element =>
+            getComputedStyle(element).fontWeight
+        );
         const irqLabelBackgroundBefore = await irqLabelHitArea.evaluate(element =>
             getComputedStyle(element).fill
         );
-        await irqLabel.click();
+        const masterNode = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"]'
+        );
+        await masterNode.locator('rect').first().click({
+            position: { x: 48, y: 24 },
+        });
+        await page.locator(
+            '.x6-widget-selection-box[data-cell-id="instance:u_master_free"]'
+        ).waitFor();
+        const irqBounds = await irq.boundingBox();
+        assert.ok(irqBounds);
+        await page.mouse.click(
+            irqBounds.x + irqBounds.width / 2,
+            irqBounds.y + irqBounds.height / 2
+        );
+        await page.locator('#inspector[data-kind="pin"]').waitFor();
+        await masterNode.locator('rect').first().click({
+            position: { x: 48, y: 24 },
+        });
+        await page.locator(
+            '.x6-widget-selection-box[data-cell-id="instance:u_master_free"]'
+        ).waitFor();
+        const irqLabelBounds = await irqLabel.boundingBox();
+        assert.ok(irqLabelBounds);
+        await page.mouse.click(
+            irqLabelBounds.x + irqLabelBounds.width / 2,
+            irqLabelBounds.y + irqLabelBounds.height / 2
+        );
         await page.locator('#inspector[data-kind="pin"]').waitFor();
         assert.equal(await irq.evaluate(element =>
             element.classList.contains('veriflow-pin-selected')
@@ -2034,9 +2064,15 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         assert.equal(await irqLabel.evaluate(element =>
             element.classList.contains('veriflow-pin-selected')
         ), true);
+        assert.equal(await irqLabelText.evaluate(element => {
+            const clip = element.closest('svg.veriflow-pin-clip');
+            const bounds = (element as SVGGraphicsElement).getBBox();
+            const clipWidth = Number(clip?.getAttribute('width') ?? 0);
+            return bounds.x >= -0.5 && bounds.x + bounds.width <= clipWidth + 0.5;
+        }), true);
         assert.equal(
             await irqLabelText.evaluate(element => getComputedStyle(element).fontWeight),
-            '700'
+            irqLabelWeightBefore
         );
         assert.notEqual(
             await irqLabelHitArea.evaluate(element => getComputedStyle(element).fill),
@@ -2131,9 +2167,15 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         );
         assert.notEqual(selectedColors.label, labelStylesBefore.fill);
         assert.notEqual(selectedLabelBackground, labelBackgroundBefore);
+        assert.equal(await aggregateLabelText.evaluate(element => {
+            const clip = element.closest('svg.veriflow-pin-clip');
+            const bounds = (element as SVGGraphicsElement).getBBox();
+            const clipWidth = Number(clip?.getAttribute('width') ?? 0);
+            return bounds.x >= -0.5 && bounds.x + bounds.width <= clipWidth + 0.5;
+        }), true);
         assert.equal(await aggregateLabelText.evaluate(element =>
             getComputedStyle(element).fontWeight
-        ), '700');
+        ), labelStylesBefore.fontWeight);
         assert.equal(Number.parseFloat(selectedColors.circleStrokeWidth), 3);
         assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.M_FREE');
         assert.equal(await page.locator('#interface-protocol').textContent(), 'Project Link');
@@ -2453,7 +2495,9 @@ test('Arch Design interface Inspector edits defaults, overrides, and top-level s
         });
 
         await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:resync', false, false);
-        await pin('interface:port:m_link', fixture.interfaceIds.top).click();
+        await page.locator(
+            '.x6-node[data-cell-id="interface:port:m_link"] rect'
+        ).first().click();
         await page.locator('#inspector[data-kind="interface"]').waitFor();
         assert.equal(await page.locator('#interface-top-level').textContent(), 'Yes');
         await page.locator('#interface-name').fill('ddr3');

@@ -486,6 +486,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /class: 'veriflow-node-accent veriflow-interface-accent'/);
     assert.match(webviewSource, /class: 'veriflow-pin-label-hit-area'/);
     assert.match(webviewSource, /'veriflow-pin-label veriflow-interface-label'/);
+    assert.match(webviewSource, /function portAtSelectionBoxPoint\(/);
     assert.doesNotMatch(webviewSource, /interfaceTag|interfaceTagText/);
     assert.doesNotMatch(
         webviewSource,
@@ -614,7 +615,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /portLabelHitArea:\s*{[^}]*pointerEvents: 'all',/s);
     assert.match(
         webviewSource,
-        /document\.addEventListener\('mousedown', selectPinLabel, true\)/
+        /document\.addEventListener\('mousedown', selectPinTarget, true\)/
     );
     assert.doesNotMatch(webviewSource, /selector: 'portLabel'/);
     assert.doesNotMatch(webviewSource, /tagName: 'clipPath'/);
