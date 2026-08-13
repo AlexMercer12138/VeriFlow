@@ -529,6 +529,17 @@ dialog::backdrop {
     stroke-width: 3px !important;
 }
 
+.x6-port-body.veriflow-connection-pending [data-selector="portBody"],
+.x6-port-body.veriflow-connection-pending {
+    fill: var(--schematic-wire-selected) !important;
+    stroke: var(--schematic-focus) !important;
+    stroke-width: 3px !important;
+}
+
+.veriflow-connection-preview-line {
+    vector-effect: non-scaling-stroke;
+}
+
 .x6-port-label.veriflow-pin-selected [data-selector="text"],
 .veriflow-pin-label.veriflow-pin-selected {
     fill: var(--schematic-text) !important;

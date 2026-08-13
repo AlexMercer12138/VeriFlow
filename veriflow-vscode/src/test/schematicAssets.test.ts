@@ -95,11 +95,6 @@ function sourceSection(
 }
 
 function assertCanonicalSegmentRendering(source: string): void {
-    assert.strictEqual(
-        source.match(/\bgraph\.addEdge\(/g)?.length ?? 0,
-        1,
-        'the renderer must have exactly one graph.addEdge call'
-    );
     const renderer = sourceSection(
         source,
         'function renderNetworks(',
@@ -510,20 +505,19 @@ async function testSchematicAssets(): Promise<void> {
             `webview support source is missing ${marker}`
         );
     }
-    assert.match(
-        webviewSource,
-        /magnetConnectable:\s*\(\)\s*=>\s*connectionAuthoringEnabled\(\)/
-    );
-    assert.match(webviewSource, /graph\.on\('edge:connected'/);
+    assert.match(webviewSource, /magnetConnectable:\s*false/);
+    assert.doesNotMatch(webviewSource, /graph\.on\('edge:connected'/);
+    assert.match(webviewSource, /graph\.on\('node:port:click'/);
+    assert.match(webviewSource, /function normalizeConnectionTerminals\(/);
     const completedConnection = sourceSection(
         webviewSource,
-        "graph.on('edge:connected'",
-        "\ngraph.on('edge:click'",
+        'function postConnection(',
+        '\nfunction handleConnectionPinClick(',
         'Arch Design connection completion'
     );
     assert.match(
         completedConnection,
-        /graph\.removeCell\(edge\);[^]*postArchDesignEdit\(\{[^]*type:\s*'connect'/,
+        /cancelPendingConnection\(\);[^]*postArchDesignEdit\(\{[^]*type:\s*'connect'/,
         'preview edge removal must precede the revision-bound edit'
     );
     const editPosting = sourceSection(

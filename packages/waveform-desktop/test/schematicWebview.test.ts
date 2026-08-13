@@ -118,45 +118,6 @@ async function dragElement(
     await page.mouse.up();
 }
 
-async function dragBetween(
-    page: Page,
-    source: Locator,
-    target: Locator,
-    expectTemporaryEdge = true
-): Promise<void> {
-    await source.waitFor({ state: 'visible' });
-    await target.waitFor({ state: 'visible' });
-    const sourceMagnet = source.locator('[data-selector="portBody"]');
-    const targetMagnet = target.locator('[data-selector="portBody"]');
-    const sourceBounds = await (await sourceMagnet.count() > 0
-        ? sourceMagnet : source).boundingBox();
-    const targetBounds = await (await targetMagnet.count() > 0
-        ? targetMagnet : target).boundingBox();
-    assert.ok(sourceBounds && targetBounds);
-    const sourcePoint = {
-        x: sourceBounds.x + sourceBounds.width / 2,
-        y: sourceBounds.y + sourceBounds.height / 2,
-    };
-    const targetPoint = {
-        x: targetBounds.x + targetBounds.width / 2,
-        y: targetBounds.y + targetBounds.height / 2,
-    };
-    const existingEdges = await page.locator('#canvas .x6-edge').count();
-    await page.mouse.move(sourcePoint.x, sourcePoint.y);
-    await page.mouse.down();
-    await page.mouse.move(
-        (sourcePoint.x + targetPoint.x) / 2,
-        (sourcePoint.y + targetPoint.y) / 2,
-        { steps: 5 }
-    );
-    assert.equal(
-        await page.locator('#canvas .x6-edge').count(),
-        existingEdges + (expectTemporaryEdge ? 1 : 0)
-    );
-    await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 5 });
-    await page.mouse.up();
-}
-
 async function verticalNodeOrder(page: Page, nodeIds: readonly string[]): Promise<string[]> {
     const centers = await Promise.all(nodeIds.map(async nodeId => {
         const bounds = await page.locator(
@@ -857,7 +818,95 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
     const targetPin = page.locator(
         '.x6-node[data-cell-id="instance:u_sink"] .x6-port-body[port="instance:u_sink:in"]'
     );
-    await dragBetween(page, sourcePin, targetPin);
+    const connectionPreview = page.locator(
+        '#canvas .x6-edge[data-cell-id="veriflow:connection-preview"]'
+    );
+    await targetPin.click();
+    await targetPin.click();
+    await connectionPreview.waitFor({ state: 'detached' });
+    await targetPin.click();
+    await page.locator('#connect-button').click();
+    await connectionPreview.waitFor({ state: 'detached' });
+    await page.locator('#connect-button').click();
+    await targetPin.click();
+    await publish('fixture:ad-connect:refresh', design, disconnectedGraph);
+    await connectionPreview.waitFor({ state: 'detached' });
+    assert.equal(await page.locator('#canvas .veriflow-connection-pending').count(), 0);
+    if (await page.locator('#connect-button').getAttribute('aria-pressed') !== 'true') {
+        await page.locator('#connect-button').click();
+    }
+    const sinkNode = page.locator('.x6-node[data-cell-id="instance:u_sink"]');
+    await sinkNode.locator('rect').first().click({ position: { x: 40, y: 24 } });
+    await page.locator(
+        '.x6-widget-selection-box[data-cell-id="instance:u_sink"]'
+    ).waitFor();
+    const selectedTargetBounds = await targetPin.boundingBox();
+    assert.ok(selectedTargetBounds);
+    await page.mouse.click(
+        selectedTargetBounds.x + selectedTargetBounds.width / 2,
+        selectedTargetBounds.y + selectedTargetBounds.height / 2
+    );
+    assert.equal(
+        await targetPin.evaluate(element =>
+            element.classList.contains('veriflow-connection-pending')
+        ),
+        true
+    );
+    await connectionPreview.waitFor({ state: 'attached' });
+    const sourceNode = page.locator('.x6-node[data-cell-id="instance:u_source"]');
+    await sourceNode.locator('rect').first().click({ position: { x: 40, y: 24 } });
+    await page.locator(
+        '.x6-widget-selection-box[data-cell-id="instance:u_source"]'
+    ).waitFor();
+    const canvasBounds = await page.locator('#canvas').boundingBox();
+    assert.ok(canvasBounds);
+    await page.mouse.move(
+        canvasBounds.x + canvasBounds.width / 2,
+        canvasBounds.y + canvasBounds.height / 2
+    );
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(
+        canvasBounds.x + canvasBounds.width / 2 - 96,
+        canvasBounds.y + canvasBounds.height / 2 + 48,
+        { steps: 4 }
+    );
+    await page.mouse.up({ button: 'right' });
+    assert.equal(
+        await targetPin.evaluate(element =>
+            element.classList.contains('veriflow-connection-pending')
+        ),
+        true
+    );
+    const selectedSourceBounds = await sourcePin.boundingBox();
+    assert.ok(selectedSourceBounds);
+    await page.mouse.click(
+        selectedSourceBounds.x + selectedSourceBounds.width / 2,
+        selectedSourceBounds.y + selectedSourceBounds.height / 2
+    );
+    assert.equal(
+        await page.locator('#connect-button').getAttribute('aria-pressed'),
+        'true'
+    );
+    assert.equal(
+        await targetPin.evaluate(element =>
+            element.classList.contains('veriflow-connection-pending')
+        ),
+        false
+    );
+    await page.waitForFunction(() => (window as unknown as {
+        __veriflowMessages: Array<{ type?: string }>;
+    }).__veriflowMessages.some(message => message.type === 'saveLayout'));
+    await page.evaluate(() => {
+        for (const revision of [
+            'fixture:ad-connect:pan-saved:1',
+            'fixture:ad-connect:pan-saved:2',
+        ]) {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision,
+            } }));
+        }
+    });
     await page.waitForFunction(() => {
         const state = window as unknown as { __veriflowMessages: Array<{
             type?: string;
@@ -878,7 +927,7 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
     });
     assert.deepEqual(editMessages, [{
         type: 'editArchDesign',
-        revision: 'fixture:ad-connect:1',
+        revision: 'fixture:ad-connect:pan-saved:2',
         edit: {
             type: 'connect',
             source: { kind: 'instance', instance: 'u_source', port: 'out' },
@@ -2616,7 +2665,8 @@ test('Arch Design top-level Master acts as a Slave at the inner connection bound
         );
         assert.equal(await master.getAttribute('magnet'), 'true');
         assert.equal(await topLevelMaster.getAttribute('magnet'), 'true');
-        await dragBetween(page, master, topLevelMaster);
+        await topLevelMaster.click();
+        await master.click();
         await page.waitForFunction(() => (window as unknown as {
             __veriflowMessages: Array<{ edit?: { type?: string } }>;
         }).__veriflowMessages.some(message => message.edit?.type === 'connectInterface'));
@@ -2674,9 +2724,30 @@ test('Arch Design rejects incompatible and occupied interface connection targets
         const scalar = pin('instance:u_master_free', 'instance:u_master_free:irq');
         assert.equal(await memberOccupied.getAttribute('magnet'), 'false');
         const editsBefore = (await archDesignEditMessages(page)).length;
-        await dragBetween(page, scalar, slave);
-        await page.waitForFunction(() => document.querySelectorAll('#canvas .x6-edge').length === 8);
-        await dragBetween(page, master, otherProtocol);
+        await scalar.click();
+        await slave.click();
+        assert.equal(
+            await scalar.evaluate(element =>
+                element.classList.contains('veriflow-connection-pending')
+            ),
+            true
+        );
+        await scalar.click();
+        await master.click();
+        await otherProtocol.click();
+        assert.equal(
+            await master.evaluate(element =>
+                element.classList.contains('veriflow-connection-pending')
+            ),
+            true
+        );
+        await page.keyboard.press('Escape');
+        assert.equal(
+            await master.evaluate(element =>
+                element.classList.contains('veriflow-connection-pending')
+            ),
+            false
+        );
         assert.equal((await archDesignEditMessages(page)).length, editsBefore);
     } finally {
         await electronApp.close();
@@ -2767,11 +2838,20 @@ test('Arch Design rejects scalar connections to occupied expanded interface memb
             assert.equal(await member.getAttribute('magnet'), 'false');
         }
         const editsBefore = (await archDesignEditMessages(page)).length;
-        await dragBetween(page, freeRequest, occupiedMembers[2]);
+        await freeRequest.click();
+        await occupiedMembers[2].dispatchEvent('click');
+        assert.equal(
+            await freeRequest.evaluate(element =>
+                element.classList.contains('veriflow-connection-pending')
+            ),
+            true
+        );
+        await page.keyboard.press('Escape');
         assert.equal((await archDesignEditMessages(page)).length, editsBefore);
         await page.locator('#connect-button').click();
         await page.locator('#connect-button').click();
-        await dragBetween(page, freeRequest, scalarSink);
+        await scalarSink.click();
+        await freeRequest.click();
         assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
             type: 'connect',
             source: {
@@ -2829,7 +2909,8 @@ test('Arch Design interfaces render distinct routes and only connect Master to S
         assert.equal(await slave.getAttribute('magnet'), 'true');
         assert.equal(await memberOccupied.getAttribute('magnet'), 'false');
         assert.equal(await unknown.getAttribute('magnet'), 'false');
-        await dragBetween(page, master, slave);
+        await slave.click();
+        await master.click();
         await page.waitForFunction(() => (window as unknown as {
             __veriflowMessages: Array<{
                 revision?: string;
@@ -2861,7 +2942,9 @@ test('Arch Design interfaces render distinct routes and only connect Master to S
             await page.locator('#connect-button').click();
         }
         const editsBeforeUnknownDrag = (await archDesignEditMessages(page)).length;
-        await dragBetween(page, master, unknown, false);
+        await master.click();
+        await unknown.click({ force: true });
+        await page.keyboard.press('Escape');
         assert.equal((await archDesignEditMessages(page)).length, editsBeforeUnknownDrag);
         const route = page.locator(
             '#canvas .x6-edge[data-cell-id^="network:interface:control:segment:"] '
@@ -4432,7 +4515,7 @@ test('Arch Design first render fits once without persisting an automatic viewpor
 });
 
 test('schematic runtime paints responsive geometry and authors Arch Design connections', {
-    timeout: 60_000,
+    timeout: 90_000,
 }, async () => {
     rmSync(screenshotRoot, { recursive: true, force: true });
     mkdirSync(screenshotRoot, { recursive: true });

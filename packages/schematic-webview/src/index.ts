@@ -3,6 +3,7 @@ import {
     MiniMap,
     Selection,
     type Cell,
+    type Edge,
     type Node,
 } from '@antv/x6';
 import {
@@ -686,40 +687,8 @@ const graph = new Graph({
         vertexMovable: false,
         vertexAddable: false,
         vertexDeletable: false,
-        magnetConnectable: () => connectionAuthoringEnabled(),
+        magnetConnectable: false,
         toolsAddable: false,
-    },
-    connecting: {
-        snap: { radius: 20 },
-        allowBlank: false,
-        allowLoop: false,
-        allowNode: false,
-        allowEdge: false,
-        allowPort: true,
-        allowMulti: true,
-        highlight: true,
-        validateMagnet({ cell, magnet }): boolean {
-            return connectionSourceFor(cell, magnet.getAttribute('port')) !== undefined;
-        },
-        validateConnection({ sourceCell, targetCell, sourcePort, targetPort }): boolean {
-            const source = connectionSourceFor(sourceCell, sourcePort);
-            const target = connectionTargetFor(targetCell, targetPort);
-            return connectionTerminalsCompatible(source, target);
-        },
-        createEdge() {
-            return this.createEdge({
-                shape: 'veriflow-network',
-                attrs: {
-                    line: {
-                        stroke: 'var(--schematic-wire-selected)',
-                        strokeWidth: 2,
-                        strokeDasharray: '5 3',
-                        pointerEvents: 'none',
-                    },
-                },
-                zIndex: 3,
-            });
-        },
     },
     preventDefaultContextMenu: true,
 });
@@ -767,6 +736,9 @@ let queuedArchDesignCommand: QueuedArchDesignCommand | undefined;
 let archDesignSemanticEditInFlight = false;
 let unloadLayoutForwarded = false;
 let archDesignGraphRefreshInProgress = false;
+type PendingConnection = Readonly<{ nodeId: string; portId: string }>;
+let pendingConnection: PendingConnection | undefined;
+let pendingConnectionPreview: Edge | undefined;
 
 function connectionAuthoringEnabled(): boolean {
     return archDesignEditable
@@ -846,38 +818,135 @@ function connectionTerminal(
     return endpoint ? { kind: 'scalar', endpoint, pin } : undefined;
 }
 
-function connectionTerminalsCompatible(
-    source: ConnectionTerminal | undefined,
-    target: ConnectionTerminal | undefined
-): boolean {
-    if (!source || !target || source.pin.id === target.pin.id
-        || source.kind !== target.kind) return false;
-    return source.kind === 'scalar'
-        || (target.kind === 'interface' && source.protocol === target.protocol);
+function normalizeConnectionTerminals(
+    first: ConnectionTerminal | undefined,
+    second: ConnectionTerminal | undefined
+): Readonly<{ source: ConnectionTerminal; target: ConnectionTerminal }> | undefined {
+    if (!first || !second || first.pin.id === second.pin.id || first.kind !== second.kind) {
+        return undefined;
+    }
+    if (first.kind === 'interface') {
+        if (second.kind !== 'interface' || first.protocol !== second.protocol) return undefined;
+        if (first.effectiveRole === 'master' && second.effectiveRole === 'slave') {
+            return { source: first, target: second };
+        }
+        if (second.effectiveRole === 'master' && first.effectiveRole === 'slave') {
+            return { source: second, target: first };
+        }
+        return undefined;
+    }
+    if (second.kind !== 'scalar') return undefined;
+    const canSource = (terminal: ScalarConnectionTerminal): boolean =>
+        terminal.pin.direction === 'driver' || terminal.pin.direction === 'bidirectional';
+    const canTarget = (terminal: ScalarConnectionTerminal): boolean =>
+        terminal.pin.direction === 'load' || terminal.pin.direction === 'bidirectional';
+    if (canSource(first) && canTarget(second)) return { source: first, target: second };
+    if (canSource(second) && canTarget(first)) return { source: second, target: first };
+    return undefined;
 }
 
-function connectionSourceFor(
-    cell: Cell | null | undefined,
-    portId: string | null | undefined
-) {
-    const terminal = connectionTerminal(cell, portId);
-    if (terminal?.kind === 'interface') {
-        return terminal.effectiveRole === 'master' ? terminal : undefined;
-    }
-    return terminal && (terminal.pin.direction === 'driver'
-        || terminal.pin.direction === 'bidirectional') ? terminal : undefined;
+function refreshPendingConnectionStyles(): void {
+    dom.canvas.querySelectorAll<SVGElement>('.veriflow-connection-pending').forEach(
+        element => element.classList.remove('veriflow-connection-pending')
+    );
+    if (!pendingConnection) return;
+    const node = graph.getCellById(pendingConnection.nodeId);
+    const view = node ? graph.findViewByCell(node) : undefined;
+    view?.container.querySelectorAll<SVGGElement>('.x6-port-body[port]').forEach(port => {
+        if (port.getAttribute('port') === pendingConnection?.portId) {
+            port.classList.add('veriflow-connection-pending');
+        }
+    });
 }
 
-function connectionTargetFor(
-    cell: Cell | null | undefined,
-    portId: string | null | undefined
-) {
-    const terminal = connectionTerminal(cell, portId);
-    if (terminal?.kind === 'interface') {
-        return terminal.effectiveRole === 'slave' ? terminal : undefined;
+function cancelPendingConnection(): void {
+    if (pendingConnectionPreview && graph.hasCell(pendingConnectionPreview)) {
+        graph.removeCell(pendingConnectionPreview);
     }
-    return terminal && (terminal.pin.direction === 'load'
-        || terminal.pin.direction === 'bidirectional') ? terminal : undefined;
+    pendingConnectionPreview = undefined;
+    pendingConnection = undefined;
+    refreshPendingConnectionStyles();
+}
+
+function startPendingConnection(node: Node, portId: string, x: number, y: number): void {
+    cancelPendingConnection();
+    pendingConnection = { nodeId: node.id, portId };
+    pendingConnectionPreview = graph.addEdge({
+        id: 'veriflow:connection-preview',
+        shape: 'veriflow-network',
+        source: { cell: node.id, port: portId },
+        target: { x, y },
+        attrs: {
+            wrap: {
+                pointerEvents: 'none',
+            },
+            line: {
+                class: 'veriflow-connection-preview-line',
+                stroke: 'var(--schematic-wire-selected)',
+                strokeWidth: 2,
+                strokeDasharray: '5 3',
+                pointerEvents: 'none',
+                targetMarker: null,
+            },
+        },
+        zIndex: 3,
+    });
+    refreshPendingConnectionStyles();
+}
+
+function pendingConnectionTerminal(): ConnectionTerminal | undefined {
+    if (!pendingConnection) return undefined;
+    return connectionTerminal(
+        graph.getCellById(pendingConnection.nodeId),
+        pendingConnection.portId
+    );
+}
+
+function postConnection(first: ConnectionTerminal, second: ConnectionTerminal): boolean {
+    const normalized = normalizeConnectionTerminals(first, second);
+    if (!normalized) return false;
+    const { source, target } = normalized;
+    cancelPendingConnection();
+    if (source.kind === 'interface') {
+        if (target.kind !== 'interface') return false;
+        const endpointName = (endpoint: ArchDesignInterfaceEndpoint): string =>
+            endpoint.kind === 'port' ? endpoint.port : endpoint.interface;
+        const baseName = `${endpointName(source.endpoint)}_to_${endpointName(target.endpoint)}`;
+        const names = new Set([
+            ...(currentArchDesignState?.design.connections.map(item => item.name) ?? []),
+            ...(currentArchDesignState?.design.interfaceConnections.map(item => item.name) ?? []),
+        ]);
+        let name = baseName;
+        for (let suffix = 2; names.has(name); suffix += 1) name = `${baseName}_${suffix}`;
+        postArchDesignEdit({
+            type: 'connectInterface',
+            connection: { name, master: source.endpoint, slave: target.endpoint },
+        });
+        return true;
+    }
+    if (target.kind !== 'scalar') return false;
+    postArchDesignEdit({ type: 'connect', source: source.endpoint, target: target.endpoint });
+    return true;
+}
+
+function handleConnectionPinClick(node: Node, portId: string, x: number, y: number): void {
+    if (!connectionAuthoringEnabled()) return;
+    const terminal = connectionTerminal(node, portId);
+    if (!terminal) return;
+    if (!pendingConnection) {
+        startPendingConnection(node, portId, x, y);
+        return;
+    }
+    if (pendingConnection.nodeId === node.id && pendingConnection.portId === portId) {
+        cancelPendingConnection();
+        return;
+    }
+    const first = pendingConnectionTerminal();
+    if (!first) {
+        startPendingConnection(node, portId, x, y);
+        return;
+    }
+    postConnection(first, terminal);
 }
 
 function refreshConnectionMagnets(): void {
@@ -1163,6 +1232,7 @@ function setAuthoringControls(): void {
     dom.inspectorForm.querySelectorAll<HTMLButtonElement>('.inspector-action').forEach(button => {
         button.disabled = disabled || button.dataset.actionAvailable !== 'true';
     });
+    if (!connectionAuthoringEnabled()) cancelPendingConnection();
     refreshConnectionMagnets();
 }
 
@@ -1507,6 +1577,7 @@ function renderSchematic(
     fitOnFirstRender = false
 ): void {
     const searchQuery = dom.searchInput.value;
+    cancelPendingConnection();
     clearPendingNodeMoves();
     applyingLayout = true;
     currentGraph = model;
@@ -2115,6 +2186,7 @@ dom.addPortButton.addEventListener('click', () => {
 dom.connectButton.addEventListener('click', () => {
     const active = dom.connectButton.getAttribute('aria-pressed') !== 'true';
     dom.connectButton.setAttribute('aria-pressed', String(active));
+    if (!active) cancelPendingConnection();
     refreshConnectionMagnets();
 });
 
@@ -2193,47 +2265,6 @@ graph.on('node:open-definition' as never, ({ cell }: { cell: Cell }) => {
     if (command) post(command);
 });
 
-graph.on('edge:connected', ({ edge, isNew }) => {
-    if (!isNew) return;
-    const source = connectionSourceFor(
-        edge.getSourceCell(),
-        edge.getSourcePortId()
-    );
-    const target = connectionTargetFor(
-        edge.getTargetCell(),
-        edge.getTargetPortId()
-    );
-    graph.removeCell(edge);
-    if (!source || !target || source.pin.id === target.pin.id) return;
-    if (source.kind === 'interface') {
-        if (target.kind !== 'interface' || source.protocol !== target.protocol) return;
-        const endpointName = (endpoint: ArchDesignInterfaceEndpoint): string =>
-            endpoint.kind === 'port' ? endpoint.port : endpoint.interface;
-        const baseName = `${endpointName(source.endpoint)}_to_${endpointName(target.endpoint)}`;
-        const names = new Set([
-            ...(currentArchDesignState?.design.connections.map(item => item.name) ?? []),
-            ...(currentArchDesignState?.design.interfaceConnections.map(item => item.name) ?? []),
-        ]);
-        let name = baseName;
-        for (let suffix = 2; names.has(name); suffix += 1) name = `${baseName}_${suffix}`;
-        postArchDesignEdit({
-            type: 'connectInterface',
-            connection: {
-                name,
-                master: source.endpoint,
-                slave: target.endpoint,
-            },
-        });
-        return;
-    }
-    if (target.kind !== 'scalar') return;
-    postArchDesignEdit({
-        type: 'connect',
-        source: source.endpoint,
-        target: target.endpoint,
-    });
-});
-
 graph.on('edge:click', ({ edge }) => {
     const data = cellData(edge);
     if (data?.objectType === 'network') selectNetwork(data.objectId);
@@ -2266,26 +2297,31 @@ function eventClientPoint(event: Event): { x: number; y: number } | undefined {
 }
 
 function portAtSelectionBoxPoint(box: Element, event: Event): {
-    node: Cell;
+    node: Node;
     port: string;
+    bodyHit: boolean;
+    point: { x: number; y: number };
 } | undefined {
     const point = eventClientPoint(event);
     const nodeId = box.getAttribute('data-cell-id');
     const node = nodeId ? graph.getCellById(nodeId) : undefined;
     const view = node && graph.findViewByCell(node);
-    if (!point || !node || !view) return undefined;
+    if (!point || !node?.isNode() || !view) return undefined;
     const portBodies = view.container.querySelectorAll<SVGElement>('.x6-port-body[port]');
     for (let index = 0; index < portBodies.length; index += 1) {
         const portBody = portBodies[index];
         const port = portBody.getAttribute('port');
         if (!port) continue;
         const label = portBody.parentElement?.querySelector('.x6-port-label');
-        const hitTargets = label ? [portBody, label] : [portBody];
-        if (hitTargets.some(target => {
+        const containsPoint = (target: Element): boolean => {
             const bounds = target.getBoundingClientRect();
             return point.x >= bounds.left && point.x <= bounds.right
                 && point.y >= bounds.top && point.y <= bounds.bottom;
-        })) return { node, port };
+        };
+        const bodyHit = containsPoint(portBody);
+        if (bodyHit || (label !== null && label !== undefined && containsPoint(label))) {
+            return { node, port, bodyHit, point };
+        }
     }
     return undefined;
 }
@@ -2311,13 +2347,31 @@ function selectPinTarget(event: Event): void {
     if (!hit) return;
     event.stopPropagation();
     selectPin(hit.node, hit.port);
+    if (hit.bodyHit && (!(event instanceof MouseEvent) || event.button === 0)) {
+        const local = graph.clientToLocal(hit.point.x, hit.point.y);
+        handleConnectionPinClick(hit.node, hit.port, local.x, local.y);
+    }
 }
 
 document.addEventListener('mousedown', selectPinTarget, true);
 document.addEventListener('touchstart', selectPinTarget, true);
 
-graph.on('node:port:click', ({ node, port }) => {
+graph.on('node:port:click', ({ e, node, port, x, y }) => {
     selectPin(node, port);
+    if (port && e.target instanceof Element && e.target.closest('.x6-port-body')) {
+        handleConnectionPinClick(node, port, x, y);
+    }
+});
+
+document.addEventListener('mousemove', event => {
+    if (!pendingConnectionPreview || !graph.hasCell(pendingConnectionPreview)) return;
+    pendingConnectionPreview.setTarget(graph.clientToLocal(event.clientX, event.clientY));
+});
+
+document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !pendingConnection) return;
+    event.preventDefault();
+    cancelPendingConnection();
 });
 
 graph.on('blank:click', () => {
