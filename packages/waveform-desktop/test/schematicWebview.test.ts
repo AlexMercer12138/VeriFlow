@@ -1463,6 +1463,13 @@ function archDesignInterfaceFixture(
             'driver',
             'master'
         )]),
+        node('port:clk', 'clk', '', [{
+            id: 'port:clk:value',
+            name: 'clk',
+            direction: 'driver',
+            width: { kind: 'known', bits: 1 },
+            readOnly: false,
+        }], 'port'),
         node(`interface:port:${topInterface.name}`, topInterface.name, 'Project Link master', [interfacePin(
             interfaceIds.top,
             topInterface.memberPrefix,
@@ -1710,7 +1717,7 @@ function archDesignInterfaceFixture(
         format: 'vik-veriflow.arch-design',
         schemaVersion: 1,
         module: 'interface_authoring',
-        ports: [],
+        ports: [{ name: 'clk', direction: 'input', width: 1 }],
         instances: nodes.filter(item => item.kind === 'instance').map(item => ({
             name: item.label,
             module: item.subtitle,
@@ -2435,6 +2442,31 @@ test('Arch Design interface Inspector edits defaults, overrides, and top-level s
             `.x6-node[data-cell-id="${nodeId}"] .x6-port-body[port="${pinId}"]`
         );
 
+        await page.locator('.x6-node[data-cell-id="port:clk"] rect').first().click();
+        await page.locator('#inspector[data-kind="port"]').waitFor();
+        assert.equal(await page.locator('#port-width').inputValue(), '1');
+        await page.locator('#port-name').fill('clock');
+        await page.locator('#port-name').press('Enter');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'updatePort'));
+        await page.locator('#inspector[data-kind="port"]').waitFor();
+        const portUpdates = (await archDesignEditMessages(page)).filter(
+            message => message.edit?.type === 'updatePort'
+        );
+        assert.equal(portUpdates.length, 1);
+        assert.deepEqual(portUpdates[0]?.edit, {
+            type: 'updatePort',
+            name: 'clk',
+            port: { name: 'clock', direction: 'input', width: 1 },
+        });
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:port-ack',
+            false,
+            false
+        );
+
         await pin('instance:u_master_connected', fixture.interfaceIds.masterConnected).click();
         await page.locator('#inspector[data-kind="interface"]').waitFor();
         assert.equal(await page.locator('#interface-peer').textContent(), 'u_slave_connected.S_LINK');
@@ -2501,11 +2533,16 @@ test('Arch Design interface Inspector edits defaults, overrides, and top-level s
         await page.locator('#inspector[data-kind="interface"]').waitFor();
         assert.equal(await page.locator('#interface-top-level').textContent(), 'Yes');
         await page.locator('#interface-name').fill('ddr3');
-        await page.locator('#interface-name').press('Tab');
+        await page.locator('#interface-name').press('Enter');
         await page.waitForFunction(() => (window as unknown as {
             __veriflowMessages: Array<{ edit?: { type?: string } }>;
         }).__veriflowMessages.some(message => message.edit?.type === 'renameInterfacePort'));
-        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
+        const renameMessages = (await archDesignEditMessages(page)).filter(
+            message => message.edit?.type === 'renameInterfacePort'
+        );
+        assert.equal(renameMessages.length, 1);
+        assert.deepEqual(renameMessages[0]?.edit, {
             type: 'renameInterfacePort',
             name: 'm_link',
             nextName: 'ddr3',

@@ -100,10 +100,13 @@ type PanelState = {
     refreshAfterPresentationWrite?: boolean;
 };
 
-type EditorSession = Readonly<{
+type EditorSession = {
     uri: vscode.Uri;
+    document: vscode.TextDocument;
     state: PanelState;
-}>;
+    refresh(): Promise<EditableSnapshot | undefined>;
+    exportInFlight?: Promise<void>;
+};
 
 export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider {
     static readonly viewType = 'veriflow.archDesignEditor';
@@ -141,12 +144,11 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
 
     async exportRtl(uri?: vscode.Uri): Promise<void> {
         const session = this.sessionFor(uri);
-        const snapshot = session?.state.snapshot;
-        if (!session || !snapshot) {
+        if (!session) {
             await vscode.window.showErrorMessage('No editable Arch Design is active');
             return;
         }
-        await this.exportSnapshot(session.uri, snapshot);
+        await this.saveAndExport(session);
     }
 
     private sessionFor(uri?: vscode.Uri): EditorSession | undefined {
@@ -156,6 +158,53 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
 
     private snapshotFor(uri?: vscode.Uri): EditableSnapshot | undefined {
         return this.sessionFor(uri)?.state.snapshot;
+    }
+
+    private saveAndExport(session: EditorSession): Promise<void> {
+        if (session.exportInFlight) return session.exportInFlight;
+        const operation = this.performSaveAndExport(session);
+        const tracked = operation.finally(() => {
+            if (session.exportInFlight === tracked) session.exportInFlight = undefined;
+        });
+        session.exportInFlight = tracked;
+        return tracked;
+    }
+
+    private async performSaveAndExport(session: EditorSession): Promise<void> {
+        try {
+            while (true) {
+                if (this.sessions.get(session.uri.toString()) !== session) return;
+                const saved = await session.document.save();
+                if (this.sessions.get(session.uri.toString()) !== session) return;
+                if (!saved) {
+                    await vscode.window.showErrorMessage(
+                        'Unable to save Arch Design before RTL export'
+                    );
+                    return;
+                }
+                if (session.document.isDirty) continue;
+                const savedVersion = session.document.version;
+                const snapshot = await session.refresh();
+                if (this.sessions.get(session.uri.toString()) !== session) return;
+                if (session.document.isDirty
+                    || session.document.version !== savedVersion) continue;
+                if (!snapshot) {
+                    if (parseArchDesignText(session.document.getText()).status === 'editable') {
+                        continue;
+                    }
+                    await vscode.window.showErrorMessage(
+                        'Saved Arch Design is not editable and cannot be exported'
+                    );
+                    return;
+                }
+                await this.exportSnapshot(session.uri, snapshot);
+                return;
+            }
+        } catch (error) {
+            if (this.sessions.get(session.uri.toString()) !== session) return;
+            const message = error instanceof Error ? error.message : String(error);
+            await vscode.window.showErrorMessage(message);
+        }
     }
 
     private async exportSnapshot(
@@ -223,7 +272,12 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             refreshGeneration: 0,
         };
         const sessionKey = document.uri.toString();
-        const session: EditorSession = { uri: document.uri, state };
+        const session: EditorSession = {
+            uri: document.uri,
+            document,
+            state,
+            refresh: () => refresh(true),
+        };
         this.sessions.set(sessionKey, session);
         const indexOwner = {};
         const revisionNamespace = crypto.randomBytes(12).toString('hex');
@@ -285,7 +339,9 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 editable,
             });
         };
-        const refresh = async (preserveEqualGraph = false): Promise<void> => {
+        const refresh = async (
+            preserveEqualGraph = false
+        ): Promise<EditableSnapshot | undefined> => {
             if (!state.ready || state.disposed || token.isCancellationRequested) return;
             const generation = ++state.refreshGeneration;
             const previousSnapshot = state.snapshot;
@@ -413,6 +469,11 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 validation,
                 inspector,
             });
+            if (generation !== state.refreshGeneration
+                || state.disposed
+                || token.isCancellationRequested
+                || state.snapshot !== snapshot) return;
+            return snapshot;
         };
         const applyDocumentEdit = async (
             snapshot: EditableSnapshot,
@@ -552,7 +613,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                     case 'exportArchDesign': {
                         const snapshot = state.snapshot;
                         if (!snapshot || command.revision !== snapshot.revision) return;
-                        await this.exportSnapshot(document.uri, snapshot);
+                        await this.saveAndExport(session);
                         return;
                     }
                     case 'selectModule':

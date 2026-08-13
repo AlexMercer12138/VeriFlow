@@ -46020,6 +46020,7 @@
     selectionStatus: requiredElement("selection-status"),
     diagnosticStatus: requiredElement("diagnostic-status")
   };
+  var inspectorCommitters = /* @__PURE__ */ new WeakMap();
   function requiredElement(id) {
     const element = document.getElementById(id);
     if (!element) throw new Error(`Missing schematic element #${id}`);
@@ -46946,10 +46947,12 @@
           }
           control.value = field.value;
         }
-        control.addEventListener("change", () => {
+        const commit = () => {
           const edit = field.commit?.(control.value);
           if (edit) postArchDesignEdit(edit);
-        });
+        };
+        inspectorCommitters.set(control, commit);
+        control.addEventListener("change", commit);
         wrapper.append(label, control);
       }
       fields.append(wrapper);
@@ -47553,6 +47556,13 @@
   }
   installIcons();
   renderCurrentInspector();
+  dom.inspectorForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const control = document.activeElement;
+    if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+      inspectorCommitters.get(control)?.();
+    }
+  });
   dom.moduleSelector.addEventListener("change", () => {
     if (currentGraph) {
       layoutSaveScheduler.flushModule(currentGraph.moduleKey);

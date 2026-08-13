@@ -170,6 +170,7 @@ const dom = {
     selectionStatus: requiredElement<HTMLSpanElement>('selection-status'),
     diagnosticStatus: requiredElement<HTMLSpanElement>('diagnostic-status'),
 };
+const inspectorCommitters = new WeakMap<HTMLInputElement | HTMLSelectElement, () => void>();
 
 function requiredElement<T extends HTMLElement>(id: string): T {
     const element = document.getElementById(id);
@@ -1286,10 +1287,12 @@ function renderArchDesignInspector(model: ArchDesignInspectorModel): void {
                 }
                 control.value = field.value;
             }
-            control.addEventListener('change', () => {
+            const commit = (): void => {
                 const edit = field.commit?.(control.value);
                 if (edit) postArchDesignEdit(edit);
-            });
+            };
+            inspectorCommitters.set(control, commit);
+            control.addEventListener('change', commit);
             wrapper.append(label, control);
         }
         fields.append(wrapper);
@@ -1987,6 +1990,14 @@ function installIcons(): void {
 
 installIcons();
 renderCurrentInspector();
+
+dom.inspectorForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const control = document.activeElement;
+    if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+        inspectorCommitters.get(control)?.();
+    }
+});
 
 dom.moduleSelector.addEventListener('change', () => {
     if (currentGraph) {

@@ -57,6 +57,7 @@ type ProviderHarness = {
     diagnostics: Array<{ uri: string; count: number }>;
     informationMessages: string[];
     errorMessages: string[];
+    exportEvents: string[];
     replacements: AppliedReplacement[];
     releasedOwners: object[];
     exportRequests: Array<{
@@ -70,7 +71,12 @@ type ProviderHarness = {
     exportRtl(): Promise<void>;
     validateWithoutUri(): Promise<void>;
     pauseExports(): () => void;
+    pauseNextIndexRefresh(): () => void;
+    pauseNextSave(): () => void;
+    pauseNextWebviewPost(type: HostEvent['type']): () => void;
     rejectNextDocumentEdit(): void;
+    rejectNextSave(): void;
+    setNextSaveDocument(text: string, version: number): void;
     failNextExport(error: Error): void;
     setDefinitions(definitions: HdlDefinitionSummary[]): void;
     invalidateIndex(): void;
@@ -127,6 +133,7 @@ async function createHarness(
     const resource = FakeUri.parse('file:///workspace/soc.ad');
     let documentText = initialText;
     let documentVersion = 1;
+    let documentDirty = false;
     let messageListener: ((message: unknown) => void) | undefined;
     let documentListener: ((event: {
         document: typeof document;
@@ -142,19 +149,47 @@ async function createHarness(
     const diagnostics: ProviderHarness['diagnostics'] = [];
     const informationMessages: string[] = [];
     const errorMessages: string[] = [];
+    const exportEvents: string[] = [];
     const replacements: AppliedReplacement[] = [];
     const releasedOwners: object[] = [];
     const exportRequests: ProviderHarness['exportRequests'] = [];
     let exportGate: Promise<void> | undefined;
     let releaseExport: (() => void) | undefined;
+    let nextIndexGate: Promise<void> | undefined;
+    let releaseNextIndex: (() => void) | undefined;
+    let nextSaveGate: Promise<void> | undefined;
+    let releaseNextSave: (() => void) | undefined;
+    let nextPostGate: Promise<void> | undefined;
+    let releaseNextPost: (() => void) | undefined;
+    let nextPostType: HostEvent['type'] | undefined;
     let nextExportError: Error | undefined;
     let nextDocumentEditAccepted = true;
+    let nextSaveAccepted = true;
+    let nextSavedDocument: Readonly<{ text: string; version: number }> | undefined;
     const disposable = { dispose(): void {} };
     const document = {
         uri: resource,
         get version(): number { return documentVersion; },
+        get isDirty(): boolean { return documentDirty; },
         getText(): string { return documentText; },
         positionAt(offset: number): number { return offset; },
+        async save(): Promise<boolean> {
+            exportEvents.push('save');
+            const accepted = nextSaveAccepted;
+            nextSaveAccepted = true;
+            if (accepted && nextSavedDocument) {
+                documentText = nextSavedDocument.text;
+                documentVersion = nextSavedDocument.version;
+                documentDirty = true;
+                nextSavedDocument = undefined;
+            }
+            const savedVersion = documentVersion;
+            const gate = nextSaveGate;
+            nextSaveGate = undefined;
+            await gate;
+            if (accepted && documentVersion === savedVersion) documentDirty = false;
+            return accepted;
+        },
     };
     const panel = {
         webview: {
@@ -164,6 +199,12 @@ async function createHarness(
             asWebviewUri(uri: FakeUri): FakeUri { return uri; },
             async postMessage(event: HostEvent): Promise<boolean> {
                 messages.push(event);
+                if (event.type === nextPostType) {
+                    const gate = nextPostGate;
+                    nextPostGate = undefined;
+                    nextPostType = undefined;
+                    await gate;
+                }
                 return true;
             },
             onDidReceiveMessage(listener: (message: unknown) => void) {
@@ -294,7 +335,12 @@ async function createHarness(
         },
     };
     const provider = new ArchDesignEditorProvider(context, {
-        getIndex: async () => index,
+        async getIndex() {
+            const gate = nextIndexGate;
+            nextIndexGate = undefined;
+            await gate;
+            return index;
+        },
         releaseIndex(owner: object): void { releasedOwners.push(owner); },
         onDidInvalidate(listener: (changed?: object) => void) {
             invalidationListener = listener;
@@ -327,6 +373,7 @@ async function createHarness(
             selectedDefinitions: HdlDefinitionSummary[],
             selectedInterfaceCatalog: InterfaceProtocolCatalog
         ) {
+            exportEvents.push('export');
             exportRequests.push({
                 designPath,
                 design: selectedDesign,
@@ -359,6 +406,7 @@ async function createHarness(
         diagnostics,
         informationMessages,
         errorMessages,
+        exportEvents,
         replacements,
         releasedOwners,
         exportRequests,
@@ -378,7 +426,33 @@ async function createHarness(
                 exportGate = undefined;
             };
         },
+        pauseNextIndexRefresh(): () => void {
+            nextIndexGate = new Promise<void>(resolve => { releaseNextIndex = resolve; });
+            return () => {
+                releaseNextIndex?.();
+                releaseNextIndex = undefined;
+            };
+        },
+        pauseNextSave(): () => void {
+            nextSaveGate = new Promise<void>(resolve => { releaseNextSave = resolve; });
+            return () => {
+                releaseNextSave?.();
+                releaseNextSave = undefined;
+            };
+        },
+        pauseNextWebviewPost(type): () => void {
+            nextPostType = type;
+            nextPostGate = new Promise<void>(resolve => { releaseNextPost = resolve; });
+            return () => {
+                releaseNextPost?.();
+                releaseNextPost = undefined;
+            };
+        },
         rejectNextDocumentEdit(): void { nextDocumentEditAccepted = false; },
+        rejectNextSave(): void { nextSaveAccepted = false; },
+        setNextSaveDocument(text, version): void {
+            nextSavedDocument = { text, version };
+        },
         failNextExport(error: Error): void { nextExportError = error; },
         setDefinitions(next): void { definitions = [...next]; },
         invalidateIndex(): void { invalidationListener?.(index); },
@@ -388,6 +462,7 @@ async function createHarness(
         changeDocument(text, version): void {
             documentText = text;
             documentVersion = version;
+            documentDirty = true;
             documentListener?.({ document, contentChanges: [{}] });
         },
         signalDocumentStateChange(): void {
@@ -398,6 +473,7 @@ async function createHarness(
             assert.ok(replacement, `missing replacement ${index}`);
             documentText = replacement.text;
             documentVersion = version;
+            documentDirty = true;
             documentListener?.({ document, contentChanges: [{}] });
         },
         closePanel(): void { disposeListener?.(); },
@@ -546,6 +622,7 @@ async function testExportUsesLatestSnapshotAndReportsAfterPublication(): Promise
         const release = harness.pauseExports();
         harness.send({ type: 'exportArchDesign', revision: latestState.revision });
         await waitFor(() => harness.exportRequests.length === 1, 'webview export request');
+        assert.deepStrictEqual(harness.exportEvents, ['save', 'export']);
         assert.deepStrictEqual(harness.informationMessages, []);
         assert.strictEqual(harness.exportRequests[0].designPath, '/workspace/soc.ad');
         assert.strictEqual(harness.exportRequests[0].design.module, 'latest_soc');
@@ -563,6 +640,180 @@ async function testExportUsesLatestSnapshotAndReportsAfterPublication(): Promise
         ]);
     } finally {
         await harness.dispose();
+    }
+}
+
+async function testExportSavesCommandDocumentAndStopsWhenSaveFails(): Promise<void> {
+    const successful = await createHarness(sourceDesign(), []);
+    try {
+        successful.setNextSaveDocument(sourceDesign({ module: 'saved_soc' }), 2);
+        await successful.exportRtl();
+        assert.deepStrictEqual(successful.exportEvents, ['save', 'export']);
+        assert.strictEqual(successful.exportRequests.length, 1);
+        assert.strictEqual(successful.exportRequests[0].design.module, 'saved_soc');
+    } finally {
+        await successful.dispose();
+    }
+
+    const rejected = await createHarness(sourceDesign(), []);
+    try {
+        rejected.rejectNextSave();
+        await rejected.exportRtl();
+        assert.deepStrictEqual(rejected.exportEvents, ['save']);
+        assert.strictEqual(rejected.exportRequests.length, 0);
+        assert.deepStrictEqual(rejected.errorMessages, [
+            'Unable to save Arch Design before RTL export',
+        ]);
+    } finally {
+        await rejected.dispose();
+    }
+
+    const rejectedWebview = await createHarness(sourceDesign(), []);
+    try {
+        const state = rejectedWebview.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(state?.type === 'archDesignState' && state.status === 'editable');
+        if (state?.type !== 'archDesignState' || state.status !== 'editable') return;
+        rejectedWebview.rejectNextSave();
+        rejectedWebview.send({ type: 'exportArchDesign', revision: state.revision });
+        await waitFor(
+            () => rejectedWebview.errorMessages.length === 1,
+            'rejected webview save error'
+        );
+        assert.deepStrictEqual(rejectedWebview.exportEvents, ['save']);
+        assert.strictEqual(rejectedWebview.exportRequests.length, 0);
+        assert.deepStrictEqual(rejectedWebview.errorMessages, [
+            'Unable to save Arch Design before RTL export',
+        ]);
+    } finally {
+        await rejectedWebview.dispose();
+    }
+
+    const repaired = await createHarness(sourceDesign(), []);
+    try {
+        repaired.changeDocument('{ invalid', 2);
+        await waitFor(
+            () => repaired.messages.some(
+                event => event.type === 'archDesignState' && event.status === 'invalid'
+            ),
+            'invalid document before save repair'
+        );
+        repaired.setNextSaveDocument(sourceDesign({ module: 'repaired_soc' }), 3);
+        await repaired.exportRtl();
+        assert.deepStrictEqual(repaired.exportEvents, ['save', 'export']);
+        assert.strictEqual(repaired.exportRequests.length, 1);
+        assert.strictEqual(repaired.exportRequests[0].design.module, 'repaired_soc');
+        assert.deepStrictEqual(repaired.errorMessages, []);
+    } finally {
+        await repaired.dispose();
+    }
+
+    const concurrent = await createHarness(sourceDesign(), []);
+    try {
+        const release = concurrent.pauseExports();
+        const first = concurrent.exportRtl();
+        const second = concurrent.exportRtl();
+        await waitFor(() => concurrent.exportRequests.length > 0, 'concurrent export request');
+        assert.deepStrictEqual(concurrent.exportEvents, ['save', 'export']);
+        assert.strictEqual(concurrent.exportRequests.length, 1);
+        release();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(concurrent.informationMessages, [
+            'Arch Design RTL exported: /workspace/soc.v',
+        ]);
+    } finally {
+        await concurrent.dispose();
+    }
+
+    const editedDuringRefresh = await createHarness(sourceDesign(), []);
+    try {
+        const releaseRefresh = editedDuringRefresh.pauseNextIndexRefresh();
+        const exporting = editedDuringRefresh.exportRtl();
+        await waitFor(
+            () => editedDuringRefresh.exportEvents.includes('save'),
+            'save before export refresh'
+        );
+        editedDuringRefresh.changeDocument(
+            sourceDesign({ module: 'edited_during_export' }),
+            2
+        );
+        releaseRefresh();
+        await exporting;
+        assert.deepStrictEqual(
+            editedDuringRefresh.exportEvents,
+            ['save', 'save', 'export']
+        );
+        assert.strictEqual(editedDuringRefresh.exportRequests.length, 1);
+        assert.strictEqual(
+            editedDuringRefresh.exportRequests[0].design.module,
+            'edited_during_export'
+        );
+    } finally {
+        await editedDuringRefresh.dispose();
+    }
+
+    const editedDuringSave = await createHarness(sourceDesign(), []);
+    try {
+        const releaseSave = editedDuringSave.pauseNextSave();
+        const exporting = editedDuringSave.exportRtl();
+        await waitFor(
+            () => editedDuringSave.exportEvents.includes('save'),
+            'pending save before document edit'
+        );
+        editedDuringSave.changeDocument(sourceDesign({ module: 'dirty_soc' }), 2);
+        releaseSave();
+        await exporting;
+        assert.deepStrictEqual(editedDuringSave.exportEvents, ['save', 'save', 'export']);
+        assert.strictEqual(editedDuringSave.exportRequests.length, 1);
+        assert.strictEqual(editedDuringSave.exportRequests[0].design.module, 'dirty_soc');
+    } finally {
+        await editedDuringSave.dispose();
+    }
+
+    const invalidatedDuringPost = await createHarness(sourceDesign(), []);
+    try {
+        const releasePost = invalidatedDuringPost.pauseNextWebviewPost('diagnostics');
+        invalidatedDuringPost.setDefinitions([moduleDefinition()]);
+        const exporting = invalidatedDuringPost.exportRtl();
+        await waitFor(
+            () => invalidatedDuringPost.messages.filter(
+                event => event.type === 'diagnostics'
+            ).length === 2,
+            'paused export diagnostics publication'
+        );
+        invalidatedDuringPost.setDefinitions([{
+            ...moduleDefinition(),
+            modelFingerprint: 'core-after-invalidation',
+        }]);
+        invalidatedDuringPost.invalidateIndex();
+        releasePost();
+        await exporting;
+        assert.deepStrictEqual(
+            invalidatedDuringPost.exportRequests[0].definitions.map(
+                item => item.modelFingerprint
+            ),
+            ['core-after-invalidation']
+        );
+    } finally {
+        await invalidatedDuringPost.dispose();
+    }
+
+    const closedDuringRefresh = await createHarness(sourceDesign(), []);
+    try {
+        const releaseRefresh = closedDuringRefresh.pauseNextIndexRefresh();
+        const exporting = closedDuringRefresh.exportRtl();
+        await waitFor(
+            () => closedDuringRefresh.exportEvents.includes('save'),
+            'save before closing export session'
+        );
+        closedDuringRefresh.closePanel();
+        releaseRefresh();
+        await exporting;
+        assert.deepStrictEqual(closedDuringRefresh.exportEvents, ['save']);
+        assert.strictEqual(closedDuringRefresh.exportRequests.length, 0);
+    } finally {
+        await closedDuringRefresh.dispose();
     }
 }
 
@@ -1308,6 +1559,7 @@ async function main(): Promise<void> {
     await testRelayoutRejectsStaleArchDesignRevision();
     await testValidateReportsLatestDiagnosticCount();
     await testExportUsesLatestSnapshotAndReportsAfterPublication();
+    await testExportSavesCommandDocumentAndStopsWhenSaveFails();
     await testExportBlocksSemanticErrorsAndReportsPublicationFailure();
     await testDisposedPanelIsNotAnActiveSession();
     console.log('Arch Design editor provider tests passed');
