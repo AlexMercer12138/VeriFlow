@@ -91,3 +91,31 @@ Confirm only the planned source, test, generated assets, and this plan are chang
 **Step 3: Commit repository changes**
 
 Commit the pin selection behavior and its tests. Do not commit `/tmp` demo files.
+
+### Task 4: Refine Interface Bus Selection And Presentation
+
+**Files:**
+- Modify: `packages/waveform-desktop/test/schematicWebview.test.ts`
+- Modify: `veriflow-vscode/src/test/schematicWebviewSupport.test.ts`
+- Modify: `packages/schematic-webview/src/index.ts`
+- Modify: `packages/schematic-webview/src/index.css`
+- Modify: `veriflow-vscode/src/schematic/webviewSupport.ts`
+- Modify: `veriflow-vscode/src/test/schematicAssets.test.ts`
+- Modify generated: `web-dist/schematic/index.js`
+- Modify generated: `web-dist/schematic/index.css`
+
+**Step 1: Capture the reported behavior with failing tests**
+
+Require pin label clicks to produce a visible label highlight, aggregate interface labels to use only the extracted prefix, and aggregate interface labels to share the full label hit target. Require top-level and instance aggregate interfaces to use the same purple interface color, with no role badge.
+
+**Step 2: Project interface connection details into the Inspector**
+
+Resolve an aggregate interface network through `GraphInterfaceNetwork.connection`, combine both endpoint member inventories in declaration order, and show one member per Inspector row with its effective width. Keep scalar network editing unchanged.
+
+**Step 3: Make top-level interface prefixes editable**
+
+For top-level interface selections, expose a `Name` text field that emits the existing `renameInterfacePort` edit with both `nextName` and `nextMemberPrefix` set to the new prefix. Rely on the existing core edit cascade to update public member names and RTL export.
+
+**Step 4: Verify user-visible behavior**
+
+Run focused support and Electron tests, rebuild generated assets, run the complete Electron and VS Code suites, then launch `/tmp/veriflow-ad-editor-demo/stream_pipeline.ad` for manual review.

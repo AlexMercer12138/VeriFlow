@@ -1301,7 +1301,13 @@ async function publishArchDesignFixture(
     }, { revision, fixture, graphOptions });
 }
 
-function archDesignInterfaceFixture(expanded = false) {
+function archDesignInterfaceFixture(
+    expanded = false,
+    topInterface: { name: string; memberPrefix: string } = {
+        name: 'm_link',
+        memberPrefix: 'M_LINK',
+    }
+) {
     const interfacePin = (
         id: string,
         name: string,
@@ -1359,7 +1365,7 @@ function archDesignInterfaceFixture(expanded = false) {
         masterConnected: 'interface:instance:u_master_connected:M_LINK',
         slaveConnected: 'interface:instance:u_slave_connected:S_LINK',
         boundaryMaster: 'interface:instance:u_boundary_master:M_BOUNDARY',
-        top: 'interface:port:m_link',
+        top: `interface:port:${topInterface.name}`,
         topFree: 'interface:port:m_free',
     };
     const node = (
@@ -1457,9 +1463,9 @@ function archDesignInterfaceFixture(expanded = false) {
             'driver',
             'master'
         )]),
-        node('interface:port:m_link', 'm_link', 'Project Link master', [interfacePin(
+        node(`interface:port:${topInterface.name}`, topInterface.name, 'Project Link master', [interfacePin(
             interfaceIds.top,
-            'm_link',
+            topInterface.memberPrefix,
             'load',
             'master',
             true
@@ -1508,7 +1514,7 @@ function archDesignInterfaceFixture(expanded = false) {
                 role: 'driver',
             },
             {
-                nodeId: 'interface:port:m_link',
+                nodeId: `interface:port:${topInterface.name}`,
                 pinId: interfaceIds.top,
                 role: 'load',
             },
@@ -1531,7 +1537,7 @@ function archDesignInterfaceFixture(expanded = false) {
     };
     const layout = {
         placement: { nodes: Object.fromEntries(nodes.map((item, index) => [item.id, {
-            column: item.id === 'interface:port:m_link' ? 2 : index % 3,
+            column: item.id === `interface:port:${topInterface.name}` ? 2 : index % 3,
             order: Math.floor(index / 3),
             yOffset: 0,
             fixed: false,
@@ -1678,14 +1684,16 @@ function archDesignInterfaceFixture(expanded = false) {
             }, 'master', {
                 connection: {
                     name: 'boundary',
-                    peer: 'm_link',
+                    peer: topInterface.name,
                     peerIdentity: interfaceIds.top,
                     defaults: [],
                     diagnostics: [],
                     warnings: [],
                 },
             }),
-            interfaceItem(interfaceIds.top, { kind: 'port', port: 'm_link' }, 'master', {
+            interfaceItem(interfaceIds.top, {
+                kind: 'port', port: topInterface.name,
+            }, 'master', {
                 connection: {
                     name: 'boundary',
                     peer: 'u_boundary_master.M_BOUNDARY',
@@ -1709,10 +1717,10 @@ function archDesignInterfaceFixture(expanded = false) {
         })),
         connections: [],
         interfacePorts: [{
-            name: 'm_link',
+            name: topInterface.name,
             protocol: 'project.link',
             role: 'master',
-            memberPrefix: 'M_LINK',
+            memberPrefix: topInterface.memberPrefix,
             members: [{ member: 'request', width: 8 }],
         }, {
             name: 'm_free',
@@ -1729,7 +1737,7 @@ function archDesignInterfaceFixture(expanded = false) {
         }, {
             name: 'boundary',
             master: { kind: 'instance', instance: 'u_boundary_master', interface: 'M_BOUNDARY' },
-            slave: { kind: 'port', port: 'm_link' },
+            slave: { kind: 'port', port: topInterface.name },
         }],
         defaults: {},
         export: {},
@@ -1885,9 +1893,9 @@ async function publishArchDesignInterfaceFixture(
     page: Page,
     revision: string,
     expanded = false,
-    initialize = true
+    initialize = true,
+    fixture = archDesignInterfaceFixture(expanded)
 ): Promise<void> {
-    const fixture = archDesignInterfaceFixture(expanded);
     await page.evaluate(({ revision, fixture, initialize }) => {
         const events = [{
             type: 'graph',
@@ -2013,6 +2021,11 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         );
         const irqPort = irq.locator('..');
         const irqLabel = irqPort.locator('.x6-port-label');
+        const irqLabelText = irqLabel.locator('.veriflow-pin-label');
+        const irqLabelHitArea = irqLabel.locator('.veriflow-pin-label-hit-area');
+        const irqLabelBackgroundBefore = await irqLabelHitArea.evaluate(element =>
+            getComputedStyle(element).fill
+        );
         await irqLabel.click();
         await page.locator('#inspector[data-kind="pin"]').waitFor();
         assert.equal(await irq.evaluate(element =>
@@ -2021,6 +2034,14 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         assert.equal(await irqLabel.evaluate(element =>
             element.classList.contains('veriflow-pin-selected')
         ), true);
+        assert.equal(
+            await irqLabelText.evaluate(element => getComputedStyle(element).fontWeight),
+            '700'
+        );
+        assert.notEqual(
+            await irqLabelHitArea.evaluate(element => getComputedStyle(element).fill),
+            irqLabelBackgroundBefore
+        );
         assert.equal(await irqLabel.evaluate(element => [
             element,
             ...element.querySelectorAll('[magnet]'),
@@ -2068,12 +2089,60 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
             '.x6-node[data-cell-id="instance:u_master_free"] '
             + `.x6-port-body[port="${fixture.interfaceIds.masterFree}"]`
         );
-        await aggregate.click();
+        const aggregateLabelHitTarget = aggregate.locator('..').locator('.x6-port-label');
+        const aggregateLabelText = aggregateLabelHitTarget.locator('.veriflow-interface-label');
+        const aggregateLabelHitArea = aggregateLabelHitTarget.locator(
+            '.veriflow-pin-label-hit-area'
+        );
+        const labelStylesBefore = await aggregateLabelText.evaluate(element => ({
+            fill: getComputedStyle(element).fill,
+            fontWeight: getComputedStyle(element).fontWeight,
+        }));
+        const labelBackgroundBefore = await aggregateLabelHitArea.evaluate(element =>
+            getComputedStyle(element).fill
+        );
+        await aggregateLabelHitTarget.click();
         await page.locator('#inspector[data-kind="interface"]').waitFor();
+        assert.equal(
+            (await aggregateLabelText.locator('tspan').first().textContent())
+                ?.replace(/\u00a0/g, ' '),
+            'M_FREE'
+        );
+        assert.equal(await aggregateLabelHitTarget.evaluate(element =>
+            element.classList.contains('veriflow-pin-selected')
+        ), true);
+        const selectedColors = await page.evaluate(({ nodeId, pinId }) => {
+            const node = document.querySelector(
+                `.x6-node[data-cell-id="${nodeId}"]`
+            )!;
+            const port = node.querySelector(`.x6-port-body[port="${pinId}"]`)!;
+            const label = port.parentElement!.querySelector('.veriflow-interface-label')!;
+            const body = port.querySelector('[data-selector="portBody"]') ?? port;
+            return {
+                label: getComputedStyle(label).fill,
+                circleStrokeWidth: getComputedStyle(body).strokeWidth,
+            };
+        }, {
+            nodeId: 'instance:u_master_free',
+            pinId: fixture.interfaceIds.masterFree,
+        });
+        const selectedLabelBackground = await aggregateLabelHitArea.evaluate(element =>
+            getComputedStyle(element).fill
+        );
+        assert.notEqual(selectedColors.label, labelStylesBefore.fill);
+        assert.notEqual(selectedLabelBackground, labelBackgroundBefore);
+        assert.equal(await aggregateLabelText.evaluate(element =>
+            getComputedStyle(element).fontWeight
+        ), '700');
+        assert.equal(Number.parseFloat(selectedColors.circleStrokeWidth), 3);
         assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.M_FREE');
         assert.equal(await page.locator('#interface-protocol').textContent(), 'Project Link');
         assert.equal(await page.locator('#interface-role').textContent(), 'master');
         assert.equal(await page.locator('#interface-missing').textContent(), 'tag');
+        assert.equal(
+            await page.locator('#interface-member-request').textContent(),
+            'M_FREE_REQUEST · 32 bits'
+        );
         assert.equal(
             await page.locator('[data-inspector-action="expose-interface"]').isEnabled(),
             true
@@ -2387,13 +2456,38 @@ test('Arch Design interface Inspector edits defaults, overrides, and top-level s
         await pin('interface:port:m_link', fixture.interfaceIds.top).click();
         await page.locator('#inspector[data-kind="interface"]').waitFor();
         assert.equal(await page.locator('#interface-top-level').textContent(), 'Yes');
+        await page.locator('#interface-name').fill('ddr3');
+        await page.locator('#interface-name').press('Tab');
+        await page.waitForFunction(() => (window as unknown as {
+            __veriflowMessages: Array<{ edit?: { type?: string } }>;
+        }).__veriflowMessages.some(message => message.edit?.type === 'renameInterfacePort'));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'renameInterfacePort',
+            name: 'm_link',
+            nextName: 'ddr3',
+            nextMemberPrefix: 'ddr3',
+        });
+
+        const renamedFixture = archDesignInterfaceFixture(false, {
+            name: 'ddr3',
+            memberPrefix: 'ddr3',
+        });
+        await publishArchDesignInterfaceFixture(
+            page,
+            'fixture:interfaces:rename-ack',
+            false,
+            false,
+            renamedFixture
+        );
+        await pin('interface:port:ddr3', renamedFixture.interfaceIds.top).click();
+        await page.locator('#inspector[data-kind="interface"]').waitFor();
         await page.locator('[data-inspector-action="resync-interface"]').click();
         await page.waitForFunction(() => (window as unknown as {
             __veriflowMessages: Array<{ edit?: { type?: string } }>;
         }).__veriflowMessages.some(message => message.edit?.type === 'resyncInterfacePort'));
         assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
             type: 'resyncInterfacePort',
-            port: 'm_link',
+            port: 'ddr3',
             source: {
                 endpoint: {
                     kind: 'instance',
@@ -2694,22 +2788,53 @@ test('Arch Design interfaces render distinct routes and only connect Master to S
         ).first();
         assert.equal(Number(await route.getAttribute('stroke-width')), 4);
         assert.ok(await page.locator('#canvas .veriflow-interface-pin').count() >= 7);
-        const topTag = page.locator(
-            '#canvas .x6-node[data-cell-id="interface:port:m_link"] .veriflow-interface-tag'
+        const interfaceColor = await route.evaluate(element => getComputedStyle(element).stroke);
+        const topNode = page.locator(
+            '#canvas .x6-node[data-cell-id="interface:port:m_link"]'
         );
-        await topTag.waitFor({ state: 'visible' });
-        assert.notEqual(await topTag.getAttribute('fill'), 'none');
         assert.equal(await page.locator(
             '#canvas .x6-node[data-cell-id="interface:port:m_link"] '
+            + '.veriflow-interface-tag, '
+            + '#canvas .x6-node[data-cell-id="interface:port:m_link"] '
             + '.veriflow-interface-tag-text'
-        ).textContent(), 'M');
-        const aggregateLabel = page.locator(
+        ).count(), 0);
+        assert.equal(
+            await topNode.locator('.veriflow-interface-accent').evaluate(element =>
+                getComputedStyle(element).fill
+            ),
+            interfaceColor
+        );
+        const masterAggregateLabel = page.locator(
             '#canvas .x6-node[data-cell-id="instance:u_master_free"] '
             + '.veriflow-interface-label'
         );
+        const slaveAggregateLabel = page.locator(
+            '#canvas .x6-node[data-cell-id="instance:u_slave_free"] '
+            + '.veriflow-interface-label'
+        );
         assert.equal(
-            (await aggregateLabel.locator('tspan').first().textContent())?.replace(/\u00a0/g, ' '),
-            'M_FREE · Project Link'
+            (await masterAggregateLabel.locator('tspan').first().textContent())
+                ?.replace(/\u00a0/g, ' '),
+            'M_FREE'
+        );
+        assert.equal(
+            await masterAggregateLabel.evaluate(element => getComputedStyle(element).fill),
+            interfaceColor
+        );
+        assert.equal(
+            await slaveAggregateLabel.evaluate(element => getComputedStyle(element).fill),
+            interfaceColor
+        );
+        await route.click({ force: true });
+        await page.locator('#inspector[data-kind="network"]').waitFor();
+        assert.equal(await page.locator('#interface-network-protocol').textContent(), 'Project Link');
+        assert.equal(
+            await page.locator('#interface-network-member-request').textContent(),
+            'M_LINK_REQUEST (32 bits) -> S_LINK_REQUEST (32 bits)'
+        );
+        assert.equal(
+            await page.locator('#interface-network-member-accept').textContent(),
+            'S_LINK_ACCEPT (1 bit) -> M_LINK_ACCEPT (1 bit)'
         );
         await page.locator('#fit-button').click();
         await pin(

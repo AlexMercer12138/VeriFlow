@@ -26,9 +26,6 @@
     --schematic-selection: var(--vscode-editor-selectionBackground, #add6ff);
     --schematic-error: var(--vscode-errorForeground, #c72e0f);
     --schematic-warning: var(--vscode-editorWarning-foreground, #9a6700);
-    --schematic-interface-master: var(--vscode-charts-blue, #2472c8);
-    --schematic-interface-slave: var(--vscode-charts-green, #16825d);
-    --schematic-interface-unknown: var(--vscode-descriptionForeground, #6e7781);
     --schematic-interface-wire: var(--vscode-charts-purple, #8b5cf6);
     --schematic-interface-pin-fill: var(--schematic-node-fill);
 }
@@ -532,9 +529,16 @@ dialog::backdrop {
     stroke-width: 3px !important;
 }
 
-.x6-port-label.veriflow-pin-selected [data-selector="text"] {
-    fill: var(--schematic-focus) !important;
-    font-weight: 600 !important;
+.x6-port-label.veriflow-pin-selected [data-selector="text"],
+.veriflow-pin-label.veriflow-pin-selected {
+    fill: var(--schematic-text) !important;
+    font-weight: 700 !important;
+}
+
+.x6-port-label.veriflow-pin-selected .veriflow-pin-label-hit-area {
+    fill: var(--schematic-selection) !important;
+    stroke: var(--schematic-focus) !important;
+    stroke-width: 1px !important;
 }
 
 .x6-node.veriflow-network-selected .veriflow-junction-dot {

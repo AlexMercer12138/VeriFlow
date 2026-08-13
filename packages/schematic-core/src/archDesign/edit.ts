@@ -985,9 +985,10 @@ export function applyArchDesignEdit(
                     `Interface port current peer does not match: ${edit.port}`
                 );
             }
+            const memberPrefix = mutable.interfacePorts[index].memberPrefix;
             mutable.interfacePorts[index] = snapshotInterfacePort(
                 edit.port,
-                edit.source.endpoint.interface,
+                memberPrefix,
                 edit.source
             );
             break;

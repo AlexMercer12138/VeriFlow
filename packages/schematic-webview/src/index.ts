@@ -231,8 +231,6 @@ function registerShapes(): void {
             markup: [
                 { tagName: 'rect', selector: 'body' },
                 { tagName: 'rect', selector: 'accent' },
-                { tagName: 'rect', selector: 'interfaceTag' },
-                { tagName: 'text', selector: 'interfaceTagText' },
                 {
                     tagName: 'svg',
                     selector: 'labelClip',
@@ -280,22 +278,7 @@ function registerShapes(): void {
                     height: '100%',
                     fill: shapeAccents[kind],
                     stroke: 'none',
-                },
-                interfaceTag: {
-                    visibility: 'hidden',
-                    stroke: 'none',
-                    rx: 2,
-                    ry: 2,
-                },
-                interfaceTagText: {
-                    visibility: 'hidden',
-                    fill: '#ffffff',
-                    fontFamily: 'var(--vscode-font-family, sans-serif)',
-                    fontSize: 9,
-                    fontWeight: 600,
-                    textAnchor: 'middle',
-                    textVerticalAnchor: 'middle',
-                    pointerEvents: 'none',
+                    class: 'veriflow-node-accent',
                 },
                 label: {
                     refX: 0,
@@ -373,11 +356,7 @@ function portGroups() {
     };
 }
 
-function interfaceColor(role: 'master' | 'slave' | 'unknown'): string {
-    if (role === 'master') return 'var(--schematic-interface-master)';
-    if (role === 'slave') return 'var(--schematic-interface-slave)';
-    return 'var(--schematic-interface-unknown)';
-}
+const interfaceColor = 'var(--schematic-interface-wire)';
 
 function pinItems(
     model: GraphNode,
@@ -409,7 +388,7 @@ function pinItems(
                         : 'var(--schematic-interface-pin-fill)',
                     stroke: source?.interface === undefined
                         ? 'var(--schematic-pin)'
-                        : interfaceColor(source.interface.role),
+                        : interfaceColor,
                     strokeWidth: source?.interface?.kind === 'aggregate' ? 2 : 1.5,
                 },
                 portLabelClip: {
@@ -426,6 +405,7 @@ function pinItems(
                     height: pin.clipBounds.height,
                     fill: 'transparent',
                     stroke: 'none',
+                    class: 'veriflow-pin-label-hit-area',
                     pointerEvents: 'all',
                     cursor: 'pointer',
                 },
@@ -436,10 +416,10 @@ function pinItems(
                     y: pin.clipBounds.height / 2,
                     fill: source?.interface === undefined
                         ? 'var(--schematic-text)'
-                        : interfaceColor(source.interface.role),
+                        : interfaceColor,
                     class: source?.interface === undefined
-                        ? undefined
-                        : 'veriflow-interface-label',
+                        ? 'veriflow-pin-label'
+                        : 'veriflow-pin-label veriflow-interface-label',
                     fontFamily: 'var(--vscode-font-family, sans-serif)',
                     fontSize: SCHEMATIC_TEXT_STYLES.pin.fontSize,
                     fontWeight: SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -492,34 +472,15 @@ function createRenderedNode(
             },
             body: {
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
-                ...(topInterface === undefined ? {} : {
-                    stroke: interfaceColor(topInterface.role),
-                    strokeWidth: 2,
-                }),
             },
             accent: {
                 height,
+                ...(topInterface === undefined ? {} : {
+                    fill: interfaceColor,
+                    class: 'veriflow-node-accent veriflow-interface-accent',
+                }),
             },
-            interfaceTag: topInterface === undefined ? {} : {
-                x: width - 22,
-                y: 6,
-                width: 16,
-                height: 14,
-                visibility: 'visible',
-                fill: interfaceColor(topInterface.role),
-                class: 'veriflow-interface-tag',
-            },
-            interfaceTagText: topInterface === undefined ? {} : {
-                x: width - 14,
-                y: 13,
-                visibility: 'visible',
-                class: 'veriflow-interface-tag-text',
-                text: topInterface.role === 'master'
-                    ? 'M' : topInterface.role === 'slave' ? 'S' : '?',
-            },
-            labelClip: topInterface === undefined
-                ? titleBounds
-                : { ...titleBounds, width: Math.max(0, titleBounds.width - 18) },
+            labelClip: titleBounds,
             label: {
                 text: rendered.title.visibleText,
                 title: rendered.title.fullText,
@@ -1077,8 +1038,9 @@ function refreshPinSelectionStyles(): void {
         view?.container.querySelectorAll<SVGGElement>('.x6-port-body[port]').forEach(port => {
             if (port.getAttribute('port') === selectedPinId) {
                 port.classList.add('veriflow-pin-selected');
-                port.parentElement?.querySelector('.x6-port-label')
-                    ?.classList.add('veriflow-pin-selected');
+                port.parentElement?.querySelectorAll<SVGElement>(
+                    '.x6-port-label, .veriflow-pin-label, [data-selector="text"]'
+                ).forEach(element => element.classList.add('veriflow-pin-selected'));
             }
         });
     }
@@ -1549,16 +1511,7 @@ function renderSchematic(
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const displayModel: SchematicGraph = {
-        ...model,
-        nodes: model.nodes.map(node => ({
-            ...node,
-            pins: node.pins.map(pin => pin.interface?.kind === 'aggregate'
-                ? { ...pin, name: `${pin.name} · ${pin.interface.protocolName}` }
-                : pin),
-        })),
-    };
-    const renderModel = layoutDisplaySchematic(displayModel, layout);
+    const renderModel = layoutDisplaySchematic(model, layout);
     currentRenderModel = renderModel;
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {

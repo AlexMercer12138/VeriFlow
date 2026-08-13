@@ -709,6 +709,24 @@ function interfaceEndpointName(
         : `${endpoint.instance}.${endpoint.interface}`;
 }
 
+function interfaceEndpointIdentity(
+    endpoint: ArchDesignInspectorData['interfaces'][number]['endpoint']
+): string {
+    return endpoint.kind === 'port'
+        ? `interface:port:${endpoint.port}`
+        : `interface:instance:${endpoint.instance}:${endpoint.interface}`;
+}
+
+function interfaceMemberFieldId(scope: string, member: string): string {
+    return `${scope}-${member.toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`;
+}
+
+function interfaceMemberValue(
+    member: ArchDesignInspectorData['interfaces'][number]['members'][number]
+): string {
+    return `${member.port} · ${formatWidth(member.width)}`;
+}
+
 function interfaceCollapseEdit(
     snapshot: ArchDesignAuthoringSnapshot,
     identity: string,
@@ -735,18 +753,31 @@ function projectInterfaceAuthoringInspector(
     const override = item.endpoint.kind === 'instance'
         ? snapshot.design.interfaceOverrides[`${item.endpoint.instance}.${item.endpoint.interface}`]
         : undefined;
+    const topLevelPort = item.endpoint.kind === 'port' ? item.endpoint.port : undefined;
     const fields: ArchDesignInspectorField[] = [
+        ...(topLevelPort === undefined ? [] : [textField(
+            'interface-name',
+            'Name',
+            snapshot.design.interfacePorts.find(port => port.name === topLevelPort)
+                ?.memberPrefix ?? topLevelPort,
+            value => value.trim().length > 0 ? {
+                type: 'renameInterfacePort',
+                name: topLevelPort,
+                nextName: value.trim(),
+                nextMemberPrefix: value.trim(),
+            } : undefined
+        )]),
         readonlyField('interface-protocol', 'Protocol', item.protocolName),
         readonlyField('interface-role', 'Role', item.role),
         readonlyField('interface-role-source', 'Role source', item.roleSource),
         readonlyField('interface-top-level', 'Top-level', item.topLevel ? 'Yes' : 'No'),
-        readonlyField(
-            'interface-members',
-            'Members',
-            item.members.length === 0
-                ? 'None'
-                : item.members.map(member => `${member.member} (${member.port})`).join(', ')
-        ),
+        ...(item.members.length === 0
+            ? [readonlyField('interface-members-empty', 'Members', 'None')]
+            : item.members.map(member => readonlyField(
+                interfaceMemberFieldId('interface-member', member.member),
+                member.member,
+                interfaceMemberValue(member)
+            ))),
         readonlyField(
             'interface-missing',
             'Missing members',
@@ -910,6 +941,72 @@ function projectInterfaceAuthoringInspector(
     };
 }
 
+function projectInterfaceNetworkAuthoringInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    network: SchematicNetwork
+): ArchDesignInspectorModel | undefined {
+    const metadata = network.interface;
+    if (!metadata) return undefined;
+    const connection = snapshot.design.interfaceConnections.find(
+        candidate => candidate.name === metadata.connection
+    );
+    if (!connection) return undefined;
+    const interfaces = snapshot.inspector?.interfaces ?? [];
+    const master = interfaces.find(item =>
+        item.identity === interfaceEndpointIdentity(connection.master)
+    );
+    const slave = interfaces.find(item =>
+        item.identity === interfaceEndpointIdentity(connection.slave)
+    );
+    const memberNames = new Set([
+        ...(master?.members.map(member => member.member) ?? []),
+        ...(slave?.members.map(member => member.member) ?? []),
+    ]);
+    const defaults = new Map(
+        (master?.connection?.defaults ?? slave?.connection?.defaults ?? []).map(item => [
+            item.member.toLowerCase(),
+            item.expression,
+        ])
+    );
+    const memberFields = [...memberNames].map(memberName => {
+        const masterMember = master?.members.find(member => member.member === memberName);
+        const slaveMember = slave?.members.find(member => member.member === memberName);
+        const direction = masterMember?.direction ?? slaveMember?.direction;
+        const sender = direction === 'slave-to-master' ? slaveMember : masterMember;
+        const receiver = direction === 'slave-to-master' ? masterMember : slaveMember;
+        const source = sender === undefined
+            ? defaults.has(memberName.toLowerCase())
+                ? `Default ${defaults.get(memberName.toLowerCase())}`
+                : 'Undriven'
+            : `${sender.port} (${formatWidth(sender.width)})`;
+        const target = receiver === undefined
+            ? 'Open'
+            : `${receiver.port} (${formatWidth(receiver.width)})`;
+        return readonlyField(
+            interfaceMemberFieldId('interface-network-member', memberName),
+            memberName,
+            `${source} -> ${target}`
+        );
+    });
+    return {
+        kind: 'network',
+        title: connection.name,
+        fields: [
+            readonlyField('interface-network-protocol', 'Protocol', metadata.protocolName),
+            readonlyField(
+                'interface-network-endpoints',
+                'Endpoints',
+                `${interfaceEndpointName(connection.master)} -> ${
+                    interfaceEndpointName(connection.slave)}`
+            ),
+            ...(memberFields.length === 0
+                ? [readonlyField('interface-network-members-empty', 'Members', 'None')]
+                : memberFields),
+        ],
+        deleteEdit: { type: 'removeInterfaceConnection', name: connection.name },
+    };
+}
+
 export function projectArchDesignInspector(
     snapshot: ArchDesignAuthoringSnapshot,
     graph: SchematicGraph,
@@ -931,6 +1028,16 @@ export function projectArchDesignInspector(
         if (interfaceModel) return interfaceModel;
     }
     if (selectedNetworkId !== undefined) {
+        const selectedNetwork = graph.networks.find(
+            candidate => candidate.id === selectedNetworkId
+        );
+        if (selectedNetwork?.interface) {
+            const interfaceNetwork = projectInterfaceNetworkAuthoringInspector(
+                snapshot,
+                selectedNetwork
+            );
+            if (interfaceNetwork) return interfaceNetwork;
+        }
         const network = projectNetworkAuthoringInspector(
             snapshot,
             graph,

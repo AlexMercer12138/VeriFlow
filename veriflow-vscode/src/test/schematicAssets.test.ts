@@ -446,6 +446,10 @@ async function testSchematicAssets(): Promise<void> {
         assert.ok(css.includes(`${token}:`), `CSS is missing ${token}`);
     }
     assert.match(css, /\.x6-edge\.veriflow-network-selected\s*>\s*path:nth-child\(2\)/);
+    assert.match(css, /--schematic-interface-wire:/);
+    assert.match(css, /\.veriflow-pin-label\.veriflow-pin-selected/);
+    assert.match(css, /\.veriflow-pin-label-hit-area/);
+    assert.doesNotMatch(css, /--schematic-interface-(?:master|slave|unknown):/);
     assert.doesNotMatch(
         css,
         /\.x6-widget-minimap\s+\.x6-graph\s*{[^}]*\b(?:width|height):\s*100%\s*!important/s,
@@ -478,6 +482,15 @@ async function testSchematicAssets(): Promise<void> {
         webviewSource.includes("type: 'connectInterface'"),
         'webview source is missing interface connection authoring'
     );
+    assert.match(webviewSource, /const interfaceColor = 'var\(--schematic-interface-wire\)'/);
+    assert.match(webviewSource, /class: 'veriflow-node-accent veriflow-interface-accent'/);
+    assert.match(webviewSource, /class: 'veriflow-pin-label-hit-area'/);
+    assert.match(webviewSource, /'veriflow-pin-label veriflow-interface-label'/);
+    assert.doesNotMatch(webviewSource, /interfaceTag|interfaceTagText/);
+    assert.doesNotMatch(
+        webviewSource,
+        /pin\.name} · \$\{pin\.interface\.protocolName}/
+    );
     const webviewSupportSource = fs.readFileSync(
         path.join(extensionRoot, 'src', 'schematic', 'webviewSupport.ts'),
         'utf8'
@@ -486,7 +499,10 @@ async function testSchematicAssets(): Promise<void> {
         "type: 'promoteInterface'",
         "type: 'setInterfaceDefault'",
         "type: 'setInterfaceOverride'",
+        "type: 'renameInterfacePort'",
         "id: 'interface-collapse'",
+        "'interface-network-protocol'",
+        "'interface-network-member'",
     ]) {
         assert.ok(
             webviewSupportSource.includes(marker),

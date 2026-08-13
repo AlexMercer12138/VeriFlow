@@ -548,8 +548,14 @@ function testPinAndInterfaceInspectorProjection(): void {
             protocol: 'project.link',
         }
     );
-    assert.strictEqual(fieldById(interfaceModel, 'interface-members').value,
-        'request (BUS_REQUEST), accept (BUS_ACCEPT)');
+    assert.strictEqual(
+        fieldById(interfaceModel, 'interface-member-request').value,
+        'BUS_REQUEST · 32 bits'
+    );
+    assert.strictEqual(
+        fieldById(interfaceModel, 'interface-member-accept').value,
+        'BUS_ACCEPT · 1 bit'
+    );
     assert.strictEqual(fieldById(interfaceModel, 'interface-missing').value, 'tag');
     assert.strictEqual(fieldById(interfaceModel, 'interface-peer').value, 'u_slave.LINK');
     assert.strictEqual(fieldById(interfaceModel, 'interface-default-tag').placeholder,
@@ -667,6 +673,13 @@ function testTopInterfaceResynchronizationProjection(): void {
 
     assert.strictEqual(model.kind, 'interface');
     assert.strictEqual(fieldById(model, 'interface-top-level').value, 'Yes');
+    assert.strictEqual(fieldById(model, 'interface-name').value, 'M_LINK');
+    assert.deepStrictEqual(fieldById(model, 'interface-name').commit?.('ddr3'), {
+        type: 'renameInterfacePort',
+        name: 'm_link',
+        nextName: 'ddr3',
+        nextMemberPrefix: 'ddr3',
+    });
     assert.deepStrictEqual(actionById(model, 'resync-interface').edit, {
         type: 'resyncInterfacePort',
         port: 'm_link',
@@ -679,6 +692,36 @@ function testTopInterfaceResynchronizationProjection(): void {
                 { member: 'accept', port: 'BUS_ACCEPT', width: 1 },
             ],
         },
+    });
+}
+
+function testInterfaceNetworkInspectorProjection(): void {
+    const fixture = interfaceFixture();
+    const model = projectArchDesignInspector(
+        fixture.snapshot,
+        fixture.graph,
+        [],
+        'network:interface:control'
+    );
+
+    assert.strictEqual(model.kind, 'network');
+    assert.strictEqual(model.title, 'control');
+    assert.strictEqual(fieldById(model, 'interface-network-protocol').value, 'Project Link');
+    assert.strictEqual(
+        fieldById(model, 'interface-network-endpoints').value,
+        'u_master.BUS -> u_slave.LINK'
+    );
+    assert.strictEqual(
+        fieldById(model, 'interface-network-member-request').value,
+        'BUS_REQUEST (32 bits) -> LINK_REQUEST (16 bits)'
+    );
+    assert.strictEqual(
+        fieldById(model, 'interface-network-member-accept').value,
+        'LINK_ACCEPT (1 bit) -> BUS_ACCEPT (1 bit)'
+    );
+    assert.deepStrictEqual(model.deleteEdit, {
+        type: 'removeInterfaceConnection',
+        name: 'control',
     });
 }
 
@@ -1007,6 +1050,7 @@ void Promise.resolve()
     .then(testArchDesignInspectorProjection)
     .then(testPinAndInterfaceInspectorProjection)
     .then(testTopInterfaceResynchronizationProjection)
+    .then(testInterfaceNetworkInspectorProjection)
     .then(testLargeFanoutInspectorUsesBoundedIndexedPreview)
     .then(testSynchronousWebviewLayoutSnapshot)
     .then(testSelectionStatusSummary)

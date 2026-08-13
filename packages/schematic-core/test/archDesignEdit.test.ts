@@ -528,7 +528,7 @@ test('promotes Master and Slave interfaces with inverted inner boundary endpoint
     }]);
 });
 
-test('resynchronizes a promoted interface from its current peer explicitly', () => {
+test('resynchronizes a renamed promoted interface without replacing its member prefix', () => {
     const source = designOf({
         instances: [{ name: 'u_dma', module: 'dma' }],
         interfacePorts: [{
@@ -544,9 +544,15 @@ test('resynchronizes a promoted interface from its current peer explicitly', () 
             slave: { kind: 'port', port: 'm_axi' },
         }],
     });
-    const next = applyArchDesignEdit(source, {
+    const renamed = applyArchDesignEdit(source, {
+        type: 'renameInterfacePort',
+        name: 'm_axi',
+        nextName: 'ddr3',
+        nextMemberPrefix: 'ddr3',
+    });
+    const next = applyArchDesignEdit(renamed, {
         type: 'resyncInterfacePort',
-        port: 'm_axi',
+        port: 'ddr3',
         source: {
             endpoint: { kind: 'instance', instance: 'u_dma', interface: 'M_AXI' },
             protocol: 'amba.axi4',
@@ -558,15 +564,19 @@ test('resynchronizes a promoted interface from its current peer explicitly', () 
         },
     });
 
-    assert.equal(next.interfacePorts[0].memberPrefix, 'M_AXI');
+    assert.equal(next.interfacePorts[0].name, 'ddr3');
+    assert.equal(next.interfacePorts[0].memberPrefix, 'ddr3');
     assert.deepEqual(next.interfacePorts[0].members, [
         { member: 'awaddr', width: 64 },
         { member: 'wdata', width: 64 },
     ]);
+    assert.deepEqual(next.interfaceConnections[0].slave, {
+        kind: 'port', port: 'ddr3',
+    });
 
-    assert.throws(() => applyArchDesignEdit(source, {
+    assert.throws(() => applyArchDesignEdit(renamed, {
         type: 'resyncInterfacePort',
-        port: 'm_axi',
+        port: 'ddr3',
         source: {
             endpoint: { kind: 'instance', instance: 'u_other', interface: 'M_AXI' },
             protocol: 'amba.axi4',

@@ -45554,6 +45554,15 @@
   function interfaceEndpointName(endpoint) {
     return endpoint.kind === "port" ? endpoint.port : `${endpoint.instance}.${endpoint.interface}`;
   }
+  function interfaceEndpointIdentity(endpoint) {
+    return endpoint.kind === "port" ? `interface:port:${endpoint.port}` : `interface:instance:${endpoint.instance}:${endpoint.interface}`;
+  }
+  function interfaceMemberFieldId(scope, member) {
+    return `${scope}-${member.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`;
+  }
+  function interfaceMemberValue(member) {
+    return `${member.port} · ${formatWidth(member.width)}`;
+  }
   function interfaceCollapseEdit(snapshot, identity2, collapsed) {
     return {
       type: "setPresentation",
@@ -45570,16 +45579,28 @@
     const item = snapshot.inspector?.interfaces.find((candidate) => candidate.identity === identity2);
     if (!item) return void 0;
     const override = item.endpoint.kind === "instance" ? snapshot.design.interfaceOverrides[`${item.endpoint.instance}.${item.endpoint.interface}`] : void 0;
+    const topLevelPort = item.endpoint.kind === "port" ? item.endpoint.port : void 0;
     const fields = [
+      ...topLevelPort === void 0 ? [] : [textField(
+        "interface-name",
+        "Name",
+        snapshot.design.interfacePorts.find((port2) => port2.name === topLevelPort)?.memberPrefix ?? topLevelPort,
+        (value) => value.trim().length > 0 ? {
+          type: "renameInterfacePort",
+          name: topLevelPort,
+          nextName: value.trim(),
+          nextMemberPrefix: value.trim()
+        } : void 0
+      )],
       readonlyField("interface-protocol", "Protocol", item.protocolName),
       readonlyField("interface-role", "Role", item.role),
       readonlyField("interface-role-source", "Role source", item.roleSource),
       readonlyField("interface-top-level", "Top-level", item.topLevel ? "Yes" : "No"),
-      readonlyField(
-        "interface-members",
-        "Members",
-        item.members.length === 0 ? "None" : item.members.map((member) => `${member.member} (${member.port})`).join(", ")
-      ),
+      ...item.members.length === 0 ? [readonlyField("interface-members-empty", "Members", "None")] : item.members.map((member) => readonlyField(
+        interfaceMemberFieldId("interface-member", member.member),
+        member.member,
+        interfaceMemberValue(member)
+      )),
       readonlyField(
         "interface-missing",
         "Missing members",
@@ -45724,6 +45745,59 @@
       actions
     };
   }
+  function projectInterfaceNetworkAuthoringInspector(snapshot, network) {
+    const metadata = network.interface;
+    if (!metadata) return void 0;
+    const connection2 = snapshot.design.interfaceConnections.find(
+      (candidate) => candidate.name === metadata.connection
+    );
+    if (!connection2) return void 0;
+    const interfaces = snapshot.inspector?.interfaces ?? [];
+    const master = interfaces.find(
+      (item) => item.identity === interfaceEndpointIdentity(connection2.master)
+    );
+    const slave = interfaces.find(
+      (item) => item.identity === interfaceEndpointIdentity(connection2.slave)
+    );
+    const memberNames = /* @__PURE__ */ new Set([
+      ...master?.members.map((member) => member.member) ?? [],
+      ...slave?.members.map((member) => member.member) ?? []
+    ]);
+    const defaults6 = new Map(
+      (master?.connection?.defaults ?? slave?.connection?.defaults ?? []).map((item) => [
+        item.member.toLowerCase(),
+        item.expression
+      ])
+    );
+    const memberFields = [...memberNames].map((memberName) => {
+      const masterMember = master?.members.find((member) => member.member === memberName);
+      const slaveMember = slave?.members.find((member) => member.member === memberName);
+      const direction = masterMember?.direction ?? slaveMember?.direction;
+      const sender = direction === "slave-to-master" ? slaveMember : masterMember;
+      const receiver = direction === "slave-to-master" ? masterMember : slaveMember;
+      const source = sender === void 0 ? defaults6.has(memberName.toLowerCase()) ? `Default ${defaults6.get(memberName.toLowerCase())}` : "Undriven" : `${sender.port} (${formatWidth(sender.width)})`;
+      const target = receiver === void 0 ? "Open" : `${receiver.port} (${formatWidth(receiver.width)})`;
+      return readonlyField(
+        interfaceMemberFieldId("interface-network-member", memberName),
+        memberName,
+        `${source} -> ${target}`
+      );
+    });
+    return {
+      kind: "network",
+      title: connection2.name,
+      fields: [
+        readonlyField("interface-network-protocol", "Protocol", metadata.protocolName),
+        readonlyField(
+          "interface-network-endpoints",
+          "Endpoints",
+          `${interfaceEndpointName(connection2.master)} -> ${interfaceEndpointName(connection2.slave)}`
+        ),
+        ...memberFields.length === 0 ? [readonlyField("interface-network-members-empty", "Members", "None")] : memberFields
+      ],
+      deleteEdit: { type: "removeInterfaceConnection", name: connection2.name }
+    };
+  }
   function projectArchDesignInspector(snapshot, graph2, selectedNodeIds2, selectedNetworkId2, selectedPinId2) {
     if (selectedPinId2 !== void 0) {
       const selectedPin = findPin(graph2, selectedPinId2);
@@ -45739,6 +45813,16 @@
       if (interfaceModel) return interfaceModel;
     }
     if (selectedNetworkId2 !== void 0) {
+      const selectedNetwork = graph2.networks.find(
+        (candidate) => candidate.id === selectedNetworkId2
+      );
+      if (selectedNetwork?.interface) {
+        const interfaceNetwork = projectInterfaceNetworkAuthoringInspector(
+          snapshot,
+          selectedNetwork
+        );
+        if (interfaceNetwork) return interfaceNetwork;
+      }
       const network = projectNetworkAuthoringInspector(
         snapshot,
         graph2,
@@ -45977,8 +46061,6 @@
         markup: [
           { tagName: "rect", selector: "body" },
           { tagName: "rect", selector: "accent" },
-          { tagName: "rect", selector: "interfaceTag" },
-          { tagName: "text", selector: "interfaceTagText" },
           {
             tagName: "svg",
             selector: "labelClip",
@@ -46025,23 +46107,8 @@
             width: 4,
             height: "100%",
             fill: shapeAccents[kind],
-            stroke: "none"
-          },
-          interfaceTag: {
-            visibility: "hidden",
             stroke: "none",
-            rx: 2,
-            ry: 2
-          },
-          interfaceTagText: {
-            visibility: "hidden",
-            fill: "#ffffff",
-            fontFamily: "var(--vscode-font-family, sans-serif)",
-            fontSize: 9,
-            fontWeight: 600,
-            textAnchor: "middle",
-            textVerticalAnchor: "middle",
-            pointerEvents: "none"
+            class: "veriflow-node-accent"
           },
           label: {
             refX: 0,
@@ -46115,11 +46182,7 @@
       }
     };
   }
-  function interfaceColor(role) {
-    if (role === "master") return "var(--schematic-interface-master)";
-    if (role === "slave") return "var(--schematic-interface-slave)";
-    return "var(--schematic-interface-unknown)";
-  }
+  var interfaceColor = "var(--schematic-interface-wire)";
   function pinItems(model, rendered) {
     const pinsById = new Map(model.pins.map((pin2) => [pin2.id, pin2]));
     return rendered.pins.map((pin2) => {
@@ -46143,7 +46206,7 @@
             ].join(" ") },
             r: source?.interface?.kind === "aggregate" ? 4 : 3,
             fill: source?.interface === void 0 ? "var(--schematic-node-fill)" : "var(--schematic-interface-pin-fill)",
-            stroke: source?.interface === void 0 ? "var(--schematic-pin)" : interfaceColor(source.interface.role),
+            stroke: source?.interface === void 0 ? "var(--schematic-pin)" : interfaceColor,
             strokeWidth: source?.interface?.kind === "aggregate" ? 2 : 1.5
           },
           portLabelClip: {
@@ -46160,6 +46223,7 @@
             height: pin2.clipBounds.height,
             fill: "transparent",
             stroke: "none",
+            class: "veriflow-pin-label-hit-area",
             pointerEvents: "all",
             cursor: "pointer"
           },
@@ -46168,8 +46232,8 @@
             title: pin2.name,
             x: pin2.side === "left" ? 0 : pin2.clipBounds.width,
             y: pin2.clipBounds.height / 2,
-            fill: source?.interface === void 0 ? "var(--schematic-text)" : interfaceColor(source.interface.role),
-            class: source?.interface === void 0 ? void 0 : "veriflow-interface-label",
+            fill: source?.interface === void 0 ? "var(--schematic-text)" : interfaceColor,
+            class: source?.interface === void 0 ? "veriflow-pin-label" : "veriflow-pin-label veriflow-interface-label",
             fontFamily: "var(--vscode-font-family, sans-serif)",
             fontSize: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontSize,
             fontWeight: import_schematic_core.SCHEMATIC_TEXT_STYLES.pin.fontWeight,
@@ -46213,32 +46277,16 @@
           "aria-keyshortcuts": model.definitionKey ? "Enter Shift+Enter" : "Enter"
         },
         body: {
-          strokeDasharray: model.readOnly ? "4 2" : void 0,
-          ...topInterface === void 0 ? {} : {
-            stroke: interfaceColor(topInterface.role),
-            strokeWidth: 2
-          }
+          strokeDasharray: model.readOnly ? "4 2" : void 0
         },
         accent: {
-          height: height2
+          height: height2,
+          ...topInterface === void 0 ? {} : {
+            fill: interfaceColor,
+            class: "veriflow-node-accent veriflow-interface-accent"
+          }
         },
-        interfaceTag: topInterface === void 0 ? {} : {
-          x: width2 - 22,
-          y: 6,
-          width: 16,
-          height: 14,
-          visibility: "visible",
-          fill: interfaceColor(topInterface.role),
-          class: "veriflow-interface-tag"
-        },
-        interfaceTagText: topInterface === void 0 ? {} : {
-          x: width2 - 14,
-          y: 13,
-          visibility: "visible",
-          class: "veriflow-interface-tag-text",
-          text: topInterface.role === "master" ? "M" : topInterface.role === "slave" ? "S" : "?"
-        },
-        labelClip: topInterface === void 0 ? titleBounds : { ...titleBounds, width: Math.max(0, titleBounds.width - 18) },
+        labelClip: titleBounds,
         label: {
           text: rendered.title.visibleText,
           title: rendered.title.fullText
@@ -46676,7 +46724,9 @@
       view?.container.querySelectorAll(".x6-port-body[port]").forEach((port2) => {
         if (port2.getAttribute("port") === selectedPinId) {
           port2.classList.add("veriflow-pin-selected");
-          port2.parentElement?.querySelector(".x6-port-label")?.classList.add("veriflow-pin-selected");
+          port2.parentElement?.querySelectorAll(
+            '.x6-port-label, .veriflow-pin-label, [data-selector="text"]'
+          ).forEach((element) => element.classList.add("veriflow-pin-selected"));
         }
       });
     }
@@ -47079,14 +47129,7 @@
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const displayModel = {
-      ...model,
-      nodes: model.nodes.map((node) => ({
-        ...node,
-        pins: node.pins.map((pin2) => pin2.interface?.kind === "aggregate" ? { ...pin2, name: `${pin2.name} · ${pin2.interface.protocolName}` } : pin2)
-      }))
-    };
-    const renderModel = layoutDisplaySchematic(displayModel, layout);
+    const renderModel = layoutDisplaySchematic(model, layout);
     currentRenderModel = renderModel;
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
