@@ -253,13 +253,16 @@ function registerShapes(): void {
                 {
                     tagName: 'g',
                     selector: 'portLabelContainer',
-                    children: [{
-                        tagName: 'svg',
-                        selector: 'portLabelClip',
-                        className: ['veriflow-text-clip', 'veriflow-pin-clip'],
-                        attrs: { overflow: 'hidden' },
-                        children: [{ tagName: 'text', selector: 'text' }],
-                    }],
+                    children: [
+                        { tagName: 'rect', selector: 'portLabelHitArea' },
+                        {
+                            tagName: 'svg',
+                            selector: 'portLabelClip',
+                            className: ['veriflow-text-clip', 'veriflow-pin-clip'],
+                            attrs: { overflow: 'hidden' },
+                            children: [{ tagName: 'text', selector: 'text' }],
+                        },
+                    ],
                 },
             ],
             attrs: {
@@ -414,6 +417,17 @@ function pinItems(
                     y: -pin.clipBounds.height / 2,
                     width: pin.clipBounds.width,
                     height: pin.clipBounds.height,
+                },
+                portLabelHitArea: {
+                    port: pin.id,
+                    x: pin.side === 'left' ? 0 : -pin.clipBounds.width,
+                    y: -pin.clipBounds.height / 2,
+                    width: pin.clipBounds.width,
+                    height: pin.clipBounds.height,
+                    fill: 'transparent',
+                    stroke: 'none',
+                    pointerEvents: 'all',
+                    cursor: 'pointer',
                 },
                 text: {
                     text: pin.visibleLabel,
@@ -1063,6 +1077,8 @@ function refreshPinSelectionStyles(): void {
         view?.container.querySelectorAll<SVGGElement>('.x6-port-body[port]').forEach(port => {
             if (port.getAttribute('port') === selectedPinId) {
                 port.classList.add('veriflow-pin-selected');
+                port.parentElement?.querySelector('.x6-port-label')
+                    ?.classList.add('veriflow-pin-selected');
             }
         });
     }
@@ -2264,7 +2280,7 @@ graph.on('node:click', ({ node }) => {
     if (data?.junction) selectNetwork(data.objectId);
 });
 
-graph.on('node:port:click', ({ node, port }) => {
+function selectPin(node: Cell, port: string | null | undefined): void {
     const data = cellData(node);
     if (!data?.node || !port || !data.node.pins.some(pin => pin.id === port)) return;
     selectedNetworkId = undefined;
@@ -2274,6 +2290,26 @@ graph.on('node:port:click', ({ node, port }) => {
     syncingSelection = false;
     refreshNetworkSelectionStyles();
     updateSelectionStatus([]);
+}
+
+function selectPinLabel(event: Event): void {
+    if (!(event.target instanceof Element)) return;
+    const label = event.target.closest('.x6-port-label');
+    if (!label) return;
+    event.stopPropagation();
+    const port = label.parentElement
+        ?.querySelector<SVGElement>('.x6-port-body[port]')
+        ?.getAttribute('port');
+    const nodeId = label.closest('.x6-node[data-cell-id]')?.getAttribute('data-cell-id');
+    const node = nodeId ? graph.getCellById(nodeId) : undefined;
+    if (node) selectPin(node, port);
+}
+
+document.addEventListener('mousedown', selectPinLabel, true);
+document.addEventListener('touchstart', selectPinLabel, true);
+
+graph.on('node:port:click', ({ node, port }) => {
+    selectPin(node, port);
 });
 
 graph.on('blank:click', () => {

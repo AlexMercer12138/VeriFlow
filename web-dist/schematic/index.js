@@ -45999,13 +45999,16 @@
           {
             tagName: "g",
             selector: "portLabelContainer",
-            children: [{
-              tagName: "svg",
-              selector: "portLabelClip",
-              className: ["veriflow-text-clip", "veriflow-pin-clip"],
-              attrs: { overflow: "hidden" },
-              children: [{ tagName: "text", selector: "text" }]
-            }]
+            children: [
+              { tagName: "rect", selector: "portLabelHitArea" },
+              {
+                tagName: "svg",
+                selector: "portLabelClip",
+                className: ["veriflow-text-clip", "veriflow-pin-clip"],
+                attrs: { overflow: "hidden" },
+                children: [{ tagName: "text", selector: "text" }]
+              }
+            ]
           }
         ],
         attrs: {
@@ -46148,6 +46151,17 @@
             y: -pin2.clipBounds.height / 2,
             width: pin2.clipBounds.width,
             height: pin2.clipBounds.height
+          },
+          portLabelHitArea: {
+            port: pin2.id,
+            x: pin2.side === "left" ? 0 : -pin2.clipBounds.width,
+            y: -pin2.clipBounds.height / 2,
+            width: pin2.clipBounds.width,
+            height: pin2.clipBounds.height,
+            fill: "transparent",
+            stroke: "none",
+            pointerEvents: "all",
+            cursor: "pointer"
           },
           text: {
             text: pin2.visibleLabel,
@@ -46662,6 +46676,7 @@
       view?.container.querySelectorAll(".x6-port-body[port]").forEach((port2) => {
         if (port2.getAttribute("port") === selectedPinId) {
           port2.classList.add("veriflow-pin-selected");
+          port2.parentElement?.querySelector(".x6-port-label")?.classList.add("veriflow-pin-selected");
         }
       });
     }
@@ -47706,7 +47721,7 @@
     const data2 = cellData(node);
     if (data2?.junction) selectNetwork(data2.objectId);
   });
-  graph.on("node:port:click", ({ node, port: port2 }) => {
+  function selectPin(node, port2) {
     const data2 = cellData(node);
     if (!data2?.node || !port2 || !data2.node.pins.some((pin2) => pin2.id === port2)) return;
     selectedNetworkId = void 0;
@@ -47716,6 +47731,21 @@
     syncingSelection = false;
     refreshNetworkSelectionStyles();
     updateSelectionStatus([]);
+  }
+  function selectPinLabel(event) {
+    if (!(event.target instanceof Element)) return;
+    const label = event.target.closest(".x6-port-label");
+    if (!label) return;
+    event.stopPropagation();
+    const port2 = label.parentElement?.querySelector(".x6-port-body[port]")?.getAttribute("port");
+    const nodeId = label.closest(".x6-node[data-cell-id]")?.getAttribute("data-cell-id");
+    const node = nodeId ? graph.getCellById(nodeId) : void 0;
+    if (node) selectPin(node, port2);
+  }
+  document.addEventListener("mousedown", selectPinLabel, true);
+  document.addEventListener("touchstart", selectPinLabel, true);
+  graph.on("node:port:click", ({ node, port: port2 }) => {
+    selectPin(node, port2);
   });
   graph.on("blank:click", () => {
     selectNetwork(void 0);

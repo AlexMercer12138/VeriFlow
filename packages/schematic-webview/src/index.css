@@ -532,6 +532,11 @@ dialog::backdrop {
     stroke-width: 3px !important;
 }
 
+.x6-port-label.veriflow-pin-selected [data-selector="text"] {
+    fill: var(--schematic-focus) !important;
+    font-weight: 600 !important;
+}
+
 .x6-node.veriflow-network-selected .veriflow-junction-dot {
     fill: var(--schematic-wire-selected) !important;
     stroke: var(--schematic-wire-selected) !important;

@@ -589,6 +589,17 @@ async function testSchematicAssets(): Promise<void> {
         );
     }
     assert.match(webviewSource, /{ tagName: 'text', selector: 'text' }/);
+    assert.match(webviewSource, /{ tagName: 'rect', selector: 'portLabelHitArea' }/);
+    assert.match(webviewSource, /portLabelHitArea:\s*{[^}]*port: pin\.id,/s);
+    assert.match(
+        webviewSource,
+        /function selectPin\(node: Cell, port: string \| null \| undefined\)/
+    );
+    assert.match(webviewSource, /portLabelHitArea:\s*{[^}]*pointerEvents: 'all',/s);
+    assert.match(
+        webviewSource,
+        /document\.addEventListener\('mousedown', selectPinLabel, true\)/
+    );
     assert.doesNotMatch(webviewSource, /selector: 'portLabel'/);
     assert.doesNotMatch(webviewSource, /tagName: 'clipPath'/);
     assert.doesNotMatch(webviewSource, /clipPath:/);

@@ -1967,15 +1967,65 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         await page.waitForTimeout(100);
         assert.deepEqual(rendererErrors, []);
 
+        const masterAggregate = page.locator(
+            '.x6-node[data-cell-id="instance:u_master_free"] '
+            + `.x6-port-body[port="${fixture.interfaceIds.masterFree}"]`
+        );
+        const masterAggregateLabel = masterAggregate.locator('..').locator('.x6-port-label');
+        const slaveAggregate = page.locator(
+            '.x6-node[data-cell-id="instance:u_slave_free"] '
+            + `.x6-port-body[port="${fixture.interfaceIds.slaveFree}"]`
+        );
+        await page.locator('#connect-button').click();
+        assert.equal(
+            await page.locator('#connect-button').getAttribute('aria-pressed'),
+            'true'
+        );
+        assert.equal(await masterAggregateLabel.evaluate(element => [
+            element,
+            ...element.querySelectorAll('[magnet]'),
+        ].some(candidate => candidate.getAttribute('magnet') === 'true')), false);
+        const edgesBeforeLabelDrag = await page.locator('#canvas .x6-edge').count();
+        const editsBeforeLabelDrag = (await archDesignEditMessages(page)).length;
+        const savesBeforeLabelDrag = await capturedSaves(page);
+        const labelBounds = await masterAggregateLabel.boundingBox();
+        const slaveBounds = await slaveAggregate.boundingBox();
+        assert.ok(labelBounds && slaveBounds);
+        await page.mouse.move(
+            labelBounds.x + labelBounds.width / 2,
+            labelBounds.y + labelBounds.height / 2
+        );
+        await page.mouse.down();
+        await page.mouse.move(
+            slaveBounds.x + slaveBounds.width / 2,
+            slaveBounds.y + slaveBounds.height / 2,
+            { steps: 8 }
+        );
+        assert.equal(await page.locator('#canvas .x6-edge').count(), edgesBeforeLabelDrag);
+        await page.mouse.up();
+        assert.equal((await archDesignEditMessages(page)).length, editsBeforeLabelDrag);
+        await page.waitForTimeout(350);
+        assert.deepEqual(await capturedSaves(page), savesBeforeLabelDrag);
+
         const irq = page.locator(
             '.x6-node[data-cell-id="instance:u_master_free"] '
             + '.x6-port-body[port="instance:u_master_free:irq"]'
         );
-        await irq.click();
+        const irqPort = irq.locator('..');
+        const irqLabel = irqPort.locator('.x6-port-label');
+        await irqLabel.click();
         await page.locator('#inspector[data-kind="pin"]').waitFor();
         assert.equal(await irq.evaluate(element =>
             element.classList.contains('veriflow-pin-selected')
         ), true);
+        assert.equal(await irqLabel.evaluate(element =>
+            element.classList.contains('veriflow-pin-selected')
+        ), true);
+        assert.equal(await irqLabel.evaluate(element => [
+            element,
+            ...element.querySelectorAll('[magnet]'),
+        ].some(candidate => candidate.getAttribute('magnet') === 'true')), false);
+        assert.equal(await page.locator('#canvas .x6-widget-selection-box').count(), 0);
         assert.equal(await page.locator('#inspector-title').textContent(), 'u_master_free.irq');
         assert.deepEqual(await page.locator('#inspector-form output').evaluateAll(outputs =>
             Object.fromEntries(outputs.map(output => [
