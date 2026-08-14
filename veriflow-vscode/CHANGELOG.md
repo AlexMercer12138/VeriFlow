@@ -1,7 +1,5 @@
 # Change Log
 
-## [Unreleased]
-
 ## [1.4.1] - 2026-08-13
 
 - 新增 `.ad` Arch Design 可视化编辑、接口聚合和 RTL 导出。
