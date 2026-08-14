@@ -148,6 +148,12 @@ async function testExtensionLifecycle(): Promise<void> {
                 async exportRtl(): Promise<void> {}
             },
         },
+        './archDesign/archDesignTreeProvider': {
+            ArchDesignTreeProvider: class {
+                refresh(): void {}
+                dispose(): void {}
+            },
+        },
         './output': outputStub,
     };
 

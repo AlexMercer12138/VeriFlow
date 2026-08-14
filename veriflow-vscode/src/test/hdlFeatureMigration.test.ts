@@ -1162,6 +1162,12 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 async exportRtl(): Promise<void> {}
             },
         },
+        './archDesign/archDesignTreeProvider': {
+            ArchDesignTreeProvider: class {
+                refresh(): void {}
+                dispose(): void {}
+            },
+        },
         './schematic': {
             SchematicNavigationRegistry: class {},
             SchematicEditorProvider: class {
@@ -1260,8 +1266,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         const activePatterns = watcherRecords
             .filter(record => !record.disposed)
             .map(record => record.pattern);
-        assert.ok(activePatterns.length >= 4);
-        assert.ok(activePatterns.every(patternValue => patternValue instanceof FakeRelativePattern));
+        assert.ok(activePatterns.includes('**/*.ad'));
+        const activeHdlPatterns = activePatterns.filter(
+            patternValue => patternValue !== '**/*.ad'
+        );
+        assert.ok(activeHdlPatterns.length >= 4);
+        assert.ok(activeHdlPatterns.every(
+            patternValue => patternValue instanceof FakeRelativePattern
+        ));
         assert.ok(activePatterns.some(patternValue =>
             patternValue instanceof FakeRelativePattern
             && patternValue.baseUri.toString() === workspaceRootUri

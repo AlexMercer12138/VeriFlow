@@ -15,6 +15,8 @@ import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
 import { ArchDesignEditorProvider } from './archDesign/archDesignEditorProvider';
+import { createArchDesign } from './archDesign/archDesignCreation';
+import { ArchDesignTreeProvider } from './archDesign/archDesignTreeProvider';
 import {
     WorkspaceInterfaceProtocolLoader,
 } from './archDesign/interfaceProtocolLoader';
@@ -238,6 +240,21 @@ export function activate(context: vscode.ExtensionContext): void {
         if (e.visible) { cmdScanModules(context); }
     });
     context.subscriptions.push(treeView);
+
+    const archDesignTreeProvider = new ArchDesignTreeProvider();
+    const archDesignTreeView = vscode.window.createTreeView(
+        'veriflow.archDesigns',
+        { treeDataProvider: archDesignTreeProvider }
+    );
+    const archDesignWatcher = vscode.workspace.createFileSystemWatcher('**/*.ad');
+    archDesignWatcher.onDidCreate(() => archDesignTreeProvider.refresh());
+    archDesignWatcher.onDidChange(() => archDesignTreeProvider.refresh());
+    archDesignWatcher.onDidDelete(() => archDesignTreeProvider.refresh());
+    context.subscriptions.push(
+        archDesignTreeProvider,
+        archDesignTreeView,
+        archDesignWatcher
+    );
     tbPanelProvider.setBeforeGenerate(async () => {
         await cmdScanModules(context);
     });
@@ -369,6 +386,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const commandUri = (value: unknown): vscode.Uri | undefined =>
         value instanceof vscode.Uri ? value : undefined;
+    const openArchDesign = async (uri: vscode.Uri): Promise<void> => {
+        await vscode.commands.executeCommand(
+            'vscode.openWith',
+            uri,
+            ArchDesignEditorProvider.viewType
+        );
+    };
+    const runArchDesignAction = async (
+        value: unknown,
+        action: (uri?: vscode.Uri) => Promise<void>
+    ): Promise<void> => {
+        const uri = commandUri(value);
+        if (uri) await openArchDesign(uri);
+        await action(uri);
+    };
     const cmds: Array<[string, (...args: unknown[]) => unknown]> = [
         ['veriflow.selectTop', () => cmdSelectTop(context)],
         ['veriflow.analyze', () => cmdAnalyze(context)],
@@ -386,10 +418,51 @@ export function activate(context: vscode.ExtensionContext): void {
         ['veriflow.scanModules', () => cmdScanModules(context)],
         ['veriflow.instantiateModule', () => cmdInstantiateModule(context)],
         ['veriflow.showOutput', () => { if (!hdlStopping) { output.show(); } }],
+        ['veriflow.createArchDesign', async () => {
+            const created = await createArchDesign<vscode.Uri>({
+                requestModule: validate => vscode.window.showInputBox({
+                    title: 'Create Arch Design',
+                    prompt: 'Enter the top-level module name',
+                    placeHolder: 'soc_top',
+                    validateInput: validate,
+                }),
+                requestTarget: module => vscode.window.showSaveDialog({
+                    title: 'Create Arch Design',
+                    saveLabel: 'Create',
+                    defaultUri: vscode.workspace.workspaceFolders?.[0]
+                        ? vscode.Uri.joinPath(
+                            vscode.workspace.workspaceFolders[0].uri,
+                            `${module}.ad`
+                        )
+                        : undefined,
+                    filters: { 'Arch Design': ['ad'] },
+                }),
+                writeFile: async (target, text) => {
+                    await vscode.workspace.fs.writeFile(
+                        target,
+                        Buffer.from(text, 'utf8')
+                    );
+                },
+                openEditor: openArchDesign,
+                reportError: async message => {
+                    await vscode.window.showErrorMessage(
+                        `Unable to create Arch Design: ${message}`
+                    );
+                },
+            });
+            if (created) archDesignTreeProvider.refresh();
+        }],
+        ['veriflow.refreshArchDesigns', () => archDesignTreeProvider.refresh()],
+        ['veriflow.openArchDesign', (uri?: unknown) => {
+            const target = commandUri(uri);
+            return target ? openArchDesign(target) : undefined;
+        }],
         ['veriflow.validateArchDesign', (uri?: unknown) =>
-            archDesignEditorProvider.validate(commandUri(uri))],
+            runArchDesignAction(uri, target =>
+                archDesignEditorProvider.validate(target))],
         ['veriflow.exportArchDesign', (uri?: unknown) =>
-            archDesignEditorProvider.exportRtl(commandUri(uri))],
+            runArchDesignAction(uri, target =>
+                archDesignEditorProvider.exportRtl(target))],
     ];
     for (const [name, fn] of cmds) {
         context.subscriptions.push(vscode.commands.registerCommand(name, fn));

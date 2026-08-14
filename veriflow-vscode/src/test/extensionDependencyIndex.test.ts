@@ -202,7 +202,7 @@ type ScanGate = {
 type WatchEventKind = 'change' | 'create' | 'delete';
 
 type WatcherRecord = {
-    pattern: FakeRelativePattern;
+    pattern: string | FakeRelativePattern;
     disposed: boolean;
     listeners: Partial<Record<WatchEventKind, (uri: FakeUri) => unknown>>;
 };
@@ -353,6 +353,10 @@ function createExtensionHarness(
     };
 
     const watcherMatches = (record: WatcherRecord, uri: FakeUri): boolean => {
+        if (typeof record.pattern === 'string') {
+            return record.pattern === '**/*.ad'
+                && path.posix.extname(uri.path) === '.ad';
+        }
         const basePath = path.posix.normalize(record.pattern.baseUri.path);
         const uriPath = path.posix.normalize(uri.path);
         const prefix = basePath.endsWith('/') ? basePath : `${basePath}/`;
@@ -425,8 +429,9 @@ function createExtensionHarness(
             },
             onDidChangeConfiguration: () => disposable,
             onDidChangeWorkspaceFolders: () => disposable,
-            createFileSystemWatcher(pattern: FakeRelativePattern) {
-                if (nextExactWatcherFailure?.filename === pattern.pattern) {
+            createFileSystemWatcher(pattern: string | FakeRelativePattern) {
+                if (typeof pattern !== 'string'
+                    && nextExactWatcherFailure?.filename === pattern.pattern) {
                     const error = nextExactWatcherFailure.error;
                     nextExactWatcherFailure = undefined;
                     throw error;
@@ -520,6 +525,12 @@ function createExtensionHarness(
                 static readonly viewType = 'veriflow.archDesignEditor';
                 async validate(): Promise<void> {}
                 async exportRtl(): Promise<void> {}
+            },
+        },
+        './archDesign/archDesignTreeProvider': {
+            ArchDesignTreeProvider: class {
+                refresh(): void {}
+                dispose(): void {}
             },
         },
         './output': {
