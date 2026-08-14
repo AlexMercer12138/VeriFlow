@@ -18,6 +18,7 @@ export type {
     RenderedNodeGeometry,
     RenderedPinGeometry,
     RenderedTextLabel,
+    SchematicNodeBodyShape,
     SchematicRenderModel,
     SerializedSchematicRenderModel,
 } from './renderModel';

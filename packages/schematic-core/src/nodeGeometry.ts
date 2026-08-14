@@ -209,7 +209,11 @@ function calculateSchematicNode(
         );
     const sideRows = Math.max(leftPins.length, rightPins.length);
     const naturalHeight = isPort
-        ? SCHEMATIC_NODE_LAYOUT.portHeight
+        ? Math.max(
+            SCHEMATIC_NODE_LAYOUT.portHeight,
+            sideRows * SCHEMATIC_NODE_LAYOUT.pinRowHeight
+                + SCHEMATIC_NODE_LAYOUT.verticalPadding
+        )
         : Math.max(
             SCHEMATIC_NODE_LAYOUT.minimumHeight,
             SCHEMATIC_NODE_LAYOUT.headerAreaHeight
@@ -247,10 +251,20 @@ function calculateSchematicNode(
             - SCHEMATIC_NODE_LAYOUT.labelHeight / 2,
     };
     const sideIndexes: Record<PinSide, number> = { left: 0, right: 0 };
+    const sideCounts: Record<PinSide, number> = {
+        left: leftPins.length,
+        right: rightPins.length,
+    };
     const pins: ResolvedPin[] = sidePins.map(({ source, side }) => {
         const row = sideIndexes[side]++;
         const anchor = isPort
-            ? { x: side === 'left' ? 0 : width, y: height / 2 }
+            ? {
+                x: side === 'left' ? 0 : width,
+                y: (height
+                    - sideCounts[side] * SCHEMATIC_NODE_LAYOUT.pinRowHeight) / 2
+                    + row * SCHEMATIC_NODE_LAYOUT.pinRowHeight
+                    + SCHEMATIC_NODE_LAYOUT.pinRowHeight / 2,
+            }
             : {
                 x: side === 'left' ? 0 : width,
                 y: SCHEMATIC_NODE_LAYOUT.headerAreaHeight

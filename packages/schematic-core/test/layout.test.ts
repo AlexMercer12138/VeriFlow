@@ -718,3 +718,71 @@ test('preserves interface metadata and render width through layout snapshots', (
     assert.deepEqual(rendered.networks[0].interface, bus.interface);
     assert.deepEqual(serialized.networks[0].interface, bus.interface);
 });
+
+test('classifies scalar boundary and instance body shapes', () => {
+    const input = node('port:shape-input', 'port', 'input', [['value', 'driver']]);
+    const output = node('port:shape-output', 'port', 'output', [['value', 'load']]);
+    const inout = node('port:shape-inout', 'port', 'inout', [
+        ['o', 'load'],
+        ['t', 'load'],
+        ['i', 'driver'],
+    ]);
+    const instance = node(
+        'instance:shape',
+        'instance',
+        'u_shape',
+        [['value', 'bidirectional']]
+    );
+    const graph: SchematicGraph = {
+        fileUri: 'file:///body-shapes.ad',
+        moduleKey: 'arch-design:body-shapes',
+        moduleName: 'body_shapes',
+        nodes: [input, output, inout, instance],
+        networks: [],
+        diagnostics: [],
+    };
+
+    const rendered = layoutSchematic(graph, undefined, text => text.length * 7);
+
+    assert.equal(rendered.nodes.get(input.id)?.bodyShape, 'directional-port');
+    assert.equal(rendered.nodes.get(output.id)?.bodyShape, 'directional-port');
+    assert.equal(rendered.nodes.get(inout.id)?.bodyShape, 'bidirectional-port');
+    assert.equal(rendered.nodes.get(instance.id)?.bodyShape, 'rectangle');
+});
+
+test('classifies known top-level interfaces as directional boundaries', () => {
+    const interfacePort = (
+        id: string,
+        role: 'master' | 'slave' | 'unknown'
+    ): GraphNode => {
+        const result = node(id, 'port', id, [['BUS', 'bidirectional']]);
+        result.pins[0].interface = {
+            id,
+            protocol: 'project.link',
+            protocolName: 'Project Link',
+            role,
+            roleSource: role === 'unknown' ? 'unknown' : 'declared',
+            kind: 'aggregate',
+            topLevel: true,
+            collapsed: true,
+        };
+        return result;
+    };
+    const master = interfacePort('interface:port:master', 'master');
+    const slave = interfacePort('interface:port:slave', 'slave');
+    const unknown = interfacePort('interface:port:unknown', 'unknown');
+    const graph: SchematicGraph = {
+        fileUri: 'file:///interface-body-shapes.ad',
+        moduleKey: 'arch-design:interface-body-shapes',
+        moduleName: 'interface_body_shapes',
+        nodes: [master, slave, unknown],
+        networks: [],
+        diagnostics: [],
+    };
+
+    const rendered = layoutSchematic(graph, undefined, text => text.length * 7);
+
+    assert.equal(rendered.nodes.get(master.id)?.bodyShape, 'directional-port');
+    assert.equal(rendered.nodes.get(slave.id)?.bodyShape, 'directional-port');
+    assert.equal(rendered.nodes.get(unknown.id)?.bodyShape, 'rectangle');
+});

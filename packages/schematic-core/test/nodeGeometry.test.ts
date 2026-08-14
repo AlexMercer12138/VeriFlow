@@ -230,3 +230,36 @@ test('keeps boundary port nodes compact with a centered side anchor', () => {
     assert.strictEqual(measured.pins[0].source, node.pins[0]);
     assert.equal(measured.pins[0].fullLabel, 'data');
 });
+
+test('centers multi-pin boundary anchors on distinct side rows', () => {
+    const id = 'port:shared_io';
+    const node: GraphNode = {
+        id,
+        kind: 'port',
+        label: 'shared_io',
+        pins: [pin(id, 'o'), pin(id, 't'), pin(id, 'i')],
+        readOnly: false,
+    };
+    const measured = measureSchematicNode(
+        node,
+        sides(node, ['left', 'left', 'right']),
+        measure
+    );
+
+    assert.equal(
+        measured.height,
+        2 * SCHEMATIC_NODE_LAYOUT.pinRowHeight
+            + SCHEMATIC_NODE_LAYOUT.verticalPadding
+    );
+    assert.ok(measured.height > SCHEMATIC_NODE_LAYOUT.portHeight);
+    assert.deepEqual(
+        measured.pins.filter(candidate => candidate.side === 'left')
+            .map(candidate => candidate.anchor.y),
+        [16, 36]
+    );
+    assert.deepEqual(
+        measured.pins.filter(candidate => candidate.side === 'right')
+            .map(candidate => candidate.anchor.y),
+        [26]
+    );
+});

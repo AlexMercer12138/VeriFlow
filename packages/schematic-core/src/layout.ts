@@ -27,6 +27,7 @@ import {
     type RenderedNodeGeometry,
     type RenderedPinGeometry,
     type RenderedTextLabel,
+    type SchematicNodeBodyShape,
     type SchematicRenderModel,
 } from './renderModel';
 import type { Point, Rectangle, RouteSegment } from './routing/geometry';
@@ -59,6 +60,23 @@ const PIN_DIRECTIONS: ReadonlySet<PinDirection> = new Set([
     'load',
     'bidirectional',
 ]);
+
+function bodyShapeFor(node: GraphNode): SchematicNodeBodyShape {
+    if (node.kind !== 'port') return 'rectangle';
+    const topLevelInterface = node.pins.find(pin =>
+        pin.interface?.topLevel
+    )?.interface;
+    if (topLevelInterface) {
+        return topLevelInterface.role === 'unknown'
+            ? 'rectangle'
+            : 'directional-port';
+    }
+    if (node.pins.length === 0) return 'rectangle';
+    return node.pins.length > 1
+        || node.pins[0].direction === 'bidirectional'
+        ? 'bidirectional-port'
+        : 'directional-port';
+}
 
 function snapshotArray(value: unknown, label: string): unknown[] {
     if (!Array.isArray(value)) throw new RangeError(`${label} must be an array`);
@@ -636,6 +654,7 @@ export function layoutSchematic(
         const rendered: RenderedNodeGeometry = Object.freeze({
             id: node.id,
             kind: node.kind,
+            bodyShape: bodyShapeFor(node),
             label: node.label,
             subtitle: node.subtitle,
             column: realized.column,

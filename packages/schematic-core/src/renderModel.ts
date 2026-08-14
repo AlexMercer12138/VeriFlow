@@ -36,9 +36,15 @@ export type RenderedPinGeometry = Readonly<{
     interface?: Readonly<GraphInterfacePin>;
 }>;
 
+export type SchematicNodeBodyShape =
+    | 'rectangle'
+    | 'directional-port'
+    | 'bidirectional-port';
+
 export type RenderedNodeGeometry = Readonly<{
     id: string;
     kind: GraphNodeKind;
+    bodyShape: SchematicNodeBodyShape;
     label: string;
     subtitle?: string;
     column: number;
