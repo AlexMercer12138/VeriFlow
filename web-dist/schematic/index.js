@@ -47088,8 +47088,7 @@
         collapsedInterfaces: {
           ...currentArchDesignState.design.presentation.collapsedInterfaces
         }
-      },
-      viewport: { ...layout.viewport }
+      }
     };
   }
   function drainArchDesignWrites() {
@@ -47260,7 +47259,11 @@
       y: translation.ty,
       zoom: graph.zoom()
     };
-    scheduleLayoutSave();
+    if (archDesignDocument) {
+      persistCurrentLayoutState();
+    } else {
+      scheduleLayoutSave();
+    }
   }
   function setMinimapVisibility() {
     const wanted = currentLayout?.minimap === true && minimapAvailable;

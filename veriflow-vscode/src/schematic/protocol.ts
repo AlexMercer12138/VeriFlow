@@ -340,22 +340,9 @@ function normalizeArchDesignPresentation(value: unknown): ArchDesignPresentation
         ownValue(value, 'collapsedInterfaces')
     );
     if (nodes === false || collapsedInterfaces === false) return undefined;
-    const viewportValue = ownValue(value, 'viewport');
-    let viewport: ArchDesignPresentation['viewport'];
-    if (viewportValue !== undefined) {
-        if (!isRecord(viewportValue)) return undefined;
-        const x = ownValue(viewportValue, 'x');
-        const y = ownValue(viewportValue, 'y');
-        const zoom = ownValue(viewportValue, 'zoom');
-        if (!finiteCoordinate(x) || !finiteCoordinate(y)
-            || typeof zoom !== 'number' || !Number.isFinite(zoom)
-            || zoom < 0.1 || zoom > 4) return undefined;
-        viewport = { x, y, zoom };
-    }
     return {
         ...(nodes === undefined ? {} : { nodes }),
         ...(collapsedInterfaces === undefined ? {} : { collapsedInterfaces }),
-        ...(viewport === undefined ? {} : { viewport }),
     };
 }
 

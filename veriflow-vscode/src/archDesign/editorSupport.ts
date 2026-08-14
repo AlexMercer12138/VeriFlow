@@ -245,9 +245,7 @@ export function archDesignLayout(
 ): SchematicLayout {
     return {
         placement: projectArchDesignPlacement(design, graph),
-        viewport: design.presentation.viewport
-            ? { ...design.presentation.viewport }
-            : { x: 0, y: 0, zoom: 1 },
+        viewport: { x: 0, y: 0, zoom: 1 },
         minimap: true,
     };
 }
@@ -290,6 +288,5 @@ export function archDesignPresentationFromLayout(
     return {
         ...(Object.keys(nodes).length === 0 ? {} : { nodes }),
         ...(collapsedInterfaces === undefined ? {} : { collapsedInterfaces }),
-        viewport: { ...layout.viewport },
     };
 }

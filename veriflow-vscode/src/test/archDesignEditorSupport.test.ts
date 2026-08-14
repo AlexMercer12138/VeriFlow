@@ -102,7 +102,6 @@ function testLayoutProjection(): void {
                 'default:stale': { column: 1, order: 0 },
             },
             collapsedInterfaces: { 'u_core.m_axi': true },
-            viewport: { x: -20, y: 30, zoom: 1.5 },
         },
     });
     const projection = projectArchDesignGraph(design, [definition()], {
@@ -110,7 +109,7 @@ function testLayoutProjection(): void {
     });
 
     const layout = archDesignLayout(design, projection.graph);
-    assert.deepStrictEqual(layout.viewport, { x: -20, y: 30, zoom: 1.5 });
+    assert.deepStrictEqual(layout.viewport, { x: 0, y: 0, zoom: 1 });
     assert.strictEqual(layout.minimap, true);
     assert.deepStrictEqual(layout.placement.nodes['instance:u_core'], {
         column: 1,
@@ -174,7 +173,6 @@ function testLayoutProjection(): void {
         Object.fromEntries(Object.entries(presentation.collapsedInterfaces ?? {})),
         { 'u_core.m_axi': true }
     );
-    assert.deepStrictEqual(presentation.viewport, { x: 4, y: 5, zoom: 0.8 });
 }
 
 function testEndpointProjection(): void {

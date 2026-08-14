@@ -241,8 +241,8 @@ Require:
 - Validate and Export RTL commands in the editor title;
 - `.v/.sv` selectors and option priority unchanged.
 
-Provider tests must assert `saveLayout` writes presentation nodes/viewport into
-the document, excludes derived constant nodes, and `relayoutAll` clears manual
+Provider tests must assert `saveLayout` writes presentation nodes into the
+document, excludes derived constant nodes, and `relayoutAll` clears manual
 placement through one undoable edit.
 
 **Step 2: Run and verify RED**

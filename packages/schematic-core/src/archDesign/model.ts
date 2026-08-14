@@ -87,16 +87,9 @@ export type ArchDesignNodePlacement = Readonly<{
     userPositioned?: boolean;
 }>;
 
-export type ArchDesignViewport = Readonly<{
-    x: number;
-    y: number;
-    zoom: number;
-}>;
-
 export type ArchDesignPresentation = Readonly<{
     nodes?: Readonly<Record<string, ArchDesignNodePlacement>>;
     collapsedInterfaces?: Readonly<Record<string, boolean>>;
-    viewport?: ArchDesignViewport;
 }>;
 
 export type ArchDesign = Readonly<{

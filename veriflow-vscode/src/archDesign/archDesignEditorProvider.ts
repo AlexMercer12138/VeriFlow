@@ -476,7 +476,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                     revision: nextRevision,
                     graph: projection.graph,
                     layout: archDesignLayout(design, projection.graph),
-                    fitOnFirstRender: design.presentation.viewport === undefined,
+                    fitOnFirstRender: true,
                 });
             }
             await post({

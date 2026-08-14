@@ -82,7 +82,6 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
                 },
             },
             collapsedInterfaces: { 'u_core.m_axi_00': true },
-            viewport: { x: 10, y: 20, zoom: 1.25 },
         },
     }));
 
@@ -100,7 +99,6 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
     assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
     assert.equal(result.design.interfaceOverrides['u_core.M_AXI'].role, 'master');
     assert.equal(result.design.interfaceOverrides['u_core.m_axi'].role, 'slave');
-    assert.ok(Object.isFrozen(result.design.presentation.viewport));
 });
 
 test('normalizes omitted interface sections for legacy schema-v1 documents', () => {
@@ -115,6 +113,16 @@ test('normalizes omitted interface sections for legacy schema-v1 documents', () 
     assert.deepEqual(result.design.interfacePorts, []);
     assert.deepEqual(Object.keys(result.design.interfaceOverrides), []);
     assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
+});
+
+test('ignores unknown presentation fields', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        presentation: { camera: { x: 10, y: 20, zoom: 1.25 } },
+    }));
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.deepEqual(result.design.presentation, {});
 });
 
 test('rejects malformed interface declarations, overrides, endpoints, and unsafe defaults', () => {
@@ -271,7 +279,6 @@ test('collects deterministic path diagnostics for malformed current fields', () 
                 },
             },
             collapsedInterfaces: { control: 'yes' },
-            viewport: { x: 'left', y: 0, zoom: 0 },
         },
     }));
 
@@ -297,8 +304,6 @@ test('collects deterministic path diagnostics for malformed current fields', () 
         '$.presentation.nodes.u_core.offset',
         '$.presentation.nodes.u_core.userPositioned',
         '$.presentation.collapsedInterfaces.control',
-        '$.presentation.viewport.x',
-        '$.presentation.viewport.zoom',
     ]) {
         assert.ok(paths.includes(path), `missing diagnostic for ${path}`);
     }

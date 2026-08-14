@@ -71,6 +71,7 @@ type CapturedSchematicLayout = {
 
 type CapturedSaveMessage = {
     type?: string;
+    moduleKey?: string;
     revision?: string;
     layout?: CapturedSchematicLayout;
 };
@@ -877,6 +878,13 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
         { steps: 4 }
     );
     await page.mouse.up({ button: 'right' });
+    await page.waitForTimeout(400);
+    assert.deepEqual(
+        (await capturedSaves(page)).filter(message =>
+            message.moduleKey === disconnectedGraph.moduleKey
+        ),
+        []
+    );
     assert.equal(
         await targetPin.evaluate(element =>
             element.classList.contains('veriflow-connection-pending')
@@ -899,20 +907,6 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
         ),
         false
     );
-    await page.waitForFunction(() => (window as unknown as {
-        __veriflowMessages: Array<{ type?: string }>;
-    }).__veriflowMessages.some(message => message.type === 'saveLayout'));
-    await page.evaluate(() => {
-        for (const revision of [
-            'fixture:ad-connect:pan-saved:1',
-            'fixture:ad-connect:pan-saved:2',
-        ]) {
-            window.dispatchEvent(new MessageEvent('message', { data: {
-                type: 'archDesignLayoutSaved',
-                revision,
-            } }));
-        }
-    });
     await page.waitForFunction(() => {
         const state = window as unknown as { __veriflowMessages: Array<{
             type?: string;
@@ -933,7 +927,7 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
     });
     assert.deepEqual(editMessages, [{
         type: 'editArchDesign',
-        revision: 'fixture:ad-connect:pan-saved:2',
+        revision: 'fixture:ad-connect:refresh',
         edit: {
             type: 'connect',
             source: { kind: 'instance', instance: 'u_source', port: 'out' },
@@ -2296,14 +2290,16 @@ test('Arch Design interface pins drive Inspector actions and survive graph refre
         const collapsePresentation = collapseEdit?.presentation as {
             nodes?: Record<string, unknown>;
             collapsedInterfaces?: Record<string, boolean>;
-            viewport?: unknown;
         } | undefined;
         assert.ok(collapsePresentation?.nodes?.['instance:u_master_free']);
         assert.equal(
             collapsePresentation?.collapsedInterfaces?.[fixture.interfaceIds.masterFree],
             false
         );
-        assert.deepEqual(collapsePresentation?.viewport, { x: 24, y: 20, zoom: 0.85 });
+        assert.deepEqual(Object.keys(collapsePresentation ?? {}).sort(), [
+            'collapsedInterfaces',
+            'nodes',
+        ]);
 
         await publishArchDesignInterfaceFixture(
             page,
@@ -2421,7 +2417,12 @@ test('Arch Design collapse edits retain the latest acknowledged layout presentat
         await captureWebviewMessages(page);
         const fixture = archDesignInterfaceFixture();
         await publishArchDesignInterfaceFixture(page, 'fixture:interfaces:layout-before-collapse');
-        await page.locator('#zoom-reset-button').click();
+        await dragElement(
+            page,
+            page.locator('.x6-node[data-cell-id="instance:u_slave_free"] rect').first(),
+            0,
+            40
+        );
         await page.waitForFunction(() => (window as unknown as {
             __veriflowMessages: Array<{ type?: string }>;
         }).__veriflowMessages.some(message => message.type === 'saveLayout'));
@@ -2452,7 +2453,6 @@ test('Arch Design collapse edits retain the latest acknowledged layout presentat
                 offset?: number;
                 userPositioned?: boolean;
             }>;
-            viewport?: unknown;
             collapsedInterfaces?: Record<string, boolean>;
         } | undefined;
         const latestPlacement = latestLayout.placement?.nodes?.['instance:u_slave_free'];
@@ -2464,7 +2464,6 @@ test('Arch Design collapse edits retain the latest acknowledged layout presentat
             ...(latestPlacement.fixed ? { userPositioned: true } : {}),
         });
         assert.ok(presentation?.nodes?.['interface:port:m_free']);
-        assert.deepEqual(presentation?.viewport, latestLayout.viewport);
         assert.equal(presentation?.collapsedInterfaces?.[fixture.interfaceIds.masterFree], false);
     } finally {
         await electronApp.close();
@@ -4069,7 +4068,7 @@ test('schematic selection boxes persist single and rubberband batch moves once',
 });
 
 test('Arch Design selection stays local and layout acknowledgement preserves cells', {
-    timeout: 30_000,
+    timeout: 45_000,
 }, async () => {
     const fixtureRoot = createElectronFixture();
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
@@ -4175,7 +4174,7 @@ test('Arch Design selection stays local and layout acknowledgement preserves cel
             const state = window as unknown as { __veriflowMessages: unknown[] };
             state.__veriflowMessages = [];
         });
-        await page.locator('#fit-button').click();
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForFunction(() => {
             const state = window as unknown as { __veriflowMessages: Array<{
                 type?: string;
@@ -4186,6 +4185,7 @@ test('Arch Design selection stays local and layout acknowledgement preserves cel
                 && message.revision === 'fixture:interaction:2'
             );
         });
+        await page.locator('#fit-button').click();
         await page.locator('#zoom-reset-button').click();
         await page.waitForTimeout(400);
         assert.equal((await capturedSaves(page)).length, 1);
@@ -4195,6 +4195,7 @@ test('Arch Design selection stays local and layout acknowledgement preserves cel
                 revision: 'fixture:interaction:3',
             } }));
         });
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForFunction(() => {
             const state = window as unknown as { __veriflowMessages: Array<{
                 type?: string;
@@ -4270,9 +4271,10 @@ test('Arch Design serializes layout saves with semantic edits', {
             });
         });
         await publishArchDesignFixture(page, 'fixture:serialized:1');
-        await page.locator('.x6-node[data-cell-id="instance:u_source"]').waitFor();
+        const sourceNode = page.locator('.x6-node[data-cell-id="instance:u_source"]');
+        await sourceNode.waitFor();
 
-        await page.locator('#fit-button').click();
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForFunction(() => {
             const messages = (window as unknown as {
                 __veriflowMessages: Array<{ type?: string }>;
@@ -4307,7 +4309,7 @@ test('Arch Design serializes layout saves with semantic edits', {
         });
         assert.equal(await page.locator('#add-port-button').isDisabled(), true);
 
-        await page.locator('#fit-button').click();
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForTimeout(400);
         assert.equal((await capturedSaves(page)).length, 1);
 
@@ -4364,16 +4366,17 @@ test('Arch Design pagehide forwards the latest queued layout', {
             });
         });
         await publishArchDesignFixture(page, 'fixture:pagehide:1');
-        await page.locator('.x6-node[data-cell-id="instance:u_source"]').waitFor();
+        const sourceNode = page.locator('.x6-node[data-cell-id="instance:u_source"]');
+        await sourceNode.waitFor();
 
-        await page.locator('#fit-button').click();
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForFunction(() => {
             const messages = (window as unknown as {
                 __veriflowMessages: Array<{ type?: string }>;
             }).__veriflowMessages;
             return messages.filter(message => message.type === 'saveLayout').length === 1;
         });
-        await page.locator('#zoom-reset-button').click();
+        await dragElement(page, sourceNode.locator('rect').first(), 0, 32);
         await page.waitForTimeout(400);
         assert.equal((await capturedSaves(page)).length, 1);
 
@@ -4391,7 +4394,7 @@ test('Arch Design pagehide forwards the latest queued layout', {
     }
 });
 
-test('Arch Design first render fits once without persisting an automatic viewport', {
+test('Arch Design first render fits once without saving layout', {
     timeout: 30_000,
 }, async () => {
     const fixtureRoot = createElectronFixture();
@@ -4495,30 +4498,6 @@ test('Arch Design first render fits once without persisting an automatic viewpor
         assert.ok(repeatedSourceBounds);
         assert.ok(Math.abs(repeatedSourceBounds.x - fittedSourceBounds.x) < 2);
         assert.ok(Math.abs(repeatedSourceBounds.y - fittedSourceBounds.y) < 2);
-        const savedFixture = archDesignInteractionFixture('saved_view_top');
-        await publishArchDesignFixture(
-            page,
-            'fixture:fit:baseline',
-            savedFixture,
-            { fitOnFirstRender: false }
-        );
-        const baselineSourceBounds = await page.locator(
-            '.x6-node[data-cell-id="instance:u_source"]'
-        ).boundingBox();
-        assert.ok(baselineSourceBounds);
-        savedFixture.layout.viewport = { x: 84, y: 68, zoom: 1 };
-        await publishArchDesignFixture(
-            page,
-            'fixture:fit:2',
-            savedFixture,
-            { fitOnFirstRender: false }
-        );
-        const sourceBounds = await page.locator(
-            '.x6-node[data-cell-id="instance:u_source"]'
-        ).boundingBox();
-        assert.ok(sourceBounds);
-        assert.ok(Math.abs(sourceBounds.x - baselineSourceBounds.x - 84) < 2);
-        assert.ok(Math.abs(sourceBounds.y - baselineSourceBounds.y - 68) < 2);
         assert.equal((await capturedSaves(page)).length, 0);
     } finally {
         await electronApp.close();

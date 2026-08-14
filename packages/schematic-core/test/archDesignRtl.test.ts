@@ -576,11 +576,11 @@ test('permits interface width warnings and fingerprints the effective protocol',
 test('keeps output deterministic across presentation and output-path changes', () => {
     const original = designOf({
         export: { output: 'generated/first.v' },
-        presentation: { viewport: { x: 1, y: 2, zoom: 1 } },
+        presentation: { collapsedInterfaces: { first: true } },
     });
     const moved = designOf({
         export: { output: 'elsewhere/second.v' },
-        presentation: { viewport: { x: 900, y: -300, zoom: 2 } },
+        presentation: { collapsedInterfaces: { first: false } },
     });
 
     const first = exportArchDesignRtl(original, [], { sourcePath: 'soc_top.ad' });

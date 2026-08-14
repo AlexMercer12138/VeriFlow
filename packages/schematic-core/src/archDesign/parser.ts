@@ -14,7 +14,6 @@ import {
     type ArchDesignNodePlacement,
     type ArchDesignPort,
     type ArchDesignPresentation,
-    type ArchDesignViewport,
     type ArchDesignWidth,
 } from './model';
 import { isSafeDefaultExpression } from './defaults';
@@ -685,30 +684,6 @@ function normalizePlacement(
         };
 }
 
-function normalizeViewport(
-    value: unknown,
-    diagnostics: ArchDesignDiagnostic[]
-): ArchDesignViewport | undefined {
-    const path = '$.presentation.viewport';
-    const record = recordValue(value, path, diagnostics);
-    const xValue = ownValue(record, 'x');
-    const yValue = ownValue(record, 'y');
-    const zoomValue = ownValue(record, 'zoom');
-    const x = typeof xValue === 'number' && Number.isFinite(xValue) ? xValue : undefined;
-    const y = typeof yValue === 'number' && Number.isFinite(yValue) ? yValue : undefined;
-    const zoom = typeof zoomValue === 'number' && Number.isFinite(zoomValue) && zoomValue > 0
-        ? zoomValue
-        : undefined;
-    if (x === undefined) diagnostic(diagnostics, `${path}.x`, 'AD_VALUE', 'x must be finite');
-    if (y === undefined) diagnostic(diagnostics, `${path}.y`, 'AD_VALUE', 'y must be finite');
-    if (zoom === undefined) {
-        diagnostic(diagnostics, `${path}.zoom`, 'AD_VALUE', 'zoom must be positive and finite');
-    }
-    return x === undefined || y === undefined || zoom === undefined
-        ? undefined
-        : { x, y, zoom };
-}
-
 function normalizePresentation(
     value: unknown,
     diagnostics: ArchDesignDiagnostic[]
@@ -752,14 +727,9 @@ function normalizePresentation(
             }
         }
     }
-    const viewportValue = ownValue(record, 'viewport');
-    const viewport = viewportValue === undefined
-        ? undefined
-        : normalizeViewport(viewportValue, diagnostics);
     return {
         ...(nodes ? { nodes } : {}),
         ...(collapsedInterfaces ? { collapsedInterfaces } : {}),
-        ...(viewport ? { viewport } : {}),
     };
 }
 

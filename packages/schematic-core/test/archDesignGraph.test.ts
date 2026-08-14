@@ -79,7 +79,6 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
         nodes: {
             'instance:u_core': { column: 7, order: 2, offset: 13, userPositioned: true },
         },
-        viewport: { x: 10, y: 20, zoom: 1.25 },
     };
     const design = designOf({
         ports: [

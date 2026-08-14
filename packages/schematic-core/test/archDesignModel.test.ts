@@ -142,11 +142,6 @@ test('models the complete schema-v1 document surface', () => {
             collapsedInterfaces: {
                 'u_core.m_axi_00': true,
             },
-            viewport: {
-                x: 4,
-                y: 8,
-                zoom: 1.25,
-            },
         },
     });
 

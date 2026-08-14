@@ -285,7 +285,6 @@ test('returns fresh mutable placement without mutating presentation', () => {
             [FIRST_ID]: { column: 1, order: 0, offset: 12, userPositioned: true },
         },
         collapsedInterfaces: { bus: true },
-        viewport: { x: 10, y: 20, zoom: 1.5 },
     });
     const presentationBefore = JSON.stringify(design.presentation);
 
@@ -562,7 +561,6 @@ test('snapshots caller-owned getter fields once and does not mutate graph', () =
         offset: 0,
         userPositioned: 0,
         collapsedInterfaces: 0,
-        viewport: 0,
         inherited: 0,
     };
     const entry = {} as Record<string, unknown>;
@@ -612,13 +610,6 @@ test('snapshots caller-owned getter fields once and does not mutate graph', () =
                 return { bus: true };
             },
         },
-        viewport: {
-            enumerable: true,
-            get() {
-                reads.viewport += 1;
-                return { x: 1, y: 2, zoom: 3 };
-            },
-        },
     });
     const design = { ...parsedDesign } as unknown as Record<string, unknown>;
     Object.defineProperty(design, 'presentation', {
@@ -643,7 +634,6 @@ test('snapshots caller-owned getter fields once and does not mutate graph', () =
         offset: 1,
         userPositioned: 1,
         collapsedInterfaces: 0,
-        viewport: 0,
         inherited: 0,
     });
     assert.deepEqual(graph, graphBefore);

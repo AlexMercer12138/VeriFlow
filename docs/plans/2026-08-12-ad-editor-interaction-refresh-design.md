@@ -2,16 +2,15 @@
 
 ## Problem
 
-The Arch Design editor currently persists selection, viewport, and node movement
-through the same full-document edit path. Every resulting text document change
+The Arch Design editor currently routes selection, viewport, and node movement
+through the same interaction path. Every resulting text document change
 causes the provider to publish `initialize`, `graph`, and `archDesignState`
 again. The webview clears and rebuilds the X6 graph, so ordinary interaction
 briefly shows the loading state and immediately loses the user's selection.
 
-The first valid graph also applies the default `{ x: 0, y: 0, zoom: 1 }`
-viewport when the document has no persisted viewport. This leaves a new design
-in the upper-left corner even though the editor already has a fit-to-content
-operation.
+The first valid graph also applies the default runtime viewport. This leaves a
+new design in the upper-left corner even though the editor already has a
+fit-to-content operation.
 
 ## Ownership
 
@@ -19,10 +18,10 @@ Selection is transient editor state. In Arch Design documents it is retained
 only in the webview state and is never written into `design.presentation`.
 Read-only HDL schematics keep their existing layout-store behavior.
 
-Viewport and node placement remain persistent Arch Design presentation state.
-The webview applies them immediately, updates its local state, and sends one
-debounced `saveLayout` message. A successful provider-owned presentation edit
-must not rebuild the graph.
+Viewport remains webview-local state and never schedules an Arch Design document
+write. Node placement remains persistent presentation state: the webview applies
+it immediately and sends one debounced `saveLayout` message. A successful
+provider-owned presentation edit must not rebuild the graph.
 
 Semantic edits, external text changes, undo/redo, catalog invalidation, and
 parse failures continue to publish a complete snapshot and graph.
@@ -57,14 +56,11 @@ an older presentation and undo the user's latest movement.
 
 ## Initial Viewport
 
-The graph host message explicitly reports whether the source contained a
-persisted viewport. On the first render of an Arch Design graph without one,
-the webview calls `zoomToFit({ padding: 24, maxScale: 1 })` after cells are
-created. It updates only the in-memory layout; the automatic fit does not send
-`saveLayout` and does not dirty the document.
-
-An explicitly persisted viewport, including `{ x: 0, y: 0, zoom: 1 }`, is
-always respected. Later full graph refreshes do not unexpectedly fit content.
+On the first render of an Arch Design graph, the webview calls
+`zoomToFit({ padding: 24, maxScale: 1 })` after cells are created. It updates
+only the in-memory layout; automatic fit, panning, and zooming do not send
+`saveLayout` and do not dirty the document. Later graph refreshes in the same
+webview retain the current local view instead of fitting again.
 
 ## Expected Interaction
 
@@ -77,7 +73,7 @@ always respected. Later full graph refreshes do not unexpectedly fit content.
   then persists any newer local layout using the refreshed revision.
 - Relayout All recomputes placement and routing locally and uses the same
   lightweight layout-save path.
-- A new design is centered once when it has no saved viewport.
+- A newly opened design is centered once.
 
 ## Verification
 
@@ -85,4 +81,4 @@ Provider tests distinguish matching provider-owned presentation changes from
 external changes and prove that the updated presentation survives the next
 semantic edit. Electron tests prove that AD selection sends no layout save,
 layout acknowledgement preserves cell identity and selection, movement saves
-once, and first render fits only when no viewport was persisted.
+once, and first render fits without persisting the view.

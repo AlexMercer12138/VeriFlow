@@ -325,7 +325,6 @@ test('replaces export settings and presentation with detached snapshots', () => 
     });
     const presentation = {
         nodes: { 'instance:u_core': { column: 1, order: 0 } },
-        viewport: { x: 10, y: 20, zoom: 1.25 },
     };
     const presented = applyArchDesignEdit(exported, {
         type: 'setPresentation', presentation,
@@ -338,7 +337,6 @@ test('replaces export settings and presentation with detached snapshots', () => 
     assert.deepEqual(plainRecord(presented.presentation.nodes), {
         'instance:u_core': { column: 1, order: 0 },
     });
-    assert.deepEqual(presented.presentation.viewport, { x: 10, y: 20, zoom: 1.25 });
 });
 
 test('rejects duplicate and unknown edit targets without mutating the source', () => {

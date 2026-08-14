@@ -152,8 +152,8 @@ Persist semantic placement rather than raw coordinates:
 node ID -> column assignment, row order, vertical offset, user-positioned flag
 ```
 
-Viewport, collapsed interfaces, and selection are presentation state. Absolute
-coordinates are regenerated when module sizes or channel demand change.
+Collapsed interfaces are document presentation state. Viewport and selection
+remain local editor state. Absolute coordinates are regenerated when module sizes or channel demand change.
 Existing schema-v1 absolute layouts may seed row order once, then are saved in
 the new schema.
 
@@ -278,9 +278,9 @@ a format discriminator and schema version:
 
 The semantic section stores top-level ports, module instances, parameter
 overrides, scalar connections, interface connections, and default overrides.
-The presentation section stores columns, rows, offsets, collapsed state, and
-viewport. A semantic fingerprint excludes presentation, so moving or zooming
-does not stale generated RTL.
+The presentation section stores columns, rows, offsets, and collapsed state.
+A semantic fingerprint excludes presentation, so moving modules or collapsing
+interfaces does not stale generated RTL.
 
 Existing `.v/.sv` schematics remain inspection views. `.ad` is the authoring
 format for adding instances, creating scalar or interface connections, and

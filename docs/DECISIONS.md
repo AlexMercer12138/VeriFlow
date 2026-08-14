@@ -204,17 +204,18 @@ full-document edit path. The provider treated its own presentation write as a
 new semantic document, republished `initialize` and `graph`, and cleared the
 selection after every ordinary interaction.
 
-**Decision:** Keep selection in webview state only. Continue persisting viewport
-and node placement in `.ad`, but recognize provider-owned presentation-only
-document changes and respond with a lightweight revision acknowledgement.
+**Decision:** Keep selection and viewport in webview state only. Persist node
+placement in `.ad`, and recognize provider-owned presentation-only document
+changes with a lightweight revision acknowledgement.
 Rebuild the graph only for semantic edits, external document changes, undo/redo,
 or catalog changes. Relayout locally and persist it through the same lightweight
 presentation path. Serialize presentation and semantic writes, coalesce newer
-layouts in both the webview and provider, and fit a design with no saved viewport
-once per webview without dirtying the document.
+layouts in both the webview and provider, and fit each newly opened design once
+per webview without dirtying the document.
 
 **Why not:**
-- Stop persisting presentation: users would lose deliberate placement and viewport state.
+- Stop persisting presentation: users would lose deliberate module placement.
+- Persist viewport: navigation alone would dirty the design document.
 - Store presentation in a sidecar: `.ad` would cease to be the complete portable design source.
 - Ignore all presentation document changes: the provider snapshot would retain an old revision and could overwrite the latest layout during a later semantic edit.
 

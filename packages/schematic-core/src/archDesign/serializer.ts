@@ -130,15 +130,6 @@ function presentationValue(presentation: ArchDesignPresentation): unknown {
         ...(presentation.collapsedInterfaces
             ? { collapsedInterfaces: sortedRecord(presentation.collapsedInterfaces) }
             : {}),
-        ...(presentation.viewport
-            ? {
-                viewport: {
-                    x: presentation.viewport.x,
-                    y: presentation.viewport.y,
-                    zoom: presentation.viewport.zoom,
-                },
-            }
-            : {}),
     };
 }
 

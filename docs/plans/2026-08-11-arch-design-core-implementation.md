@@ -25,7 +25,7 @@ need a format-breaking rewrite:
 - scalar network endpoint lists and per-receiver default overrides;
 - master-to-slave interface connections and member defaults;
 - export language/output preferences;
-- node placement, collapsed-interface, and viewport presentation state.
+- node placement and collapsed-interface presentation state.
 
 No new runtime dependency and no Python source or Python test path is added.
 
@@ -73,7 +73,7 @@ test('creates a minimal schema-v1 Arch Design', () => {
 The representative typed value must cover numeric and expression widths,
 input/output/inout ports, instance parameter values, top-level and instance
 connection endpoints, endpoint defaults, interface endpoints, Verilog export,
-semantic placement, collapsed interfaces, and viewport state.
+semantic placement and collapsed interfaces.
 
 Require `createEmptyArchDesign` to reject empty or invalid Verilog identifiers
 instead of creating an unusable document.
@@ -115,7 +115,7 @@ Model defaults as string expressions keyed by receiver endpoint
 (`instance.port` or `port.signal`). Model interface connections with one master
 and one slave endpoint, an optional protocol name, and optional member-default
 overrides. Model presentation as optional node placements, collapsed-interface
-flags, and viewport state.
+flags.
 
 `createEmptyArchDesign(module)` must validate a plain Verilog identifier,
 construct all required top-level collections, and deeply freeze its output.

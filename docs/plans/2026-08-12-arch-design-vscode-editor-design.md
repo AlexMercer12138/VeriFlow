@@ -82,8 +82,8 @@ undo, redo, and external-change behavior. Document change events rebuild and
 republish the graph; the webview never assumes an edit succeeded.
 
 Layout saves are converted from `SchematicLayout` to `design.presentation` and
-use the same document-edit path. Only stable port and instance placement plus
-viewport are persisted. Constant/default nodes remain derived.
+use the same document-edit path. Only stable port and instance placement is
+persisted. Viewport remains webview-local, and constant/default nodes remain derived.
 
 Unknown schema versions open read-only. Invalid JSON or schema text publishes
 localized diagnostics and retains the most recent valid graph when one exists.

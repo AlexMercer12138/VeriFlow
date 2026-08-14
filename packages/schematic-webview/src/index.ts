@@ -1383,7 +1383,6 @@ function archDesignPresentationForCurrentLayout(
                     ...currentArchDesignState.design.presentation.collapsedInterfaces,
                 },
             }),
-        viewport: { ...layout.viewport },
     };
 }
 
@@ -1571,7 +1570,11 @@ function updateViewportFromGraph(): void {
         y: translation.ty,
         zoom: graph.zoom(),
     };
-    scheduleLayoutSave();
+    if (archDesignDocument) {
+        persistCurrentLayoutState();
+    } else {
+        scheduleLayoutSave();
+    }
 }
 
 function setMinimapVisibility(): void {

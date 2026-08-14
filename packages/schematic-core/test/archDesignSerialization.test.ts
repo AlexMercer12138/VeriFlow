@@ -63,7 +63,6 @@ function sourceDesign(overrides: Record<string, unknown> = {}): Record<string, u
                 },
             },
             collapsedInterfaces: { 'u_core.m_axi_00': true },
-            viewport: { x: 10, y: 20, zoom: 1.25 },
         },
         ...overrides,
     };
@@ -105,6 +104,21 @@ test('serializes normalized designs in fixed schema order and round trips', () =
     const reparsed = parseArchDesignText(source);
     assert.equal(reparsed.status, 'editable');
     if (reparsed.status === 'editable') assert.deepEqual(reparsed.design, design);
+});
+
+test('does not serialize unknown presentation fields', () => {
+    const design = editable(sourceDesign());
+    const withUnknownField = {
+        ...design,
+        presentation: {
+            ...design.presentation,
+            camera: { x: 10, y: 20, zoom: 1.25 },
+        },
+    } as unknown as ArchDesign;
+
+    const serialized = JSON.parse(serializeArchDesign(withUnknownField));
+
+    assert.equal(serialized.presentation.camera, undefined);
 });
 
 test('canonicalizes dictionary insertion order without reordering declarations', () => {
@@ -177,7 +191,6 @@ test('ignores presentation and output path when computing semantic fingerprints'
                 },
             },
             collapsedInterfaces: { 'u_core.m_axi_00': false },
-            viewport: { x: -50, y: 80, zoom: 0.75 },
         },
     }));
 

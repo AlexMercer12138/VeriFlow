@@ -120,7 +120,7 @@ function testArchDesignCommands(): void {
                         userPositioned: true,
                     },
                 },
-                viewport: { x: 1, y: 2, zoom: 1.5 },
+                camera: { x: 1, y: 2, zoom: 1.5 },
             },
         },
     }), {
@@ -137,7 +137,6 @@ function testArchDesignCommands(): void {
                         userPositioned: true,
                     },
                 },
-                viewport: { x: 1, y: 2, zoom: 1.5 },
             },
         },
     });

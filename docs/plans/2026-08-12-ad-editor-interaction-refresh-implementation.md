@@ -4,7 +4,7 @@
 
 **Goal:** Remove full graph reloads from Arch Design selection and presentation changes while centering a design once on first open.
 
-**Architecture:** Selection remains local webview state. Viewport and placement still use `.ad` presentation, but the provider recognizes its own presentation-only document replacement and responds with a lightweight revision acknowledgement instead of republishing the graph. A graph flag requests an automatic fit only once per module in the current webview.
+**Architecture:** Selection and viewport remain local webview state. Placement uses `.ad` presentation, and the provider recognizes its own presentation-only document replacement and responds with a lightweight revision acknowledgement instead of republishing the graph. A graph flag requests an automatic fit only once per module in the current webview.
 
 **Tech Stack:** TypeScript, VS Code Custom Text Editor API, AntV X6, Node test runner, Playwright Electron.
 
@@ -93,8 +93,8 @@ Run the focused Electron command again. Expected: PASS.
 
 **Step 1: Write the failing Electron test**
 
-Select an AD instance, attach a marker to its live SVG node, pan or drag and
-capture the emitted layout save, then publish `archDesignLayoutSaved`. Assert
+Select an AD instance, attach a marker to its live SVG node, drag it and capture
+the emitted layout save, then publish `archDesignLayoutSaved`. Assert
 that the same marked element remains, the selection and Inspector survive, and
 the next save/edit uses the acknowledged revision.
 
@@ -124,9 +124,8 @@ Run the focused Electron test. Expected: PASS.
 
 **Step 1: Write the failing tests**
 
-Assert that the provider sets `fitOnFirstRender: true` only when
-`design.presentation.viewport` is absent. In Electron, assert that such a graph
-is centered without posting `saveLayout`; an explicit viewport is respected.
+Assert that the provider sets `fitOnFirstRender: true` for a newly opened AD.
+In Electron, assert that the graph is centered without posting `saveLayout`.
 Publish a later flagged graph for the same module and assert it is not fitted a
 second time.
 
