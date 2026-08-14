@@ -45,21 +45,80 @@ assert.ok(
     manifest.activationEvents.includes('onCustomEditor:veriflow.archDesignEditor'),
     'Arch Design custom editor activation is missing'
 );
+for (const activation of [
+    'onView:veriflow.archDesigns',
+    'onCommand:veriflow.createArchDesign',
+]) {
+    assert.ok(
+        manifest.activationEvents.includes(activation),
+        `${activation} activation is missing`
+    );
+}
 const archDesignLanguage = (manifest.contributes.languages ?? []).find(
     (item: any) => item.id === 'arch-design'
 );
 assert.ok(archDesignLanguage, 'Arch Design language contribution is missing');
 assert.deepStrictEqual(archDesignLanguage.extensions, ['.ad']);
+const workflowViews = manifest.contributes.views.veriflow;
+assert.deepStrictEqual(
+    workflowViews.map((item: any) => item.id),
+    ['veriflow.modules', 'veriflow.archDesigns', 'veriflow.testbench']
+);
+assert.strictEqual(workflowViews[0].name, 'Simulation');
+assert.strictEqual(workflowViews[0].contextualTitle, 'Simulation');
+assert.strictEqual(workflowViews[1].name, 'Arch Designs');
+assert.strictEqual(workflowViews[1].contextualTitle, 'Arch Designs');
+
+for (const id of [
+    'veriflow.createArchDesign',
+    'veriflow.refreshArchDesigns',
+    'veriflow.openArchDesign',
+]) {
+    assert.ok(
+        manifest.contributes.commands.some((item: any) => item.command === id),
+        `${id} command contribution is missing`
+    );
+}
+const archDesignWelcome = (manifest.contributes.viewsWelcome ?? []).find(
+    (item: any) => item.view === 'veriflow.archDesigns'
+);
+assert.ok(archDesignWelcome, 'Arch Designs empty-state contribution is missing');
+assert.match(
+    archDesignWelcome.contents,
+    /\[Create Arch Design\]\(command:veriflow\.createArchDesign\)/
+);
+for (const id of ['veriflow.createArchDesign', 'veriflow.refreshArchDesigns']) {
+    assert.ok(
+        (manifest.contributes.menus['view/title'] ?? []).some(
+            (item: any) => item.command === id
+                && /view\s*==\s*veriflow\.archDesigns\b/.test(item.when)
+        ),
+        `${id} Arch Designs title action is missing`
+    );
+}
+for (const id of [
+    'veriflow.openArchDesign',
+    'veriflow.validateArchDesign',
+    'veriflow.exportArchDesign',
+]) {
+    assert.ok(
+        (manifest.contributes.menus['view/item/context'] ?? []).some(
+            (item: any) => item.command === id
+                && /viewItem\s*==\s*archDesignFile\b/.test(item.when)
+        ),
+        `${id} Arch Design item action is missing`
+    );
+}
 for (const id of ['veriflow.validateArchDesign', 'veriflow.exportArchDesign']) {
     assert.ok(
         manifest.contributes.commands.some((item: any) => item.command === id),
         `${id} command contribution is missing`
     );
     assert.ok(
-        (manifest.contributes.menus['editor/title'] ?? []).some(
-            (item: any) => item.command === id && /resourceExtname\s*==\s*\.ad/.test(item.when)
+        !(manifest.contributes.menus['editor/title'] ?? []).some(
+            (item: any) => item.command === id
         ),
-        `${id} editor-title contribution is missing`
+        `${id} must not duplicate the in-editor toolbar`
     );
 }
 assert.match(

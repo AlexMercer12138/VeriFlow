@@ -224,6 +224,9 @@ function run(): void {
             'VSIX manifest does not activate the Arch Design editor'
         );
         for (const command of [
+            'veriflow.createArchDesign',
+            'veriflow.refreshArchDesigns',
+            'veriflow.openArchDesign',
             'veriflow.validateArchDesign',
             'veriflow.exportArchDesign',
         ]) {
@@ -232,6 +235,55 @@ function run(): void {
                     (item: { command?: string }) => item.command === command
                 ),
                 `VSIX manifest is missing ${command}`
+            );
+        }
+        assert.deepStrictEqual(
+            packagedManifest.contributes.views.veriflow.map(
+                (item: { id?: string }) => item.id
+            ),
+            ['veriflow.modules', 'veriflow.archDesigns', 'veriflow.testbench']
+        );
+        assert.strictEqual(
+            packagedManifest.contributes.views.veriflow[0].name,
+            'Simulation'
+        );
+        assert.ok(
+            packagedManifest.activationEvents.includes('onView:veriflow.archDesigns'),
+            'VSIX manifest does not activate the Arch Designs view'
+        );
+        assert.ok(
+            packagedManifest.activationEvents.includes(
+                'onCommand:veriflow.createArchDesign'
+            ),
+            'VSIX manifest does not activate Arch Design creation'
+        );
+        assert.ok(
+            packagedManifest.contributes.viewsWelcome.some(
+                (item: { view?: string; contents?: string }) =>
+                    item.view === 'veriflow.archDesigns'
+                    && item.contents?.includes(
+                        '[Create Arch Design](command:veriflow.createArchDesign)'
+                    )
+            ),
+            'VSIX manifest is missing the Arch Designs empty state'
+        );
+        for (const command of [
+            'veriflow.validateArchDesign',
+            'veriflow.exportArchDesign',
+        ]) {
+            assert.ok(
+                !packagedManifest.contributes.menus['editor/title'].some(
+                    (item: { command?: string }) => item.command === command
+                ),
+                `VSIX manifest duplicates ${command} in the editor title`
+            );
+            assert.ok(
+                packagedManifest.contributes.menus['view/item/context'].some(
+                    (item: { command?: string; when?: string }) =>
+                        item.command === command
+                        && item.when?.includes('viewItem == archDesignFile')
+                ),
+                `VSIX manifest is missing the ${command} tree action`
             );
         }
 

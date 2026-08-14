@@ -35,7 +35,9 @@
     "workspaceContains:**/*.sv",
     "onCustomEditor:veriflow.waveformEditor",
     "onCustomEditor:veriflow.schematicEditor",
-    "onCustomEditor:veriflow.archDesignEditor"
+    "onCustomEditor:veriflow.archDesignEditor",
+    "onView:veriflow.archDesigns",
+    "onCommand:veriflow.createArchDesign"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -89,9 +91,15 @@
       "veriflow": [
         {
           "id": "veriflow.modules",
-          "name": "VeriFlow",
+          "name": "Simulation",
           "icon": "$(circuit-board)",
-          "contextualTitle": "VeriFlow"
+          "contextualTitle": "Simulation"
+        },
+        {
+          "id": "veriflow.archDesigns",
+          "name": "Arch Designs",
+          "icon": "$(type-hierarchy-sub)",
+          "contextualTitle": "Arch Designs"
         },
         {
           "type": "webview",
@@ -102,6 +110,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "veriflow.archDesigns",
+        "contents": "[Create Arch Design](command:veriflow.createArchDesign)"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -166,6 +180,24 @@
         "icon": "$(output)"
       },
       {
+        "command": "veriflow.createArchDesign",
+        "title": "Create Arch Design",
+        "category": "VeriFlow",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "veriflow.refreshArchDesigns",
+        "title": "Refresh Arch Designs",
+        "category": "VeriFlow",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "veriflow.openArchDesign",
+        "title": "Open Arch Design",
+        "category": "VeriFlow",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "veriflow.validateArchDesign",
         "title": "Validate Arch Design",
         "category": "VeriFlow",
@@ -203,16 +235,6 @@
           "command": "veriflow.openSchematic",
           "when": "editorLangId == verilog || editorLangId == systemverilog",
           "group": "navigation@10"
-        },
-        {
-          "command": "veriflow.validateArchDesign",
-          "when": "resourceExtname == .ad",
-          "group": "navigation@10"
-        },
-        {
-          "command": "veriflow.exportArchDesign",
-          "when": "resourceExtname == .ad",
-          "group": "navigation@11"
         }
       ],
       "view/title": [
@@ -240,6 +262,33 @@
           "command": "veriflow.scanModules",
           "when": "view == veriflow.modules",
           "group": "navigation@5"
+        },
+        {
+          "command": "veriflow.createArchDesign",
+          "when": "view == veriflow.archDesigns",
+          "group": "navigation@1"
+        },
+        {
+          "command": "veriflow.refreshArchDesigns",
+          "when": "view == veriflow.archDesigns",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "veriflow.openArchDesign",
+          "when": "view == veriflow.archDesigns && viewItem == archDesignFile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "veriflow.validateArchDesign",
+          "when": "view == veriflow.archDesigns && viewItem == archDesignFile",
+          "group": "navigation@2"
+        },
+        {
+          "command": "veriflow.exportArchDesign",
+          "when": "view == veriflow.archDesigns && viewItem == archDesignFile",
+          "group": "navigation@3"
         }
       ]
     },
