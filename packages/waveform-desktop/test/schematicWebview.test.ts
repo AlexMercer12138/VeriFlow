@@ -192,6 +192,11 @@ function visualSchematicFixture() {
         ['cross_a', 'load'],
     ]);
     const output = node('port:visual-output', 'port', 'result_out', [['value', 'load']]);
+    const inout = node('port:visual-inout', 'port', 'shared_io', [
+        ['o', 'load'],
+        ['t', 'load'],
+        ['i', 'driver'],
+    ]);
     const feedbackTopDriver = node(
         'instance:visual-feedback-top-driver',
         'instance',
@@ -250,6 +255,7 @@ function visualSchematicFixture() {
             feedbackBottomLoad,
             empty,
             output,
+            inout,
         ],
         networks: [
             network('network:visual-seed-a', 'seed_a', [[inputA, 0], [wide, 0]]),
@@ -2956,6 +2962,10 @@ test('Arch Design interfaces render distinct routes and only connect Master to S
         const topNode = page.locator(
             '#canvas .x6-node[data-cell-id="interface:port:m_link"]'
         );
+        assert.equal(
+            await topNode.locator('.veriflow-boundary-directional').count(),
+            1
+        );
         assert.equal(await page.locator(
             '#canvas .x6-node[data-cell-id="interface:port:m_link"] '
             + '.veriflow-interface-tag, '
@@ -4574,6 +4584,28 @@ test('schematic runtime paints responsive geometry and authors Arch Design conne
 
         await page.locator('#canvas .x6-node[data-cell-id="instance:visual-wide"]').waitFor();
         await page.locator('#minimap:not([hidden]) .x6-node').first().waitFor();
+        assert.equal(await page.locator(
+            '#canvas .x6-node[data-cell-id="port:visual-input-a"] '
+            + '.veriflow-boundary-directional'
+        ).count(), 1);
+        assert.equal(await page.locator(
+            '#canvas .x6-node[data-cell-id="port:visual-output"] '
+            + '.veriflow-boundary-directional'
+        ).count(), 1);
+        const inoutNode = page.locator(
+            '#canvas .x6-node[data-cell-id="port:visual-inout"]'
+        );
+        assert.equal(
+            await inoutNode.locator('.veriflow-boundary-bidirectional').count(),
+            1
+        );
+        const inoutPinCenters = await inoutNode.locator('.x6-port-body[port]')
+            .evaluateAll(elements => elements.map(element => {
+                const bounds = element.getBoundingClientRect();
+                return Math.round((bounds.top + bounds.height / 2) * 100) / 100;
+            }));
+        assert.equal(inoutPinCenters.length, 3);
+        assert.equal(new Set(inoutPinCenters).size, 3);
         await page.locator('#selection-status').getByText(
             'No selection',
             { exact: true }
@@ -4691,10 +4723,10 @@ test('schematic runtime paints responsive geometry and authors Arch Design conne
             name: 'desktop' | 'narrow'
         ): Promise<void> => {
             const geometry = await renderedGeometry(page);
-            assert.equal(geometry.nodeCount, 13);
+            assert.equal(geometry.nodeCount, 14);
             assert.ok(geometry.edgeCount > fixture.graph.networks.length);
             assert.equal(geometry.labelCount, 0);
-            assert.equal(geometry.pinCount, 26);
+            assert.equal(geometry.pinCount, 29);
             assert.deepEqual(geometry.textOverflow, []);
             assert.deepEqual(geometry.pinOverflow, []);
             assert.deepEqual(geometry.segmentNodeIntersections, []);
@@ -4710,6 +4742,7 @@ test('schematic runtime paints responsive geometry and authors Arch Design conne
             assert.deepEqual(geometry.portTitles, {
                 'port:visual-input-a': 'input_a',
                 'port:visual-input-b': 'input_b',
+                'port:visual-inout': 'shared_io',
                 'port:visual-output': 'result_out',
             });
             assert.deepEqual(geometry.portTitleOverflow, []);

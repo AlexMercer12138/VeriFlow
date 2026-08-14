@@ -962,7 +962,7 @@
         const pinWidth = leftNatural + rightNatural + exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap + 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset;
         const naturalWidth = isPort ? exports2.SCHEMATIC_NODE_LAYOUT.portWidth : Math.min(exports2.SCHEMATIC_NODE_LAYOUT.maximumWidth, Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumWidth, headingWidth, pinWidth));
         const sideRows = Math.max(leftPins.length, rightPins.length);
-        const naturalHeight = isPort ? exports2.SCHEMATIC_NODE_LAYOUT.portHeight : Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumHeight, exports2.SCHEMATIC_NODE_LAYOUT.headerAreaHeight + sideRows * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.verticalPadding);
+        const naturalHeight = isPort ? Math.max(exports2.SCHEMATIC_NODE_LAYOUT.portHeight, sideRows * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.verticalPadding) : Math.max(exports2.SCHEMATIC_NODE_LAYOUT.minimumHeight, exports2.SCHEMATIC_NODE_LAYOUT.headerAreaHeight + sideRows * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.verticalPadding);
         const width2 = fixedSize?.width ?? naturalWidth;
         const height2 = fixedSize?.height ?? naturalHeight;
         const availableForPins = Math.max(0, width2 - 2 * exports2.SCHEMATIC_NODE_LAYOUT.pinLabelInset - exports2.SCHEMATIC_NODE_LAYOUT.minimumCenterGap);
@@ -979,9 +979,16 @@
           y: exports2.SCHEMATIC_NODE_LAYOUT.subtitleCenterY - exports2.SCHEMATIC_NODE_LAYOUT.labelHeight / 2
         };
         const sideIndexes = { left: 0, right: 0 };
+        const sideCounts = {
+          left: leftPins.length,
+          right: rightPins.length
+        };
         const pins = sidePins.map(({ source, side }) => {
           const row = sideIndexes[side]++;
-          const anchor2 = isPort ? { x: side === "left" ? 0 : width2, y: height2 / 2 } : {
+          const anchor2 = isPort ? {
+            x: side === "left" ? 0 : width2,
+            y: (height2 - sideCounts[side] * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight) / 2 + row * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight / 2
+          } : {
             x: side === "left" ? 0 : width2,
             y: exports2.SCHEMATIC_NODE_LAYOUT.headerAreaHeight + row * exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight + exports2.SCHEMATIC_NODE_LAYOUT.pinRowHeight / 2
           };
@@ -3371,6 +3378,8 @@
           const toNode = nodes.get(to.nodeId);
           const sourceChannel = sideChannel(fromNode, from.pinId);
           const targetChannel = sideChannel(toNode, to.pinId);
+          if (Math.abs(fromNode.column - toNode.column) > 1)
+            continue;
           if (Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel) {
             const aligned = locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(baseGeometry, from).y === realizedPinPoint(baseGeometry, to).y;
             if (aligned || !forcedConnections.has(connectionKey(context.network.id, from, to)))
@@ -3719,7 +3728,20 @@
       function selectCorridorCandidate(grid2, locations, from, to, rowCount, reuse) {
         return rankedCorridorCandidates(grid2, locations, from, to, rowCount, reuse)[0];
       }
-      function ordinaryVariantUsesFreshTracks(reuse, networkId, from, to, nodes, locations, geometry, forcedConnections, variantIndex) {
+      function shortcutVariants(enabled, reuse, fromNode, toNode, from, to, geometry) {
+        const startColumn = Math.min(fromNode.column, toNode.column);
+        const endColumn = Math.max(fromNode.column, toNode.column);
+        if (!enabled || endColumn - startColumn <= 1 || realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y) {
+          return Object.freeze([]);
+        }
+        const midpoint = (startColumn + endColumn) / 2;
+        const channels = Array.from({ length: endColumn - startColumn }, (_, index2) => startColumn + index2).sort((left4, right4) => Math.abs(left4 + 0.5 - midpoint) - Math.abs(right4 + 0.5 - midpoint) || left4 - right4);
+        return Object.freeze(channels.flatMap((channel) => [
+          Object.freeze({ channel, fresh: false }),
+          ...reuse.channels.has(channel) ? [Object.freeze({ channel, fresh: true })] : []
+        ]));
+      }
+      function ordinaryVariantUsesFreshTracks(allowShortcuts, reuse, networkId, from, to, nodes, locations, geometry, forcedConnections, variantIndex) {
         const fromNode = nodes.get(from.nodeId);
         const toNode = nodes.get(to.nodeId);
         const sourceChannel = sideChannel(fromNode, from.pinId);
@@ -3729,15 +3751,19 @@
         const forced = adjacentSharedChannel && forcedConnections.has(connectionKey(networkId, from, to));
         if (forced)
           return false;
-        const aligned = adjacentSharedChannel && locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
-        if (!sharedChannel)
-          return variantIndex % 2 === 1;
-        if (aligned) {
-          return variantIndex > 0 && (variantIndex - 1) % 2 === 1;
+        const aligned = realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+        const topologyOffset = sharedChannel ? aligned ? 1 : 2 : allowShortcuts && aligned && Math.abs(fromNode.column - toNode.column) > 1 ? 1 : 0;
+        if (variantIndex < topologyOffset) {
+          return sharedChannel && !aligned && variantIndex === 1;
         }
-        return variantIndex % 2 === 1;
+        const shortcuts = shortcutVariants(allowShortcuts, reuse, fromNode, toNode, from, to, geometry);
+        const shortcutIndex = variantIndex - topologyOffset;
+        if (shortcutIndex < shortcuts.length) {
+          return shortcuts[shortcutIndex].fresh;
+        }
+        return (shortcutIndex - shortcuts.length) % 2 === 1;
       }
-      function planOrdinaryConnection(allocator, reuse, networkId, from, to, nodes, locations, rowCount, geometry, forcedConnections, preferredChannelLegs, preferredCorridorTracks, variantIndex) {
+      function planOrdinaryConnection(allocator, allowShortcuts, reuse, networkId, from, to, nodes, locations, rowCount, geometry, forcedConnections, preferredChannelLegs, preferredCorridorTracks, variantIndex) {
         const { grid: grid2 } = allocator;
         const fromNode = nodes.get(from.nodeId);
         const toNode = nodes.get(to.nodeId);
@@ -3746,11 +3772,12 @@
         const adjacentSharedChannel = Math.abs(fromNode.column - toNode.column) === 1 && sourceChannel === targetChannel;
         const reusableSharedChannel = sourceChannel === targetChannel && reuse.channels.has(sourceChannel);
         const sharedChannel = adjacentSharedChannel || reusableSharedChannel;
-        const aligned = adjacentSharedChannel && locations.get(from.nodeId).row === locations.get(to.nodeId).row && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+        const aligned = realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
         const forced = adjacentSharedChannel && forcedConnections.has(connectionKey(networkId, from, to));
         const intent = (terminal, peer, role, channel, variant) => channelLegIntent(ordinaryChannelLegKey(networkId, from, to, role, variant), networkId, channel, terminal, peer, role, nodes, locations, geometry);
         const preferred = (terminal, peer, role, channel) => preferredChannelLegs.get(preferredChannelLegKey(networkId, terminal, role, channel, role === "shared" ? peer : void 0));
-        if (sharedChannel && aligned && variantIndex === 0 && !forced) {
+        const crossColumnAligned = allowShortcuts && !sharedChannel && Math.abs(fromNode.column - toNode.column) > 1 && aligned;
+        if ((sharedChannel || crossColumnAligned) && aligned && variantIndex === 0 && !forced) {
           return Object.freeze({ kind: "direct", networkId, from, to });
         }
         if (sharedChannel && !aligned && variantIndex < 2 && !forced) {
@@ -3765,8 +3792,24 @@
             track
           });
         }
-        const topologyOffset = sharedChannel && !forced ? aligned ? 1 : 2 : 0;
-        const corridorVariant = variantIndex - topologyOffset;
+        const topologyOffset = sharedChannel && !forced ? aligned ? 1 : 2 : crossColumnAligned && !forced ? 1 : 0;
+        const shortcuts = shortcutVariants(allowShortcuts, reuse, fromNode, toNode, from, to, geometry);
+        const shortcutIndex = variantIndex - topologyOffset;
+        if (shortcutIndex >= 0 && shortcutIndex < shortcuts.length) {
+          const shortcut = shortcuts[shortcutIndex];
+          const trackIntent = intent(from, to, "shared", shortcut.channel, shortcut.fresh ? `shortcut:fresh:${shortcut.channel}` : `shortcut:${shortcut.channel}`);
+          const track = shortcut.fresh ? allocator.channelLeg(trackIntent) : channelTrack(allocator, reuse, shortcut.channel, trackIntent);
+          reuse.channels.set(shortcut.channel, track);
+          return Object.freeze({
+            kind: "shortcut",
+            networkId,
+            from,
+            to,
+            channel: shortcut.channel,
+            track
+          });
+        }
+        const corridorVariant = shortcutIndex - shortcuts.length;
         if (corridorVariant < 0)
           return void 0;
         const freshTracks = !forced && corridorVariant % 2 === 1;
@@ -3894,7 +3937,7 @@
             segments: orderedPathSegments(plan.networkId, [source, target])
           });
         }
-        if (plan.kind === "adjacent") {
+        if (plan.kind === "adjacent" || plan.kind === "shortcut") {
           const channelX = grid2.channels[plan.channel].trackX[resolveChannelTrack(plan.track)];
           const segments2 = orderedPathSegments(plan.networkId, [
             source,
@@ -4214,8 +4257,9 @@
       }
       function plannedChannelLegCount(plans) {
         return plans.reduce((count, plan) => {
-          if (plan.kind === "adjacent")
+          if (plan.kind === "adjacent" || plan.kind === "shortcut") {
             return count + 1;
+          }
           if (plan.kind === "corridor")
             return count + 2;
           if (plan.kind === "feedback") {
@@ -4230,7 +4274,7 @@
           result.add(handle.reuseKey ?? handle.key);
         };
         for (const plan of plans) {
-          if (plan.kind === "adjacent") {
+          if (plan.kind === "adjacent" || plan.kind === "shortcut") {
             add(plan.track);
           } else if (plan.kind === "corridor") {
             add(plan.sourceTrack);
@@ -4249,7 +4293,7 @@
       function plannedChannelLegHandles(plans) {
         const result = [];
         for (const plan of plans) {
-          if (plan.kind === "adjacent") {
+          if (plan.kind === "adjacent" || plan.kind === "shortcut") {
             result.push(plan.track);
           } else if (plan.kind === "corridor") {
             result.push(plan.sourceTrack, plan.targetTrack);
@@ -4536,8 +4580,10 @@
                 continue;
               }
               let skipFreshVariant = false;
-              for (let variantIndex = 0; variantIndex <= 2 * (rowCount + 3); variantIndex += 1) {
-                const freshTracks = ordinaryVariantUsesFreshTracks(reuse, network.id, from, to, nodeById, locations, contextGeometry, forcedAdjacent, variantIndex);
+              const columnSpan = Math.abs(nodeById.get(from.nodeId).column - nodeById.get(to.nodeId).column);
+              const maximumVariant = 2 * (rowCount + 3) + 2 * columnSpan + 1;
+              for (let variantIndex = 0; variantIndex <= maximumVariant; variantIndex += 1) {
+                const freshTracks = ordinaryVariantUsesFreshTracks(terminals.length === 2, reuse, network.id, from, to, nodeById, locations, contextGeometry, forcedAdjacent, variantIndex);
                 if (freshTracks && skipFreshVariant) {
                   skipFreshVariant = false;
                   continue;
@@ -4549,7 +4595,7 @@
                 const candidateExteriorTracks = { ...exteriorTracks };
                 let plan;
                 try {
-                  plan = planOrdinaryConnection(branch.allocator, candidateReuse, network.id, from, to, nodeById, locations, rowCount, contextGeometry, forcedAdjacent, preferredChannelLegs, preferredCorridorTracks, variantIndex);
+                  plan = planOrdinaryConnection(branch.allocator, terminals.length === 2, candidateReuse, network.id, from, to, nodeById, locations, rowCount, contextGeometry, forcedAdjacent, preferredChannelLegs, preferredCorridorTracks, variantIndex);
                 } catch (error) {
                   if (error instanceof RangeError) {
                     candidateFailure ?? (candidateFailure = error);
@@ -4779,6 +4825,17 @@
         "load",
         "bidirectional"
       ]);
+      function bodyShapeFor(node) {
+        if (node.kind !== "port")
+          return "rectangle";
+        const topLevelInterface = node.pins.find((pin2) => pin2.interface?.topLevel)?.interface;
+        if (topLevelInterface) {
+          return topLevelInterface.role === "unknown" ? "rectangle" : "directional-port";
+        }
+        if (node.pins.length === 0)
+          return "rectangle";
+        return node.pins.length > 1 || node.pins[0].direction === "bidirectional" ? "bidirectional-port" : "directional-port";
+      }
       function snapshotArray(value, label) {
         if (!Array.isArray(value))
           throw new RangeError(`${label} must be an array`);
@@ -5226,6 +5283,7 @@
           const rendered = Object.freeze({
             id: node.id,
             kind: node.kind,
+            bodyShape: bodyShapeFor(node),
             label: node.label,
             subtitle: node.subtitle,
             column: realized.column,
@@ -45977,6 +46035,16 @@
     opaque: "var(--vscode-charts-red, #c74e39)",
     generateArray: "var(--vscode-charts-orange, #c76b29)"
   };
+  var boundaryBodyPaths = {
+    rectangle: "M 0 0 H 96 V 40 H 0 Z",
+    "directional-port": "M 0 0 H 80 L 96 20 L 80 40 H 0 Z",
+    "bidirectional-port": "M 16 0 H 80 L 96 20 L 80 40 H 16 L 0 20 Z"
+  };
+  var boundaryBodyClasses = {
+    rectangle: "veriflow-boundary-rectangle",
+    "directional-port": "veriflow-boundary-directional",
+    "bidirectional-port": "veriflow-boundary-bidirectional"
+  };
   var dom = {
     shell: requiredElement("schematic-shell"),
     canvas: requiredElement("canvas"),
@@ -46064,7 +46132,12 @@
         width: kind === "port" ? import_schematic_core.SCHEMATIC_NODE_LAYOUT.portWidth : import_schematic_core.SCHEMATIC_NODE_LAYOUT.minimumWidth,
         height: kind === "port" ? import_schematic_core.SCHEMATIC_NODE_LAYOUT.portHeight : import_schematic_core.SCHEMATIC_NODE_LAYOUT.minimumHeight,
         markup: [
-          { tagName: "rect", selector: "body" },
+          ...kind === "port" ? [
+            { tagName: "rect", selector: "bg" },
+            { tagName: "path", selector: "body" }
+          ] : [
+            { tagName: "rect", selector: "body" }
+          ],
           { tagName: "rect", selector: "accent" },
           {
             tagName: "svg",
@@ -46099,12 +46172,27 @@
           }
         ],
         attrs: {
+          ...kind === "port" ? {
+            bg: {
+              refWidth: "100%",
+              refHeight: "100%",
+              fill: "transparent",
+              stroke: "none",
+              pointerEvents: "all"
+            }
+          } : {},
           body: {
+            ...kind === "port" ? {
+              refD: boundaryBodyPaths.rectangle,
+              class: boundaryBodyClasses.rectangle,
+              pointerEvents: "none"
+            } : {},
             fill: "var(--schematic-node-fill)",
             stroke: "var(--schematic-node-border)",
             strokeWidth: 1.5,
             rx: 3,
-            ry: 3
+            ry: 3,
+            strokeLinejoin: "round"
           },
           accent: {
             x: 0,
@@ -46282,9 +46370,14 @@
           "aria-keyshortcuts": model.definitionKey ? "Enter Shift+Enter" : "Enter"
         },
         body: {
-          strokeDasharray: model.readOnly ? "4 2" : void 0
+          strokeDasharray: model.readOnly ? "4 2" : void 0,
+          ...model.kind === "port" ? {
+            refD: boundaryBodyPaths[rendered.bodyShape],
+            class: boundaryBodyClasses[rendered.bodyShape]
+          } : {}
         },
         accent: {
+          x: model.kind === "port" && rendered.bodyShape === "bidirectional-port" ? 16 : 0,
           height: height2,
           ...topInterface === void 0 ? {} : {
             fill: interfaceColor,

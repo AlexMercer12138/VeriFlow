@@ -40,6 +40,7 @@ import {
     type RenderedNodeGeometry,
     type RouteSegment,
     type SchematicGraph,
+    type SchematicNodeBodyShape,
     type SchematicRenderModel,
     type SchematicNetwork,
     type TextMeasurementStyle,
@@ -126,6 +127,18 @@ const shapeAccents: Record<GraphNodeKind, string> = {
     expression: 'var(--vscode-charts-purple, #8b5cf6)',
     opaque: 'var(--vscode-charts-red, #c74e39)',
     generateArray: 'var(--vscode-charts-orange, #c76b29)',
+};
+
+const boundaryBodyPaths: Record<SchematicNodeBodyShape, string> = {
+    rectangle: 'M 0 0 H 96 V 40 H 0 Z',
+    'directional-port': 'M 0 0 H 80 L 96 20 L 80 40 H 0 Z',
+    'bidirectional-port': 'M 16 0 H 80 L 96 20 L 80 40 H 16 L 0 20 Z',
+};
+
+const boundaryBodyClasses: Record<SchematicNodeBodyShape, string> = {
+    rectangle: 'veriflow-boundary-rectangle',
+    'directional-port': 'veriflow-boundary-directional',
+    'bidirectional-port': 'veriflow-boundary-bidirectional',
 };
 
 const dom = {
@@ -231,7 +244,12 @@ function registerShapes(): void {
                 ? SCHEMATIC_NODE_LAYOUT.portHeight
                 : SCHEMATIC_NODE_LAYOUT.minimumHeight,
             markup: [
-                { tagName: 'rect', selector: 'body' },
+                ...(kind === 'port' ? [
+                    { tagName: 'rect', selector: 'bg' },
+                    { tagName: 'path', selector: 'body' },
+                ] : [
+                    { tagName: 'rect', selector: 'body' },
+                ]),
                 { tagName: 'rect', selector: 'accent' },
                 {
                     tagName: 'svg',
@@ -266,12 +284,27 @@ function registerShapes(): void {
                 },
             ],
             attrs: {
+                ...(kind === 'port' ? {
+                    bg: {
+                        refWidth: '100%',
+                        refHeight: '100%',
+                        fill: 'transparent',
+                        stroke: 'none',
+                        pointerEvents: 'all',
+                    },
+                } : {}),
                 body: {
+                    ...(kind === 'port' ? {
+                        refD: boundaryBodyPaths.rectangle,
+                        class: boundaryBodyClasses.rectangle,
+                        pointerEvents: 'none',
+                    } : {}),
                     fill: 'var(--schematic-node-fill)',
                     stroke: 'var(--schematic-node-border)',
                     strokeWidth: 1.5,
                     rx: 3,
                     ry: 3,
+                    strokeLinejoin: 'round',
                 },
                 accent: {
                     x: 0,
@@ -474,8 +507,14 @@ function createRenderedNode(
             },
             body: {
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
+                ...(model.kind === 'port' ? {
+                    refD: boundaryBodyPaths[rendered.bodyShape],
+                    class: boundaryBodyClasses[rendered.bodyShape],
+                } : {}),
             },
             accent: {
+                x: model.kind === 'port'
+                    && rendered.bodyShape === 'bidirectional-port' ? 16 : 0,
                 height,
                 ...(topInterface === undefined ? {} : {
                     fill: interfaceColor,
