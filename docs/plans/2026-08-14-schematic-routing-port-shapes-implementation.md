@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Prefer safe short cross-column routes and render directional and bidirectional boundary port bodies without changing the existing placement architecture.
+**Goal:** Prefer safe short cross-column routes and render discoverable directional boundary ports without changing the existing placement architecture.
 
 **Architecture:** Extend the transactional router with one additional vertical-trunk candidate that is validated and scored by the existing preflight machinery before corridor fallbacks. Add boundary body classification to the shared render model, make multi-pin boundary geometry allocate distinct rows, and let the X6 webview select a normalized SVG path from that render metadata.
 
@@ -171,7 +171,85 @@ git add packages/schematic-webview/src/index.ts packages/waveform-desktop/test/s
 git commit -m "feat(schematic): render directional boundary port shapes"
 ```
 
-### Task 4: Full Regression Verification
+### Task 4: Correct Shared-Channel Routing And Inout Semantics
+
+**Files:**
+- Modify: `packages/schematic-core/test/router.test.ts`
+- Modify: `packages/schematic-core/test/pins.test.ts`
+- Modify: `packages/schematic-core/test/layout.test.ts`
+- Modify: `packages/schematic-core/src/routing/router.ts`
+- Modify: `packages/schematic-core/src/pins.ts`
+- Modify: `packages/schematic-core/src/layout.ts`
+- Modify: `packages/schematic-webview/src/index.ts`
+- Modify: `packages/schematic-webview/src/index.css`
+- Modify: `packages/waveform-desktop/test/schematicWebview.test.ts`
+- Regenerate: `web-dist/schematic/index.js`
+
+**Step 1: Write failing routing tests**
+
+Add two ordered, non-crossing networks between different pins on the same pair
+of adjacent-column modules. Assert that both paths are `H-V-H`. Preserve the
+existing crossed-pin fixture and its separate-corridor behavior.
+
+**Step 2: Run the focused router test and verify RED**
+
+Run:
+
+```bash
+npm run build --workspace @veriflow/schematic-core
+npx tsc -p packages/schematic-core/tsconfig.test.json
+node --test --test-name-pattern="shared adjacent module pins" packages/schematic-core/dist-test/test/router.test.js
+```
+
+Expected: FAIL because module-row equality marks the ordered routes as a
+conflict and forces five-segment corridor paths.
+
+**Step 3: Correct the conflict predicate and verify GREEN**
+
+Store the realized left and right pin Y coordinates in each adjacent
+descriptor. Sort and compare those coordinates, treating equal geometry as a
+conflict only when two descriptors actually compete for the same pin position.
+Run the focused test plus the complete schematic-core suite.
+
+**Step 4: Write failing inout geometry and runtime tests**
+
+Assert that the top-level inout `o` and `t` anchors are left, `i` is right, and
+its body shape is `directional-port`. In the Electron fixture, assert the `t`
+marker has an amber double-ring class, all `i/o/t` markers expose their native
+hover descriptions, and ordinary instance pins do not receive those classes.
+
+**Step 5: Run the focused tests and verify RED**
+
+Run:
+
+```bash
+npm test --workspace @veriflow/schematic-core
+npm run build:web
+npx tsc -p packages/waveform-desktop/tsconfig.test.json
+node --test --test-name-pattern="schematic runtime paints" packages/waveform-desktop/dist-test/test/schematicWebview.test.js
+```
+
+Expected: core assertions fail because all boundary pins inherit the first
+pin's side and the inout remains bidirectional; runtime assertions fail because
+the markers have no semantic class or hover description.
+
+**Step 6: Implement the inout behavior and verify GREEN**
+
+Resolve each multi-pin boundary by its individual direction (`load` left,
+`driver` right), classify the inout body as directional, and attach semantic
+marker classes and native `title` attributes only for three-pin top-level
+inout nodes. Render `t` with an amber outer ring while retaining the normal
+inner pin marker and existing selection behavior. Rebuild the web assets and
+run the focused suites.
+
+**Step 7: Commit**
+
+```bash
+git add packages/schematic-core packages/schematic-webview packages/waveform-desktop/test web-dist/schematic/index.js
+git commit -m "fix(schematic): clarify adjacent routes and inout pins"
+```
+
+### Task 5: Full Regression And Visual Verification
 
 **Files:**
 - Verify: all changed files and generated web assets
@@ -198,7 +276,16 @@ npm test
 Expected: every Node suite passes; the optional Icarus test may remain skipped
 when `iverilog` is unavailable. Do not run Python tests.
 
-**Step 3: Review the final diff and commit any verification-only adjustments**
+**Step 3: Verify the actual AD demo with captured evidence**
+
+Open `/tmp/veriflow-ad-editor-demo/stream_pipeline.ad` in the Extension
+Development Host, fit the diagram, and capture a screenshot. Extract the
+rendered segment orientations for `sample_in`, `sample_valid`,
+`s_axi_control`, `result_out`, and `result_valid`; assert clear unaligned
+connections use exactly `horizontal-vertical-horizontal`, and inspect the
+screenshot for module intersections or overlapping wire segments.
+
+**Step 4: Review the final diff and commit any verification-only adjustments**
 
 ```bash
 git status --short
