@@ -99,6 +99,12 @@ type AdjacentPathPlan = PlannedPathBase & Readonly<{
     track: ChannelLegHandle;
 }>;
 
+type ShortcutPathPlan = PlannedPathBase & Readonly<{
+    kind: 'shortcut';
+    channel: number;
+    track: ChannelLegHandle;
+}>;
+
 type CorridorPathPlan = PlannedPathBase & Readonly<{
     kind: 'corridor';
     sourceChannel: number;
@@ -126,6 +132,7 @@ type FeedbackPathPlan = PlannedPathBase & Readonly<{
 
 type PlannedPath = DirectPathPlan
     | AdjacentPathPlan
+    | ShortcutPathPlan
     | CorridorPathPlan
     | FeedbackPathPlan;
 
@@ -1189,6 +1196,7 @@ function preferredOrdinaryCorridorTracks(
         const toNode = nodes.get(to.nodeId)!;
         const sourceChannel = sideChannel(fromNode, from.pinId);
         const targetChannel = sideChannel(toNode, to.pinId);
+        if (Math.abs(fromNode.column - toNode.column) > 1) continue;
         if (Math.abs(fromNode.column - toNode.column) === 1
             && sourceChannel === targetChannel) {
             const aligned = locations.get(from.nodeId)!.row
@@ -1881,7 +1889,46 @@ function selectCorridorCandidate(
     )[0];
 }
 
+type ShortcutVariant = Readonly<{
+    channel: number;
+    fresh: boolean;
+}>;
+
+function shortcutVariants(
+    enabled: boolean,
+    reuse: NetworkTrackReuse,
+    fromNode: RoutingGridNodeInput,
+    toNode: RoutingGridNodeInput,
+    from: RoutingTerminalRequest,
+    to: RoutingTerminalRequest,
+    geometry: RealizedRoutingGrid
+): readonly ShortcutVariant[] {
+    const startColumn = Math.min(fromNode.column, toNode.column);
+    const endColumn = Math.max(fromNode.column, toNode.column);
+    if (!enabled
+        || endColumn - startColumn <= 1
+        || realizedPinPoint(geometry, from).y
+            === realizedPinPoint(geometry, to).y) {
+        return Object.freeze([]);
+    }
+    const midpoint = (startColumn + endColumn) / 2;
+    const channels = Array.from(
+        { length: endColumn - startColumn },
+        (_, index) => startColumn + index
+    ).sort((left, right) =>
+        Math.abs(left + 0.5 - midpoint) - Math.abs(right + 0.5 - midpoint)
+        || left - right
+    );
+    return Object.freeze(channels.flatMap(channel => [
+        Object.freeze({ channel, fresh: false }),
+        ...(reuse.channels.has(channel)
+            ? [Object.freeze({ channel, fresh: true })]
+            : []),
+    ]));
+}
+
 function ordinaryVariantUsesFreshTracks(
+    allowShortcuts: boolean,
     reuse: NetworkTrackReuse,
     networkId: string,
     from: RoutingTerminalRequest,
@@ -1905,19 +1952,34 @@ function ordinaryVariantUsesFreshTracks(
     const forced = adjacentSharedChannel
         && forcedConnections.has(connectionKey(networkId, from, to));
     if (forced) return false;
-    const aligned = adjacentSharedChannel
-        && locations.get(from.nodeId)!.row === locations.get(to.nodeId)!.row
-        && realizedPinPoint(geometry, from).y
-            === realizedPinPoint(geometry, to).y;
-    if (!sharedChannel) return variantIndex % 2 === 1;
-    if (aligned) {
-        return variantIndex > 0 && (variantIndex - 1) % 2 === 1;
+    const aligned = realizedPinPoint(geometry, from).y
+        === realizedPinPoint(geometry, to).y;
+    const topologyOffset = sharedChannel
+        ? aligned ? 1 : 2
+        : allowShortcuts && aligned
+            && Math.abs(fromNode.column - toNode.column) > 1 ? 1 : 0;
+    if (variantIndex < topologyOffset) {
+        return sharedChannel && !aligned && variantIndex === 1;
     }
-    return variantIndex % 2 === 1;
+    const shortcuts = shortcutVariants(
+        allowShortcuts,
+        reuse,
+        fromNode,
+        toNode,
+        from,
+        to,
+        geometry
+    );
+    const shortcutIndex = variantIndex - topologyOffset;
+    if (shortcutIndex < shortcuts.length) {
+        return shortcuts[shortcutIndex].fresh;
+    }
+    return (shortcutIndex - shortcuts.length) % 2 === 1;
 }
 
 function planOrdinaryConnection(
     allocator: RoutingAllocationJournal,
+    allowShortcuts: boolean,
     reuse: NetworkTrackReuse,
     networkId: string,
     from: RoutingTerminalRequest,
@@ -1942,9 +2004,8 @@ function planOrdinaryConnection(
     const reusableSharedChannel = sourceChannel === targetChannel
         && reuse.channels.has(sourceChannel);
     const sharedChannel = adjacentSharedChannel || reusableSharedChannel;
-    const aligned = adjacentSharedChannel
-        && locations.get(from.nodeId)!.row === locations.get(to.nodeId)!.row
-        && realizedPinPoint(geometry, from).y === realizedPinPoint(geometry, to).y;
+    const aligned = realizedPinPoint(geometry, from).y
+        === realizedPinPoint(geometry, to).y;
     const forced = adjacentSharedChannel
         && forcedConnections.has(connectionKey(networkId, from, to));
     const intent = (
@@ -1979,7 +2040,11 @@ function planOrdinaryConnection(
         )
     );
 
-    if (sharedChannel && aligned && variantIndex === 0 && !forced) {
+    const crossColumnAligned = allowShortcuts && !sharedChannel
+        && Math.abs(fromNode.column - toNode.column) > 1
+        && aligned;
+    if ((sharedChannel || crossColumnAligned)
+        && aligned && variantIndex === 0 && !forced) {
         return Object.freeze({ kind: 'direct', networkId, from, to });
     }
     if (sharedChannel && !aligned && variantIndex < 2 && !forced) {
@@ -2012,8 +2077,47 @@ function planOrdinaryConnection(
 
     const topologyOffset = sharedChannel && !forced
         ? aligned ? 1 : 2
-        : 0;
-    const corridorVariant = variantIndex - topologyOffset;
+        : crossColumnAligned && !forced ? 1 : 0;
+    const shortcuts = shortcutVariants(
+        allowShortcuts,
+        reuse,
+        fromNode,
+        toNode,
+        from,
+        to,
+        geometry
+    );
+    const shortcutIndex = variantIndex - topologyOffset;
+    if (shortcutIndex >= 0 && shortcutIndex < shortcuts.length) {
+        const shortcut = shortcuts[shortcutIndex];
+        const trackIntent = intent(
+            from,
+            to,
+            'shared',
+            shortcut.channel,
+            shortcut.fresh ? `shortcut:fresh:${shortcut.channel}`
+                : `shortcut:${shortcut.channel}`
+        );
+        const track = shortcut.fresh
+            ? allocator.channelLeg(trackIntent)
+            : channelTrack(
+                allocator,
+                reuse,
+                shortcut.channel,
+                trackIntent
+            );
+        reuse.channels.set(shortcut.channel, track);
+        return Object.freeze({
+            kind: 'shortcut',
+            networkId,
+            from,
+            to,
+            channel: shortcut.channel,
+            track,
+        });
+    }
+
+    const corridorVariant = shortcutIndex - shortcuts.length;
     if (corridorVariant < 0) return undefined;
     const freshTracks = !forced && corridorVariant % 2 === 1;
     const corridorIndex = forced
@@ -2239,7 +2343,7 @@ function materializePath(
             segments: orderedPathSegments(plan.networkId, [source, target]),
         });
     }
-    if (plan.kind === 'adjacent') {
+    if (plan.kind === 'adjacent' || plan.kind === 'shortcut') {
         const channelX = grid.channels[plan.channel].trackX[
             resolveChannelTrack(plan.track)
         ];
@@ -2744,7 +2848,9 @@ function materializeRoutedNetworks(
 
 function plannedChannelLegCount(plans: readonly PlannedPath[]): number {
     return plans.reduce((count, plan) => {
-        if (plan.kind === 'adjacent') return count + 1;
+        if (plan.kind === 'adjacent' || plan.kind === 'shortcut') {
+            return count + 1;
+        }
         if (plan.kind === 'corridor') return count + 2;
         if (plan.kind === 'feedback') {
             return count
@@ -2763,7 +2869,7 @@ function usedPhysicalChannelLegKeys(
         result.add(handle.reuseKey ?? handle.key);
     };
     for (const plan of plans) {
-        if (plan.kind === 'adjacent') {
+        if (plan.kind === 'adjacent' || plan.kind === 'shortcut') {
             add(plan.track);
         } else if (plan.kind === 'corridor') {
             add(plan.sourceTrack);
@@ -2785,7 +2891,7 @@ function plannedChannelLegHandles(
 ): readonly ChannelLegHandle[] {
     const result: ChannelLegHandle[] = [];
     for (const plan of plans) {
-        if (plan.kind === 'adjacent') {
+        if (plan.kind === 'adjacent' || plan.kind === 'shortcut') {
             result.push(plan.track);
         } else if (plan.kind === 'corridor') {
             result.push(plan.sourceTrack, plan.targetTrack);
@@ -3316,10 +3422,17 @@ function routeNetworksInternal(
                 }
 
                 let skipFreshVariant = false;
+                const columnSpan = Math.abs(
+                    nodeById.get(from.nodeId)!.column
+                        - nodeById.get(to.nodeId)!.column
+                );
+                const maximumVariant = 2 * (rowCount + 3)
+                    + 2 * columnSpan + 1;
                 for (let variantIndex = 0;
-                    variantIndex <= 2 * (rowCount + 3);
+                    variantIndex <= maximumVariant;
                     variantIndex += 1) {
                     const freshTracks = ordinaryVariantUsesFreshTracks(
+                        terminals.length === 2,
                         reuse,
                         network.id,
                         from,
@@ -3342,6 +3455,7 @@ function routeNetworksInternal(
                     try {
                         plan = planOrdinaryConnection(
                             branch.allocator,
+                            terminals.length === 2,
                             candidateReuse,
                             network.id,
                             from,

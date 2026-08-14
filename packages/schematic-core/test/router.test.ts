@@ -180,6 +180,37 @@ test('routes a non-adjacent connection as H-V-H-V-H', () => {
     );
 });
 
+test('prefers a clear H-V-H shortcut across non-adjacent columns', () => {
+    const route = routeFixture({
+        nodes: [
+            routingNode('source', 0, 0),
+            routingNode('middle', 1, 0, 40, 80),
+            routingNode('sink', 2, 0, 40, 80),
+        ],
+        networks: [{
+            id: 'network:shortcut',
+            terminals: [
+                { nodeId: 'source', pinId: 'right', role: 'driver' },
+                { nodeId: 'sink', pinId: 'left', role: 'load' },
+            ],
+        }],
+        options: { columnCount: 3 },
+    });
+
+    assert.deepEqual(
+        route.networks[0].paths[0].segments.map(segment => segment.orientation),
+        ['horizontal', 'vertical', 'horizontal']
+    );
+    assert.equal(route.grid.rowGaps.every(gap => gap.trackY.length === 0), true);
+    assert.equal(route.grid.outer.top.trackY.length, 0);
+    assert.equal(route.grid.outer.bottom.trackY.length, 0);
+    for (const segment of route.networks[0].segments) {
+        assert.equal(route.grid.nodes.some(node =>
+            segmentIntersectsRectangleInterior(segment, node.bounds)
+        ), false);
+    }
+});
+
 test('collapses a forward collinear point sequence in traversal order', () => {
     const points = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }];
     const segments = orderedPathSegments('network:points', points);
