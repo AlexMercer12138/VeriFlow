@@ -36,6 +36,7 @@ import {
     SCHEMATIC_TEXT_STYLES,
     type GraphNode,
     type GraphNodeKind,
+    type GraphPin,
     type NetworkRoute,
     type RenderedNodeGeometry,
     type RouteSegment,
@@ -393,6 +394,34 @@ function portGroups() {
 
 const interfaceColor = 'var(--schematic-interface-wire)';
 
+type InoutPinSemantic = 'o' | 't' | 'i';
+
+const inoutPinDescriptions: Readonly<Record<InoutPinSemantic, string>> = {
+    o: 'Output drive (O)',
+    t: 'Tri-state enable (T)',
+    i: 'Input sense (I)',
+};
+
+function inoutPinSemantic(
+    node: GraphNode,
+    pin: GraphPin
+): InoutPinSemantic | undefined {
+    if (node.kind !== 'port' || node.pins.length !== 3) return undefined;
+    const expectedDirections: Readonly<Record<InoutPinSemantic, GraphPin['direction']>> = {
+        o: 'load',
+        t: 'load',
+        i: 'driver',
+    };
+    const semantics: readonly InoutPinSemantic[] = ['o', 't', 'i'];
+    const matches = semantics.map(semantic => node.pins.filter(candidate =>
+        candidate.direction === expectedDirections[semantic]
+            && (candidate.name === semantic
+                || candidate.name === `${node.label}_${semantic}`)
+    ));
+    if (matches.some(candidates => candidates.length !== 1)) return undefined;
+    return semantics.find((semantic, index) => matches[index][0].id === pin.id);
+}
+
 function pinItems(
     model: GraphNode,
     rendered: RenderedNodeGeometry
@@ -400,17 +429,53 @@ function pinItems(
     const pinsById = new Map(model.pins.map(pin => [pin.id, pin]));
     return rendered.pins.map(pin => {
         const source = pinsById.get(pin.id);
+        const inoutSemantic = source === undefined
+            ? undefined
+            : inoutPinSemantic(model, source);
+        const inoutDescription = inoutSemantic === undefined
+            ? undefined
+            : inoutPinDescriptions[inoutSemantic];
         return {
             id: pin.id,
             group: pin.side,
+            ...(inoutSemantic === 't' ? {
+                markup: [
+                    {
+                        tagName: 'circle',
+                        selector: 'portHalo',
+                        attrs: {
+                            fill: 'none',
+                            pointerEvents: 'none',
+                        },
+                    },
+                    { tagName: 'circle', selector: 'portBody' },
+                ],
+            } : {}),
             args: {
                 x: pin.anchor.x - rendered.bounds.x,
                 y: pin.anchor.y - rendered.bounds.y,
             },
             attrs: {
+                ...(inoutSemantic === 't'
+                    ? {
+                        portHalo: {
+                            r: 6,
+                            class: 'veriflow-inout-t-ring',
+                        },
+                    }
+                    : {}),
                 portBody: {
                     magnet: source !== undefined && pinConnectable(source),
                     strokeDasharray: source?.readOnly ? '2 1' : undefined,
+                    ...(inoutSemantic === undefined ? {} : {
+                        class: [
+                            'x6-port-body',
+                            'veriflow-inout-pin',
+                            `veriflow-inout-pin-${inoutSemantic}`,
+                        ].join(' '),
+                        title: inoutDescription,
+                        'aria-label': inoutDescription,
+                    }),
                     ...(source?.interface === undefined ? {} : { class: [
                             'x6-port-body',
                             'veriflow-interface-pin',

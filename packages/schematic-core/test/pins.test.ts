@@ -228,3 +228,16 @@ test('places top-level input right and output and inout left', () => {
     assert.equal(sides.get(pinKey(output.id, output.pins[0].id)), 'left');
     assert.equal(sides.get(pinKey(inout.id, inout.pins[0].id)), 'left');
 });
+
+test('places top-level inout drive pins left and sense pin right', () => {
+    const inout = node('port:gpio', 'port', [
+        pin('port:gpio:o', 'load'),
+        pin('port:gpio:t', 'load'),
+        pin('port:gpio:i', 'driver'),
+    ]);
+    const sides = resolvePinSides(graph([inout], []));
+
+    assert.equal(sides.get(pinKey(inout.id, inout.pins[0].id)), 'left');
+    assert.equal(sides.get(pinKey(inout.id, inout.pins[1].id)), 'left');
+    assert.equal(sides.get(pinKey(inout.id, inout.pins[2].id)), 'right');
+});

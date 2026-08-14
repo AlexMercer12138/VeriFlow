@@ -746,7 +746,7 @@ test('classifies scalar boundary and instance body shapes', () => {
 
     assert.equal(rendered.nodes.get(input.id)?.bodyShape, 'directional-port');
     assert.equal(rendered.nodes.get(output.id)?.bodyShape, 'directional-port');
-    assert.equal(rendered.nodes.get(inout.id)?.bodyShape, 'bidirectional-port');
+    assert.equal(rendered.nodes.get(inout.id)?.bodyShape, 'directional-port');
     assert.equal(rendered.nodes.get(instance.id)?.bodyShape, 'rectangle');
 });
 

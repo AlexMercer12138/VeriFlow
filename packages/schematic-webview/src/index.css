@@ -518,6 +518,13 @@ dialog::backdrop {
     vector-effect: non-scaling-stroke;
 }
 
+.veriflow-inout-t-ring {
+    fill: none;
+    stroke: var(--schematic-warning);
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke;
+}
+
 .veriflow-interface-label {
     font-weight: 600;
 }

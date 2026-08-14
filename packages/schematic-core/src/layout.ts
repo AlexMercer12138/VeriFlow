@@ -72,10 +72,7 @@ function bodyShapeFor(node: GraphNode): SchematicNodeBodyShape {
             : 'directional-port';
     }
     if (node.pins.length === 0) return 'rectangle';
-    return node.pins.length > 1
-        || node.pins[0].direction === 'bidirectional'
-        ? 'bidirectional-port'
-        : 'directional-port';
+    return 'directional-port';
 }
 
 function snapshotArray(value: unknown, label: string): unknown[] {

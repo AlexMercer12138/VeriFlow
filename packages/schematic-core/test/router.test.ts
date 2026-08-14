@@ -1311,6 +1311,63 @@ test('orders forced adjacent tracks by pin geometry before network IDs', () => {
     assert.deepEqual(geometryFor(original, 'b'), geometryFor(renamed, 'a'));
 });
 
+test('routes ordered shared adjacent module pins as H-V-H', () => {
+    const twoPinNode = (
+        id: string,
+        column: number,
+        side: 'left' | 'right',
+        pinYs: readonly [number, number]
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 50 },
+        pinAnchors: [
+            {
+                id: `${side}-upper`,
+                x: side === 'left' ? 0 : 100,
+                y: pinYs[0],
+            },
+            {
+                id: `${side}-lower`,
+                x: side === 'left' ? 0 : 100,
+                y: pinYs[1],
+            },
+        ],
+    });
+    const route = routeNetworks(
+        [
+            twoPinNode('left', 0, 'right', [10, 30]),
+            twoPinNode('right', 1, 'left', [20, 40]),
+        ],
+        [
+            {
+                id: 'network:upper',
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-upper', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-upper', role: 'load' },
+                ],
+            },
+            {
+                id: 'network:lower',
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-lower', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-lower', role: 'load' },
+                ],
+            },
+        ]
+    );
+
+    assert.deepEqual(route.networks.map(network =>
+        network.paths[0].segments.map(segment => segment.orientation)
+    ), [
+        ['horizontal', 'vertical', 'horizontal'],
+        ['horizontal', 'vertical', 'horizontal'],
+    ]);
+    assert.equal(route.grid.rowGaps.every(gap => gap.trackY.length === 0), true);
+});
+
 test('routes outer escapes independently of network ID order', () => {
     const nodes = [
         routingNode('left-top', 0, 0),

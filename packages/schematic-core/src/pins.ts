@@ -22,9 +22,12 @@ export function pinKey(nodeId: string, pinId: string): PinKey {
     return `${nodeId.length}:${nodeId}${pinId}` as PinKey;
 }
 
-function boundaryPinSide(node: GraphNode): PinSide | undefined {
+function boundaryPinSide(
+    node: GraphNode,
+    direction: GraphNode['pins'][number]['direction']
+): PinSide | undefined {
     if (node.kind !== 'port') return undefined;
-    return node.pins[0]?.direction === 'driver' ? 'right' : 'left';
+    return direction === 'driver' ? 'right' : 'left';
 }
 
 function compareEndpoints(left: OrderedEndpoint, right: OrderedEndpoint): number {
@@ -84,7 +87,7 @@ export function resolvePinSides(
 
     const resolved = new Map<PinKey, PinSide>();
     for (const candidate of orderedPins) {
-        const boundary = boundaryPinSide(candidate.node);
+        const boundary = boundaryPinSide(candidate.node, candidate.direction);
         if (boundary) {
             resolved.set(candidate.key, boundary);
         } else if (candidate.direction === 'driver') {

@@ -499,10 +499,10 @@
       function pinKey(nodeId, pinId) {
         return `${nodeId.length}:${nodeId}${pinId}`;
       }
-      function boundaryPinSide(node) {
+      function boundaryPinSide(node, direction) {
         if (node.kind !== "port")
           return void 0;
-        return node.pins[0]?.direction === "driver" ? "right" : "left";
+        return direction === "driver" ? "right" : "left";
       }
       function compareEndpoints(left4, right4) {
         return left4.nodeIndex - right4.nodeIndex || left4.pinIndex - right4.pinIndex || (left4.nodeId < right4.nodeId ? -1 : left4.nodeId > right4.nodeId ? 1 : 0) || (left4.pinId < right4.pinId ? -1 : left4.pinId > right4.pinId ? 1 : 0);
@@ -547,7 +547,7 @@
         }
         const resolved = /* @__PURE__ */ new Map();
         for (const candidate of orderedPins) {
-          const boundary2 = boundaryPinSide(candidate.node);
+          const boundary2 = boundaryPinSide(candidate.node, candidate.direction);
           if (boundary2) {
             resolved.set(candidate.key, boundary2);
           } else if (candidate.direction === "driver") {
@@ -3328,15 +3328,17 @@
               continue;
             const fromLocation = locations.get(context.root.nodeId);
             const toLocation = locations.get(to.nodeId);
-            const aligned = fromLocation.row === toLocation.row && realizedPinPoint(baseGeometry, context.root).y === realizedPinPoint(baseGeometry, to).y;
+            const fromPoint = realizedPinPoint(baseGeometry, context.root);
+            const toPoint = realizedPinPoint(baseGeometry, to);
+            const aligned = fromLocation.row === toLocation.row && fromPoint.y === toPoint.y;
             if (aligned)
               continue;
             const fromIsLeft = fromNode.column < toNode.column;
             const descriptor = Object.freeze({
               key: connectionKey(context.network.id, context.root, to),
               networkId: context.network.id,
-              leftRow: fromIsLeft ? fromLocation.row : toLocation.row,
-              rightRow: fromIsLeft ? toLocation.row : fromLocation.row
+              leftY: fromIsLeft ? fromPoint.y : toPoint.y,
+              rightY: fromIsLeft ? toPoint.y : fromPoint.y
             });
             const descriptors = byChannel.get(sourceChannel) ?? [];
             descriptors.push(descriptor);
@@ -3348,8 +3350,8 @@
           if (new Set(descriptors.map((descriptor) => descriptor.networkId)).size < 2) {
             continue;
           }
-          descriptors.sort((left4, right4) => left4.leftRow - right4.leftRow || left4.rightRow - right4.rightRow || (left4.key < right4.key ? -1 : left4.key > right4.key ? 1 : 0));
-          const hasConflict = descriptors.some((descriptor, index2) => index2 > 0 && (descriptor.leftRow <= descriptors[index2 - 1].leftRow || descriptor.rightRow <= descriptors[index2 - 1].rightRow));
+          descriptors.sort((left4, right4) => left4.leftY - right4.leftY || left4.rightY - right4.rightY || (left4.key < right4.key ? -1 : left4.key > right4.key ? 1 : 0));
+          const hasConflict = descriptors.some((descriptor, index2) => index2 > 0 && (descriptor.leftY <= descriptors[index2 - 1].leftY || descriptor.rightY <= descriptors[index2 - 1].rightY));
           if (!hasConflict)
             continue;
           for (const descriptor of descriptors)
@@ -4834,7 +4836,7 @@
         }
         if (node.pins.length === 0)
           return "rectangle";
-        return node.pins.length > 1 || node.pins[0].direction === "bidirectional" ? "bidirectional-port" : "directional-port";
+        return "directional-port";
       }
       function snapshotArray(value, label) {
         if (!Array.isArray(value))
@@ -46276,21 +46278,70 @@
     };
   }
   var interfaceColor = "var(--schematic-interface-wire)";
+  var inoutPinDescriptions = {
+    o: "Output drive (O)",
+    t: "Tri-state enable (T)",
+    i: "Input sense (I)"
+  };
+  function inoutPinSemantic(node, pin2) {
+    if (node.kind !== "port" || node.pins.length !== 3) return void 0;
+    const expectedDirections = {
+      o: "load",
+      t: "load",
+      i: "driver"
+    };
+    const semantics = ["o", "t", "i"];
+    const matches = semantics.map((semantic) => node.pins.filter(
+      (candidate) => candidate.direction === expectedDirections[semantic] && (candidate.name === semantic || candidate.name === `${node.label}_${semantic}`)
+    ));
+    if (matches.some((candidates) => candidates.length !== 1)) return void 0;
+    return semantics.find((semantic, index2) => matches[index2][0].id === pin2.id);
+  }
   function pinItems(model, rendered) {
     const pinsById = new Map(model.pins.map((pin2) => [pin2.id, pin2]));
     return rendered.pins.map((pin2) => {
       const source = pinsById.get(pin2.id);
+      const inoutSemantic = source === void 0 ? void 0 : inoutPinSemantic(model, source);
+      const inoutDescription = inoutSemantic === void 0 ? void 0 : inoutPinDescriptions[inoutSemantic];
       return {
         id: pin2.id,
         group: pin2.side,
+        ...inoutSemantic === "t" ? {
+          markup: [
+            {
+              tagName: "circle",
+              selector: "portHalo",
+              attrs: {
+                fill: "none",
+                pointerEvents: "none"
+              }
+            },
+            { tagName: "circle", selector: "portBody" }
+          ]
+        } : {},
         args: {
           x: pin2.anchor.x - rendered.bounds.x,
           y: pin2.anchor.y - rendered.bounds.y
         },
         attrs: {
+          ...inoutSemantic === "t" ? {
+            portHalo: {
+              r: 6,
+              class: "veriflow-inout-t-ring"
+            }
+          } : {},
           portBody: {
             magnet: source !== void 0 && pinConnectable(source),
             strokeDasharray: source?.readOnly ? "2 1" : void 0,
+            ...inoutSemantic === void 0 ? {} : {
+              class: [
+                "x6-port-body",
+                "veriflow-inout-pin",
+                `veriflow-inout-pin-${inoutSemantic}`
+              ].join(" "),
+              title: inoutDescription,
+              "aria-label": inoutDescription
+            },
             ...source?.interface === void 0 ? {} : { class: [
               "x6-port-body",
               "veriflow-interface-pin",

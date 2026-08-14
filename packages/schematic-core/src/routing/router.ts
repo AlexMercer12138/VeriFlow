@@ -176,8 +176,8 @@ type PendingTreeTerminal = {
 type AdjacentDescriptor = Readonly<{
     key: string;
     networkId: string;
-    leftRow: number;
-    rightRow: number;
+    leftY: number;
+    rightY: number;
 }>;
 
 type ChannelLegRole = 'source' | 'target' | 'shared'
@@ -1111,20 +1111,17 @@ function forcedAdjacentConnections(
             if (sourceChannel !== targetChannel) continue;
             const fromLocation = locations.get(context.root.nodeId)!;
             const toLocation = locations.get(to.nodeId)!;
+            const fromPoint = realizedPinPoint(baseGeometry, context.root);
+            const toPoint = realizedPinPoint(baseGeometry, to);
             const aligned = fromLocation.row === toLocation.row
-                && realizedPinPoint(baseGeometry, context.root).y
-                    === realizedPinPoint(baseGeometry, to).y;
+                && fromPoint.y === toPoint.y;
             if (aligned) continue;
             const fromIsLeft = fromNode.column < toNode.column;
             const descriptor: AdjacentDescriptor = Object.freeze({
                 key: connectionKey(context.network.id, context.root, to),
                 networkId: context.network.id,
-                leftRow: fromIsLeft
-                    ? fromLocation.row
-                    : toLocation.row,
-                rightRow: fromIsLeft
-                    ? toLocation.row
-                    : fromLocation.row,
+                leftY: fromIsLeft ? fromPoint.y : toPoint.y,
+                rightY: fromIsLeft ? toPoint.y : fromPoint.y,
             });
             const descriptors = byChannel.get(sourceChannel) ?? [];
             descriptors.push(descriptor);
@@ -1138,13 +1135,13 @@ function forcedAdjacentConnections(
             continue;
         }
         descriptors.sort((left, right) =>
-            left.leftRow - right.leftRow
-            || left.rightRow - right.rightRow
+            left.leftY - right.leftY
+            || left.rightY - right.rightY
             || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0)
         );
         const hasConflict = descriptors.some((descriptor, index) => index > 0
-            && (descriptor.leftRow <= descriptors[index - 1].leftRow
-                || descriptor.rightRow <= descriptors[index - 1].rightRow)
+            && (descriptor.leftY <= descriptors[index - 1].leftY
+                || descriptor.rightY <= descriptors[index - 1].rightY)
         );
         if (!hasConflict) continue;
         for (const descriptor of descriptors) result.add(descriptor.key);

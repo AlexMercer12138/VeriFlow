@@ -193,9 +193,9 @@ function visualSchematicFixture() {
     ]);
     const output = node('port:visual-output', 'port', 'result_out', [['value', 'load']]);
     const inout = node('port:visual-inout', 'port', 'shared_io', [
-        ['o', 'load'],
-        ['t', 'load'],
-        ['i', 'driver'],
+        ['shared_io_o', 'load'],
+        ['shared_io_t', 'load'],
+        ['shared_io_i', 'driver'],
     ]);
     const feedbackTopDriver = node(
         'instance:visual-feedback-top-driver',
@@ -2958,6 +2958,9 @@ test('Arch Design interfaces render distinct routes and only connect Master to S
         ).first();
         assert.equal(Number(await route.getAttribute('stroke-width')), 4);
         assert.ok(await page.locator('#canvas .veriflow-interface-pin').count() >= 7);
+        assert.equal(await page.locator('#canvas .veriflow-interface-pin').evaluateAll(
+            pins => pins.every(pin => pin.matches('.x6-port-body[port]'))
+        ), true);
         const interfaceColor = await route.evaluate(element => getComputedStyle(element).stroke);
         const topNode = page.locator(
             '#canvas .x6-node[data-cell-id="interface:port:m_link"]'
@@ -4596,16 +4599,61 @@ test('schematic runtime paints responsive geometry and authors Arch Design conne
             '#canvas .x6-node[data-cell-id="port:visual-inout"]'
         );
         assert.equal(
-            await inoutNode.locator('.veriflow-boundary-bidirectional').count(),
+            await inoutNode.locator('.veriflow-boundary-directional').count(),
             1
         );
         const inoutPinCenters = await inoutNode.locator('.x6-port-body[port]')
             .evaluateAll(elements => elements.map(element => {
                 const bounds = element.getBoundingClientRect();
-                return Math.round((bounds.top + bounds.height / 2) * 100) / 100;
+                return {
+                    port: element.getAttribute('port'),
+                    x: Math.round((bounds.left + bounds.width / 2) * 100) / 100,
+                    y: Math.round((bounds.top + bounds.height / 2) * 100) / 100,
+                };
             }));
         assert.equal(inoutPinCenters.length, 3);
-        assert.equal(new Set(inoutPinCenters).size, 3);
+        assert.equal(new Set(inoutPinCenters.map(pin => pin.y)).size, 3);
+        const inoutPinCenter = (name: 'o' | 't' | 'i') =>
+            inoutPinCenters.find(pin =>
+                pin.port === `port:visual-inout:shared_io_${name}`
+            )!;
+        assert.equal(inoutPinCenter('o').x, inoutPinCenter('t').x);
+        assert.ok(inoutPinCenter('i').x > inoutPinCenter('o').x);
+        const inoutMarkers = {
+            o: inoutNode.locator(
+                'circle.x6-port-body.veriflow-inout-pin-o'
+                + '[port="port:visual-inout:shared_io_o"]'
+            ),
+            t: inoutNode.locator(
+                '.x6-port-body[port="port:visual-inout:shared_io_t"] '
+                + 'circle.veriflow-inout-pin-t'
+            ),
+            i: inoutNode.locator(
+                'circle.x6-port-body.veriflow-inout-pin-i'
+                + '[port="port:visual-inout:shared_io_i"]'
+            ),
+        };
+        assert.equal(
+            await inoutMarkers.o.locator('title').textContent(),
+            'Output drive (O)'
+        );
+        assert.equal(
+            await inoutMarkers.t.locator('title').textContent(),
+            'Tri-state enable (T)'
+        );
+        assert.equal(
+            await inoutMarkers.i.locator('title').textContent(),
+            'Input sense (I)'
+        );
+        assert.equal(await inoutNode.locator(
+            '.x6-port-body[port="port:visual-inout:shared_io_t"] '
+            + 'circle.veriflow-inout-t-ring'
+        ).count(), 1);
+        assert.equal(await page.locator(
+            '#canvas .x6-node[data-cell-id="instance:visual-wide"] '
+            + '.x6-port-body[port="instance:visual-wide:spare_input"] '
+            + 'title'
+        ).count(), 0);
         await page.locator('#selection-status').getByText(
             'No selection',
             { exact: true }
