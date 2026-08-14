@@ -15,7 +15,7 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 ## HDL 工作流
 
 1. 打开包含 `.v` 或 `.sv` 文件的工作区。
-2. 从活动栏进入 **VeriFlow** 并选择顶层模块。
+2. 从活动栏进入 **VeriFlow**，在 **Simulation** 区域选择顶层模块。
 3. 执行 **Analyze Dependencies** 或 **Compile & Simulate**。
 4. 执行 **Open Waveform** 查看生成的 VCD。
 
@@ -23,26 +23,11 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 
 ## 架构设计编辑器
 
-先创建有效的 `.ad` 文件，再用可视化架构设计编辑器打开。最小内容如下，将 `soc_top` 改为需要生成的顶层模块名：
+在 **Arch Designs** 区域点击 **Create Arch Design**，输入顶层模块名并选择 `.ad` 文件保存位置，新设计会直接在可视化编辑器中打开。
 
-```json
-{
-  "format": "vik-veriflow.arch-design",
-  "schemaVersion": 1,
-  "module": "soc_top",
-  "ports": [],
-  "instances": [],
-  "connections": [],
-  "interfaceConnections": [],
-  "defaults": {},
-  "export": {},
-  "presentation": {}
-}
-```
+使用工具栏添加模块实例和顶层端口。连线时先单击任意一侧端点，再单击另一侧端点；两次单击之间可以平移画布。选中模块、端口、引脚、网络或识别出的接口，可在右侧属性栏查看和修改对应内容。
 
-使用工具栏添加模块实例和顶层端口，启用连线模式后从输出引脚拖到输入引脚。选中模块、端口、引脚、网络或识别出的接口，可在右侧属性栏查看和修改对应内容。
-
-使用 **Validate Arch Design** 校验当前设计，使用 **Export Arch Design RTL** 生成 RTL。默认导出同目录、同名的 `.v` 文件；可在属性栏选择 SystemVerilog 和相对 `.sv` 输出路径。扩展不会覆盖手写 RTL。
+错误和警告会实时显示在 E/W 计数与 Problems 面板中。编辑器内只保留画布工具栏的 **Export RTL** 导出入口；每个文件的 **Arch Designs** 右键菜单和命令面板也可执行验证与导出。默认导出同目录、同名的 `.v` 文件；可在属性栏选择 SystemVerilog 和相对 `.sv` 输出路径。扩展不会覆盖手写 RTL。
 
 `.ad` 是 VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。
 

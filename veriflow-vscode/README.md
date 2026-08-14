@@ -15,7 +15,7 @@ Verilog Design Flow brings module discovery, dependency analysis, simulation, wa
 ## HDL Workflow
 
 1. Open a workspace containing `.v` or `.sv` files.
-2. Open **VeriFlow** from the Activity Bar and select the top module.
+2. Open **VeriFlow** from the Activity Bar, then select the top module in **Simulation**.
 3. Run **Analyze Dependencies** or **Compile & Simulate**.
 4. Run **Open Waveform** to inspect the generated VCD.
 
@@ -23,26 +23,11 @@ Open a `.vcd` file directly with **VeriFlow Waveform Viewer**. Run **Open as Ver
 
 ## Arch Design Editor
 
-Create a valid `.ad` file, then open it to use the visual architecture editor. This is the minimal document; replace `soc_top` with the generated top-level module name:
+In **Arch Designs**, select **Create Arch Design**, enter the top-level module name, and choose where to save the `.ad` file. The new design opens directly in the visual editor.
 
-```json
-{
-  "format": "vik-veriflow.arch-design",
-  "schemaVersion": 1,
-  "module": "soc_top",
-  "ports": [],
-  "instances": [],
-  "connections": [],
-  "interfaceConnections": [],
-  "defaults": {},
-  "export": {},
-  "presentation": {}
-}
-```
+Add module instances and top-level ports from the toolbar. To connect them, click either endpoint and then click the other endpoint; you can pan the canvas between clicks. Select an instance, port, pin, network, or recognized interface to inspect and edit it.
 
-Add module instances and top-level ports from the toolbar, enable connection mode, then drag from an output pin to an input pin. Select an instance, port, pin, network, or recognized interface to inspect and edit it.
-
-Use **Validate Arch Design** to check the current design and **Export Arch Design RTL** to generate RTL. Verilog is exported to a sibling `.v` file by default; SystemVerilog and a relative `.sv` output can be selected in the Inspector. Existing hand-written RTL is never overwritten.
+Errors and warnings update live in the E/W counters and the Problems panel. The editor has one in-editor export action: **Export RTL** in the canvas toolbar. Validate and export are also available from each file's **Arch Designs** context menu and the Command Palette. Verilog is exported to a sibling `.v` file by default; SystemVerilog and a relative `.sv` output can be selected in the Inspector. Existing hand-written RTL is never overwritten.
 
 `.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility.
 

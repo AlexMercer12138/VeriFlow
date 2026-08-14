@@ -33,6 +33,7 @@ veriflow analyze --project project.json
 veriflow sim --project project.json
 veriflow wave --project project.json
 
+veriflow ad new soc_top -o design/soc.ad
 veriflow ad validate design/soc.ad --project project.json
 veriflow ad export design/soc.ad --project project.json
 veriflow ad export design/soc.ad --language systemverilog -o generated/soc.sv
@@ -42,24 +43,11 @@ veriflow ad export design/soc.ad --language systemverilog -o generated/soc.sv
 
 ## VS Code
 
-打开 HDL 工作区后，从活动栏进入 **VeriFlow**，选择顶层并执行依赖分析、仿真或波形查看。`.vcd` 可直接用内置查看器打开；对 `.v`、`.sv` 执行 **Open as VeriFlow Schematic** 可查看只读原理图。
+打开 HDL 工作区后，从活动栏进入 **VeriFlow**。**Simulation** 区域用于选择顶层、分析依赖、仿真和查看波形；`.vcd` 可直接用内置查看器打开，对 `.v`、`.sv` 执行 **Open as VeriFlow Schematic** 可查看只读原理图。
 
-创建 `.ad` 文件并用 VS Code 打开，即可在画布中添加实例和顶层端口、编辑参数与默认值、连接标量或协议接口，并从工具栏校验和导出 RTL。最小文件如下：
+在 **Arch Designs** 区域点击 **Create Arch Design**，依次输入顶层模块名和保存位置，扩展会创建并打开规范的 `.ad` 文件。编辑器支持添加实例和顶层端口、编辑参数与默认值，以及连接标量或协议接口。连线时依次单击两个端点即可，起点方向不限，两次单击之间可平移画布。
 
-```json
-{
-  "format": "vik-veriflow.arch-design",
-  "schemaVersion": 1,
-  "module": "soc_top",
-  "ports": [],
-  "instances": [],
-  "connections": [],
-  "interfaceConnections": [],
-  "defaults": {},
-  "export": {},
-  "presentation": {}
-}
-```
+设计错误和警告会实时显示在 E/W 计数与 Problems 面板中。编辑器内只保留画布工具栏的 **Export RTL** 按钮；验证和导出也可从 **Arch Designs** 文件右键菜单或命令面板执行。默认导出同目录、同名的 `.v`，也可在属性栏选择 SystemVerilog 和相对 `.sv` 输出路径。
 
 接口按端口名称和方向自动识别，可折叠为一条连接，也可展开后单独操作成员。角色无法推断时可在属性栏指定 Master 或 Slave；协议接口固定一对一连接，一对多应使用专门的互联模块。实例接口可整体提升为顶层接口，展开后的成员也可按普通端口单独提升。
 
