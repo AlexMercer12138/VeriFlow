@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { readFile, realpath } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,6 +10,7 @@ import {
 } from '@veriflow/flow-core';
 import { canonicalizeSourceUri } from '@veriflow/hdl-core/preprocessor';
 import {
+    createEmptyArchDesignText,
     exportArchDesignRtl,
     parseArchDesignText,
     validateArchDesign,
@@ -59,6 +60,33 @@ function displayPath(filepath: string, cwd: string): string {
         && !path.isAbsolute(relative)
     );
     return normalizePathSeparators(isInsideCwd ? relative || '.' : filepath);
+}
+
+export async function adNew(
+    options: CommandOptions,
+    environment: CommandEnvironment
+): Promise<number> {
+    const text = createEmptyArchDesignText(options.module!);
+    const requested = options.output ?? `${options.module}.ad`;
+    const output = requested.toLowerCase().endsWith('.ad')
+        ? requested
+        : `${requested}.ad`;
+    const filepath = path.resolve(environment.cwd, output);
+    await mkdir(path.dirname(filepath), { recursive: true });
+    try {
+        await writeFile(filepath, text, { encoding: 'utf8', flag: 'wx' });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            throw new Error(
+                `Arch Design already exists: ${displayPath(filepath, environment.cwd)}`
+            );
+        }
+        throw error;
+    }
+    environment.stdout(
+        `Arch Design created: ${displayPath(filepath, environment.cwd)}\n`
+    );
+    return 0;
 }
 
 function printDiagnostics(

@@ -4,7 +4,7 @@ import os from 'node:os';
 
 import type { CommandExecutor } from '@veriflow/flow-core/simulation';
 
-import { adExport, adValidate } from './commands/ad';
+import { adExport, adNew, adValidate } from './commands/ad';
 import { analyze } from './commands/analyze';
 import { libAdd, libList, libRemove } from './commands/lib';
 import {
@@ -62,7 +62,7 @@ positional arguments:
     analyze      analyze dependencies
     sim          compile and simulate
     wave         open waveform viewer
-    ad           validate and export Arch Designs
+    ad           create, validate, and export Arch Designs
 
 options:
   -h, --help     show this help message and exit
@@ -108,6 +108,7 @@ const AD_HELP = `usage: veriflow ad [-h] ACTION ...
 
 positional arguments:
   ACTION
+    new       create an Arch Design
     validate  validate an Arch Design
     export    export an Arch Design to RTL
 
@@ -206,6 +207,16 @@ options:
                         project JSON file
 `;
 
+const AD_NEW_HELP = `usage: veriflow ad new [-h] [-o OUTPUT] MODULE
+
+positional arguments:
+  MODULE                generated top module name
+
+options:
+  -h, --help            show this help message and exit
+  -o, --output OUTPUT   output Arch Design file
+`;
+
 const AD_VALIDATE_HELP = `usage: veriflow ad validate [-h] [-p PROJECT] [-L LIB] DESIGN
 
 positional arguments:
@@ -296,6 +307,14 @@ const LEAF_COMMANDS: Record<string, LeafCommand> = {
         ],
         handler: topGet,
     },
+    'ad new': {
+        help: AD_NEW_HELP,
+        positionals: [{ key: 'module', requiredName: 'MODULE' }],
+        options: [
+            { key: 'output', aliases: ['-o', '--output'] },
+        ],
+        handler: adNew,
+    },
     'ad validate': {
         help: AD_VALIDATE_HELP,
         positionals: [{ key: 'design', requiredName: 'DESIGN' }],
@@ -333,7 +352,7 @@ const PARENT_ACTIONS: Record<string, string[]> = {
     project: ['new', 'open', 'show'],
     lib: ['add', 'remove', 'list'],
     top: ['set', 'get'],
-    ad: ['validate', 'export'],
+    ad: ['new', 'validate', 'export'],
 };
 
 const TOP_LEVEL_COMMANDS: Record<string, LeafCommand> = {

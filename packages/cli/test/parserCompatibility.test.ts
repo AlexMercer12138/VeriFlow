@@ -95,6 +95,7 @@ test('shows Arch Design parent help', async () => {
 
 positional arguments:
   ACTION
+    new       create an Arch Design
     validate  validate an Arch Design
     export    export an Arch Design to RTL
 
@@ -102,6 +103,50 @@ options:
   -h, --help  show this help message and exit
 `);
         assert.equal(result.stderr, '');
+    });
+});
+
+test('shows Arch Design creation options in leaf help', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'new', '--help'], cwd);
+
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.stdout, `usage: veriflow ad new [-h] [-o OUTPUT] MODULE
+
+positional arguments:
+  MODULE                generated top module name
+
+options:
+  -h, --help            show this help message and exit
+  -o, --output OUTPUT   output Arch Design file
+`);
+        assert.equal(result.stderr, '');
+    });
+});
+
+test('requires a module for Arch Design creation', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'new'], cwd);
+
+        assert.equal(result.exitCode, 2);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr, `usage: veriflow ad new [-h] [-o OUTPUT] MODULE
+veriflow ad new: error: the following arguments are required: MODULE
+`);
+    });
+});
+
+test('accepts Arch Design creation output aliases', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const short = await invoke(['ad', 'new', 'short_top', '-odesign/short'], cwd);
+        const long = await invoke([
+            'ad', 'new', '--output=design/long.AD', 'long_top',
+        ], cwd);
+
+        assert.equal(short.exitCode, 0);
+        assert.equal(long.exitCode, 0);
+        assert.equal(existsSync(path.join(cwd, 'design/short.ad')), true);
+        assert.equal(existsSync(path.join(cwd, 'design/long.AD')), true);
     });
 });
 

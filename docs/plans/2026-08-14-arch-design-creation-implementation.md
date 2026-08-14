@@ -91,6 +91,7 @@ git commit -m "feat(ad): share empty design text factory"
 - Modify: `packages/cli/src/commands/ad.ts`
 - Modify: `packages/cli/test/parserCompatibility.test.ts`
 - Modify: `packages/cli/test/adCommand.test.ts`
+- Modify: `tests/cli_contract/cases.json`
 
 **Step 1: Write failing parser and help tests**
 
@@ -163,7 +164,7 @@ export async function adNew(
 }
 ```
 
-Update root and AD help descriptions to include creation.
+Update root and AD help descriptions to include creation, then update the shared CLI contract snapshots that contain the root help text.
 
 **Step 5: Run CLI tests and commit**
 
@@ -172,7 +173,7 @@ Run: `npm test --workspace @veriflow/cli`
 Expected: all CLI tests pass.
 
 ```bash
-git add packages/cli/src/main.ts packages/cli/src/commands/ad.ts packages/cli/test/parserCompatibility.test.ts packages/cli/test/adCommand.test.ts
+git add packages/cli/src/main.ts packages/cli/src/commands/ad.ts packages/cli/test/parserCompatibility.test.ts packages/cli/test/adCommand.test.ts tests/cli_contract/cases.json docs/plans/2026-08-14-arch-design-creation-implementation.md
 git commit -m "feat(cli): create Arch Design files"
 ```
 

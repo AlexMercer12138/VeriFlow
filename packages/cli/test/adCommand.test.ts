@@ -12,7 +12,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { parseArchDesignRtlMarker } from '@veriflow/schematic-core/arch-design';
+import {
+    createEmptyArchDesignText,
+    parseArchDesignRtlMarker,
+} from '@veriflow/schematic-core/arch-design';
 
 import { type CliEnvironment, runCli } from '../src/main';
 
@@ -145,6 +148,74 @@ function createDirectoryAlias(target: string, alias: string): string | undefined
         throw error;
     }
 }
+
+test('creates a canonical Arch Design beside the current directory', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke(['ad', 'new', 'soc_top'], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design created: soc_top.ad\n',
+            stderr: '',
+        });
+        assert.equal(
+            readFileSync(path.join(cwd, 'soc_top.ad'), 'utf8'),
+            createEmptyArchDesignText('soc_top')
+        );
+    });
+});
+
+test('creates missing output parents and appends the ad suffix', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke([
+            'ad', 'new', 'system_top', '-o', 'design/nested/system',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 0,
+            stdout: 'Arch Design created: design/nested/system.ad\n',
+            stderr: '',
+        });
+        assert.equal(
+            readFileSync(path.join(cwd, 'design/nested/system.ad'), 'utf8'),
+            createEmptyArchDesignText('system_top')
+        );
+    });
+});
+
+test('rejects invalid module names before creating an output directory', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const result = await invoke([
+            'ad', 'new', 'not-a-module', '-o', 'design/system.ad',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error: Arch Design module must be a valid Verilog identifier\n',
+        });
+        assert.equal(existsSync(path.join(cwd, 'design')), false);
+    });
+});
+
+test('preserves an existing Arch Design target', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const target = path.join(cwd, 'existing.ad');
+        const original = 'hand-written design\n';
+        writeFileSync(target, original, 'utf8');
+
+        const result = await invoke([
+            'ad', 'new', 'soc_top', '--output', 'existing.ad',
+        ], cwd);
+
+        assert.deepEqual(result, {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error: Arch Design already exists: existing.ad\n',
+        });
+        assert.equal(readFileSync(target, 'utf8'), original);
+    });
+});
 
 test('validates a standalone Arch Design against HDL beside the design', async () => {
     await withTemporaryDirectory(async cwd => {
