@@ -15,6 +15,7 @@ import { showModuleInstantiationPicker } from './moduleInstantiationCommand';
 import { TestbenchPanelProvider } from './testbenchPanel';
 import { WaveformEditorProvider } from './waveformEditorProvider';
 import { ArchDesignEditorProvider } from './archDesign/archDesignEditorProvider';
+import { createArchDesignCommandHandlers } from './archDesign/archDesignCommands';
 import { createArchDesign } from './archDesign/archDesignCreation';
 import { ArchDesignTreeProvider } from './archDesign/archDesignTreeProvider';
 import {
@@ -393,14 +394,12 @@ export function activate(context: vscode.ExtensionContext): void {
             ArchDesignEditorProvider.viewType
         );
     };
-    const runArchDesignAction = async (
-        value: unknown,
-        action: (uri?: vscode.Uri) => Promise<void>
-    ): Promise<void> => {
-        const uri = commandUri(value);
-        if (uri) await openArchDesign(uri);
-        await action(uri);
-    };
+    const archDesignCommands = createArchDesignCommandHandlers<vscode.Uri>({
+        isResource: (value): value is vscode.Uri => value instanceof vscode.Uri,
+        openEditor: openArchDesign,
+        validate: uri => archDesignEditorProvider.validate(uri),
+        exportRtl: uri => archDesignEditorProvider.exportRtl(uri),
+    });
     const cmds: Array<[string, (...args: unknown[]) => unknown]> = [
         ['veriflow.selectTop', () => cmdSelectTop(context)],
         ['veriflow.analyze', () => cmdAnalyze(context)],
@@ -453,16 +452,12 @@ export function activate(context: vscode.ExtensionContext): void {
             if (created) archDesignTreeProvider.refresh();
         }],
         ['veriflow.refreshArchDesigns', () => archDesignTreeProvider.refresh()],
-        ['veriflow.openArchDesign', (uri?: unknown) => {
-            const target = commandUri(uri);
-            return target ? openArchDesign(target) : undefined;
-        }],
+        ['veriflow.openArchDesign', (uri?: unknown) =>
+            archDesignCommands.open(uri)],
         ['veriflow.validateArchDesign', (uri?: unknown) =>
-            runArchDesignAction(uri, target =>
-                archDesignEditorProvider.validate(target))],
+            archDesignCommands.validate(uri)],
         ['veriflow.exportArchDesign', (uri?: unknown) =>
-            runArchDesignAction(uri, target =>
-                archDesignEditorProvider.exportRtl(target))],
+            archDesignCommands.exportRtl(uri)],
     ];
     for (const [name, fn] of cmds) {
         context.subscriptions.push(vscode.commands.registerCommand(name, fn));

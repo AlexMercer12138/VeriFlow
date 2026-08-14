@@ -79,6 +79,9 @@ async function main(): Promise<void> {
         const { ArchDesignTreeProvider } = require(
             '../archDesign/archDesignTreeProvider'
         ) as typeof import('../archDesign/archDesignTreeProvider');
+        const { createArchDesignCommandHandlers } = require(
+            '../archDesign/archDesignCommands'
+        ) as typeof import('../archDesign/archDesignCommands');
         const resources = [
             new FakeUri('z/top.ad'),
             new FakeUri('a/sub/system.ad'),
@@ -106,6 +109,30 @@ async function main(): Promise<void> {
         }
         assert.deepStrictEqual(await provider.getChildren(items[0]), []);
         assert.deepStrictEqual(provider.getTreeItem(items[0]), items[0]);
+
+        const actions: string[] = [];
+        const handlers = createArchDesignCommandHandlers<FakeUri>({
+            isResource: (value): value is FakeUri => value instanceof FakeUri,
+            openEditor: async resource => {
+                actions.push(`open:${resource.path}`);
+            },
+            validate: async resource => {
+                actions.push(`validate:${resource?.path ?? 'active'}`);
+            },
+            exportRtl: async resource => {
+                actions.push(`export:${resource?.path ?? 'active'}`);
+            },
+        });
+        await handlers.open(items[0]);
+        await handlers.validate(items[0]);
+        await handlers.exportRtl(items[0]);
+        assert.deepStrictEqual(actions, [
+            'open:a/Upper.AD',
+            'open:a/Upper.AD',
+            'validate:a/Upper.AD',
+            'open:a/Upper.AD',
+            'export:a/Upper.AD',
+        ]);
 
         let refreshes = 0;
         const subscription = provider.onDidChangeTreeData(() => { refreshes += 1; });

@@ -123,11 +123,19 @@ for (const id of ['veriflow.validateArchDesign', 'veriflow.exportArchDesign']) {
 }
 assert.match(
     extensionSource,
-    /\['veriflow\.validateArchDesign',[\s\S]*?archDesignEditorProvider\.validate/
+    /validate:\s*uri\s*=>\s*archDesignEditorProvider\.validate\(uri\)/
 );
 assert.match(
     extensionSource,
-    /\['veriflow\.exportArchDesign',[\s\S]*?archDesignEditorProvider\.exportRtl/
+    /exportRtl:\s*uri\s*=>\s*archDesignEditorProvider\.exportRtl\(uri\)/
+);
+assert.match(
+    extensionSource,
+    /\['veriflow\.validateArchDesign',[\s\S]*?archDesignCommands\.validate\(uri\)/
+);
+assert.match(
+    extensionSource,
+    /\['veriflow\.exportArchDesign',[\s\S]*?archDesignCommands\.exportRtl\(uri\)/
 );
 for (const id of ['veriflow.openSchematic', 'veriflow.openSchematicFromExplorer']) {
     assert.ok(

@@ -104,6 +104,7 @@ type EditorSession = {
     uri: vscode.Uri;
     document: vscode.TextDocument;
     state: PanelState;
+    initialRefresh: Promise<void>;
     refresh(): Promise<EditableSnapshot | undefined>;
     exportInFlight?: Promise<void>;
 };
@@ -125,6 +126,12 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
     }
 
     async validate(uri?: vscode.Uri): Promise<void> {
+        const session = this.sessionFor(uri);
+        if (!session) {
+            await vscode.window.showErrorMessage('No editable Arch Design is active');
+            return;
+        }
+        await session.initialRefresh;
         const snapshot = this.snapshotFor(uri);
         if (!snapshot) {
             await vscode.window.showErrorMessage('No editable Arch Design is active');
@@ -148,6 +155,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             await vscode.window.showErrorMessage('No editable Arch Design is active');
             return;
         }
+        await session.initialRefresh;
         await this.saveAndExport(session);
     }
 
@@ -271,11 +279,22 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             ready: false,
             refreshGeneration: 0,
         };
+        let initialRefreshResolved = false;
+        let resolveInitialRefresh!: () => void;
+        const initialRefresh = new Promise<void>(resolve => {
+            resolveInitialRefresh = resolve;
+        });
+        const finishInitialRefresh = (): void => {
+            if (initialRefreshResolved) return;
+            initialRefreshResolved = true;
+            resolveInitialRefresh();
+        };
         const sessionKey = document.uri.toString();
         const session: EditorSession = {
             uri: document.uri,
             document,
             state,
+            initialRefresh,
             refresh: () => refresh(true),
         };
         this.sessions.set(sessionKey, session);
@@ -553,7 +572,11 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 switch (command.type) {
                     case 'ready':
                         state.ready = true;
-                        await refresh();
+                        try {
+                            await refresh();
+                        } finally {
+                            finishInitialRefresh();
+                        }
                         return;
                     case 'editArchDesign': {
                         const snapshot = state.snapshot;
@@ -702,6 +725,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 void refresh(true).catch(error => { void reportError(error); });
             });
         const tokenSubscription = token.onCancellationRequested(() => {
+            finishInitialRefresh();
             state.refreshGeneration += 1;
             state.snapshot = undefined;
             state.pendingPresentationWrite = undefined;
@@ -715,6 +739,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
         });
         const panelSubscription = panel.onDidDispose(() => {
             if (state.disposed) return;
+            finishInitialRefresh();
             state.disposed = true;
             state.refreshGeneration += 1;
             if (this.sessions.get(sessionKey) === session) {

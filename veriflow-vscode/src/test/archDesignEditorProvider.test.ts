@@ -127,7 +127,8 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 async function createHarness(
     initialText: string,
     initialDefinitions: HdlDefinitionSummary[] = [],
-    initialProtocolGeneration = 0
+    initialProtocolGeneration = 0,
+    autoReady = true
 ): Promise<ProviderHarness> {
     const extensionRoot = path.resolve(__dirname, '..', '..');
     const resource = FakeUri.parse('file:///workspace/soc.ad');
@@ -175,6 +176,9 @@ async function createHarness(
         positionAt(offset: number): number { return offset; },
         async save(): Promise<boolean> {
             exportEvents.push('save');
+            if (exportEvents.length > 50) {
+                throw new Error('export retried before editor initialization');
+            }
             const accepted = nextSaveAccepted;
             nextSaveAccepted = true;
             if (accepted && nextSavedDocument) {
@@ -395,11 +399,13 @@ async function createHarness(
     });
     await provider.resolveCustomTextEditor(document, panel, token);
     assert.ok(messageListener);
-    messageListener!({ type: 'ready' });
-    await waitFor(
-        () => messages.some(event => event.type === 'archDesignState'),
-        'initial Arch Design state'
-    );
+    if (autoReady) {
+        messageListener!({ type: 'ready' });
+        await waitFor(
+            () => messages.some(event => event.type === 'archDesignState'),
+            'initial Arch Design state'
+        );
+    }
 
     return {
         messages,
@@ -484,6 +490,49 @@ async function createHarness(
             delete require.cache[require.resolve('../archDesign/archDesignEditorProvider')];
         },
     };
+}
+
+async function testValidateWaitsForInitialEditorRefresh(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), [], 0, false);
+    try {
+        let settled = false;
+        const validation = harness.validate().then(() => { settled = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(settled, false);
+        assert.deepStrictEqual(harness.errorMessages, []);
+        assert.deepStrictEqual(harness.informationMessages, []);
+
+        harness.send({ type: 'ready' });
+        await validation;
+        assert.deepStrictEqual(harness.errorMessages, []);
+        assert.deepStrictEqual(harness.informationMessages, [
+            'Arch Design validation passed: 0 errors',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testExportWaitsForInitialEditorRefresh(): Promise<void> {
+    const harness = await createHarness(sourceDesign(), [], 0, false);
+    try {
+        let settled = false;
+        const exporting = harness.exportRtl().then(() => { settled = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(settled, false);
+        assert.deepStrictEqual(harness.exportEvents, []);
+        assert.deepStrictEqual(harness.errorMessages, []);
+
+        harness.send({ type: 'ready' });
+        await exporting;
+        assert.deepStrictEqual(harness.exportEvents, ['save', 'export']);
+        assert.deepStrictEqual(harness.errorMessages, []);
+        assert.deepStrictEqual(harness.informationMessages, [
+            'Arch Design RTL exported: /workspace/soc.v',
+        ]);
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands(): Promise<void> {
@@ -1540,6 +1589,8 @@ async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    await testValidateWaitsForInitialEditorRefresh();
+    await testExportWaitsForInitialEditorRefresh();
     await testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands();
     await testEditableLifecycleAndNativeEdit();
     await testRejectedDocumentEditRepublishesEditableState();
