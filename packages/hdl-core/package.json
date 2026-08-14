@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/hdl-core",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Host-neutral HDL syntax and preprocessing core for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",

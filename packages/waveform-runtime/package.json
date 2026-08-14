@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/waveform-runtime",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Indexed VCD waveform runtime for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",
