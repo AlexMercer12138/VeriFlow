@@ -20,7 +20,7 @@ The tree uses VS Code workspace file APIs and an `.ad` file-system watcher. It d
 
 Creation first prompts for the exported Verilog top-module name and validates it as an HDL identifier. A save dialog then defaults to `<module>.ad` while allowing the user to select any workspace directory. Cancelling either step creates nothing. A successful write immediately opens the new file in the AD custom editor. Existing files are never overwritten without an explicit save-dialog choice, and file-system failures are reported without opening a partial design.
 
-Editor-title commands, Command Palette commands, and tree-item context commands share the same handlers. Validate and export handlers accept an optional resource URI so a tree action targets that item while existing active-editor behavior remains compatible.
+The AD webview toolbar remains the only in-editor location for RTL export. The redundant Validate and Export contributions are removed from the VS Code editor title. Validation remains continuous: the toolbar error and warning counts and the Problems panel present its current results without requiring a manual action. Validate and export commands remain registered for the Command Palette and tree-item context menus. Their handlers accept an optional resource URI so a tree action targets that item while active-editor command invocation remains compatible.
 
 ## CLI
 
@@ -44,4 +44,4 @@ Invalid module names are rejected before a save dialog or file write. CLI creati
 
 ## Verification
 
-Shared-core tests cover deterministic template generation and parsing round trips. CLI tests cover help and argument compatibility, default and explicit output paths, suffix completion, parent creation, invalid module names, and no-clobber behavior. VS Code tests cover discovery and ordering, empty-state contribution metadata, watcher refresh, create/open behavior, cancellation, and URI forwarding from context actions. Workspace TypeScript builds and Node test suites provide final regression coverage; no Python tests are involved.
+Shared-core tests cover deterministic template generation and parsing round trips. CLI tests cover help and argument compatibility, default and explicit output paths, suffix completion, parent creation, invalid module names, and no-clobber behavior. VS Code tests cover discovery and ordering, empty-state contribution metadata, watcher refresh, create/open behavior, cancellation, URI forwarding from context actions, and the absence of duplicate AD editor-title actions. Workspace TypeScript builds and Node test suites provide final regression coverage; no Python tests are involved.
