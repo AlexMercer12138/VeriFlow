@@ -12,6 +12,7 @@ import type {
     ArchDesignPresentation,
     ArchDesignWidth,
 } from './model';
+import { createEmptyArchDesign } from './model';
 import { compareCodeUnits } from './ordering';
 
 function sortedRecord<T>(
@@ -163,4 +164,8 @@ function serializableArchDesign(design: ArchDesign): unknown {
 
 export function serializeArchDesign(design: ArchDesign): string {
     return `${JSON.stringify(serializableArchDesign(design), null, 2)}\n`;
+}
+
+export function createEmptyArchDesignText(module: string): string {
+    return serializeArchDesign(createEmptyArchDesign(module));
 }

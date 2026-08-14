@@ -5,6 +5,8 @@ import {
     ARCH_DESIGN_FORMAT,
     ARCH_DESIGN_SCHEMA_VERSION,
     createEmptyArchDesign,
+    createEmptyArchDesignText,
+    parseArchDesignText,
     type ArchDesign,
 } from '../src/archDesign';
 
@@ -36,6 +38,33 @@ test('creates a deeply frozen minimal schema-v1 Arch Design', () => {
     assert.ok(Object.isFrozen(design.defaults));
     assert.ok(Object.isFrozen(design.export));
     assert.ok(Object.isFrozen(design.presentation));
+});
+
+test('creates canonical empty Arch Design text', () => {
+    const text = createEmptyArchDesignText('soc_top');
+
+    assert.equal(text, [
+        '{',
+        '  "format": "vik-veriflow.arch-design",',
+        '  "schemaVersion": 1,',
+        '  "module": "soc_top",',
+        '  "ports": [],',
+        '  "instances": [],',
+        '  "connections": [],',
+        '  "interfacePorts": [],',
+        '  "interfaceOverrides": {},',
+        '  "interfaceConnections": [],',
+        '  "defaults": {},',
+        '  "export": {},',
+        '  "presentation": {}',
+        '}',
+        '',
+    ].join('\n'));
+    const parsed = parseArchDesignText(text);
+    assert.equal(parsed.status, 'editable');
+    if (parsed.status === 'editable') {
+        assert.equal(parsed.design.module, 'soc_top');
+    }
 });
 
 test('models the complete schema-v1 document surface', () => {
@@ -147,9 +176,11 @@ test('rejects an empty or non-plain module identifier', () => {
         true,
         ['soc_top'],
     ]) {
-        assert.throws(
-            () => createEmptyArchDesign(invalid as string),
-            /valid Verilog identifier/
-        );
+        for (const create of [createEmptyArchDesign, createEmptyArchDesignText]) {
+            assert.throws(
+                () => create(invalid as string),
+                /valid Verilog identifier/
+            );
+        }
     }
 });
