@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,9 +17,11 @@ import type { LegacyNativeSimulationRequest as RootLegacyRequest } from '@verifl
 import type { LegacySimulationExecution as RootLegacyExecution } from '@veriflow/flow-core';
 import {
     LegacyNativeSimulatorBackend,
+    LinuxProcessIdentityProvider,
     NativeSimulatorBackend,
     NodeCommandExecutor,
     NodeProcessTreeTerminator,
+    type ProcessIdentityProvider,
     type ProcessTreeTerminator,
 } from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
@@ -667,6 +669,124 @@ test('Windows process-tree termination tolerates an already-exited process', asy
     });
 
     await assert.doesNotReject(terminator.terminate(12_345));
+});
+
+test('Linux identities parse starttime after process names with spaces and parentheses', () => {
+    const fields = ['S', '1'];
+    while (fields.length < 19) fields.push(String(fields.length));
+    fields.push('987654321');
+    const provider = new LinuxProcessIdentityProvider(filepath => {
+        assert.equal(filepath, '/proc/42/stat');
+        return `42 (sim worker (phase 1)) ${fields.join(' ')}\n`;
+    });
+
+    assert.equal(provider.identity(42, 'fallback'), 'linux:987654321');
+    assert.equal(provider.supportsForcedTermination, true);
+});
+
+test('POSIX cleanup never signals a reused PID with a changed precise identity', async () => {
+    const signals: Array<{ processId: number; signal: NodeJS.Signals }> = [];
+    let identityReads = 0;
+    const identityProvider: ProcessIdentityProvider = {
+        supportsForcedTermination: true,
+        identity(processId, fallback) {
+            assert.equal(processId, 42);
+            assert.match(fallback, /same-second/);
+            identityReads += 1;
+            return identityReads === 1 ? 'linux:old-start-ticks' : 'linux:new-start-ticks';
+        },
+    };
+    const terminator = new NodeProcessTreeTerminator(
+        'linux',
+        () => [
+            '41 1 S Sun Aug 16 12:00:00 2026 parent',
+            '42 41 S Sun Aug 16 12:00:00 2026 same-second',
+        ].join('\n'),
+        identityProvider,
+        (processId, signal) => {
+            signals.push({ processId, signal });
+        }
+    );
+
+    await terminator.terminate(41);
+
+    assert.deepEqual(signals, []);
+});
+
+test('Darwin cleanup uses a stable composite only for immediate SIGTERM', async () => {
+    const signals: Array<{ processId: number; signal: NodeJS.Signals }> = [];
+    const terminator = new NodeProcessTreeTerminator(
+        'darwin',
+        () => [
+            '41 1 S Sun Aug 16 12:00:00 2026 parent command',
+            '42 41 S Sun Aug 16 12:00:00 2026 child command',
+        ].join('\n'),
+        undefined,
+        (processId, signal) => {
+            signals.push({ processId, signal });
+        }
+    );
+
+    await terminator.terminate(41);
+
+    assert.deepEqual(signals, [{ processId: 42, signal: 'SIGTERM' }]);
+});
+
+test('shell exit 127 is a compile infrastructure failure with a cause', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-127-'));
+    try {
+        const result = await new NativeSimulatorBackend('native:missing', {
+            name: 'missing',
+            compileCmd: 'veriflow-command-that-does-not-exist-127',
+            runCmd: 'unused',
+        }).compileAndRun(normalizedRequest(root));
+
+        assert.equal(result.exitCode, 127);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(result.cause?.code, 'SHELL_EXIT_127');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('shell exit 126 is a run infrastructure failure with a cause', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-126-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const nonExecutable = path.join(root, 'not-executable');
+    writeFileSync(nonExecutable, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    const simulator = simulatorConfig(capturePath);
+    simulator.runCmd = quote(nonExecutable);
+    try {
+        const result = await new NativeSimulatorBackend(
+            'native:not-executable',
+            simulator
+        ).compileAndRun(normalizedRequest(root));
+
+        assert.equal(result.exitCode, 126);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(result.cause?.code, 'SHELL_EXIT_126');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('ordinary numeric run exits remain HDL run failures', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-run-exit-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const simulator = simulatorConfig(capturePath);
+    simulator.runCmd = simulator.runCmd.replace(' run ', ' run-fail ');
+    try {
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulator
+        ).compileAndRun(normalizedRequest(root));
+
+        assert.equal(result.exitCode, 3);
+        assert.equal(result.stage, 'run');
+        assert.equal(result.cause, undefined);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test('abort invokes process-tree cleanup without replacing the abort result', async () => {

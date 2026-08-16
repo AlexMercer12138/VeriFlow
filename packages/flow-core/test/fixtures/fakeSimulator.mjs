@@ -15,6 +15,10 @@ switch (action) {
     case 'run':
         process.stdout.write('RUN OK\n');
         break;
+    case 'run-fail':
+        process.stderr.write('RUN FAILED\n');
+        process.exitCode = 3;
+        break;
     case 'run-artifact':
         writeFileSync(args[1], 'VCD DATA\n');
         process.stdout.write('RUN OK\n');

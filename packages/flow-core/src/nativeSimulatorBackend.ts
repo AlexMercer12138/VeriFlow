@@ -1,4 +1,5 @@
 import { exec, execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -34,8 +35,66 @@ type PosixProcessIdentity = {
     processId: number;
     parentId: number;
     state: string;
-    started: string;
+    fallback: string;
+    identity: string;
 };
+
+type PosixProcessSnapshot = Omit<PosixProcessIdentity, 'identity'>;
+
+type SignalProcess = (
+    processId: number,
+    signal: NodeJS.Signals
+) => void;
+
+export interface ProcessIdentityProvider {
+    readonly supportsForcedTermination: boolean;
+    identity(processId: number, fallback: string): string | undefined;
+}
+
+export class LinuxProcessIdentityProvider implements ProcessIdentityProvider {
+    readonly supportsForcedTermination = true;
+
+    constructor(
+        private readonly readFile: (filepath: string) => string = filepath =>
+            readFileSync(filepath, 'utf8')
+    ) {}
+
+    identity(processId: number, _fallback: string): string | undefined {
+        try {
+            const stat = this.readFile(`/proc/${processId}/stat`);
+            const openingParenthesis = stat.indexOf('(');
+            const closingParenthesis = stat.lastIndexOf(')');
+            if (openingParenthesis < 0
+                || closingParenthesis <= openingParenthesis
+                || stat.slice(0, openingParenthesis).trim() !== String(processId)) {
+                return undefined;
+            }
+            const fields = stat.slice(closingParenthesis + 1).trim().split(/\s+/);
+            const starttime = fields[19];
+            return starttime !== undefined && /^\d+$/.test(starttime)
+                ? `linux:${starttime}`
+                : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+}
+
+class PosixCompositeIdentityProvider implements ProcessIdentityProvider {
+    readonly supportsForcedTermination = false;
+
+    identity(_processId: number, fallback: string): string {
+        return `posix:${fallback}`;
+    }
+}
+
+function defaultProcessIdentityProvider(
+    platform: NodeJS.Platform
+): ProcessIdentityProvider {
+    return platform === 'linux'
+        ? new LinuxProcessIdentityProvider()
+        : new PosixCompositeIdentityProvider();
+}
 
 function delay(milliseconds: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -51,7 +110,10 @@ function nodeExecFileRunner(executable: string, args: readonly string[]): string
 export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
     constructor(
         private readonly platform: NodeJS.Platform = process.platform,
-        private readonly execFileRunner: ExecFileRunner = nodeExecFileRunner
+        private readonly execFileRunner: ExecFileRunner = nodeExecFileRunner,
+        private readonly identityProvider: ProcessIdentityProvider =
+            defaultProcessIdentityProvider(platform),
+        private readonly signalProcess: SignalProcess = process.kill
     ) {}
 
     async terminate(processId: number | undefined): Promise<void> {
@@ -69,6 +131,7 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
 
             const descendants = this.posixDescendants(processId);
             this.signalMatchingProcesses(descendants, 'SIGTERM');
+            if (!this.identityProvider.supportsForcedTermination) return;
             let running = await this.waitForExit(descendants, 50);
             if (running.length > 0) {
                 this.signalMatchingProcesses(running, 'SIGKILL');
@@ -82,21 +145,21 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
         }
     }
 
-    private posixProcessSnapshot(): Map<number, PosixProcessIdentity> {
-        const snapshot = new Map<number, PosixProcessIdentity>();
+    private posixProcessSnapshot(): Map<number, PosixProcessSnapshot> {
+        const snapshot = new Map<number, PosixProcessSnapshot>();
         const processes = this.execFileRunner('ps', [
             '-eo',
-            'pid=,ppid=,stat=,lstart=',
+            'pid=,ppid=,stat=,lstart=,command=',
         ]);
         for (const line of processes.split('\n')) {
-            const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
+            const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)(?:\s+(.*?))?\s*$/.exec(line);
             if (match === null) continue;
             const processId = Number(match[1]);
             snapshot.set(processId, {
                 processId,
                 parentId: Number(match[2]),
                 state: match[3],
-                started: match[4],
+                fallback: `${match[4]} ${match[5] ?? ''}`.trim(),
             });
         }
         return snapshot;
@@ -104,17 +167,21 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
 
     private posixDescendants(processId: number): PosixProcessIdentity[] {
         const snapshot = this.posixProcessSnapshot();
-        const children = new Map<number, PosixProcessIdentity[]>();
-        for (const identity of snapshot.values()) {
-            const siblings = children.get(identity.parentId);
-            if (siblings === undefined) children.set(identity.parentId, [identity]);
-            else siblings.push(identity);
+        const children = new Map<number, PosixProcessSnapshot[]>();
+        for (const process of snapshot.values()) {
+            const siblings = children.get(process.parentId);
+            if (siblings === undefined) children.set(process.parentId, [process]);
+            else siblings.push(process);
         }
         const descendants: PosixProcessIdentity[] = [];
         const visit = (parent: number): void => {
             for (const child of children.get(parent) ?? []) {
                 visit(child.processId);
-                descendants.push(child);
+                const identity = this.identityProvider.identity(
+                    child.processId,
+                    child.fallback
+                );
+                if (identity !== undefined) descendants.push({ ...child, identity });
             }
         };
         visit(processId);
@@ -128,8 +195,11 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
         return identities.filter(identity => {
             const current = snapshot.get(identity.processId);
             return current !== undefined
-                && current.started === identity.started
-                && !current.state.startsWith('Z');
+                && !current.state.startsWith('Z')
+                && this.identityProvider.identity(
+                    current.processId,
+                    current.fallback
+                ) === identity.identity;
         });
     }
 
@@ -139,7 +209,7 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
     ): void {
         for (const identity of this.runningProcesses(identities)) {
             try {
-                process.kill(identity.processId, signal);
+                this.signalProcess(identity.processId, signal);
             } catch {
             }
         }
@@ -230,8 +300,13 @@ export class NodeCommandExecutor implements CommandExecutor {
                 signal?.removeEventListener('abort', onAbort);
                 await terminationPromise;
                 const failure = error as ExecFailure | null;
+                const shellExitCode = failure !== null
+                    && (failure.code === 126 || failure.code === 127)
+                    ? failure.code
+                    : undefined;
                 if (failure !== null
-                    && typeof failure.code !== 'number'
+                    && (typeof failure.code !== 'number'
+                        || shellExitCode !== undefined)
                     && termination === undefined) {
                     termination = 'infrastructure';
                 }
@@ -242,7 +317,9 @@ export class NodeCommandExecutor implements CommandExecutor {
                         : '';
                 const cause = termination === 'infrastructure' && failure !== null
                     ? {
-                        ...(typeof failure.code === 'string'
+                        ...(shellExitCode !== undefined
+                            ? { code: `SHELL_EXIT_${shellExitCode}` }
+                            : typeof failure.code === 'string'
                             ? { code: failure.code }
                             : {}),
                         message: failure.message,
