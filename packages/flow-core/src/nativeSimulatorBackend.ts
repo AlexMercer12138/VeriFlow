@@ -25,41 +25,29 @@ type ExecFailure = Error & {
 
 type LegacyCompatibleSimulationExecution = SimulationExecution & LegacySimulationExecution;
 
-const LEGACY_REQUEST_FIELDS = ['files', 'output', 'simulator', 'cwd'] as const;
-
 function hasOwnProperty(value: object, property: PropertyKey): boolean {
     return Object.prototype.hasOwnProperty.call(value, property);
 }
 
-function ownProperty(value: object, property: PropertyKey): unknown {
-    if (!hasOwnProperty(value, property)) return undefined;
-    return (value as Record<PropertyKey, unknown>)[property];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasCompleteNormalizedRequestShape(
+function ownLegacySimulator(
     request: SimulationRequest | LegacyNativeSimulationRequest
-): request is SimulationRequest {
-    return Array.isArray(ownProperty(request, 'runtimeFiles'))
-        && Array.isArray(ownProperty(request, 'includeDirs'))
-        && isRecord(ownProperty(request, 'defines'))
-        && Array.isArray(ownProperty(request, 'plusargs'))
-        && Array.isArray(ownProperty(request, 'artifacts'))
-        && typeof ownProperty(request, 'timeoutMs') === 'number';
-}
-
-function isLegacyNativeSimulationRequest(
-    request: SimulationRequest | LegacyNativeSimulationRequest
-): request is LegacyNativeSimulationRequest {
-    // A complete normalized shape wins; partial extra fields remain legacy-compatible.
-    return LEGACY_REQUEST_FIELDS.every(field => hasOwnProperty(request, field))
-        && !hasCompleteNormalizedRequestShape(request);
+): SimulatorConfig {
+    if (!hasOwnProperty(request, 'simulator')) {
+        throw new Error('Native simulator configuration is required');
+    }
+    const simulator = (request as LegacyNativeSimulationRequest).simulator;
+    if (simulator === undefined) {
+        throw new Error('Native simulator configuration is required');
+    }
+    return simulator;
 }
 
 function normalizeLegacyRequest(request: LegacyNativeSimulationRequest): SimulationRequest {
+    if (!hasOwnProperty(request, 'files')
+        || !hasOwnProperty(request, 'output')
+        || !hasOwnProperty(request, 'cwd')) {
+        throw new Error('Legacy native simulation request fields must be own properties');
+    }
     const topModule = hasOwnProperty(request, 'topModule')
         ? request.topModule
         : undefined;
@@ -116,6 +104,7 @@ function executionPath(filepath: string, cwd: string): string {
 
 export class NativeSimulatorBackend implements SimulatorBackend {
     private readonly logParser = new LogParser();
+    private readonly legacyCompatibilityMode: boolean;
     private readonly backendId: string | undefined;
     private readonly simulator: SimulatorConfig | undefined;
     private readonly executor: CommandExecutor;
@@ -129,12 +118,14 @@ export class NativeSimulatorBackend implements SimulatorBackend {
         executor: CommandExecutor = new NodeCommandExecutor()
     ) {
         if (typeof backendIdOrExecutor === 'string') {
+            this.legacyCompatibilityMode = false;
             this.backendId = backendIdOrExecutor;
             this.simulator = simulator;
             this.executor = executor;
             return;
         }
 
+        this.legacyCompatibilityMode = true;
         this.backendId = undefined;
         this.simulator = undefined;
         this.executor = backendIdOrExecutor ?? new NodeCommandExecutor();
@@ -150,13 +141,15 @@ export class NativeSimulatorBackend implements SimulatorBackend {
     ): Promise<SimulationExecution | LegacyCompatibleSimulationExecution> {
         let legacyRequest: LegacyNativeSimulationRequest | undefined;
         let normalizedRequest: SimulationRequest;
-        if (isLegacyNativeSimulationRequest(request)) {
-            legacyRequest = request;
-            normalizedRequest = normalizeLegacyRequest(request);
+        let simulator: SimulatorConfig | undefined;
+        if (this.legacyCompatibilityMode) {
+            legacyRequest = request as LegacyNativeSimulationRequest;
+            simulator = ownLegacySimulator(request);
+            normalizedRequest = normalizeLegacyRequest(legacyRequest);
         } else {
-            normalizedRequest = request;
+            simulator = this.simulator;
+            normalizedRequest = createSimulationRequest(request as SimulationRequest);
         }
-        const simulator = this.simulator ?? legacyRequest?.simulator;
         if (simulator === undefined) {
             throw new Error('Native simulator configuration is required');
         }

@@ -285,7 +285,7 @@ test('normalized native requests ignore inherited simulator configuration', asyn
     }
 });
 
-test('normalized request fields take precedence over an own simulator property', async () => {
+test('configured native requests ignore an own simulator property', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-hybrid-'));
     const legacyCapturePath = path.join(root, 'legacy-calls.jsonl');
     const normalizedCapturePath = path.join(root, 'normalized-calls.jsonl');
@@ -294,11 +294,6 @@ test('normalized request fields take precedence over an own simulator property',
             simulator: simulatorConfig(legacyCapturePath, 'compile-fail'),
         });
 
-        await assert.rejects(
-            new NativeSimulatorBackend().compileAndRun(input),
-            /Native simulator configuration is required/
-        );
-
         const result = await new NativeSimulatorBackend(
             'native:fake',
             simulatorConfig(normalizedCapturePath)
@@ -306,6 +301,59 @@ test('normalized request fields take precedence over an own simulator property',
         assert.equal(result.success, true);
         assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
         assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('configured native mode does not infer legacy from request shape', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-mode-'));
+    const legacyCapturePath = path.join(root, 'legacy-calls.jsonl');
+    const normalizedCapturePath = path.join(root, 'normalized-calls.jsonl');
+    try {
+        const input = {
+            files: [path.join(root, 'child.v'), path.join(root, 'top.v')],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            topModule: 'top',
+            simulator: simulatorConfig(legacyCapturePath, 'compile-fail'),
+        } as unknown as SimulationRequest;
+        Object.setPrototypeOf(input, {
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            timeoutMs: 300_000,
+        });
+
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(normalizedCapturePath)
+        ).compileAndRun(input);
+
+        assert.equal(result.success, true);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('configured native mode normalizes hostile request values', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-validation-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const input = normalizedRequest(root);
+        input.timeoutMs = null as unknown as number;
+
+        await assert.rejects(
+            new NativeSimulatorBackend(
+                'native:fake',
+                simulatorConfig(capturePath)
+            ).compileAndRun(input),
+            /timeoutMs/
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -393,6 +441,42 @@ test('legacy requests remain legacy with individual normalized option fields', a
         );
         assert.deepEqual(result.artifacts, [], field);
     }
+});
+
+test('legacy constructor mode ignores a complete normalized-looking extension', async () => {
+    const input = Object.assign(legacyContractRequest(), {
+        runtimeFiles: ['runtime.hex'],
+        includeDirs: ['include'],
+        defines: { TRACE: true },
+        plusargs: ['+trace'],
+        artifacts: [{
+            kind: 'vcd' as const,
+            path: 'wave.vcd',
+            destination: '/workspace/wave.vcd',
+        }],
+        timeoutMs: -1,
+        signal: new AbortController().signal,
+    });
+
+    const result = await new NativeSimulatorBackend(
+        successfulExecutor()
+    ).compileAndRun(input);
+
+    assert.deepEqual(result.artifacts, []);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), true);
+});
+
+test('legacy constructor mode requires an own simulator configuration', async () => {
+    const { simulator, ...withoutSimulator } = legacyContractRequest();
+    Object.setPrototypeOf(withoutSimulator, { simulator });
+
+    await assert.rejects(
+        new NativeSimulatorBackend(successfulExecutor()).compileAndRun(
+            withoutSimulator as LegacyNativeSimulationRequest
+        ),
+        /Native simulator configuration is required/
+    );
 });
 
 test('legacy adaptation does not read inherited normalized options', async () => {
