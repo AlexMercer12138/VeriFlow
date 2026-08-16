@@ -3,6 +3,10 @@ export {
     loadIverilog,
     type ExtensionIverilogLoader,
 } from './loadIverilog';
+export {
+    IverilogWasmBackend,
+    type IverilogApiProvider,
+} from './iverilogWasmBackend';
 export type {
     CompileRequest,
     CompileResult,
