@@ -129,6 +129,7 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 },
                 partialArtifacts,
                 waveFileForArtifacts(partialArtifacts),
+                artifactCleanupMessages(error),
             );
         }
 
@@ -271,15 +272,20 @@ function infrastructureFailure(
     timings: NormalizedSimulationExecution['timings'] = {},
     artifacts: SimulationArtifactResult[] = initialArtifacts(request),
     waveFile: string | null = waveFileForArtifacts(artifacts),
+    additionalErrorMessages: readonly string[] = [],
 ): NormalizedSimulationExecution {
+    const errorMessages = [cause.message, ...additionalErrorMessages];
     return {
         success: false,
         exitCode: -1,
         stdout: output.stdout,
-        stderr: appendLine(output.stderr, cause.message),
+        stderr: errorMessages.reduce(appendLine, output.stderr),
         logEntries: [
             ...output.logEntries,
-            { level: 'ERROR', message: cause.message },
+            ...errorMessages.map(message => ({
+                level: 'ERROR' as const,
+                message,
+            })),
         ],
         waveFile,
         elapsedTime,
@@ -353,6 +359,25 @@ function artifactOperationCause(error: unknown): unknown {
         current = current.cause;
     }
     return current;
+}
+
+function artifactCleanupMessages(error: unknown): string[] {
+    if (typeof error !== 'object' || error === null || !('errors' in error)) {
+        return [];
+    }
+    const errors = error.errors;
+    if (!Array.isArray(errors)) return [];
+
+    const operationCause = artifactOperationCause(error);
+    const operationMessage = errorDetails(operationCause).message;
+    const seen = new Set([operationMessage]);
+    return errors.flatMap(candidate => {
+        if (candidate === operationCause) return [];
+        const message = errorDetails(candidate).message;
+        if (seen.has(message)) return [];
+        seen.add(message);
+        return [`Artifact cleanup failed: ${message}`];
+    });
 }
 
 function waveFileForArtifacts(

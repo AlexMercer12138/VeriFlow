@@ -6,6 +6,7 @@ import {
     readFile,
     rename,
     rm,
+    unlink,
     writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -652,6 +653,139 @@ test('reports artifacts committed before a later artifact rename failure', async
     }
 });
 
+test('reports cleanup diagnostics after a partial artifact rename failure', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-partial-cleanup-');
+    const firstDestination = path.join(root, 'first.vcd');
+    const secondDestination = path.join(root, 'second.vcd');
+    const renameError = new Error('injected second rename failure');
+    const cleanupError = new Error('injected cleanup failure');
+    let renames = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([
+            ['first.vcd', Buffer.from('first')],
+            ['second.vcd', Buffer.from('second')],
+        ]),
+    });
+    const backend = new IverilogWasmBackend(providerFor(api), {
+        artifactFileSystem: {
+            async rename(oldPath, newPath) {
+                renames += 1;
+                if (renames === 2) throw renameError;
+                await rename(oldPath, newPath);
+            },
+            async unlink(hostPath) {
+                if (path.basename(hostPath).startsWith('.second.vcd.')) {
+                    throw cleanupError;
+                }
+                await unlink(hostPath);
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: partialArtifactRequests(firstDestination, secondDestination),
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        const cleanupMessage = `Artifact cleanup failed: ${cleanupError.message}`;
+        assert.deepEqual(result.cause, {
+            code: 'ARTIFACT_WRITE',
+            message: renameError.message,
+        });
+        assert.equal(
+            result.stderr,
+            `${renameError.message}\n${cleanupMessage}\n`,
+        );
+        assert.deepEqual(result.logEntries.filter(entry => entry.level === 'ERROR'), [
+            { level: 'ERROR', message: renameError.message },
+            { level: 'ERROR', message: cleanupMessage },
+        ]);
+        assertPartialArtifactExecution(result, firstDestination, secondDestination);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('reports cleanup diagnostics after aborting between artifact renames', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-partial-abort-');
+    const firstDestination = path.join(root, 'first.vcd');
+    const secondDestination = path.join(root, 'second.vcd');
+    const cleanupError = new Error('injected abort cleanup failure');
+    const controller = new AbortController();
+    let renames = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([
+            ['first.vcd', Buffer.from('first')],
+            ['second.vcd', Buffer.from('second')],
+        ]),
+    });
+    const backend = new IverilogWasmBackend(providerFor(api), {
+        artifactFileSystem: {
+            async rename(oldPath, newPath) {
+                renames += 1;
+                await rename(oldPath, newPath);
+                if (renames === 1) controller.abort();
+            },
+            async unlink(hostPath) {
+                if (path.basename(hostPath).startsWith('.second.vcd.')) {
+                    throw cleanupError;
+                }
+                await unlink(hostPath);
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: partialArtifactRequests(firstDestination, secondDestination),
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+            signal: controller.signal,
+        });
+
+        const cleanupMessage = `Artifact cleanup failed: ${cleanupError.message}`;
+        assert.equal(result.cause?.code, 'ABORTED');
+        assert.equal(result.cause?.message, 'Artifact writing aborted');
+        assert.equal(
+            result.stderr,
+            `Artifact writing aborted\n${cleanupMessage}\n`,
+        );
+        assert.deepEqual(result.logEntries.filter(entry => entry.level === 'ERROR'), [
+            { level: 'ERROR', message: 'Artifact writing aborted' },
+            { level: 'ERROR', message: cleanupMessage },
+        ]);
+        assertPartialArtifactExecution(result, firstDestination, secondDestination);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('maps worker, protocol, timeout, trap, and abort rejections to infrastructure failures', async () => {
     const failures = [
         {
@@ -1048,4 +1182,52 @@ test('real abort stops an infinite simulation without leaving a worker handle', 
 
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function partialArtifactRequests(
+    firstDestination: string,
+    secondDestination: string,
+) {
+    return [
+        {
+            kind: 'vcd' as const,
+            path: 'first.vcd',
+            destination: firstDestination,
+            required: true,
+        },
+        {
+            kind: 'vcd' as const,
+            path: 'second.vcd',
+            destination: secondDestination,
+            required: true,
+        },
+    ];
+}
+
+function assertPartialArtifactExecution(
+    result: Awaited<ReturnType<IverilogWasmBackend['compileAndRun']>>,
+    firstDestination: string,
+    secondDestination: string,
+): void {
+    assert.equal(result.success, false);
+    assert.equal(result.stage, 'infrastructure');
+    assert.deepEqual(result.artifacts, [
+        {
+            kind: 'vcd',
+            path: 'first.vcd',
+            destination: firstDestination,
+            required: true,
+            written: true,
+            size: 5,
+        },
+        {
+            kind: 'vcd',
+            path: 'second.vcd',
+            destination: secondDestination,
+            required: true,
+            written: false,
+            size: 0,
+        },
+    ]);
+    assert.equal(result.waveFile, firstDestination);
 }
