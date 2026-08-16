@@ -68,6 +68,11 @@
       "require": "./dist/simulation.js",
       "default": "./dist/simulation.js"
     },
+    "./simulatorBackendRegistry": {
+      "types": "./dist/simulatorBackendRegistry.d.ts",
+      "require": "./dist/simulatorBackendRegistry.js",
+      "default": "./dist/simulatorBackendRegistry.js"
+    },
     "./templateEngine": {
       "types": "./dist/templateEngine.d.ts",
       "require": "./dist/templateEngine.js",
@@ -104,6 +109,9 @@
       ],
       "simulation": [
         "dist/simulation.d.ts"
+      ],
+      "simulatorBackendRegistry": [
+        "dist/simulatorBackendRegistry.d.ts"
       ],
       "templateEngine": [
         "dist/templateEngine.d.ts"

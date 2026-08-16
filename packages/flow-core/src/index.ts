@@ -24,6 +24,7 @@ export type {
     SimulationStage,
     SimulatorBackend,
 } from './simulation';
+export * from './simulatorBackendRegistry';
 export * from './templateEngine';
 export * from './types';
 
