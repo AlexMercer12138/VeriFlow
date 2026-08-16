@@ -11,6 +11,7 @@ import type { LegacySimulationExecution as RootLegacyExecution } from '@veriflow
 import { NativeSimulatorBackend } from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
     createSimulationRequest,
+    type CommandExecutor,
     type LegacyNativeSimulationRequest,
     type SimulationArtifactResult,
     type SimulationExecution,
@@ -66,6 +67,33 @@ function normalizedRequest(root: string): SimulationRequest {
         cwd: root,
         topModule: 'top',
     });
+}
+
+function legacyContractRequest(): LegacyNativeSimulationRequest {
+    return {
+        files: ['/workspace/top.v'],
+        output: '/workspace/top.out',
+        simulator: {
+            name: 'fake',
+            compileCmd: 'compile "{output}" {files}',
+            runCmd: 'run "{output}"',
+        },
+        cwd: '/workspace',
+        topModule: 'top',
+    };
+}
+
+function successfulExecutor(): CommandExecutor {
+    return {
+        async execute() {
+            return {
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                elapsedTime: 0,
+            };
+        },
+    };
 }
 
 function captures(filepath: string): Capture[] {
@@ -330,6 +358,79 @@ test('legacy native request adapter preserves command aliases', async () => {
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('legacy requests remain legacy with individual normalized option fields', async () => {
+    const extras: Array<[string, Record<string, unknown>]> = [
+        ['runtimeFiles', { runtimeFiles: ['runtime.hex'] }],
+        ['includeDirs', { includeDirs: ['include'] }],
+        ['defines', { defines: { TRACE: true } }],
+        ['plusargs', { plusargs: ['+trace'] }],
+        ['artifacts', { artifacts: [{
+            kind: 'vcd',
+            path: 'wave.vcd',
+            destination: '/workspace/wave.vcd',
+        }] }],
+        ['timeoutMs', { timeoutMs: 1_000 }],
+        ['signal', { signal: new AbortController().signal }],
+    ];
+
+    for (const [field, extra] of extras) {
+        const input = Object.assign(legacyContractRequest(), extra);
+        const result = await new NativeSimulatorBackend(
+            successfulExecutor()
+        ).compileAndRun(input);
+
+        assert.equal(
+            Object.prototype.hasOwnProperty.call(result, 'compileCommand'),
+            true,
+            field
+        );
+        assert.equal(
+            Object.prototype.hasOwnProperty.call(result, 'runCommand'),
+            true,
+            field
+        );
+        assert.deepEqual(result.artifacts, [], field);
+    }
+});
+
+test('legacy adaptation does not read inherited normalized options', async () => {
+    const reads: string[] = [];
+    const inheritedOptions = {
+        runtimeFiles: ['runtime.hex'],
+        includeDirs: ['include'],
+        defines: { TRACE: true },
+        plusargs: ['+trace'],
+        artifacts: [{
+            kind: 'vcd' as const,
+            path: 'wave.vcd',
+            destination: '/workspace/wave.vcd',
+        }],
+        timeoutMs: 1_000,
+        signal: new AbortController().signal,
+    };
+    const prototype = {};
+    for (const [field, value] of Object.entries(inheritedOptions)) {
+        Object.defineProperty(prototype, field, {
+            configurable: true,
+            get() {
+                reads.push(field);
+                return value;
+            },
+        });
+    }
+    const input = legacyContractRequest();
+    Object.setPrototypeOf(input, prototype);
+
+    const result = await new NativeSimulatorBackend(
+        successfulExecutor()
+    ).compileAndRun(input);
+
+    assert.deepEqual(reads, []);
+    assert.deepEqual(result.artifacts, []);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), true);
 });
 
 test('native simulator backend runs rendered commands in the requested cwd', async () => {

@@ -26,26 +26,49 @@ type ExecFailure = Error & {
 type LegacyCompatibleSimulationExecution = SimulationExecution & LegacySimulationExecution;
 
 const LEGACY_REQUEST_FIELDS = ['files', 'output', 'simulator', 'cwd'] as const;
-const NORMALIZED_ONLY_REQUEST_FIELDS = [
-    'runtimeFiles',
-    'includeDirs',
-    'defines',
-    'plusargs',
-    'artifacts',
-    'timeoutMs',
-    'signal',
-] as const;
 
 function hasOwnProperty(value: object, property: PropertyKey): boolean {
     return Object.prototype.hasOwnProperty.call(value, property);
 }
 
+function ownProperty(value: object, property: PropertyKey): unknown {
+    if (!hasOwnProperty(value, property)) return undefined;
+    return (value as Record<PropertyKey, unknown>)[property];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasCompleteNormalizedRequestShape(
+    request: SimulationRequest | LegacyNativeSimulationRequest
+): request is SimulationRequest {
+    return Array.isArray(ownProperty(request, 'runtimeFiles'))
+        && Array.isArray(ownProperty(request, 'includeDirs'))
+        && isRecord(ownProperty(request, 'defines'))
+        && Array.isArray(ownProperty(request, 'plusargs'))
+        && Array.isArray(ownProperty(request, 'artifacts'))
+        && typeof ownProperty(request, 'timeoutMs') === 'number';
+}
+
 function isLegacyNativeSimulationRequest(
     request: SimulationRequest | LegacyNativeSimulationRequest
 ): request is LegacyNativeSimulationRequest {
-    // Hybrid objects are normalized; the adapter accepts only the isolated old shape.
+    // A complete normalized shape wins; partial extra fields remain legacy-compatible.
     return LEGACY_REQUEST_FIELDS.every(field => hasOwnProperty(request, field))
-        && NORMALIZED_ONLY_REQUEST_FIELDS.every(field => !hasOwnProperty(request, field));
+        && !hasCompleteNormalizedRequestShape(request);
+}
+
+function normalizeLegacyRequest(request: LegacyNativeSimulationRequest): SimulationRequest {
+    const topModule = hasOwnProperty(request, 'topModule')
+        ? request.topModule
+        : undefined;
+    return createSimulationRequest({
+        files: request.files,
+        output: request.output,
+        cwd: request.cwd,
+        ...(topModule === undefined ? {} : { topModule }),
+    });
 }
 
 function withLegacyCommandAliases(
@@ -129,7 +152,7 @@ export class NativeSimulatorBackend implements SimulatorBackend {
         let normalizedRequest: SimulationRequest;
         if (isLegacyNativeSimulationRequest(request)) {
             legacyRequest = request;
-            normalizedRequest = createSimulationRequest(request);
+            normalizedRequest = normalizeLegacyRequest(request);
         } else {
             normalizedRequest = request;
         }
