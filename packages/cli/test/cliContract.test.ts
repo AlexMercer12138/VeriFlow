@@ -12,7 +12,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import type { CommandExecutor, ProcessExecution } from '@veriflow/flow-core/simulation';
+import type { DependencyResult } from '@veriflow/flow-core/types';
+import type {
+    CommandExecutor,
+    ProcessExecution,
+    SimulationExecution,
+    SimulationRequest,
+    SimulatorBackend,
+} from '@veriflow/flow-core/simulation';
 import type { WaveViewerLauncher } from '../src/commands/wave';
 import { CliEnvironment, runCli } from '../src/main';
 
@@ -186,6 +193,44 @@ function normalize(value: unknown, replacements: Array<[string, string]>): unkno
     return value;
 }
 
+function successfulExecution(
+    backendId: string,
+    stdout = 'PASS\n',
+    commands: SimulationExecution['commands'] = {}
+): SimulationExecution {
+    return {
+        success: true,
+        exitCode: 0,
+        stdout,
+        stderr: '',
+        logEntries: [],
+        waveFile: null,
+        elapsedTime: 0.01,
+        backendId,
+        stage: 'run',
+        timings: { compile: 0.004, run: 0.006 },
+        commands,
+        artifacts: [],
+    };
+}
+
+function dependencyResult(topModule: string, files: string[]): DependencyResult {
+    return {
+        topModule,
+        topDefinitionKey: topModule,
+        files,
+        missingModules: [],
+        ambiguousModules: {},
+        moduleMap: {},
+        depGraph: {},
+    };
+}
+
+function writeProject(filepath: string, project: JsonObject): void {
+    mkdirSync(path.dirname(filepath), { recursive: true });
+    writeFileSync(filepath, JSON.stringify(project, null, 2), 'utf8');
+}
+
 test('contract normalization handles Windows separators without replacing lookalikes', () => {
     const value = {
         stdout: 'Root: C:\\contract\\workspace\\libs\\project\n',
@@ -248,6 +293,289 @@ test('project new persists builtin simulation defaults', async () => {
             run_cmd: 'vvp "{output}"',
         });
     } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('simulation help lists builtin, native, experimental, and legacy backend IDs', async () => {
+    let stdout = '';
+    const exitCode = await runCli(['sim', '--help'], {
+        cwd: process.cwd(),
+        homeDir: os.homedir(),
+        stdout: text => { stdout += text; },
+        stderr: () => undefined,
+    });
+
+    assert.equal(exitCode, 0);
+    assert.match(
+        stdout,
+        /builtin\/native-iverilog\/experimental-ts\/iverilog\/vcs\/xsim\/custom/
+    );
+});
+
+test('builtin simulation receives the complete normalized request without command logging', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-request-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const libraryDir = path.join(cwd, 'library');
+    const runtimeFile = path.join(cwd, 'vectors', 'input.hex');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(libraryDir, { recursive: true });
+    mkdirSync(path.dirname(runtimeFile), { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeFileSync(runtimeFile, '00\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'request-contract',
+        project_root: 'rtl',
+        lib_dirs: ['library'],
+        top_module: 'top',
+        simulator: 'builtin',
+        wave_file_template: 'waves/top.vcd',
+        defines: { WIDTH: 8, TRACE: true },
+        simulation_files: ['vectors/input.hex'],
+    });
+
+    let capturedRequest: SimulationRequest | undefined;
+    let scanSignal: AbortSignal | undefined;
+    let scanDefines: Record<string, string | true> | undefined;
+    let stdout = '';
+    const backend: SimulatorBackend = {
+        compileAndRun(request): Promise<SimulationExecution> {
+            capturedRequest = request;
+            return Promise.resolve(successfulExecution(
+                'builtin',
+                'PASS\n',
+                { compile: 'not-a-native-command', run: 'not-a-native-command' },
+            ));
+        },
+    };
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: (text: string) => { stdout += text; },
+        stderr: () => undefined,
+        simulationBackendOptions: {
+            builtinProvider: () => backend,
+        },
+        dependencySessionFactory: (_searchDirectories, defines) => {
+            scanDefines = defines;
+            return {
+                scan(_topModule: string, signal: AbortSignal) {
+                    scanSignal = signal;
+                    return Promise.resolve(dependencyResult('top', [topFile]));
+                },
+                dispose: () => Promise.resolve(),
+            };
+        },
+    } satisfies CliEnvironment;
+
+    try {
+        const exitCode = await runCli(['sim', '--project', 'project.json'], environment);
+
+        assert.equal(exitCode, 0);
+        assert.ok(capturedRequest);
+        assert.deepEqual(capturedRequest.files, [topFile]);
+        assert.deepEqual(capturedRequest.runtimeFiles, [runtimeFile]);
+        assert.deepEqual(capturedRequest.includeDirs, [rootDir, libraryDir]);
+        assert.deepEqual(capturedRequest.defines, { WIDTH: 8, TRACE: true });
+        assert.deepEqual(scanDefines, { WIDTH: '8', TRACE: true });
+        assert.deepEqual(capturedRequest.plusargs, []);
+        assert.equal(capturedRequest.timeoutMs, 300_000);
+        assert.equal(capturedRequest.output, path.join(rootDir, 'top.out'));
+        assert.equal(capturedRequest.cwd, rootDir);
+        assert.equal(capturedRequest.topModule, 'top');
+        assert.equal(capturedRequest.signal, scanSignal);
+        assert.deepEqual(capturedRequest.artifacts, [{
+            kind: 'vcd',
+            path: 'waves/top.vcd',
+            destination: path.join(rootDir, 'waves', 'top.vcd'),
+            required: false,
+        }]);
+        assert.doesNotMatch(stdout, /\[CMD\]/);
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('native-iverilog and legacy iverilog remain explicit native command backends', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-native-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'native-contract',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+    });
+
+    const commands: string[] = [];
+    const commandExecutor: CommandExecutor = {
+        execute(command): Promise<ProcessExecution> {
+            commands.push(command);
+            return Promise.resolve({
+                exitCode: 0,
+                stdout: commands.length % 2 === 0 ? 'PASS\n' : '',
+                stderr: '',
+                elapsedTime: 0.01,
+            });
+        },
+    };
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: () => undefined,
+        stderr: () => undefined,
+        commandExecutor,
+        dependencySessionFactory: () => ({
+            scan: () => Promise.resolve(dependencyResult('top', [topFile])),
+            dispose: () => Promise.resolve(),
+        }),
+    } satisfies CliEnvironment;
+
+    try {
+        assert.equal(await runCli([
+            'sim', '--project', 'project.json', '--sim', 'native-iverilog',
+        ], environment), 0);
+        assert.match(commands[0], /^iverilog -g2005 /);
+        assert.equal(commands.length, 2);
+
+        commands.length = 0;
+        assert.equal(await runCli([
+            'sim', '--project', 'project.json', '--sim', 'iverilog',
+        ], environment), 0);
+        assert.match(commands[0], /^iverilog -o /);
+        assert.doesNotMatch(commands[0], /-g2005/);
+        assert.equal(commands.length, 2);
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('unknown and experimental backends fail explicitly without fallback', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-unavailable-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'unavailable-contract',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+    });
+
+    let builtinCalls = 0;
+    let nativeCalls = 0;
+    let stderr = '';
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: () => undefined,
+        stderr: (text: string) => { stderr += text; },
+        simulationBackendOptions: {
+            builtinProvider: () => {
+                builtinCalls += 1;
+                return { compileAndRun: () => Promise.resolve(successfulExecution('builtin')) };
+            },
+            nativeBackendFactory: (): SimulatorBackend => {
+                nativeCalls += 1;
+                return { compileAndRun: () => Promise.resolve(successfulExecution('native')) };
+            },
+        },
+        dependencySessionFactory: () => ({
+            scan: () => Promise.resolve(dependencyResult('top', [topFile])),
+            dispose: () => Promise.resolve(),
+        }),
+    } satisfies CliEnvironment;
+
+    try {
+        assert.equal(await runCli([
+            'sim', '--project', 'project.json', '--sim', 'unknown-engine',
+        ], environment), 1);
+        assert.equal(stderr, 'Error: Unknown simulation backend: unknown-engine\n');
+        assert.equal(builtinCalls, 0);
+        assert.equal(nativeCalls, 0);
+
+        stderr = '';
+        assert.equal(await runCli([
+            'sim', '--project', 'project.json', '--sim', 'experimental-ts',
+        ], environment), 1);
+        assert.equal(
+            stderr,
+            'Error: experimental-ts is not available in this build; '
+            + 'no fallback was attempted\n'
+        );
+        assert.equal(builtinCalls, 0);
+        assert.equal(nativeCalls, 0);
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('SIGINT uses one signal for dependency scan and simulation through host disposal', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-sigint-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'sigint-contract',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+    });
+
+    const originalListeners = new Set(process.listeners('SIGINT'));
+    let scanSignal: AbortSignal | undefined;
+    let simulationSignal: AbortSignal | undefined;
+    let interrupt: NodeJS.SignalsListener | undefined;
+    let listenerPresentDuringDispose = false;
+    const backend: SimulatorBackend = {
+        compileAndRun(request): Promise<SimulationExecution> {
+            simulationSignal = request.signal;
+            interrupt = process.listeners('SIGINT').find(listener => (
+                !originalListeners.has(listener)
+            ));
+            assert.ok(interrupt);
+            interrupt('SIGINT');
+            assert.equal(request.signal?.aborted, true);
+            return Promise.resolve(successfulExecution('builtin'));
+        },
+    };
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: () => undefined,
+        stderr: () => undefined,
+        simulationBackendOptions: { builtinProvider: () => backend },
+        dependencySessionFactory: () => ({
+            scan(_topModule: string, signal: AbortSignal) {
+                scanSignal = signal;
+                return Promise.resolve(dependencyResult('top', [topFile]));
+            },
+            dispose() {
+                listenerPresentDuringDispose = interrupt !== undefined
+                    && process.listeners('SIGINT').includes(interrupt);
+                return Promise.resolve();
+            },
+        }),
+    } satisfies CliEnvironment;
+
+    try {
+        assert.equal(await runCli(['sim', '--project', 'project.json'], environment), 0);
+        assert.equal(scanSignal, simulationSignal);
+        assert.equal(scanSignal?.aborted, true);
+        assert.equal(listenerPresentDuringDispose, true);
+        assert.ok(interrupt);
+        assert.equal(process.listeners('SIGINT').includes(interrupt), false);
+    } finally {
+        if (interrupt) process.off('SIGINT', interrupt);
         rmSync(caseRoot, { recursive: true, force: true });
     }
 });

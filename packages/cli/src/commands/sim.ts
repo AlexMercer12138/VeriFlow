@@ -2,18 +2,45 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
+    createSimulationRequest,
     GlobalConfigStore,
-    NativeSimulatorBackend,
     ProjectStore,
+    resolveWaveFile,
+    type DependencyResult,
     type LogEntry,
+    type NormalizedSimulationExecution,
     type Project,
-    type SimulationExecution,
 } from '@veriflow/flow-core';
 import { DependencyAnalyzer } from '@veriflow/hdl-runtime/dependencyAnalyzer';
 
 import { type CliEnvironment } from '../main';
 import { NodeWorkspaceHost } from '../runtime/nodeWorkspaceHost';
+import { createCliSimulationBackends } from '../runtime/simulationBackends';
 import { type CommandOptions } from './project';
+
+export interface CliDependencySession {
+    scan(topModule: string, signal: AbortSignal): Promise<DependencyResult>;
+    dispose(): Promise<void>;
+}
+
+export type CliDependencySessionFactory = (
+    searchDirectories: string[],
+    defines: Record<string, string | true>,
+) => CliDependencySession;
+
+function createDependencySession(
+    searchDirectories: string[],
+    defines: Record<string, string | true>,
+): CliDependencySession {
+    const host = new NodeWorkspaceHost(searchDirectories, defines);
+    return {
+        async scan(topModule, signal) {
+            await host.scan(signal);
+            return new DependencyAnalyzer(host.index).resolve(topModule);
+        },
+        dispose: () => host.dispose(),
+    };
+}
 
 function applyOverrides(
     project: Project,
@@ -54,8 +81,9 @@ function existingDirectories(directories: string[]): string[] {
 
 function failure(
     stderr: string,
-    logEntries: LogEntry[]
-): SimulationExecution {
+    logEntries: LogEntry[],
+    backendId: string,
+): NormalizedSimulationExecution {
     return {
         success: false,
         exitCode: -1,
@@ -64,8 +92,11 @@ function failure(
         logEntries,
         waveFile: null,
         elapsedTime: 0,
-        compileCommand: '',
-        runCommand: '',
+        backendId,
+        stage: 'input',
+        timings: {},
+        commands: {},
+        artifacts: [],
     };
 }
 
@@ -79,8 +110,18 @@ function printNonEmptyLines(
     }
 }
 
-function printResult(result: SimulationExecution, environment: CliEnvironment): number {
+function printResult(
+    result: NormalizedSimulationExecution,
+    environment: CliEnvironment,
+    logCommands = false,
+): number {
+    if (logCommands && result.commands.compile) {
+        environment.stdout(`[CMD] Compile: ${result.commands.compile}\n`);
+    }
     if (result.stdout) printNonEmptyLines(result.stdout, environment);
+    if (logCommands && result.success && result.commands.run) {
+        environment.stdout(`[CMD] Run: ${result.commands.run}\n`);
+    }
     if (result.stderr && !result.success) {
         printNonEmptyLines(result.stderr, environment, '  ');
     }
@@ -99,6 +140,19 @@ function printResult(result: SimulationExecution, environment: CliEnvironment): 
         }
     }
     return 1;
+}
+
+function parserDefines(
+    defines: Project['defines'],
+): Record<string, string | true> {
+    return Object.fromEntries(Object.entries(defines).map(([name, value]) => [
+        name,
+        value === true ? true : String(value),
+    ]));
+}
+
+function workspaceRelativePath(root: string, filepath: string): string {
+    return path.relative(root, filepath).split(path.sep).join('/');
 }
 
 export async function simulate(
@@ -128,47 +182,62 @@ export async function simulate(
         ...globalLibraries.map(directory => path.resolve(environment.cwd, directory)),
         ...project.libDirs,
     ]);
-    const host = new NodeWorkspaceHost(searchDirectories);
+    const dependencySession = (
+        environment.dependencySessionFactory ?? createDependencySession
+    )(searchDirectories, parserDefines(project.defines));
     const controller = new AbortController();
     const interrupt = (): void => controller.abort();
     process.once('SIGINT', interrupt);
     try {
-        await host.scan(controller.signal);
-        const dependencies = new DependencyAnalyzer(host.index).resolve(project.topModule);
+        const dependencies = await dependencySession.scan(
+            project.topModule,
+            controller.signal,
+        );
         if (dependencies.missingModules.length > 0) {
             return printResult(failure(
                 `Missing modules: ${dependencies.missingModules.join(', ')}`,
                 dependencies.missingModules.map(moduleName => ({
                     level: 'ERROR',
                     message: `Module not found: ${moduleName}`,
-                }))
+                })),
+                project.simulator,
             ), environment);
         }
 
-        const simulator = project.simulators[project.simulator];
-        if (!simulator) {
-            return printResult(failure(
-                `Simulator '${project.simulator}' not configured`,
-                [{ level: 'ERROR', message: `Unknown simulator: ${project.simulator}` }]
-            ), environment);
-        }
-
-        const result = await new NativeSimulatorBackend(
-            environment.commandExecutor
-        ).compileAndRun({
+        const waveFile = resolveWaveFile(project);
+        const request = createSimulationRequest({
             files: dependencies.files,
+            runtimeFiles: project.simulationFiles,
+            includeDirs: searchDirectories,
+            defines: project.defines,
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: workspaceRelativePath(project.rootDir, waveFile),
+                destination: waveFile,
+                required: false,
+            }],
             output: path.join(project.rootDir, `${project.topModule}.out`),
-            simulator,
             cwd: project.rootDir,
             topModule: project.topModule,
+            timeoutMs: 300_000,
+            signal: controller.signal,
         });
-        result.stdout = `[CMD] Compile: ${result.compileCommand}\n${result.stdout}`;
-        if (result.success && result.runCommand) {
-            result.stdout += `\n[CMD] Run: ${result.runCommand}\n`;
-        }
-        return printResult(result, environment);
+        const registry = createCliSimulationBackends(project, {
+            ...environment.simulationBackendOptions,
+            commandExecutor: environment.commandExecutor,
+        });
+        const result = await registry.run(project.simulator, request);
+        return printResult(
+            result,
+            environment,
+            project.simulator !== 'builtin' && project.simulator !== 'experimental-ts',
+        );
     } finally {
-        process.off('SIGINT', interrupt);
-        await host.dispose();
+        try {
+            await dependencySession.dispose();
+        } finally {
+            process.off('SIGINT', interrupt);
+        }
     }
 }

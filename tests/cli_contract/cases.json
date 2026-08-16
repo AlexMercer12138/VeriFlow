@@ -953,8 +953,8 @@
       ],
       "expected": {
         "exit_code": 1,
-        "stdout": "Simulating: top\nSimulator: missing\nWave viewer: builtin\n  Simulator 'missing' not configured\n\nSimulation: FAILED (exit=-1)\nErrors:\n  [ERROR]  Unknown simulator: missing\n",
-        "stderr": "",
+        "stdout": "Simulating: top\nSimulator: missing\nWave viewer: builtin\n",
+        "stderr": "Error: Unknown simulation backend: missing\n",
         "observed_json": {
           "workspace/project.json": {
             "project_name": "unknown_sim",
@@ -1101,7 +1101,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1260,7 +1260,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1279,7 +1279,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -2154,7 +2154,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -2313,7 +2313,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -2332,7 +2332,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},

@@ -6,9 +6,12 @@ import test from 'node:test';
 
 import {
     ConfiguredNativeSimulatorBackend,
-    NativeSimulatorBackend as RootNativeSimulatorBackend,
     type SimulationFailureCause,
 } from '@veriflow/flow-core';
+// @ts-expect-error Task 9 removed the temporary root native backend alias.
+import type { NativeSimulatorBackend as RemovedRootNativeBackend } from '@veriflow/flow-core';
+// @ts-expect-error Task 9 removed the temporary root execution alias.
+import type { SimulationExecution as RemovedRootExecution } from '@veriflow/flow-core';
 // @ts-expect-error The named legacy backend is available only from its direct subpath.
 import { LegacyNativeSimulatorBackend as RootLegacyNativeSimulatorBackend } from '@veriflow/flow-core';
 // @ts-expect-error Legacy native requests are available only from the simulation subpath.
@@ -172,12 +175,19 @@ function assertRootBackendAliases(
     executor: CommandExecutor,
     simulator: SimulatorConfig
 ): void {
-    void new RootNativeSimulatorBackend(executor);
     void new ConfiguredNativeSimulatorBackend('native:fake', simulator, executor);
     // @ts-expect-error Strict direct-subpath backends require configuration.
     void new NativeSimulatorBackend(executor);
     // @ts-expect-error Legacy backends accept only an optional executor.
     void new LegacyNativeSimulatorBackend('native:fake', simulator, executor);
+}
+
+function assertRemovedRootAliases(
+    backend: RemovedRootNativeBackend,
+    execution: RemovedRootExecution
+): void {
+    void backend;
+    void execution;
 }
 
 function legacyArtifacts(result: LegacySimulationExecution): unknown {

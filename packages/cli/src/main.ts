@@ -16,12 +16,16 @@ import {
 } from './commands/project';
 import { topGet, topSet } from './commands/top';
 import { simulate } from './commands/sim';
+import type { CliDependencySessionFactory } from './commands/sim';
 import { openWaveform, type WaveViewerLauncher } from './commands/wave';
 import { NodeWaveViewerLauncher } from './runtime/nodeWaveViewerLauncher';
+import type { CliSimulationBackendOptions } from './runtime/simulationBackends';
 
 export interface CliEnvironment extends CommandEnvironment {
     commandExecutor?: CommandExecutor;
     waveViewerLauncher?: WaveViewerLauncher;
+    simulationBackendOptions?: CliSimulationBackendOptions;
+    dependencySessionFactory?: CliDependencySessionFactory;
 }
 
 type CommandHandler = (
@@ -125,7 +129,7 @@ options:
   -r, --root ROOT      project root directory
   -t, --top TOP        top module name
   -L, --lib LIB        lib dirs (comma separated)
-  -s, --sim SIM        simulator (iverilog/vcs/xsim/custom)
+  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)
   -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)
   --output, -o OUTPUT  output JSON file path
 `;
@@ -182,7 +186,7 @@ options:
   -t, --top TOP         top module name (auto-saved)
   -r, --root ROOT       project root (use with --top)
   -L, --lib LIB         lib dirs (comma separated, auto-saved)
-  -s, --sim SIM         simulator (auto-saved)
+  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)
   -w, --wave WAVE       wave viewer (auto-saved)
 `;
 
@@ -195,7 +199,7 @@ options:
                         project JSON file
   --top, -t TOP         top module name (auto-saved)
   --lib, -L LIB         lib dirs (comma separated, auto-saved)
-  --sim, -s SIM         simulator (auto-saved)
+  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)
   --wave, -w WAVE       wave viewer (auto-saved)
 `;
 
