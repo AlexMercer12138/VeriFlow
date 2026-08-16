@@ -82,13 +82,17 @@ export async function buildVirtualWorkspace(
     return {
         files,
         sources: sources.map(source => source.virtualPath),
-        includeDirs: input.includeDirs.map(includeDir => mapHostPath(
+        includeDirs: stableUnique(input.includeDirs.map(includeDir => mapHostPath(
             normalizeHostPath(includeDir, context, cwd),
             roots,
             context,
-        )),
+        ))),
         hostPathByVirtualPath,
     };
+}
+
+function stableUnique(values: readonly string[]): string[] {
+    return [...new Set(values)];
 }
 
 function pathContext(cwd: string): PathContext {

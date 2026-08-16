@@ -185,6 +185,94 @@ test('maps an include root equal to cwd to the workspace namespace', async () =>
     }
 });
 
+test('deduplicates exact include roots without changing the first root mapping', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-duplicate-include-'));
+    const source = path.join(root, 'top.v');
+    const includeRoot = path.join(root, 'include');
+    const header = path.join(includeRoot, 'defs.vh');
+
+    try {
+        await mkdir(includeRoot, { recursive: true });
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(header, '`define WIDTH 8\n'),
+        ]);
+
+        const workspace = await buildVirtualWorkspace({
+            cwd: root,
+            files: [source, header],
+            runtimeFiles: [],
+            includeDirs: [includeRoot, includeRoot],
+        });
+
+        assert.deepEqual(workspace.sources, [
+            'workspace/top.v',
+            'libraries/0/defs.vh',
+        ]);
+        assert.deepEqual(workspace.includeDirs, ['libraries/0']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('deduplicates relative and absolute aliases of one include root', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-aliased-include-'));
+    const source = path.join(root, 'top.v');
+    const includeRoot = path.join(root, 'include');
+    const header = path.join(includeRoot, 'defs.vh');
+
+    try {
+        await mkdir(includeRoot, { recursive: true });
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(header, '`define WIDTH 8\n'),
+        ]);
+
+        const workspace = await buildVirtualWorkspace({
+            cwd: root,
+            files: [source, header],
+            runtimeFiles: [],
+            includeDirs: ['include', includeRoot],
+        });
+
+        assert.deepEqual(workspace.sources, [
+            'workspace/top.v',
+            'libraries/0/defs.vh',
+        ]);
+        assert.deepEqual(workspace.includeDirs, ['libraries/0']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('deduplicates Windows include roots across case and separator aliases', async () => {
+    const workspace = await buildVirtualWorkspace({
+        cwd: 'C:\\repo',
+        files: [
+            'C:\\repo\\top.v',
+            'D:\\SDK\\include\\defs.vh',
+        ],
+        runtimeFiles: [],
+        includeDirs: [
+            'D:\\SDK\\include',
+            'd:/sdk/include',
+        ],
+    }, {
+        async readFile(hostPath) {
+            return Buffer.from(hostPath);
+        },
+        async realpath(hostPath) {
+            return hostPath;
+        },
+    });
+
+    assert.deepEqual(workspace.sources, [
+        'workspace/top.v',
+        'libraries/0/defs.vh',
+    ]);
+    assert.deepEqual(workspace.includeDirs, ['libraries/0']);
+});
+
 test('resolves relative sources and include roots from the request cwd', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-relative-'));
     const projectFile = path.join(root, 'rtl', 'top.v');
