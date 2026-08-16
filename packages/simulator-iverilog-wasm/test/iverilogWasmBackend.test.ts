@@ -345,6 +345,78 @@ test('maps a missing required artifact to an artifact infrastructure failure', a
     }
 });
 
+test('required artifact absence overrides an HDL run failure without losing diagnostics', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-required-fail-');
+    const destination = path.join(root, 'required-after-failure.vcd');
+    const api = apiReturning({
+        success: false,
+        stage: 'run',
+        exitCode: 1,
+        stdout: 'output before failure\n',
+        stderr: 'workspace/top.v:1: error: runtime failed\n',
+        timings: { preprocess: 4, compile: 5, run: 6 },
+        artifacts: new Map(),
+    });
+
+    try {
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'required-after-failure.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        const missingMessage = 'Required artifacts were not produced: '
+            + 'required-after-failure.vcd';
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(result.exitCode, -1);
+        assert.deepEqual(result.cause, {
+            code: 'ARTIFACT_MISSING',
+            message: missingMessage,
+        });
+        assert.equal(result.stdout, 'output before failure\n');
+        assert.equal(
+            result.stderr,
+            `${source}:1: error: runtime failed\n${missingMessage}\n`,
+        );
+        assert.equal(result.timings.preprocess, 0.004);
+        assert.equal(result.timings.compile, 0.005);
+        assert.equal(result.timings.run, 0.006);
+        assert.ok((result.timings.artifact ?? -1) >= 0);
+        assert.deepEqual(result.logEntries.filter(entry => entry.level === 'ERROR'), [
+            {
+                level: 'ERROR',
+                message: 'runtime failed',
+                fileRef: source,
+                lineNo: 1,
+            },
+            { level: 'ERROR', message: missingMessage },
+        ]);
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: 'required-after-failure.vcd',
+            destination,
+            required: true,
+            written: false,
+            size: 0,
+        }]);
+        assert.equal(result.waveFile, null);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('writes artifacts returned before an expected HDL runtime failure', async () => {
     const { root, source } = await createSourceRoot('veriflow-wasm-run-fail-');
     const destination = path.join(root, 'failure.vcd');

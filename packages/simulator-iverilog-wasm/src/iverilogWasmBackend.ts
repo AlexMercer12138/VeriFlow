@@ -114,7 +114,7 @@ export class IverilogWasmBackend implements SimulatorBackend {
             artifacts,
         };
 
-        if (!result.success || missingRequired.length === 0) return base;
+        if (missingRequired.length === 0) return base;
 
         const message = `Required artifacts were not produced: ${missingRequired
             .map(artifact => artifact.path)
