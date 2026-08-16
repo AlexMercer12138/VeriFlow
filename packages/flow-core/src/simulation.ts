@@ -84,7 +84,9 @@ export interface SimulatorBackend {
 }
 
 export function createSimulationRequest(input: SimulationRequestInput): SimulationRequest {
-    const timeoutMs = input.timeoutMs ?? DEFAULT_SIMULATION_TIMEOUT_MS;
+    const timeoutMs = input.timeoutMs === undefined
+        ? DEFAULT_SIMULATION_TIMEOUT_MS
+        : input.timeoutMs;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
         throw new RangeError(
             `timeoutMs must be a positive integer no greater than ${MAX_TIMER_DELAY_MS}`

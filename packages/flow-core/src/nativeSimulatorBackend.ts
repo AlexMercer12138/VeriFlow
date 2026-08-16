@@ -25,6 +25,29 @@ type ExecFailure = Error & {
 
 type LegacyCompatibleSimulationExecution = SimulationExecution & LegacySimulationExecution;
 
+const LEGACY_REQUEST_FIELDS = ['files', 'output', 'simulator', 'cwd'] as const;
+const NORMALIZED_ONLY_REQUEST_FIELDS = [
+    'runtimeFiles',
+    'includeDirs',
+    'defines',
+    'plusargs',
+    'artifacts',
+    'timeoutMs',
+    'signal',
+] as const;
+
+function hasOwnProperty(value: object, property: PropertyKey): boolean {
+    return Object.prototype.hasOwnProperty.call(value, property);
+}
+
+function isLegacyNativeSimulationRequest(
+    request: SimulationRequest | LegacyNativeSimulationRequest
+): request is LegacyNativeSimulationRequest {
+    // Hybrid objects are normalized; the adapter accepts only the isolated old shape.
+    return LEGACY_REQUEST_FIELDS.every(field => hasOwnProperty(request, field))
+        && NORMALIZED_ONLY_REQUEST_FIELDS.every(field => !hasOwnProperty(request, field));
+}
+
 function withLegacyCommandAliases(
     execution: SimulationExecution,
     legacyRequest: LegacyNativeSimulationRequest | undefined,
@@ -104,7 +127,7 @@ export class NativeSimulatorBackend implements SimulatorBackend {
     ): Promise<SimulationExecution | LegacyCompatibleSimulationExecution> {
         let legacyRequest: LegacyNativeSimulationRequest | undefined;
         let normalizedRequest: SimulationRequest;
-        if ('simulator' in request) {
+        if (isLegacyNativeSimulationRequest(request)) {
             legacyRequest = request;
             normalizedRequest = createSimulationRequest(request);
         } else {

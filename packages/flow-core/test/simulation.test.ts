@@ -164,6 +164,15 @@ test('simulation requests validate the Node timer range', () => {
     }).timeoutMs, 2_147_483_647);
 });
 
+test('simulation requests reject null timeout values', () => {
+    assert.throws(() => createSimulationRequest({
+        files: ['top.v'],
+        output: 'top.out',
+        cwd: '/workspace',
+        timeoutMs: null as unknown as number,
+    }), /timeoutMs/);
+});
+
 test('simulation requests preserve the exact abort signal', () => {
     const controller = new AbortController();
     const result = createSimulationRequest({
@@ -218,6 +227,55 @@ test('normalized native results omit legacy command aliases', async () => {
             simulatorConfig(capturePath)
         ).compileAndRun(normalizedRequest(root));
 
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('normalized native requests ignore inherited simulator configuration', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-prototype-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const input = normalizedRequest(root);
+        Object.setPrototypeOf(input, { simulator: simulatorConfig(capturePath) });
+
+        await assert.rejects(
+            new NativeSimulatorBackend().compileAndRun(input),
+            /Native simulator configuration is required/
+        );
+
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(capturePath)
+        ).compileAndRun(input);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('normalized request fields take precedence over an own simulator property', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-hybrid-'));
+    const legacyCapturePath = path.join(root, 'legacy-calls.jsonl');
+    const normalizedCapturePath = path.join(root, 'normalized-calls.jsonl');
+    try {
+        const input = Object.assign(normalizedRequest(root), {
+            simulator: simulatorConfig(legacyCapturePath, 'compile-fail'),
+        });
+
+        await assert.rejects(
+            new NativeSimulatorBackend().compileAndRun(input),
+            /Native simulator configuration is required/
+        );
+
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(normalizedCapturePath)
+        ).compileAndRun(input);
+        assert.equal(result.success, true);
         assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
         assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
     } finally {
