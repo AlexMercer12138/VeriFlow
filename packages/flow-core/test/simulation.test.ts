@@ -4,15 +4,25 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import {
+    ConfiguredNativeSimulatorBackend,
+    NativeSimulatorBackend as RootNativeSimulatorBackend,
+} from '@veriflow/flow-core';
+// @ts-expect-error The named legacy backend is available only from its direct subpath.
+import { LegacyNativeSimulatorBackend as RootLegacyNativeSimulatorBackend } from '@veriflow/flow-core';
 // @ts-expect-error Legacy native requests are available only from the simulation subpath.
 import type { LegacyNativeSimulationRequest as RootLegacyRequest } from '@veriflow/flow-core';
 // @ts-expect-error Legacy executions are available only from the simulation subpath.
 import type { LegacySimulationExecution as RootLegacyExecution } from '@veriflow/flow-core';
-import { NativeSimulatorBackend } from '@veriflow/flow-core/nativeSimulatorBackend';
+import {
+    LegacyNativeSimulatorBackend,
+    NativeSimulatorBackend,
+} from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
     createSimulationRequest,
     type CommandExecutor,
     type LegacyNativeSimulationRequest,
+    type LegacySimulationExecution,
     type SimulationArtifactResult,
     type SimulationExecution,
     type SimulationRequest,
@@ -94,6 +104,41 @@ function successfulExecutor(): CommandExecutor {
             };
         },
     };
+}
+
+async function assertBackendTypeBoundaries(
+    strictBackend: NativeSimulatorBackend,
+    legacyBackend: LegacyNativeSimulatorBackend,
+    normalized: SimulationRequest,
+    legacy: LegacyNativeSimulationRequest
+): Promise<void> {
+    // @ts-expect-error Strict backends accept only normalized requests.
+    void strictBackend.compileAndRun(legacy);
+    // @ts-expect-error Legacy backends accept only legacy requests.
+    void legacyBackend.compileAndRun(normalized);
+
+    const strictResult = await strictBackend.compileAndRun(normalized);
+    // @ts-expect-error Strict results do not expose legacy command aliases.
+    void strictResult.compileCommand;
+    const legacyResult = await legacyBackend.compileAndRun(legacy);
+    // @ts-expect-error Legacy results expose only the compatibility result contract.
+    void legacyResult.commands;
+}
+
+function assertRootBackendAliases(
+    executor: CommandExecutor,
+    simulator: SimulatorConfig
+): void {
+    void new RootNativeSimulatorBackend(executor);
+    void new ConfiguredNativeSimulatorBackend('native:fake', simulator, executor);
+    // @ts-expect-error Strict direct-subpath backends require configuration.
+    void new NativeSimulatorBackend(executor);
+    // @ts-expect-error Legacy backends accept only an optional executor.
+    void new LegacyNativeSimulatorBackend('native:fake', simulator, executor);
+}
+
+function legacyArtifacts(result: LegacySimulationExecution): unknown {
+    return (result as unknown as { artifacts: unknown }).artifacts;
 }
 
 function captures(filepath: string): Capture[] {
@@ -270,7 +315,9 @@ test('normalized native requests ignore inherited simulator configuration', asyn
         Object.setPrototypeOf(input, { simulator: simulatorConfig(capturePath) });
 
         await assert.rejects(
-            new NativeSimulatorBackend().compileAndRun(input),
+            new LegacyNativeSimulatorBackend().compileAndRun(
+                input as unknown as LegacyNativeSimulationRequest
+            ),
             /Native simulator configuration is required/
         );
 
@@ -397,12 +444,12 @@ test('legacy native request adapter preserves command aliases', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-legacy-'));
     const capturePath = path.join(root, 'calls.jsonl');
     try {
-        const result = await new NativeSimulatorBackend().compileAndRun(
+        const result = await new LegacyNativeSimulatorBackend().compileAndRun(
             request(root, capturePath)
         );
 
-        assert.equal(result.commands.compile, result.compileCommand);
-        assert.equal(result.commands.run, result.runCommand);
+        assert.match(result.compileCommand, / compile "top\.out" "child\.v" "top\.v"$/);
+        assert.match(result.runCommand, / run "top\.out"$/);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -425,7 +472,7 @@ test('legacy requests remain legacy with individual normalized option fields', a
 
     for (const [field, extra] of extras) {
         const input = Object.assign(legacyContractRequest(), extra);
-        const result = await new NativeSimulatorBackend(
+        const result = await new LegacyNativeSimulatorBackend(
             successfulExecutor()
         ).compileAndRun(input);
 
@@ -439,7 +486,7 @@ test('legacy requests remain legacy with individual normalized option fields', a
             true,
             field
         );
-        assert.deepEqual(result.artifacts, [], field);
+        assert.deepEqual(legacyArtifacts(result), [], field);
     }
 });
 
@@ -458,11 +505,11 @@ test('legacy constructor mode ignores a complete normalized-looking extension', 
         signal: new AbortController().signal,
     });
 
-    const result = await new NativeSimulatorBackend(
+    const result = await new LegacyNativeSimulatorBackend(
         successfulExecutor()
     ).compileAndRun(input);
 
-    assert.deepEqual(result.artifacts, []);
+    assert.deepEqual(legacyArtifacts(result), []);
     assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), true);
 });
@@ -472,7 +519,7 @@ test('legacy constructor mode requires an own simulator configuration', async ()
     Object.setPrototypeOf(withoutSimulator, { simulator });
 
     await assert.rejects(
-        new NativeSimulatorBackend(successfulExecutor()).compileAndRun(
+        new LegacyNativeSimulatorBackend(successfulExecutor()).compileAndRun(
             withoutSimulator as LegacyNativeSimulationRequest
         ),
         /Native simulator configuration is required/
@@ -507,12 +554,12 @@ test('legacy adaptation does not read inherited normalized options', async () =>
     const input = legacyContractRequest();
     Object.setPrototypeOf(input, prototype);
 
-    const result = await new NativeSimulatorBackend(
+    const result = await new LegacyNativeSimulatorBackend(
         successfulExecutor()
     ).compileAndRun(input);
 
     assert.deepEqual(reads, []);
-    assert.deepEqual(result.artifacts, []);
+    assert.deepEqual(legacyArtifacts(result), []);
     assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), true);
 });
@@ -521,7 +568,7 @@ test('native simulator backend runs rendered commands in the requested cwd', asy
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-sim-'));
     const capturePath = path.join(root, 'calls.jsonl');
     try {
-        const result = await new NativeSimulatorBackend().compileAndRun(
+        const result = await new LegacyNativeSimulatorBackend().compileAndRun(
             request(root, capturePath)
         );
 
@@ -545,7 +592,7 @@ test('native simulator backend stops after a compile error and parses diagnostic
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-sim-fail-'));
     const capturePath = path.join(root, 'calls.jsonl');
     try {
-        const result = await new NativeSimulatorBackend().compileAndRun(
+        const result = await new LegacyNativeSimulatorBackend().compileAndRun(
             request(root, capturePath, 'compile-fail')
         );
 

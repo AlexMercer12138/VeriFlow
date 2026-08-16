@@ -23,14 +23,12 @@ type ExecFailure = Error & {
     killed?: boolean;
 };
 
-type LegacyCompatibleSimulationExecution = SimulationExecution & LegacySimulationExecution;
-
 function hasOwnProperty(value: object, property: PropertyKey): boolean {
     return Object.prototype.hasOwnProperty.call(value, property);
 }
 
 function ownLegacySimulator(
-    request: SimulationRequest | LegacyNativeSimulationRequest
+    request: LegacyNativeSimulationRequest
 ): SimulatorConfig {
     if (!hasOwnProperty(request, 'simulator')) {
         throw new Error('Native simulator configuration is required');
@@ -57,16 +55,6 @@ function normalizeLegacyRequest(request: LegacyNativeSimulationRequest): Simulat
         cwd: request.cwd,
         ...(topModule === undefined ? {} : { topModule }),
     });
-}
-
-function withLegacyCommandAliases(
-    execution: SimulationExecution,
-    legacyRequest: LegacyNativeSimulationRequest | undefined,
-    compileCommand: string,
-    runCommand: string
-): SimulationExecution | LegacyCompatibleSimulationExecution {
-    if (legacyRequest === undefined) return execution;
-    return { ...execution, compileCommand, runCommand };
 }
 
 export class NodeCommandExecutor implements CommandExecutor {
@@ -102,131 +90,115 @@ function executionPath(filepath: string, cwd: string): string {
         : relative === '' ? path.basename(absolute) : absolute;
 }
 
-export class NativeSimulatorBackend implements SimulatorBackend {
-    private readonly logParser = new LogParser();
-    private readonly legacyCompatibilityMode: boolean;
-    private readonly backendId: string | undefined;
-    private readonly simulator: SimulatorConfig | undefined;
-    private readonly executor: CommandExecutor;
-
-    constructor(backendId: string, simulator: SimulatorConfig, executor?: CommandExecutor);
-    /** @deprecated Pass backend ID and simulator configuration; remove in Task 9. */
-    constructor(executor?: CommandExecutor);
-    constructor(
-        backendIdOrExecutor?: string | CommandExecutor,
-        simulator?: SimulatorConfig,
-        executor: CommandExecutor = new NodeCommandExecutor()
-    ) {
-        if (typeof backendIdOrExecutor === 'string') {
-            this.legacyCompatibilityMode = false;
-            this.backendId = backendIdOrExecutor;
-            this.simulator = simulator;
-            this.executor = executor;
-            return;
-        }
-
-        this.legacyCompatibilityMode = true;
-        this.backendId = undefined;
-        this.simulator = undefined;
-        this.executor = backendIdOrExecutor ?? new NodeCommandExecutor();
+async function executeNativeSimulation(
+    backendId: string,
+    simulator: SimulatorConfig,
+    executor: CommandExecutor,
+    request: SimulationRequest
+): Promise<SimulationExecution> {
+    const logParser = new LogParser();
+    const artifacts = request.artifacts.map(artifact => ({
+        ...artifact,
+        written: false,
+        size: 0,
+    }));
+    const files = request.files.map(filepath => (
+        executionPath(filepath, request.cwd)
+    ));
+    const output = executionPath(request.output, request.cwd);
+    const compileCommand = TemplateEngine.renderCompile(
+        simulator.compileCmd,
+        output,
+        files,
+        request.topModule ?? ''
+    );
+    const compile = await executor.execute(
+        compileCommand,
+        request.cwd,
+        PROCESS_TIMEOUT_SECONDS
+    );
+    const compileEntries = logParser.parse(`${compile.stdout}\n${compile.stderr}`);
+    const compileResult: SimulationExecution = {
+        success: compile.exitCode === 0 && !logParser.hasErrors(compile.stderr),
+        exitCode: compile.exitCode,
+        stdout: compile.stdout,
+        stderr: compile.stderr,
+        logEntries: compileEntries,
+        waveFile: null,
+        elapsedTime: compile.elapsedTime,
+        backendId,
+        stage: 'compile',
+        timings: {},
+        commands: { compile: compileCommand },
+        artifacts,
+    };
+    if (!compileResult.success) {
+        return compileResult;
     }
 
-    async compileAndRun(request: SimulationRequest): Promise<SimulationExecution>;
-    /** @deprecated Pass a normalized request; remove in Task 9. */
+    const runCommand = TemplateEngine.renderRun(simulator.runCmd, output);
+    const run = await executor.execute(
+        runCommand,
+        request.cwd,
+        PROCESS_TIMEOUT_SECONDS
+    );
+    const runResult: SimulationExecution = {
+        success: run.exitCode === 0,
+        exitCode: run.exitCode,
+        stdout: run.stdout,
+        stderr: run.stderr,
+        logEntries: [
+            ...compileEntries,
+            ...logParser.parse(`${run.stdout}\n${run.stderr}`),
+        ],
+        waveFile: null,
+        elapsedTime: compile.elapsedTime + run.elapsedTime,
+        backendId,
+        stage: 'run',
+        timings: {},
+        commands: { compile: compileCommand, run: runCommand },
+        artifacts,
+    };
+    return runResult;
+}
+
+export class NativeSimulatorBackend implements SimulatorBackend {
+    constructor(
+        private readonly backendId: string,
+        private readonly simulator: SimulatorConfig,
+        private readonly executor: CommandExecutor = new NodeCommandExecutor()
+    ) {}
+
+    async compileAndRun(request: SimulationRequest): Promise<SimulationExecution> {
+        return executeNativeSimulation(
+            this.backendId,
+            this.simulator,
+            this.executor,
+            createSimulationRequest(request)
+        );
+    }
+}
+
+/** @deprecated Pass normalized requests to NativeSimulatorBackend; remove in Task 9. */
+export class LegacyNativeSimulatorBackend {
+    constructor(
+        private readonly executor: CommandExecutor = new NodeCommandExecutor()
+    ) {}
+
     async compileAndRun(
         request: LegacyNativeSimulationRequest
-    ): Promise<LegacyCompatibleSimulationExecution>;
-    async compileAndRun(
-        request: SimulationRequest | LegacyNativeSimulationRequest
-    ): Promise<SimulationExecution | LegacyCompatibleSimulationExecution> {
-        let legacyRequest: LegacyNativeSimulationRequest | undefined;
-        let normalizedRequest: SimulationRequest;
-        let simulator: SimulatorConfig | undefined;
-        if (this.legacyCompatibilityMode) {
-            legacyRequest = request as LegacyNativeSimulationRequest;
-            simulator = ownLegacySimulator(request);
-            normalizedRequest = normalizeLegacyRequest(legacyRequest);
-        } else {
-            simulator = this.simulator;
-            normalizedRequest = createSimulationRequest(request as SimulationRequest);
-        }
-        if (simulator === undefined) {
-            throw new Error('Native simulator configuration is required');
-        }
-
-        const backendId = this.backendId ?? simulator.name;
-        const artifacts = normalizedRequest.artifacts.map(artifact => ({
-            ...artifact,
-            written: false,
-            size: 0,
-        }));
-        const files = normalizedRequest.files.map(filepath => (
-            executionPath(filepath, normalizedRequest.cwd)
-        ));
-        const output = executionPath(normalizedRequest.output, normalizedRequest.cwd);
-        const compileCommand = TemplateEngine.renderCompile(
-            simulator.compileCmd,
-            output,
-            files,
-            normalizedRequest.topModule ?? ''
+    ): Promise<LegacySimulationExecution> {
+        const simulator = ownLegacySimulator(request);
+        const execution = await executeNativeSimulation(
+            simulator.name,
+            simulator,
+            this.executor,
+            normalizeLegacyRequest(request)
         );
-        const compile = await this.executor.execute(
-            compileCommand,
-            normalizedRequest.cwd,
-            PROCESS_TIMEOUT_SECONDS
-        );
-        const compileEntries = this.logParser.parse(`${compile.stdout}\n${compile.stderr}`);
-        const compileResult: SimulationExecution = {
-            success: compile.exitCode === 0 && !this.logParser.hasErrors(compile.stderr),
-            exitCode: compile.exitCode,
-            stdout: compile.stdout,
-            stderr: compile.stderr,
-            logEntries: compileEntries,
-            waveFile: null,
-            elapsedTime: compile.elapsedTime,
-            backendId,
-            stage: 'compile',
-            timings: {},
-            commands: { compile: compileCommand },
-            artifacts,
+        return {
+            ...execution,
+            compileCommand: execution.commands.compile ?? '',
+            runCommand: execution.commands.run ?? '',
         };
-        if (!compileResult.success) {
-            return withLegacyCommandAliases(
-                compileResult,
-                legacyRequest,
-                compileCommand,
-                ''
-            );
-        }
-
-        const runCommand = TemplateEngine.renderRun(simulator.runCmd, output);
-        const run = await this.executor.execute(
-            runCommand,
-            normalizedRequest.cwd,
-            PROCESS_TIMEOUT_SECONDS
-        );
-        const runResult: SimulationExecution = {
-            success: run.exitCode === 0,
-            exitCode: run.exitCode,
-            stdout: run.stdout,
-            stderr: run.stderr,
-            logEntries: [
-                ...compileEntries,
-                ...this.logParser.parse(`${run.stdout}\n${run.stderr}`),
-            ],
-            waveFile: null,
-            elapsedTime: compile.elapsedTime + run.elapsedTime,
-            backendId,
-            stage: 'run',
-            timings: {},
-            commands: { compile: compileCommand, run: runCommand },
-            artifacts,
-        };
-        return withLegacyCommandAliases(
-            runResult,
-            legacyRequest,
-            compileCommand,
-            runCommand
-        );
     }
 }
