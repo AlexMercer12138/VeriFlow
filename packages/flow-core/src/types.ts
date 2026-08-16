@@ -14,6 +14,7 @@ export interface SimulationResult {
     stdout: string;
     stderr: string;
     logEntries: LogEntry[];
+    /** @deprecated Prefer artifact results on SimulationExecution. */
     waveFile: string | null;
     elapsedTime: number;
 }

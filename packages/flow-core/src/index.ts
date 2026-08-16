@@ -1,3 +1,5 @@
+import type { LegacySimulationExecution } from './simulation';
+
 export * from './defaults';
 export * from './globalConfigStore';
 export * from './logParser';
@@ -5,6 +7,22 @@ export * from './nativeSimulatorBackend';
 export * from './pathStyle';
 export * from './project';
 export * from './projectStore';
-export * from './simulation';
+export { createSimulationRequest } from './simulation';
+export type {
+    CommandExecutor,
+    LegacyNativeSimulationRequest,
+    LegacySimulationExecution,
+    ProcessExecution,
+    SimulationArtifactRequest,
+    SimulationArtifactResult,
+    SimulationExecution as NormalizedSimulationExecution,
+    SimulationRequest,
+    SimulationRequestInput,
+    SimulationStage,
+    SimulatorBackend,
+} from './simulation';
 export * from './templateEngine';
 export * from './types';
+
+/** @deprecated Temporary CLI compatibility alias; remove in Task 9. */
+export type SimulationExecution = LegacySimulationExecution;

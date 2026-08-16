@@ -5,7 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { NativeSimulatorBackend } from '@veriflow/flow-core/nativeSimulatorBackend';
-import type { SimulationRequest } from '@veriflow/flow-core/simulation';
+import {
+    createSimulationRequest,
+    type LegacyNativeSimulationRequest,
+    type SimulationArtifactResult,
+    type SimulationExecution,
+    type SimulationRequest,
+} from '@veriflow/flow-core/simulation';
+import type { SimulatorConfig } from '@veriflow/flow-core/types';
 
 type Capture = {
     action: string;
@@ -21,7 +28,17 @@ function request(
     root: string,
     capturePath: string,
     compileAction = 'compile'
-): SimulationRequest {
+): LegacyNativeSimulationRequest {
+    return {
+        files: [path.join(root, 'child.v'), path.join(root, 'top.v')],
+        output: path.join(root, 'top.out'),
+        simulator: simulatorConfig(capturePath, compileAction),
+        cwd: root,
+        topModule: 'top',
+    };
+}
+
+function simulatorConfig(capturePath: string, compileAction = 'compile'): SimulatorConfig {
     const fixture = path.resolve(
         __dirname,
         '..',
@@ -32,21 +49,210 @@ function request(
     );
     const prefix = `${quote(process.execPath)} ${quote(fixture)} ${quote(capturePath)}`;
     return {
+        name: 'fake',
+        compileCmd: `${prefix} ${compileAction} "{output}" {files}`,
+        runCmd: `${prefix} run "{output}"`,
+    };
+}
+
+function normalizedRequest(root: string): SimulationRequest {
+    return createSimulationRequest({
         files: [path.join(root, 'child.v'), path.join(root, 'top.v')],
         output: path.join(root, 'top.out'),
-        simulator: {
-            name: 'fake',
-            compileCmd: `${prefix} ${compileAction} "{output}" {files}`,
-            runCmd: `${prefix} run "{output}"`,
-        },
         cwd: root,
         topModule: 'top',
-    };
+    });
 }
 
 function captures(filepath: string): Capture[] {
     return readFileSync(filepath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 }
+
+test('simulation requests use conservative defaults', () => {
+    const result = createSimulationRequest({
+        files: ['top.v'],
+        output: 'top.out',
+        cwd: '/workspace',
+    });
+
+    assert.deepEqual(result, {
+        files: ['top.v'],
+        runtimeFiles: [],
+        includeDirs: [],
+        defines: {},
+        plusargs: [],
+        artifacts: [],
+        output: 'top.out',
+        cwd: '/workspace',
+        timeoutMs: 300_000,
+    });
+});
+
+test('simulation requests clone caller-owned collections and artifact entries', () => {
+    const files = ['top.v'];
+    const runtimeFiles = ['runtime.hex'];
+    const includeDirs = ['include'];
+    const defines = { WIDTH: 8, TRACE: true };
+    const plusargs = ['+seed=1'];
+    const artifacts = [{
+        kind: 'vcd' as const,
+        path: 'wave.vcd',
+        destination: '/workspace/wave.vcd',
+        required: true,
+    }];
+
+    const result = createSimulationRequest({
+        files,
+        runtimeFiles,
+        includeDirs,
+        defines,
+        plusargs,
+        artifacts,
+        output: 'top.out',
+        cwd: '/workspace',
+    });
+
+    files.push('late.v');
+    runtimeFiles.push('late.hex');
+    includeDirs.push('late-include');
+    defines.WIDTH = 16;
+    plusargs.push('+late');
+    artifacts[0].destination = '/tmp/changed.vcd';
+    artifacts.push({
+        kind: 'vcd',
+        path: 'late.vcd',
+        destination: '/workspace/late.vcd',
+        required: false,
+    });
+
+    assert.deepEqual(result.files, ['top.v']);
+    assert.deepEqual(result.runtimeFiles, ['runtime.hex']);
+    assert.deepEqual(result.includeDirs, ['include']);
+    assert.deepEqual(result.defines, { WIDTH: 8, TRACE: true });
+    assert.deepEqual(result.plusargs, ['+seed=1']);
+    assert.deepEqual(result.artifacts, [{
+        kind: 'vcd',
+        path: 'wave.vcd',
+        destination: '/workspace/wave.vcd',
+        required: true,
+    }]);
+    assert.notEqual(result.files, files);
+    assert.notEqual(result.defines, defines);
+    assert.notEqual(result.artifacts, artifacts);
+    assert.notEqual(result.artifacts[0], artifacts[0]);
+});
+
+test('simulation requests validate the Node timer range', () => {
+    for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+        assert.throws(() => createSimulationRequest({
+            files: ['top.v'],
+            output: 'top.out',
+            cwd: '/workspace',
+            timeoutMs,
+        }), /timeoutMs/);
+    }
+
+    assert.equal(createSimulationRequest({
+        files: ['top.v'],
+        output: 'top.out',
+        cwd: '/workspace',
+        timeoutMs: 2_147_483_647,
+    }).timeoutMs, 2_147_483_647);
+});
+
+test('simulation requests preserve the exact abort signal', () => {
+    const controller = new AbortController();
+    const result = createSimulationRequest({
+        files: ['top.v'],
+        output: 'top.out',
+        cwd: '/workspace',
+        signal: controller.signal,
+    });
+
+    assert.equal(result.signal, controller.signal);
+});
+
+test('normalized native results report backend, stage, commands, timings, and artifacts', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-contract-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const input = normalizedRequest(root);
+        input.artifacts.push({
+            kind: 'vcd',
+            path: 'wave.vcd',
+            destination: path.join(root, 'wave.vcd'),
+        });
+        const result: SimulationExecution = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(capturePath)
+        ).compileAndRun(input);
+        const artifact: SimulationArtifactResult = result.artifacts[0];
+
+        assert.equal(result.backendId, 'native:fake');
+        assert.equal(result.stage, 'run');
+        assert.deepEqual(result.timings, {});
+        assert.match(result.commands.compile ?? '', / compile "top\.out" "child\.v" "top\.v"$/);
+        assert.match(result.commands.run ?? '', / run "top\.out"$/);
+        assert.deepEqual(artifact, {
+            kind: 'vcd',
+            path: 'wave.vcd',
+            destination: path.join(root, 'wave.vcd'),
+            written: false,
+            size: 0,
+        });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('normalized native compile failures retain contract metadata', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-contract-fail-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const input = normalizedRequest(root);
+        input.artifacts.push({
+            kind: 'file',
+            path: 'compile.log',
+            destination: path.join(root, 'compile.log'),
+            required: true,
+        });
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(capturePath, 'compile-fail')
+        ).compileAndRun(input);
+
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'compile');
+        assert.deepEqual(result.timings, {});
+        assert.match(result.commands.compile ?? '', / compile-fail "top\.out"/);
+        assert.equal(result.commands.run, undefined);
+        assert.deepEqual(result.artifacts, [{
+            kind: 'file',
+            path: 'compile.log',
+            destination: path.join(root, 'compile.log'),
+            required: true,
+            written: false,
+            size: 0,
+        }]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('legacy native request adapter preserves command aliases', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-legacy-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const result = await new NativeSimulatorBackend().compileAndRun(
+            request(root, capturePath)
+        );
+
+        assert.equal(result.commands.compile, result.compileCommand);
+        assert.equal(result.commands.run, result.runCommand);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 test('native simulator backend runs rendered commands in the requested cwd', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-sim-'));
