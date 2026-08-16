@@ -310,3 +310,35 @@ silently mix engines or fall back between them during one simulation.
 **Tags:** #architecture #simulation #verilog #wasm #performance #tooling
 
 ---
+
+## 2026-08-17: Give Icarus WASM a virtual VVP working directory
+
+**Context:** VeriFlow resolves `simulation_files` relative to the project JSON,
+while simulation runs from `project_root`. A valid project can therefore use
+`$readmemh("../vectors/input.hex")`, but Icarus WASM 0.1.1 always runs VVP from
+`/work` and rejects virtual file paths containing `..`.
+
+**Decision:** Add an optional, strictly validated relative POSIX `runCwd` to
+the upstream run and simulate requests. Stage files and collect artifacts from
+the existing `/work` root, but run VVP from `/work/<runCwd>`. The VeriFlow
+adapter maps requested host files beneath one deterministic virtual root and
+passes the mapped `project_root` as `runCwd`.
+
+**Why not:**
+- Require all `simulation_files` to be inside `project_root`: this narrows an
+  existing project-file contract and breaks layouts supported by native Icarus.
+- Rewrite `$readmemh` or other HDL strings: source rewriting is incomplete,
+  macro-sensitive, and changes user code semantics.
+- Permit `..` virtual file paths: the upstream workspace must remain isolated
+  and cannot safely expose traversal components.
+- Move artifact paths under `runCwd`: artifacts are explicit API paths rooted
+  at the virtual workspace and must remain backward compatible.
+
+**Affects:** `/home/mercer/prj/iverilog/wasm/package/`,
+`packages/simulator-iverilog-wasm/`, `packages/cli/`
+
+**Related:** `docs/plans/2026-08-17-iverilog-wasm-run-cwd-upgrade.md`
+
+**Tags:** #architecture #simulation #wasm #api #lesson-learned
+
+---
