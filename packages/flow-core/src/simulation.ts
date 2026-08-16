@@ -8,7 +8,13 @@ export interface ProcessExecution {
     stdout: string;
     stderr: string;
     elapsedTime: number;
-    termination?: 'abort' | 'timeout';
+    termination?: 'abort' | 'timeout' | 'infrastructure';
+    cause?: SimulationFailureCause;
+}
+
+export interface SimulationFailureCause {
+    code?: string;
+    message: string;
 }
 
 export interface CommandExecutor {
@@ -68,6 +74,7 @@ export interface SimulationExecution extends SimulationResult {
     timings: Partial<Record<'preprocess' | 'compile' | 'run' | 'artifact', number>>;
     commands: { compile?: string; run?: string };
     artifacts: SimulationArtifactResult[];
+    cause?: SimulationFailureCause;
 }
 
 /** @deprecated Temporary CLI request compatibility; remove in Task 9. */

@@ -23,6 +23,11 @@ switch (action) {
         writeFileSync(args.at(-1), String(process.pid));
         setInterval(() => {}, 1_000);
         break;
+    case 'wait-ignore-term':
+        process.on('SIGTERM', () => {});
+        writeFileSync(args.at(-1), String(process.pid));
+        setInterval(() => {}, 1_000);
+        break;
     default:
         process.stderr.write(`unknown fake simulator action: ${action}\n`);
         process.exitCode = 64;

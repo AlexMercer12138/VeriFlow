@@ -86,8 +86,37 @@ test('compile templates render defines and include directories only when request
             variables.defines,
             variables.includeDirs
         ),
-        'compile -D"TRACE" -D"WIDTH=8" -D"DISABLED=0" '
-            + '-I"rtl/include" -I"vendor headers" -o top.out "top.v"'
+        "compile '-DTRACE' '-DWIDTH=8' '-DDISABLED=0' "
+            + "'-Irtl/include' '-Ivendor headers' -o top.out \"top.v\""
+    );
+});
+
+test('compile template shell arguments quote POSIX and Windows metacharacters', () => {
+    assert.equal(
+        TemplateEngine.renderCompile(
+            'compile {defines} {include_dirs}',
+            'top.out',
+            ['top.v'],
+            'top',
+            { PAYLOAD: `a'b"$()` + '`' },
+            [`headers ' " $()` + '`'],
+            'linux'
+        ),
+        "compile '-DPAYLOAD=a'\"'\"'b\"$()`' "
+            + "'-Iheaders '\"'\"' \" $()`'"
+    );
+    assert.equal(
+        TemplateEngine.renderCompile(
+            'compile {defines} {include_dirs}',
+            'top.out',
+            ['top.v'],
+            'top',
+            { SAFE: 'a"b&c' },
+            ['C:\\dir with space\\'],
+            'win32'
+        ),
+        'compile ^"-DSAFE=a\\^"b^&c^" '
+            + '^"-IC:\\dir^ with^ space\\\\^"'
     );
 });
 

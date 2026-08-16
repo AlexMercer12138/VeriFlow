@@ -19,6 +19,7 @@ export type {
     SimulationArtifactRequest,
     SimulationArtifactResult,
     SimulationExecution as NormalizedSimulationExecution,
+    SimulationFailureCause,
     SimulationRequest,
     SimulationRequestInput,
     SimulationStage,

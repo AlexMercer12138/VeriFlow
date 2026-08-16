@@ -27,7 +27,18 @@ type ExecFileRunner = (
 ) => string;
 
 export interface ProcessTreeTerminator {
-    terminate(processId: number | undefined): void;
+    terminate(processId: number | undefined): Promise<void> | void;
+}
+
+type PosixProcessIdentity = {
+    processId: number;
+    parentId: number;
+    state: string;
+    started: string;
+};
+
+function delay(milliseconds: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
 function nodeExecFileRunner(executable: string, args: readonly string[]): string {
@@ -43,7 +54,7 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
         private readonly execFileRunner: ExecFileRunner = nodeExecFileRunner
     ) {}
 
-    terminate(processId: number | undefined): void {
+    async terminate(processId: number | undefined): Promise<void> {
         if (processId === undefined) return;
         try {
             if (this.platform === 'win32') {
@@ -56,38 +67,95 @@ export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
                 return;
             }
 
-            const children = this.posixDescendantProcessIds(processId);
-            for (const descendant of children) {
-                try {
-                    process.kill(descendant, 'SIGTERM');
-                } catch {
-                }
+            const descendants = this.posixDescendants(processId);
+            this.signalMatchingProcesses(descendants, 'SIGTERM');
+            let running = await this.waitForExit(descendants, 50);
+            if (running.length > 0) {
+                this.signalMatchingProcesses(running, 'SIGKILL');
+                running = await this.waitForExit(running, 500);
+            }
+            if (running.length > 0) {
+                this.signalMatchingProcesses(running, 'SIGKILL');
+                await this.waitForExit(running, 500);
             }
         } catch {
         }
     }
 
-    private posixDescendantProcessIds(processId: number): number[] {
-        const children = new Map<number, number[]>();
-        const processes = this.execFileRunner('ps', ['-eo', 'pid=,ppid=']);
+    private posixProcessSnapshot(): Map<number, PosixProcessIdentity> {
+        const snapshot = new Map<number, PosixProcessIdentity>();
+        const processes = this.execFileRunner('ps', [
+            '-eo',
+            'pid=,ppid=,stat=,lstart=',
+        ]);
         for (const line of processes.split('\n')) {
-            const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+            const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
             if (match === null) continue;
-            const child = Number(match[1]);
-            const parent = Number(match[2]);
-            const siblings = children.get(parent);
-            if (siblings === undefined) children.set(parent, [child]);
-            else siblings.push(child);
+            const processId = Number(match[1]);
+            snapshot.set(processId, {
+                processId,
+                parentId: Number(match[2]),
+                state: match[3],
+                started: match[4],
+            });
         }
-        const descendants: number[] = [];
+        return snapshot;
+    }
+
+    private posixDescendants(processId: number): PosixProcessIdentity[] {
+        const snapshot = this.posixProcessSnapshot();
+        const children = new Map<number, PosixProcessIdentity[]>();
+        for (const identity of snapshot.values()) {
+            const siblings = children.get(identity.parentId);
+            if (siblings === undefined) children.set(identity.parentId, [identity]);
+            else siblings.push(identity);
+        }
+        const descendants: PosixProcessIdentity[] = [];
         const visit = (parent: number): void => {
             for (const child of children.get(parent) ?? []) {
-                visit(child);
+                visit(child.processId);
                 descendants.push(child);
             }
         };
         visit(processId);
         return descendants;
+    }
+
+    private runningProcesses(
+        identities: readonly PosixProcessIdentity[]
+    ): PosixProcessIdentity[] {
+        const snapshot = this.posixProcessSnapshot();
+        return identities.filter(identity => {
+            const current = snapshot.get(identity.processId);
+            return current !== undefined
+                && current.started === identity.started
+                && !current.state.startsWith('Z');
+        });
+    }
+
+    private signalMatchingProcesses(
+        identities: readonly PosixProcessIdentity[],
+        signal: NodeJS.Signals
+    ): void {
+        for (const identity of this.runningProcesses(identities)) {
+            try {
+                process.kill(identity.processId, signal);
+            } catch {
+            }
+        }
+    }
+
+    private async waitForExit(
+        identities: readonly PosixProcessIdentity[],
+        timeoutMs: number
+    ): Promise<PosixProcessIdentity[]> {
+        const deadline = performance.now() + timeoutMs;
+        let running = this.runningProcesses(identities);
+        while (running.length > 0 && performance.now() < deadline) {
+            await delay(10);
+            running = this.runningProcesses(running);
+        }
+        return running;
     }
 }
 
@@ -138,10 +206,18 @@ export class NodeCommandExecutor implements CommandExecutor {
         signal?: AbortSignal
     ): Promise<ProcessExecution> {
         const started = performance.now();
+        if (signal?.aborted) {
+            return Promise.resolve({
+                exitCode: -1,
+                stdout: '',
+                stderr: 'Simulation aborted',
+                elapsedTime: (performance.now() - started) / 1_000,
+                termination: 'abort',
+            });
+        }
         return new Promise(resolve => {
-            let termination: ProcessExecution['termination'] = signal?.aborted
-                ? 'abort'
-                : undefined;
+            let termination: ProcessExecution['termination'];
+            let terminationPromise: Promise<void> | undefined;
             const commandController = new AbortController();
             const child = exec(command, {
                 cwd,
@@ -149,15 +225,29 @@ export class NodeCommandExecutor implements CommandExecutor {
                 maxBuffer: 50 * 1024 * 1024,
                 signal: commandController.signal,
                 windowsHide: true,
-            }, (error, stdout, stderr) => {
+            }, async (error, stdout, stderr) => {
                 clearTimeout(timeout);
                 signal?.removeEventListener('abort', onAbort);
+                await terminationPromise;
                 const failure = error as ExecFailure | null;
+                if (failure !== null
+                    && typeof failure.code !== 'number'
+                    && termination === undefined) {
+                    termination = 'infrastructure';
+                }
                 const terminationMessage = termination === 'abort'
                     ? 'Simulation aborted'
                     : termination === 'timeout'
                         ? `Simulation timed out after ${timeoutSeconds} seconds`
                         : '';
+                const cause = termination === 'infrastructure' && failure !== null
+                    ? {
+                        ...(typeof failure.code === 'string'
+                            ? { code: failure.code }
+                            : {}),
+                        message: failure.message,
+                    }
+                    : undefined;
                 resolve({
                     exitCode: failure === null
                         ? 0
@@ -168,25 +258,25 @@ export class NodeCommandExecutor implements CommandExecutor {
                     ),
                     elapsedTime: (performance.now() - started) / 1_000,
                     ...(termination === undefined ? {} : { termination }),
+                    ...(cause === undefined ? {} : { cause }),
                 });
             });
-            const terminate = (): void => {
-                try {
-                    this.processTreeTerminator.terminate(child.pid);
-                } catch {
-                }
-                commandController.abort();
+            const terminate = (): Promise<void> => {
+                terminationPromise ??= Promise.resolve()
+                    .then(() => this.processTreeTerminator.terminate(child.pid))
+                    .catch(() => {})
+                    .then(() => commandController.abort());
+                return terminationPromise;
             };
             const onAbort = (): void => {
                 termination ??= 'abort';
-                terminate();
+                void terminate();
             };
             const timeout = setTimeout(() => {
                 termination ??= 'timeout';
-                terminate();
+                void terminate();
             }, timeoutSeconds * 1_000);
             signal?.addEventListener('abort', onAbort, { once: true });
-            if (termination === 'abort') terminate();
         });
     }
 }
@@ -263,6 +353,7 @@ async function executeNativeSimulation(
         timings: { compile: compile.elapsedTime },
         commands: { compile: compileCommand },
         artifacts: initialArtifacts,
+        ...(compile.cause === undefined ? {} : { cause: compile.cause }),
     };
     if (!compileResult.success) {
         return compileResult;
@@ -299,6 +390,7 @@ async function executeNativeSimulation(
         },
         commands: { compile: compileCommand, run: runCommand },
         artifacts: inspected.artifacts,
+        ...(run.cause === undefined ? {} : { cause: run.cause }),
     };
     return runResult;
 }

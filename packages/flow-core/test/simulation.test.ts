@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
     ConfiguredNativeSimulatorBackend,
     NativeSimulatorBackend as RootNativeSimulatorBackend,
+    type SimulationFailureCause,
 } from '@veriflow/flow-core';
 // @ts-expect-error The named legacy backend is available only from its direct subpath.
 import { LegacyNativeSimulatorBackend as RootLegacyNativeSimulatorBackend } from '@veriflow/flow-core';
@@ -129,6 +130,23 @@ async function waitForFile(filepath: string, timeoutMs: number): Promise<void> {
     }
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error(`Timed out after ${timeoutMs} ms`)),
+                    timeoutMs
+                );
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
 async function assertBackendTypeBoundaries(
     strictBackend: NativeSimulatorBackend,
     legacyBackend: LegacyNativeSimulatorBackend,
@@ -162,6 +180,10 @@ function assertRootBackendAliases(
 
 function legacyArtifacts(result: LegacySimulationExecution): unknown {
     return (result as unknown as { artifacts: unknown }).artifacts;
+}
+
+function infrastructureCause(cause: SimulationFailureCause): SimulationFailureCause {
+    return cause;
 }
 
 function captures(filepath: string): Capture[] {
@@ -403,6 +425,38 @@ test('native execution reports a requested VCD in place without copying it', asy
     }
 });
 
+test('native template arguments cannot execute shell substitutions', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-quote-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const sideEffectPath = path.join(root, 'injected');
+    const simulator = simulatorConfig(capturePath);
+    simulator.compileCmd = simulator.compileCmd.replace(
+        'compile "{output}" {files}',
+        'compile {defines} {include_dirs}'
+    );
+    const defineValue = `value"$(touch "${sideEffectPath}")`;
+    const includeDir = `headers"` + '`' + `touch "${sideEffectPath}"` + '`';
+    try {
+        const input = normalizedRequest(root);
+        input.defines = { PAYLOAD: defineValue };
+        input.includeDirs = [includeDir];
+
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulator
+        ).compileAndRun(input);
+
+        assert.equal(result.success, true);
+        assert.equal(existsSync(sideEffectPath), false);
+        assert.deepEqual(captures(capturePath)[0].args, [
+            `-DPAYLOAD=${defineValue}`,
+            `-I${includeDir}`,
+        ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('aborting native execution terminates the process and returns infrastructure failure', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-abort-'));
     const capturePath = path.join(root, 'calls.jsonl');
@@ -432,6 +486,70 @@ test('aborting native execution terminates the process and returns infrastructur
         assert.match(result.stderr, /aborted/i);
         await new Promise(resolve => setTimeout(resolve, 50));
         assert.equal(processExists(processId), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('native abort escalates to SIGKILL and waits for a SIGTERM-resistant descendant', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-kill-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const pidPath = path.join(root, 'simulator.pid');
+    const controller = new AbortController();
+    const simulator = simulatorConfig(capturePath, 'wait-ignore-term');
+    simulator.compileCmd += ` ${quote(pidPath)}`;
+    let processId: number | undefined;
+    let running: Promise<SimulationExecution> | undefined;
+    try {
+        running = new NativeSimulatorBackend(
+            'native:fake',
+            simulator
+        ).compileAndRun(createSimulationRequest({
+            files: [path.join(root, 'top.v')],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 5_000,
+            signal: controller.signal,
+        }));
+        await waitForFile(pidPath, 2_000);
+        processId = Number(readFileSync(pidPath, 'utf8'));
+
+        controller.abort();
+        const result = await withTimeout(running, 1_000);
+
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(processExists(processId), false);
+    } finally {
+        if (processId !== undefined && processExists(processId)) {
+            process.kill(processId, 'SIGKILL');
+        }
+        if (running !== undefined) await running.catch(() => {});
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('a pre-aborted signal returns without starting a command', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-pre-abort-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const controller = new AbortController();
+    const terminated: Array<number | undefined> = [];
+    controller.abort();
+    try {
+        const result = await new NodeCommandExecutor({
+            terminate(processId) {
+                terminated.push(processId);
+            },
+        }).execute(
+            simulatorConfig(capturePath).compileCmd,
+            root,
+            1,
+            controller.signal
+        );
+
+        assert.equal(result.termination, 'abort');
+        assert.match(result.stderr, /aborted/i);
+        assert.equal(existsSync(capturePath), false);
+        assert.deepEqual(terminated, []);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -494,6 +612,35 @@ test('node command executor removes abort listeners after completion', async () 
     assert.equal(activeAbortListeners, 0);
 });
 
+test('non-numeric command failures expose an infrastructure cause', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-cwd-'));
+    const missingCwd = path.join(root, 'missing');
+    try {
+        const processResult = await new NodeCommandExecutor().execute(
+            `${quote(process.execPath)} -e ""`,
+            missingCwd,
+            1
+        );
+        const execution = await new NativeSimulatorBackend(
+            'native:fake',
+            { name: 'fake', compileCmd: 'compile', runCmd: 'run' },
+            {
+                async execute() {
+                    return processResult;
+                },
+            }
+        ).compileAndRun(normalizedRequest(root));
+
+        assert.equal(processResult.termination, 'infrastructure');
+        assert.equal(infrastructureCause(processResult.cause!).code, 'ENOENT');
+        assert.match(processResult.cause?.message ?? '', /ENOENT/);
+        assert.equal(execution.stage, 'infrastructure');
+        assert.deepEqual(execution.cause, processResult.cause);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('Windows process-tree termination invokes taskkill without shell interpolation', () => {
     const calls: Array<{ executable: string; args: readonly string[] }> = [];
     const terminator = new NodeProcessTreeTerminator(
@@ -512,14 +659,14 @@ test('Windows process-tree termination invokes taskkill without shell interpolat
     }]);
 });
 
-test('Windows process-tree termination tolerates an already-exited process', () => {
+test('Windows process-tree termination tolerates an already-exited process', async () => {
     const terminator = new NodeProcessTreeTerminator('win32', () => {
         const error = new Error('process not found') as NodeJS.ErrnoException;
         error.code = 'ESRCH';
         throw error;
     });
 
-    assert.doesNotThrow(() => terminator.terminate(12_345));
+    await assert.doesNotReject(terminator.terminate(12_345));
 });
 
 test('abort invokes process-tree cleanup without replacing the abort result', async () => {
@@ -527,9 +674,9 @@ test('abort invokes process-tree cleanup without replacing the abort result', as
     const processIds: number[] = [];
     const nativeTerminator = new NodeProcessTreeTerminator();
     const terminator: ProcessTreeTerminator = {
-        terminate(processId) {
+        async terminate(processId) {
             if (processId !== undefined) processIds.push(processId);
-            nativeTerminator.terminate(processId);
+            await nativeTerminator.terminate(processId);
             throw new Error('cleanup failed');
         },
     };
@@ -553,9 +700,9 @@ test('timeout invokes process-tree cleanup without replacing the timeout result'
     const processIds: number[] = [];
     const nativeTerminator = new NodeProcessTreeTerminator();
     const terminator: ProcessTreeTerminator = {
-        terminate(processId) {
+        async terminate(processId) {
             if (processId !== undefined) processIds.push(processId);
-            nativeTerminator.terminate(processId);
+            await nativeTerminator.terminate(processId);
             throw new Error('cleanup failed');
         },
     };
