@@ -268,3 +268,45 @@ may be promoted as scalar top-level ports instead.
 **Tags:** #architecture #schematic #arch-design #interfaces #code-generation
 
 ---
+
+## 2026-08-16: Default to Icarus WASM while developing a TypeScript simulator
+
+**Context:** VeriFlow needs a zero-install simulator with dependable Verilog
+compatibility, while a project-owned simulator remains desirable for tighter
+integration, predictable cross-platform behavior, and long-term independence.
+The maintained Icarus fork already provides a Node-only WebAssembly package,
+but the current TypeScript HDL model is structural and does not implement
+executable Verilog semantics.
+
+**Decision:** Use `@veriflow/iverilog-wasm` as the stable built-in simulator,
+retain native Icarus as the development and performance reference, and develop
+a separate experimental TypeScript simulator targeting IEEE 1364-2005. Use the
+Verilog-2005 cases in Icarus `ivtest/regress-vlg.list` as the compatibility
+corpus, excluding cases that explicitly select another language generation.
+Do not support SystemVerilog or external VPI/PLI in the TypeScript simulator.
+Keep all backends behind the shared asynchronous simulation contract and never
+silently mix engines or fall back between them during one simulation.
+
+**Why not:**
+- Bundle native Icarus as the only built-in backend: platform-specific binaries,
+  signing, and release matrices add distribution cost that the existing WASM
+  package avoids.
+- Replace Icarus immediately with a TypeScript implementation: full Verilog-2005
+  elaboration and runtime compatibility is a multi-stage effort, so product
+  availability must not depend on its completion.
+- Treat native or WASM Icarus as the unquestionable semantic specification:
+  Icarus has documented extensions and deviations; IEEE behavior and each
+  regression case's declared expectation remain authoritative.
+- Transparently route unsupported constructs to another backend: a design must
+  execute under one coherent scheduler and semantic model.
+- Include SystemVerilog or external VPI/PLI in the first TypeScript target: both
+  materially expand the language, ABI, lifecycle, and compatibility surface.
+
+**Affects:** `packages/flow-core/`, `packages/hdl-core/`, `packages/hdl-runtime/`,
+`packages/cli/`, `veriflow-vscode/`, `.github/workflows/`
+
+**Related:** `docs/plans/2026-08-16-verilog-2005-simulator-backends-design.md`
+
+**Tags:** #architecture #simulation #verilog #wasm #performance #tooling
+
+---
