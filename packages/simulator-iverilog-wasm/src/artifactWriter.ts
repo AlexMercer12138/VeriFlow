@@ -20,6 +20,24 @@ export interface ArtifactWriteResult extends ArtifactWriteRequest {
     size: number;
 }
 
+export class ArtifactWriteError extends Error {
+    readonly cause: unknown;
+    readonly errors: readonly unknown[];
+    readonly results: readonly ArtifactWriteResult[];
+
+    constructor(
+        cause: unknown,
+        results: readonly ArtifactWriteResult[],
+        errors: readonly unknown[] = [cause],
+    ) {
+        super(cause instanceof Error ? cause.message : 'Artifact writing failed');
+        this.name = 'ArtifactWriteError';
+        this.cause = cause;
+        this.errors = errors;
+        this.results = results;
+    }
+}
+
 export interface ArtifactTempFile {
     writeFile(data: Uint8Array): Promise<unknown>;
     sync(): Promise<void>;
@@ -151,6 +169,7 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
     }
 
     const staged: StagedArtifact[] = [];
+    const committed = new Map<string, StagedArtifact>();
     const temporaryPaths: string[] = [];
     try {
         for (const entry of produced) {
@@ -189,20 +208,37 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
         for (const artifact of staged) {
             throwIfAborted(options.signal);
             await movePath(artifact.tempPath, artifact.destination);
+            committed.set(artifact.request.path, artifact);
         }
     } catch (error) {
         const cleanupErrors = await cleanupTemporaryPaths(
             temporaryPaths,
             removePath,
         );
-        throw combineErrors(error, cleanupErrors);
+        const combined = combineErrors(error, cleanupErrors);
+        if (committed.size > 0) {
+            throw new ArtifactWriteError(
+                combined instanceof ArtifactCleanupError
+                    ? combined.cause
+                    : combined,
+                artifactResults(requests, committed),
+                combined instanceof ArtifactCleanupError
+                    ? combined.errors
+                    : [combined],
+            );
+        }
+        throw combined;
     }
 
-    const resultByPath = new Map(
-        staged.map(artifact => [artifact.request.path, artifact]),
-    );
+    return artifactResults(requests, committed);
+}
+
+function artifactResults<T extends ArtifactWriteRequest>(
+    requests: readonly T[],
+    committed: ReadonlyMap<string, StagedArtifact>,
+): Array<T & { written: boolean; size: number }> {
     return requests.map(request => {
-        const artifact = resultByPath.get(request.path);
+        const artifact = committed.get(request.path);
         return {
             ...request,
             written: artifact !== undefined,

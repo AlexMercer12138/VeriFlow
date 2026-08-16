@@ -9,29 +9,68 @@ import {
     type SimulatorBackend,
 } from '@veriflow/flow-core';
 
-import { writeRequestedArtifacts } from './artifactWriter';
+import {
+    ArtifactWriteError,
+    writeRequestedArtifacts,
+    type ArtifactWriterFileSystem,
+} from './artifactWriter';
 import type { IverilogApi, RunResult } from './iverilogApi';
 import { loadIverilog } from './loadIverilog';
-import { buildVirtualWorkspace, type VirtualWorkspace } from './virtualWorkspace';
+import {
+    buildVirtualWorkspace,
+    type VirtualWorkspace,
+    type VirtualWorkspaceFileSystem,
+} from './virtualWorkspace';
 
 const BACKEND_ID = 'builtin';
 
 export type IverilogApiProvider = () => Promise<IverilogApi>;
 
+export interface IverilogWasmBackendOptions {
+    workspaceFileSystem?: VirtualWorkspaceFileSystem;
+    artifactFileSystem?: ArtifactWriterFileSystem;
+}
+
 export class IverilogWasmBackend implements SimulatorBackend {
     constructor(
         private readonly loadApi: IverilogApiProvider = loadIverilog,
+        private readonly options: IverilogWasmBackendOptions = {},
     ) {}
 
     async compileAndRun(input: SimulationRequest): Promise<NormalizedSimulationExecution> {
         const request = createSimulationRequest(input);
-        const workspace = await buildVirtualWorkspace({
-            cwd: request.cwd,
-            files: request.files,
-            runtimeFiles: request.runtimeFiles,
-            includeDirs: request.includeDirs,
-        });
         const started = performance.now();
+        if (request.signal?.aborted) {
+            return infrastructureFailure(
+                request,
+                abortedCause(),
+                (performance.now() - started) / 1_000,
+            );
+        }
+
+        let workspace: VirtualWorkspace;
+        try {
+            workspace = await buildVirtualWorkspace({
+                cwd: request.cwd,
+                files: request.files,
+                runtimeFiles: request.runtimeFiles,
+                includeDirs: request.includeDirs,
+            }, this.options.workspaceFileSystem);
+        } catch (error) {
+            return infrastructureFailure(
+                request,
+                infrastructureCause(error),
+                (performance.now() - started) / 1_000,
+            );
+        }
+        if (request.signal?.aborted) {
+            return infrastructureFailure(
+                request,
+                abortedCause(),
+                (performance.now() - started) / 1_000,
+            );
+        }
+
         let result: RunResult;
 
         try {
@@ -73,10 +112,12 @@ export class IverilogWasmBackend implements SimulatorBackend {
                         ...request.files,
                         ...request.runtimeFiles,
                     ],
+                    fileSystem: this.options.artifactFileSystem,
                 },
             );
         } catch (error) {
             const artifactTime = (performance.now() - artifactStarted) / 1_000;
+            const partialArtifacts = artifactFailureResults(error, request);
             return infrastructureFailure(
                 request,
                 artifactFailureCause(error),
@@ -86,6 +127,8 @@ export class IverilogWasmBackend implements SimulatorBackend {
                     ...stageTimings,
                     artifact: artifactTime,
                 },
+                partialArtifacts,
+                waveFileForArtifacts(partialArtifacts),
             );
         }
 
@@ -96,9 +139,7 @@ export class IverilogWasmBackend implements SimulatorBackend {
         const missingRequired = artifacts.filter(artifact => (
             artifact.required === true && !artifact.written
         ));
-        const waveFile = artifacts.find(artifact => (
-            artifact.kind === 'vcd' && artifact.written
-        ))?.destination ?? null;
+        const waveFile = waveFileForArtifacts(artifacts);
         const base: NormalizedSimulationExecution = {
             success: result.success,
             exitCode: result.exitCode,
@@ -178,13 +219,18 @@ function mapDiagnosticPaths(
     if (replacements.size === 0) return value;
 
     const pattern = new RegExp(
-        [...replacements.keys()]
+        `(^|[^A-Za-z0-9_./\\\\-])(${[...replacements.keys()]
             .sort((left, right) => right.length - left.length)
             .map(escapeRegExp)
-            .join('|'),
-        'g',
+            .join('|')})(?=:(?:\\d+(?=[:\\s])|\\s))`,
+        'gm',
     );
-    return value.replace(pattern, matched => replacements.get(matched)!);
+    return value.replace(
+        pattern,
+        (_matched, prefix: string, virtualPath: string) => (
+            `${prefix}${replacements.get(virtualPath)!}`
+        ),
+    );
 }
 
 function hostPathForVirtualPath(
@@ -223,6 +269,8 @@ function infrastructureFailure(
     elapsedTime: number,
     output: MappedOutput = { stdout: '', stderr: '', logEntries: [] },
     timings: NormalizedSimulationExecution['timings'] = {},
+    artifacts: SimulationArtifactResult[] = initialArtifacts(request),
+    waveFile: string | null = waveFileForArtifacts(artifacts),
 ): NormalizedSimulationExecution {
     return {
         success: false,
@@ -233,13 +281,13 @@ function infrastructureFailure(
             ...output.logEntries,
             { level: 'ERROR', message: cause.message },
         ],
-        waveFile: null,
+        waveFile,
         elapsedTime,
         backendId: BACKEND_ID,
         stage: 'infrastructure',
         timings,
         commands: {},
-        artifacts: initialArtifacts(request),
+        artifacts,
         cause,
     };
 }
@@ -268,13 +316,51 @@ function infrastructureCause(error: unknown): SimulationFailureCause {
     };
 }
 
+function abortedCause(): SimulationFailureCause {
+    return { code: 'ABORTED', message: 'Simulation aborted' };
+}
+
 function artifactFailureCause(error: unknown): SimulationFailureCause {
-    const infrastructure = infrastructureCause(error);
+    const infrastructure = infrastructureCause(artifactOperationCause(error));
     if (infrastructure.code === 'ABORTED') return infrastructure;
     return {
         code: 'ARTIFACT_WRITE',
         message: infrastructure.message,
     };
+}
+
+function artifactFailureResults(
+    error: unknown,
+    request: SimulationRequest,
+): SimulationArtifactResult[] {
+    if (!(error instanceof ArtifactWriteError)) return initialArtifacts(request);
+    const resultByPath = new Map(error.results.map(result => [result.path, result]));
+    return request.artifacts.map(artifact => {
+        const result = resultByPath.get(artifact.path);
+        return {
+            ...artifact,
+            written: result?.written ?? false,
+            size: result?.size ?? 0,
+        };
+    });
+}
+
+function artifactOperationCause(error: unknown): unknown {
+    let current = error instanceof ArtifactWriteError ? error.cause : error;
+    if (current instanceof Error
+        && current.name === 'ArtifactCleanupError'
+        && 'cause' in current) {
+        current = current.cause;
+    }
+    return current;
+}
+
+function waveFileForArtifacts(
+    artifacts: readonly SimulationArtifactResult[],
+): string | null {
+    return artifacts.find(artifact => (
+        artifact.kind === 'vcd' && artifact.written
+    ))?.destination ?? null;
 }
 
 function errorDetails(error: unknown): {

@@ -4,6 +4,7 @@ import {
     mkdtemp,
     mkdir,
     readFile,
+    rename,
     rm,
     writeFile,
 } from 'node:fs/promises';
@@ -239,6 +240,56 @@ test('does not remap host path text introduced by diagnostic mapping', async () 
         });
 
         assert.equal(result.stderr, `${nestedSource}:1: syntax error\n`);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps only complete virtual path tokens in diagnostic-shaped output', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-token-');
+    const stdout = [
+        'prefixworkspace/top.vsuffix',
+        '$display workspace/top.v',
+        '',
+    ].join('\n');
+    const stderr = [
+        'prefixworkspace/top.v:12: error: embedded token',
+        'workspace/top.v.bak:1: error: backup file',
+        'workspace/top.v:12: error: mapped relative',
+        '/work/workspace/top.v:13: error: mapped absolute',
+        '',
+    ].join('\n');
+    const api = apiReturning({
+        success: false,
+        stage: 'compile',
+        exitCode: 2,
+        stdout,
+        stderr,
+        timings: { preprocess: 1, compile: 1 },
+        artifacts: new Map(),
+    });
+
+    try {
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.stdout, stdout);
+        assert.equal(result.stderr, [
+            'prefixworkspace/top.v:12: error: embedded token',
+            'workspace/top.v.bak:1: error: backup file',
+            `${source}:12: error: mapped relative`,
+            `${source}:13: error: mapped absolute`,
+            '',
+        ].join('\n'));
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -514,6 +565,93 @@ test('maps abort after simulation settle and before artifact commit as aborted i
     }
 });
 
+test('reports artifacts committed before a later artifact rename failure', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-partial-write-');
+    const firstDestination = path.join(root, 'first.vcd');
+    const secondDestination = path.join(root, 'second.vcd');
+    const renameError = new Error('injected second rename failure');
+    let renames = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'simulation completed\n',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([
+            ['first.vcd', Buffer.from('first')],
+            ['second.vcd', Buffer.from('second')],
+        ]),
+    });
+    const backend = new IverilogWasmBackend(providerFor(api), {
+        artifactFileSystem: {
+            async rename(oldPath: string, newPath: string) {
+                renames += 1;
+                if (renames === 2) throw renameError;
+                await rename(oldPath, newPath);
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [
+                {
+                    kind: 'vcd',
+                    path: 'first.vcd',
+                    destination: firstDestination,
+                    required: true,
+                },
+                {
+                    kind: 'vcd',
+                    path: 'second.vcd',
+                    destination: secondDestination,
+                    required: true,
+                },
+            ],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.deepEqual(result.cause, {
+            code: 'ARTIFACT_WRITE',
+            message: renameError.message,
+        });
+        assert.deepEqual(result.artifacts, [
+            {
+                kind: 'vcd',
+                path: 'first.vcd',
+                destination: firstDestination,
+                required: true,
+                written: true,
+                size: 5,
+            },
+            {
+                kind: 'vcd',
+                path: 'second.vcd',
+                destination: secondDestination,
+                required: true,
+                written: false,
+                size: 0,
+            },
+        ]);
+        assert.equal(result.waveFile, firstDestination);
+        assert.ok((result.timings.artifact ?? -1) >= 0);
+        assert.equal(await readFile(firstDestination, 'utf8'), 'first');
+        await assert.rejects(readFile(secondDestination), { code: 'ENOENT' });
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('maps worker, protocol, timeout, trap, and abort rejections to infrastructure failures', async () => {
     const failures = [
         {
@@ -582,6 +720,178 @@ test('maps worker, protocol, timeout, trap, and abort rejections to infrastructu
         } finally {
             await rm(root, { recursive: true, force: true });
         }
+    }
+});
+
+test('pre-aborted requests skip workspace reads and API loading', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let reads = 0;
+    let realpaths = 0;
+    let loadCalls = 0;
+    const destination = path.join(os.tmpdir(), 'pre-aborted.vcd');
+    const backend = new IverilogWasmBackend(async () => {
+        loadCalls += 1;
+        throw new Error('API must not load');
+    }, {
+        workspaceFileSystem: {
+            async readFile() {
+                reads += 1;
+                return Buffer.alloc(0);
+            },
+            async realpath(hostPath: string) {
+                realpaths += 1;
+                return hostPath;
+            },
+        },
+    });
+
+    const result = await backend.compileAndRun({
+        files: ['/virtual/top.v'],
+        runtimeFiles: [],
+        includeDirs: [],
+        defines: {},
+        plusargs: [],
+        artifacts: [{
+            kind: 'vcd',
+            path: 'pre-aborted.vcd',
+            destination,
+            required: true,
+        }],
+        output: '/virtual/top.out',
+        cwd: '/virtual',
+        timeoutMs: 1_000,
+        signal: controller.signal,
+    });
+
+    assert.equal(reads, 0);
+    assert.equal(realpaths, 0);
+    assert.equal(loadCalls, 0);
+    assert.equal(result.backendId, 'builtin');
+    assert.equal(result.success, false);
+    assert.equal(result.stage, 'infrastructure');
+    assert.equal(result.exitCode, -1);
+    assert.equal(result.cause?.code, 'ABORTED');
+    assert.deepEqual(result.commands, {});
+    assert.deepEqual(result.timings, {});
+    assert.deepEqual(result.artifacts, [{
+        kind: 'vcd',
+        path: 'pre-aborted.vcd',
+        destination,
+        required: true,
+        written: false,
+        size: 0,
+    }]);
+});
+
+test('workspace read and canonicalization errors return infrastructure executions', async () => {
+    const failures = [
+        {
+            error: Object.assign(new Error('custom read failure'), {
+                code: 'CUSTOM_READ',
+            }),
+            fileSystem: {
+                async readFile(): Promise<never> {
+                    throw Object.assign(new Error('custom read failure'), {
+                        code: 'CUSTOM_READ',
+                    });
+                },
+                async realpath(hostPath: string) {
+                    return hostPath;
+                },
+            },
+        },
+        {
+            error: Object.assign(new Error('custom realpath failure'), {
+                code: 'CUSTOM_REALPATH',
+            }),
+            fileSystem: {
+                async readFile(): Promise<never> {
+                    throw new Error('read must not run');
+                },
+                async realpath(): Promise<never> {
+                    throw Object.assign(new Error('custom realpath failure'), {
+                        code: 'CUSTOM_REALPATH',
+                    });
+                },
+            },
+        },
+    ];
+
+    for (const failure of failures) {
+        let loadCalls = 0;
+        const destination = path.join(os.tmpdir(), `${failure.error.code}.vcd`);
+        const result = await new IverilogWasmBackend(async () => {
+            loadCalls += 1;
+            throw new Error('API must not load');
+        }, {
+            workspaceFileSystem: failure.fileSystem,
+        }).compileAndRun({
+            files: ['/virtual/top.v'],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'workspace-error.vcd',
+                destination,
+            }],
+            output: '/virtual/top.out',
+            cwd: '/virtual',
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(loadCalls, 0);
+        assert.equal(result.backendId, 'builtin');
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(result.exitCode, -1);
+        assert.deepEqual(result.cause, {
+            code: failure.error.code,
+            message: failure.error.message,
+        });
+        assert.deepEqual(result.commands, {});
+        assert.deepEqual(result.timings, {});
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: 'workspace-error.vcd',
+            destination,
+            written: false,
+            size: 0,
+        }]);
+    }
+});
+
+test('missing source files return ENOENT infrastructure executions', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-missing-'));
+    const missingSource = path.join(root, 'missing.v');
+    let loadCalls = 0;
+
+    try {
+        const result = await new IverilogWasmBackend(async () => {
+            loadCalls += 1;
+            throw new Error('API must not load');
+        }).compileAndRun({
+            files: [missingSource],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(root, 'missing.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(loadCalls, 0);
+        assert.equal(result.backendId, 'builtin');
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(result.cause?.code, 'ENOENT');
+        assert.match(result.cause?.message ?? '', /ENOENT/);
+        assert.deepEqual(result.artifacts, []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
     }
 });
 

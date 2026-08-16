@@ -9,6 +9,7 @@ import {
     rename,
     rm,
     symlink,
+    unlink,
     writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -16,9 +17,15 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+    ArtifactWriteError,
     writeRequestedArtifacts,
     type ArtifactWriterFileSystem,
 } from '../src/artifactWriter';
+import { ArtifactWriteError as PublicArtifactWriteError } from '../src';
+
+test('exports structured artifact write errors from the package root', () => {
+    assert.equal(PublicArtifactWriteError, ArtifactWriteError);
+});
 
 test('rejects unsafe artifact names before touching destinations', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-name-'));
@@ -435,6 +442,7 @@ test('cleans uncommitted temporary files after a later rename fails', async () =
     };
 
     try {
+        let captured: unknown;
         await assert.rejects(
             writeRequestedArtifacts(new Map([
                 ['first.vcd', Buffer.from('first')],
@@ -443,8 +451,35 @@ test('cleans uncommitted temporary files after a later rename fails', async () =
                 { path: 'first.vcd', destination: path.join(root, 'first.vcd') },
                 { path: 'second.vcd', destination: path.join(root, 'second.vcd') },
             ], { cwd: root, fileSystem }),
-            error => error === renameError,
+            error => {
+                captured = error;
+                return error instanceof Error && error.name === 'ArtifactWriteError';
+            },
         );
+        const artifactError = captured as Error & {
+            cause: unknown;
+            results: Array<{
+                path: string;
+                destination: string;
+                written: boolean;
+                size: number;
+            }>;
+        };
+        assert.equal(artifactError.cause, renameError);
+        assert.deepEqual(artifactError.results, [
+            {
+                path: 'first.vcd',
+                destination: path.join(root, 'first.vcd'),
+                written: true,
+                size: 5,
+            },
+            {
+                path: 'second.vcd',
+                destination: path.join(root, 'second.vcd'),
+                written: false,
+                size: 0,
+            },
+        ]);
         assert.equal(await readFile(path.join(root, 'first.vcd'), 'utf8'), 'first');
         await assert.rejects(lstat(path.join(root, 'second.vcd')), { code: 'ENOENT' });
         assert.deepEqual(await readdir(root), ['first.vcd']);
@@ -466,6 +501,7 @@ test('stops committing artifacts when aborted between renames', async () => {
     };
 
     try {
+        let captured: unknown;
         await assert.rejects(
             writeRequestedArtifacts(new Map([
                 ['first.vcd', Buffer.from('first')],
@@ -478,12 +514,94 @@ test('stops committing artifacts when aborted between renames', async () => {
                 signal: controller.signal,
                 fileSystem,
             }),
-            error => error instanceof Error && error.name === 'AbortError',
+            error => {
+                captured = error;
+                return error instanceof Error && error.name === 'ArtifactWriteError';
+            },
         );
+        const artifactError = captured as Error & {
+            cause: unknown;
+            results: Array<{
+                path: string;
+                destination: string;
+                written: boolean;
+                size: number;
+            }>;
+        };
+        assert.ok(artifactError.cause instanceof Error);
+        assert.equal(artifactError.cause.name, 'AbortError');
+        assert.deepEqual(artifactError.results, [
+            {
+                path: 'first.vcd',
+                destination: path.join(root, 'first.vcd'),
+                written: true,
+                size: 5,
+            },
+            {
+                path: 'second.vcd',
+                destination: path.join(root, 'second.vcd'),
+                written: false,
+                size: 0,
+            },
+        ]);
         assert.equal(renames, 1);
         assert.equal(await readFile(path.join(root, 'first.vcd'), 'utf8'), 'first');
         await assert.rejects(lstat(path.join(root, 'second.vcd')), { code: 'ENOENT' });
         assert.deepEqual(await readdir(root), ['first.vcd']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('preserves the original partial-write cause alongside cleanup diagnostics', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-partial-cleanup-'));
+    const renameError = new Error('injected rename failure');
+    const cleanupError = new Error('injected cleanup failure');
+    let renames = 0;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async rename(oldPath, newPath) {
+            renames += 1;
+            if (renames === 2) throw renameError;
+            await rename(oldPath, newPath);
+        },
+        async unlink(hostPath) {
+            if (path.basename(hostPath).startsWith('.second.vcd.')) {
+                throw cleanupError;
+            }
+            await unlink(hostPath);
+        },
+    };
+
+    try {
+        let captured: unknown;
+        await assert.rejects(
+            writeRequestedArtifacts(new Map([
+                ['first.vcd', Buffer.from('first')],
+                ['second.vcd', Buffer.from('second')],
+            ]), [
+                { path: 'first.vcd', destination: path.join(root, 'first.vcd') },
+                { path: 'second.vcd', destination: path.join(root, 'second.vcd') },
+            ], { cwd: root, fileSystem }),
+            error => {
+                captured = error;
+                return error instanceof Error && error.name === 'ArtifactWriteError';
+            },
+        );
+        const artifactError = captured as Error & {
+            cause: unknown;
+            errors: readonly unknown[];
+            results: Array<{ path: string; written: boolean; size: number }>;
+        };
+        assert.equal(artifactError.cause, renameError);
+        assert.deepEqual(artifactError.errors, [renameError, cleanupError]);
+        assert.deepEqual(artifactError.results.map(result => ({
+            path: result.path,
+            written: result.written,
+            size: result.size,
+        })), [
+            { path: 'first.vcd', written: true, size: 5 },
+            { path: 'second.vcd', written: false, size: 0 },
+        ]);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
