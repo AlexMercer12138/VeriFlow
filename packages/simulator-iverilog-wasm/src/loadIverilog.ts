@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import type { IverilogApi } from './iverilogApi';
 
@@ -40,7 +40,7 @@ export function createExtensionIverilogLoader(
             ]);
             assertContained(trustedRoot, modulePath);
 
-            return importEsm(moduleUrl.href);
+            return importEsm(pathToFileURL(modulePath).href);
         },
     };
 }

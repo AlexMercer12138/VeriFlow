@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -87,10 +88,9 @@ test('extension loader accepts only modules inside its bound file root', async (
         pathToFileURL(`${upstreamRoot}${path.sep}`),
     );
 
-    assert.equal(
-        typeof (await loader.load(pathToFileURL(upstreamEntry))).simulate,
-        'function',
-    );
+    const fileApi = await loader.load(pathToFileURL(upstreamEntry));
+    assert.equal(typeof fileApi.simulate, 'function');
+    await assertVerilog2005Pass(fileApi);
     await assert.rejects(
         loader.load('https://example.com/iverilog.js'),
         /must be @veriflow\/iverilog-wasm or a file: URL/,
@@ -107,7 +107,117 @@ test('extension loader accepts only modules inside its bound file root', async (
         loader.load(new URL('../package.json', pathToFileURL(`${upstreamRoot}${path.sep}`))),
         /outside the trusted extension root/,
     );
+    await assert.rejects(
+        loader.load(new URL(`${pathToFileURL(upstreamEntry).href}?version=1`)),
+        /must not contain a query or fragment/,
+    );
+    await assert.rejects(
+        loader.load(new URL(`${pathToFileURL(upstreamEntry).href}#entry`)),
+        /must not contain a query or fragment/,
+    );
+    await assert.rejects(
+        loader.load(new URL(
+            `%2e%2e/package.json`,
+            pathToFileURL(`${upstreamRoot}${path.sep}`),
+        )),
+        /outside the trusted extension root/,
+    );
 });
+
+test('extension loader rejects a trusted-root link that resolves outside', async t => {
+    const fixtureRoot = await mkdtemp(
+        path.join(packageRoot, 'dist-test', 'outside-link-'),
+    );
+    const trustedRoot = path.join(fixtureRoot, 'trusted');
+    const outsideRoot = path.join(fixtureRoot, 'outside');
+    const linkedRoot = path.join(trustedRoot, 'linked');
+
+    try {
+        await Promise.all([
+            mkdir(trustedRoot),
+            mkdir(outsideRoot),
+        ]);
+        await writeFile(
+            path.join(outsideRoot, 'runtime.mjs'),
+            'export const loadedFrom = import.meta.url;\n',
+        );
+        if (!await createDirectoryLink(outsideRoot, linkedRoot, t)) return;
+
+        const loader = requireAdapter().createExtensionIverilogLoader(
+            pathToFileURL(`${trustedRoot}${path.sep}`),
+        );
+        await assert.rejects(
+            loader.load(pathToFileURL(path.join(linkedRoot, 'runtime.mjs'))),
+            /outside the trusted extension root/,
+        );
+    } finally {
+        await rm(fixtureRoot, { recursive: true, force: true });
+    }
+});
+
+test('extension loader imports the canonical path behind a trusted-root link', async t => {
+    const fixtureRoot = await mkdtemp(
+        path.join(packageRoot, 'dist-test', 'inside-link-'),
+    );
+    const trustedRoot = path.join(fixtureRoot, 'trusted');
+    const canonicalRoot = path.join(trustedRoot, 'canonical');
+    const linkedRoot = path.join(trustedRoot, 'linked');
+    const canonicalEntry = path.join(canonicalRoot, 'runtime.mjs');
+
+    try {
+        await mkdir(canonicalRoot, { recursive: true });
+        await writeFile(
+            canonicalEntry,
+            'export const loadedFrom = import.meta.url;\n',
+        );
+        if (!await createDirectoryLink(canonicalRoot, linkedRoot, t)) return;
+
+        const script = [
+            `const { pathToFileURL } = require('node:url');`,
+            `const adapter = require(${JSON.stringify(adapterPath)});`,
+            `const loader = adapter.createExtensionIverilogLoader(pathToFileURL(${JSON.stringify(`${trustedRoot}${path.sep}`)}));`,
+            `loader.load(pathToFileURL(${JSON.stringify(path.join(linkedRoot, 'runtime.mjs'))}))`,
+            `  .then(api => {`,
+            `    const expected = pathToFileURL(${JSON.stringify(canonicalEntry)}).href;`,
+            `    if (api.loadedFrom !== expected) {`,
+            `      throw new Error(JSON.stringify({ expected, actual: api.loadedFrom }));`,
+            `    }`,
+            `  })`,
+            `  .catch(error => { console.error(error); process.exitCode = 1; });`,
+        ].join('\n');
+        const result = spawnSync(process.execPath, [
+            '--preserve-symlinks',
+            '-e',
+            script,
+        ], { encoding: 'utf8' });
+
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+    } finally {
+        await rm(fixtureRoot, { recursive: true, force: true });
+    }
+});
+
+async function createDirectoryLink(
+    target: string,
+    link: string,
+    context: test.TestContext,
+): Promise<boolean> {
+    try {
+        await symlink(
+            target,
+            link,
+            process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        return true;
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+            context.skip(`directory links are unavailable: ${code}`);
+            return false;
+        }
+        throw error;
+    }
+}
 
 test('bundled CommonJS adapter keeps the ESM runtime and binary assets external', async () => {
     await mkdir(path.join(packageRoot, 'dist-test'), { recursive: true });

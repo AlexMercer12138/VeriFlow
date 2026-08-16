@@ -21,7 +21,7 @@
     "watch:vscode": "node scripts/watch-vscode.mjs",
     "build": "npm run build:parser && npm run build:vscode",
     "typecheck:shared": "npm run build:shared && npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/schematic-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime --workspace @veriflow/simulator-iverilog-wasm",
-    "test:shared": "npm test --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/schematic-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime",
+    "test:shared": "npm test --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/schematic-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime --workspace @veriflow/simulator-iverilog-wasm",
     "test:cli": "npm test --workspace @veriflow/cli",
     "test:release": "node --test scripts/lib/npm-command.test.mjs scripts/lib/python-retirement.test.mjs scripts/lib/release.test.mjs && node scripts/test-node-release.mjs",
     "test": "npm run test --workspaces --if-present",

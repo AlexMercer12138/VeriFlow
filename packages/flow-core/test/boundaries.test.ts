@@ -12,6 +12,7 @@ const sharedPackages = [
     '@veriflow/schematic-core',
     '@veriflow/hdl-runtime',
     '@veriflow/waveform-runtime',
+    '@veriflow/simulator-iverilog-wasm',
 ] as const;
 const vscodeProductName = JSON.parse(readFileSync(
     path.join(repositoryRoot, 'veriflow-vscode', 'package.json'),
@@ -41,6 +42,22 @@ const archDesignRuntimeExports = [
 function packageDirectory(packageName: string): string {
     return path.join(repositoryRoot, 'packages', packageName.slice('@veriflow/'.length));
 }
+
+test('shared test aggregate covers every shared package', () => {
+    const rootManifest = JSON.parse(readFileSync(
+        path.join(repositoryRoot, 'package.json'),
+        'utf8'
+    )) as { scripts: Record<string, string> };
+    const sharedTest = rootManifest.scripts['test:shared'];
+
+    for (const packageName of sharedPackages) {
+        assert.match(
+            sharedTest,
+            new RegExp(`--workspace ${packageName.replace('/', '\\/')}(?: |$)`),
+            `${packageName} is missing from test:shared`
+        );
+    }
+});
 
 function sourceFiles(directory: string): string[] {
     return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
