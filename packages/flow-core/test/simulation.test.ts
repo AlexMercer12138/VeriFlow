@@ -18,6 +18,8 @@ import {
     LegacyNativeSimulatorBackend,
     NativeSimulatorBackend,
     NodeCommandExecutor,
+    NodeProcessTreeTerminator,
+    type ProcessTreeTerminator,
 } from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
     createSimulationRequest,
@@ -490,6 +492,84 @@ test('node command executor removes abort listeners after completion', async () 
     );
 
     assert.equal(activeAbortListeners, 0);
+});
+
+test('Windows process-tree termination invokes taskkill without shell interpolation', () => {
+    const calls: Array<{ executable: string; args: readonly string[] }> = [];
+    const terminator = new NodeProcessTreeTerminator(
+        'win32',
+        (executable, args) => {
+            calls.push({ executable, args });
+            return '';
+        }
+    );
+
+    terminator.terminate(12_345);
+
+    assert.deepEqual(calls, [{
+        executable: 'taskkill',
+        args: ['/PID', '12345', '/T', '/F'],
+    }]);
+});
+
+test('Windows process-tree termination tolerates an already-exited process', () => {
+    const terminator = new NodeProcessTreeTerminator('win32', () => {
+        const error = new Error('process not found') as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+    });
+
+    assert.doesNotThrow(() => terminator.terminate(12_345));
+});
+
+test('abort invokes process-tree cleanup without replacing the abort result', async () => {
+    const controller = new AbortController();
+    const processIds: number[] = [];
+    const nativeTerminator = new NodeProcessTreeTerminator();
+    const terminator: ProcessTreeTerminator = {
+        terminate(processId) {
+            if (processId !== undefined) processIds.push(processId);
+            nativeTerminator.terminate(processId);
+            throw new Error('cleanup failed');
+        },
+    };
+    const execution = new NodeCommandExecutor(terminator).execute(
+        `${quote(process.execPath)} -e "setInterval(() => {}, 1000)"`,
+        process.cwd(),
+        5,
+        controller.signal
+    );
+    setTimeout(() => controller.abort(), 25);
+
+    const result = await execution;
+
+    assert.equal(result.termination, 'abort');
+    assert.match(result.stderr, /aborted/i);
+    assert.equal(processIds.length, 1);
+    assert.ok(Number.isInteger(processIds[0]) && processIds[0] > 0);
+});
+
+test('timeout invokes process-tree cleanup without replacing the timeout result', async () => {
+    const processIds: number[] = [];
+    const nativeTerminator = new NodeProcessTreeTerminator();
+    const terminator: ProcessTreeTerminator = {
+        terminate(processId) {
+            if (processId !== undefined) processIds.push(processId);
+            nativeTerminator.terminate(processId);
+            throw new Error('cleanup failed');
+        },
+    };
+
+    const result = await new NodeCommandExecutor(terminator).execute(
+        `${quote(process.execPath)} -e "setInterval(() => {}, 1000)"`,
+        process.cwd(),
+        0.025
+    );
+
+    assert.equal(result.termination, 'timeout');
+    assert.match(result.stderr, /timed out/i);
+    assert.equal(processIds.length, 1);
+    assert.ok(Number.isInteger(processIds[0]) && processIds[0] > 0);
 });
 
 test('normalized native results omit legacy command aliases', async () => {

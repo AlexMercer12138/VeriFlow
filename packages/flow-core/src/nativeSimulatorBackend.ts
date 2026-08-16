@@ -21,14 +21,55 @@ type ExecFailure = Error & {
     code?: number | string;
 };
 
-function descendantProcessIds(processId: number): number[] {
-    if (process.platform === 'win32') return [];
-    try {
+type ExecFileRunner = (
+    executable: string,
+    args: readonly string[]
+) => string;
+
+export interface ProcessTreeTerminator {
+    terminate(processId: number | undefined): void;
+}
+
+function nodeExecFileRunner(executable: string, args: readonly string[]): string {
+    return execFileSync(executable, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+    });
+}
+
+export class NodeProcessTreeTerminator implements ProcessTreeTerminator {
+    constructor(
+        private readonly platform: NodeJS.Platform = process.platform,
+        private readonly execFileRunner: ExecFileRunner = nodeExecFileRunner
+    ) {}
+
+    terminate(processId: number | undefined): void {
+        if (processId === undefined) return;
+        try {
+            if (this.platform === 'win32') {
+                this.execFileRunner('taskkill', [
+                    '/PID',
+                    String(processId),
+                    '/T',
+                    '/F',
+                ]);
+                return;
+            }
+
+            const children = this.posixDescendantProcessIds(processId);
+            for (const descendant of children) {
+                try {
+                    process.kill(descendant, 'SIGTERM');
+                } catch {
+                }
+            }
+        } catch {
+        }
+    }
+
+    private posixDescendantProcessIds(processId: number): number[] {
         const children = new Map<number, number[]>();
-        const processes = execFileSync('ps', ['-eo', 'pid=,ppid='], {
-            encoding: 'utf8',
-            windowsHide: true,
-        });
+        const processes = this.execFileRunner('ps', ['-eo', 'pid=,ppid=']);
         for (const line of processes.split('\n')) {
             const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
             if (match === null) continue;
@@ -47,18 +88,6 @@ function descendantProcessIds(processId: number): number[] {
         };
         visit(processId);
         return descendants;
-    } catch {
-        return [];
-    }
-}
-
-function killProcessTree(processId: number | undefined): void {
-    if (processId === undefined) return;
-    for (const descendant of descendantProcessIds(processId)) {
-        try {
-            process.kill(descendant, 'SIGTERM');
-        } catch {
-        }
     }
 }
 
@@ -97,6 +126,11 @@ function normalizeLegacyRequest(request: LegacyNativeSimulationRequest): Simulat
 }
 
 export class NodeCommandExecutor implements CommandExecutor {
+    constructor(
+        private readonly processTreeTerminator: ProcessTreeTerminator =
+            new NodeProcessTreeTerminator()
+    ) {}
+
     execute(
         command: string,
         cwd: string,
@@ -137,7 +171,10 @@ export class NodeCommandExecutor implements CommandExecutor {
                 });
             });
             const terminate = (): void => {
-                killProcessTree(child.pid);
+                try {
+                    this.processTreeTerminator.terminate(child.pid);
+                } catch {
+                }
                 commandController.abort();
             };
             const onAbort = (): void => {
