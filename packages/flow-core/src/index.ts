@@ -10,8 +10,6 @@ export * from './projectStore';
 export { createSimulationRequest } from './simulation';
 export type {
     CommandExecutor,
-    LegacyNativeSimulationRequest,
-    LegacySimulationExecution,
     ProcessExecution,
     SimulationArtifactRequest,
     SimulationArtifactResult,

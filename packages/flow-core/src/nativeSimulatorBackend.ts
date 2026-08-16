@@ -23,6 +23,18 @@ type ExecFailure = Error & {
     killed?: boolean;
 };
 
+type LegacyCompatibleSimulationExecution = SimulationExecution & LegacySimulationExecution;
+
+function withLegacyCommandAliases(
+    execution: SimulationExecution,
+    legacyRequest: LegacyNativeSimulationRequest | undefined,
+    compileCommand: string,
+    runCommand: string
+): SimulationExecution | LegacyCompatibleSimulationExecution {
+    if (legacyRequest === undefined) return execution;
+    return { ...execution, compileCommand, runCommand };
+}
+
 export class NodeCommandExecutor implements CommandExecutor {
     execute(command: string, cwd: string, timeoutSeconds: number): Promise<ProcessExecution> {
         const started = performance.now();
@@ -86,10 +98,10 @@ export class NativeSimulatorBackend implements SimulatorBackend {
     /** @deprecated Pass a normalized request; remove in Task 9. */
     async compileAndRun(
         request: LegacyNativeSimulationRequest
-    ): Promise<SimulationExecution & LegacySimulationExecution>;
+    ): Promise<LegacyCompatibleSimulationExecution>;
     async compileAndRun(
         request: SimulationRequest | LegacyNativeSimulationRequest
-    ): Promise<SimulationExecution & LegacySimulationExecution> {
+    ): Promise<SimulationExecution | LegacyCompatibleSimulationExecution> {
         let legacyRequest: LegacyNativeSimulationRequest | undefined;
         let normalizedRequest: SimulationRequest;
         if ('simulator' in request) {
@@ -125,7 +137,7 @@ export class NativeSimulatorBackend implements SimulatorBackend {
             PROCESS_TIMEOUT_SECONDS
         );
         const compileEntries = this.logParser.parse(`${compile.stdout}\n${compile.stderr}`);
-        const compileResult: SimulationExecution & LegacySimulationExecution = {
+        const compileResult: SimulationExecution = {
             success: compile.exitCode === 0 && !this.logParser.hasErrors(compile.stderr),
             exitCode: compile.exitCode,
             stdout: compile.stdout,
@@ -138,10 +150,15 @@ export class NativeSimulatorBackend implements SimulatorBackend {
             timings: {},
             commands: { compile: compileCommand },
             artifacts,
-            compileCommand,
-            runCommand: '',
         };
-        if (!compileResult.success) return compileResult;
+        if (!compileResult.success) {
+            return withLegacyCommandAliases(
+                compileResult,
+                legacyRequest,
+                compileCommand,
+                ''
+            );
+        }
 
         const runCommand = TemplateEngine.renderRun(simulator.runCmd, output);
         const run = await this.executor.execute(
@@ -149,7 +166,7 @@ export class NativeSimulatorBackend implements SimulatorBackend {
             normalizedRequest.cwd,
             PROCESS_TIMEOUT_SECONDS
         );
-        return {
+        const runResult: SimulationExecution = {
             success: run.exitCode === 0,
             exitCode: run.exitCode,
             stdout: run.stdout,
@@ -165,8 +182,12 @@ export class NativeSimulatorBackend implements SimulatorBackend {
             timings: {},
             commands: { compile: compileCommand, run: runCommand },
             artifacts,
-            compileCommand,
-            runCommand,
         };
+        return withLegacyCommandAliases(
+            runResult,
+            legacyRequest,
+            compileCommand,
+            runCommand
+        );
     }
 }

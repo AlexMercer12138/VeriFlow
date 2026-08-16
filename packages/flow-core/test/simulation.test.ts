@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+// @ts-expect-error Legacy native requests are available only from the simulation subpath.
+import type { LegacyNativeSimulationRequest as RootLegacyRequest } from '@veriflow/flow-core';
+// @ts-expect-error Legacy executions are available only from the simulation subpath.
+import type { LegacySimulationExecution as RootLegacyExecution } from '@veriflow/flow-core';
 import { NativeSimulatorBackend } from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
     createSimulationRequest,
@@ -200,6 +204,22 @@ test('normalized native results report backend, stage, commands, timings, and ar
             written: false,
             size: 0,
         });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('normalized native results omit legacy command aliases', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-no-aliases-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    try {
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(capturePath)
+        ).compileAndRun(normalizedRequest(root));
+
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'compileCommand'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(result, 'runCommand'), false);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
