@@ -786,6 +786,149 @@ test('reports cleanup diagnostics after aborting between artifact renames', asyn
     }
 });
 
+test('preserves cleanup errors with identical messages and distinct codes', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-cleanup-codes-');
+    const destination = path.join(root, 'wave.vcd');
+    const operationError = new Error('injected artifact write failure');
+    const accessError = Object.assign(new Error('cleanup failed'), { code: 'EACCES' });
+    const permissionError = Object.assign(new Error('cleanup failed'), { code: 'EPERM' });
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([['wave.vcd', Buffer.from('wave')]]),
+    });
+    const backend = new IverilogWasmBackend(providerFor(api), {
+        artifactFileSystem: {
+            async openExclusive() {
+                return {
+                    async writeFile() {
+                        throw operationError;
+                    },
+                    async sync() {},
+                    async close() {
+                        throw accessError;
+                    },
+                };
+            },
+            async unlink() {
+                throw permissionError;
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        const accessMessage = 'Artifact cleanup failed (EACCES): cleanup failed';
+        const permissionMessage = 'Artifact cleanup failed (EPERM): cleanup failed';
+        assert.deepEqual(result.cause, {
+            code: 'ARTIFACT_WRITE',
+            message: operationError.message,
+        });
+        assert.equal(
+            result.stderr,
+            `${operationError.message}\n${accessMessage}\n${permissionMessage}\n`,
+        );
+        assert.deepEqual(result.logEntries.filter(entry => entry.level === 'ERROR'), [
+            { level: 'ERROR', message: operationError.message },
+            { level: 'ERROR', message: accessMessage },
+            { level: 'ERROR', message: permissionMessage },
+        ]);
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: 'wave.vcd',
+            destination,
+            required: true,
+            written: false,
+            size: 0,
+        }]);
+        assert.equal(result.waveFile, null);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('does not report AggregateError children as artifact cleanup failures', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-aggregate-write-');
+    const destination = path.join(root, 'wave.vcd');
+    const AggregateErrorConstructor = (globalThis as unknown as {
+        AggregateError: new (
+            errors: readonly unknown[],
+            message: string,
+        ) => Error & { errors: readonly unknown[] };
+    }).AggregateError;
+    const operationError = new AggregateErrorConstructor([
+        new Error('first operation detail'),
+        new Error('second operation detail'),
+    ], 'aggregate operation failed');
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([['wave.vcd', Buffer.from('wave')]]),
+    });
+    const backend = new IverilogWasmBackend(providerFor(api), {
+        artifactFileSystem: {
+            async rename() {
+                throw operationError;
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.deepEqual(result.cause, {
+            code: 'ARTIFACT_WRITE',
+            message: operationError.message,
+        });
+        assert.equal(result.stderr, `${operationError.message}\n`);
+        assert.deepEqual(result.logEntries.filter(entry => entry.level === 'ERROR'), [
+            { level: 'ERROR', message: operationError.message },
+        ]);
+        assert.doesNotMatch(result.stderr, /Artifact cleanup failed/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('maps worker, protocol, timeout, trap, and abort rejections to infrastructure failures', async () => {
     const failures = [
         {

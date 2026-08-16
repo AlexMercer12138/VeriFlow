@@ -22,18 +22,20 @@ export interface ArtifactWriteResult extends ArtifactWriteRequest {
 
 export class ArtifactWriteError extends Error {
     readonly cause: unknown;
+    readonly cleanupErrors: readonly unknown[];
     readonly errors: readonly unknown[];
     readonly results: readonly ArtifactWriteResult[];
 
     constructor(
         cause: unknown,
         results: readonly ArtifactWriteResult[],
-        errors: readonly unknown[] = [cause],
+        cleanupErrors: readonly unknown[] = [],
     ) {
         super(cause instanceof Error ? cause.message : 'Artifact writing failed');
         this.name = 'ArtifactWriteError';
         this.cause = cause;
-        this.errors = errors;
+        this.cleanupErrors = [...cleanupErrors];
+        this.errors = [cause, ...this.cleanupErrors];
         this.results = results;
     }
 }
@@ -69,13 +71,13 @@ interface StagedArtifact {
 }
 
 class ArtifactCleanupError extends Error {
-    readonly errors: readonly unknown[];
+    readonly cleanupErrors: readonly unknown[];
     readonly cause: unknown;
 
-    constructor(errors: readonly unknown[], cause: unknown) {
+    constructor(cleanupErrors: readonly unknown[], cause: unknown) {
         super('Artifact operation failed and cleanup also failed');
         this.name = 'ArtifactCleanupError';
-        this.errors = errors;
+        this.cleanupErrors = cleanupErrors;
         this.cause = cause;
     }
 }
@@ -216,18 +218,20 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
             removePath,
         );
         const combined = combineErrors(error, cleanupErrors);
-        if (committed.size > 0) {
+        const operationError = combined instanceof ArtifactCleanupError
+            ? combined.cause
+            : combined;
+        const cleanupFailures = combined instanceof ArtifactCleanupError
+            ? combined.cleanupErrors
+            : [];
+        if (committed.size > 0 || cleanupFailures.length > 0) {
             throw new ArtifactWriteError(
-                combined instanceof ArtifactCleanupError
-                    ? combined.cause
-                    : combined,
+                operationError,
                 artifactResults(requests, committed),
-                combined instanceof ArtifactCleanupError
-                    ? combined.errors
-                    : [combined],
+                cleanupFailures,
             );
         }
-        throw combined;
+        throw operationError;
     }
 
     return artifactResults(requests, committed);
@@ -369,12 +373,12 @@ function combineErrors(
     if (cleanupErrors.length === 0) return original;
     if (original instanceof ArtifactCleanupError) {
         return new ArtifactCleanupError(
-            [...original.errors, ...cleanupErrors],
+            [...original.cleanupErrors, ...cleanupErrors],
             original.cause,
         );
     }
     return new ArtifactCleanupError(
-        [original, ...cleanupErrors],
+        cleanupErrors,
         original,
     );
 }

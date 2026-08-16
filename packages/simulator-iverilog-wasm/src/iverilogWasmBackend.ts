@@ -352,32 +352,34 @@ function artifactFailureResults(
 }
 
 function artifactOperationCause(error: unknown): unknown {
-    let current = error instanceof ArtifactWriteError ? error.cause : error;
-    if (current instanceof Error
-        && current.name === 'ArtifactCleanupError'
-        && 'cause' in current) {
-        current = current.cause;
-    }
-    return current;
+    return error instanceof ArtifactWriteError ? error.cause : error;
 }
 
 function artifactCleanupMessages(error: unknown): string[] {
-    if (typeof error !== 'object' || error === null || !('errors' in error)) {
-        return [];
-    }
-    const errors = error.errors;
-    if (!Array.isArray(errors)) return [];
+    if (!(error instanceof ArtifactWriteError)) return [];
 
-    const operationCause = artifactOperationCause(error);
-    const operationMessage = errorDetails(operationCause).message;
-    const seen = new Set([operationMessage]);
-    return errors.flatMap(candidate => {
-        if (candidate === operationCause) return [];
-        const message = errorDetails(candidate).message;
-        if (seen.has(message)) return [];
-        seen.add(message);
-        return [`Artifact cleanup failed: ${message}`];
+    const seen = new Set<string>();
+    return error.cleanupErrors.flatMap(cleanupError => {
+        const key = cleanupErrorKey(cleanupError);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        const details = errorDetails(cleanupError);
+        const code = details.code === undefined ? '' : ` (${details.code})`;
+        return [`Artifact cleanup failed${code}: ${details.message}`];
     });
+}
+
+function cleanupErrorKey(error: unknown): string {
+    if (error instanceof Error) {
+        const details = errorDetails(error);
+        return JSON.stringify([
+            'error',
+            details.name,
+            details.code ?? null,
+            details.message,
+        ]);
+    }
+    return JSON.stringify(['value', typeof error, String(error)]);
 }
 
 function waveFileForArtifacts(

@@ -589,10 +589,12 @@ test('preserves the original partial-write cause alongside cleanup diagnostics',
         );
         const artifactError = captured as Error & {
             cause: unknown;
+            cleanupErrors: readonly unknown[];
             errors: readonly unknown[];
             results: Array<{ path: string; written: boolean; size: number }>;
         };
         assert.equal(artifactError.cause, renameError);
+        assert.deepEqual(artifactError.cleanupErrors, [cleanupError]);
         assert.deepEqual(artifactError.errors, [renameError, cleanupError]);
         assert.deepEqual(artifactError.results.map(result => ({
             path: result.path,
@@ -659,12 +661,12 @@ test('does not create missing artifact destination directories', async () => {
 });
 
 function reportsErrors(error: unknown, expected: readonly unknown[]): boolean {
-    assert.ok(error instanceof Error);
-    const reported = error as Error & {
-        cause?: unknown;
-        errors?: readonly unknown[];
+    assert.ok(error instanceof ArtifactWriteError);
+    const reported = error as ArtifactWriteError & {
+        cleanupErrors?: readonly unknown[];
     };
     assert.deepEqual(reported.errors, expected);
     assert.equal(reported.cause, expected[0]);
+    assert.deepEqual(reported.cleanupErrors, expected.slice(1));
     return true;
 }
