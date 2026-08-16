@@ -4,7 +4,6 @@ import {
     mkdir,
     mkdtemp,
     readFile,
-    realpath,
     rm,
     symlink,
     writeFile,
@@ -212,6 +211,9 @@ test('normalizes Windows drives and separators into valid POSIX virtual paths', 
             readPaths.push(hostPath);
             return Buffer.from(hostPath);
         },
+        async realpath(hostPath) {
+            return hostPath;
+        },
     });
 
     assert.deepEqual(workspace.sources.slice(0, 2), [
@@ -277,7 +279,6 @@ test('rejects source aliases that resolve to the same host file', async t => {
                     reads += 1;
                     return readFile(hostPath);
                 },
-                realpath,
             }),
             /duplicate host file|duplicate virtual path/i,
         );

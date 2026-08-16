@@ -50,6 +50,18 @@ interface StagedArtifact {
     size: number;
 }
 
+class ArtifactCleanupError extends Error {
+    readonly errors: readonly unknown[];
+    readonly cause: unknown;
+
+    constructor(errors: readonly unknown[], cause: unknown) {
+        super('Artifact operation failed and cleanup also failed');
+        this.name = 'ArtifactCleanupError';
+        this.errors = errors;
+        this.cause = cause;
+    }
+}
+
 const defaultOpenExclusive = async (tempPath: string): Promise<FileHandle> => (
     open(tempPath, 'wx', 0o600)
 );
@@ -153,8 +165,17 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
                 await handle.sync();
                 await handle.close();
                 closed = true;
-            } finally {
-                if (!closed) await handle.close().catch(() => {});
+            } catch (operationError) {
+                const closeErrors: unknown[] = [];
+                if (!closed) {
+                    try {
+                        await handle.close();
+                        closed = true;
+                    } catch (closeError) {
+                        closeErrors.push(closeError);
+                    }
+                }
+                throw combineErrors(operationError, closeErrors);
             }
             staged.push({
                 request: entry.request,
@@ -166,13 +187,15 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
 
         throwIfAborted(options.signal);
         for (const artifact of staged) {
+            throwIfAborted(options.signal);
             await movePath(artifact.tempPath, artifact.destination);
         }
     } catch (error) {
-        await Promise.all(temporaryPaths.map(tempPath => (
-            removePath(tempPath).catch(() => {})
-        )));
-        throw error;
+        const cleanupErrors = await cleanupTemporaryPaths(
+            temporaryPaths,
+            removePath,
+        );
+        throw combineErrors(error, cleanupErrors);
     }
 
     const resultByPath = new Map(
@@ -277,6 +300,47 @@ async function canonicalArtifactDestination(
 
 function nativePathComparisonKey(hostPath: string): string {
     return process.platform === 'win32' ? hostPath.toLowerCase() : hostPath;
+}
+
+async function cleanupTemporaryPaths(
+    tempPaths: readonly string[],
+    removePath: (hostPath: string) => Promise<void>,
+): Promise<unknown[]> {
+    const outcomes = await Promise.all(tempPaths.map(async tempPath => {
+        try {
+            await removePath(tempPath);
+            return { failed: false as const };
+        } catch (error) {
+            return isMissingPathError(error)
+                ? { failed: false as const }
+                : { failed: true as const, error };
+        }
+    }));
+    return outcomes.flatMap(outcome => outcome.failed ? [outcome.error] : []);
+}
+
+function isMissingPathError(error: unknown): boolean {
+    return typeof error === 'object'
+        && error !== null
+        && 'code' in error
+        && error.code === 'ENOENT';
+}
+
+function combineErrors(
+    original: unknown,
+    cleanupErrors: readonly unknown[],
+): unknown {
+    if (cleanupErrors.length === 0) return original;
+    if (original instanceof ArtifactCleanupError) {
+        return new ArtifactCleanupError(
+            [...original.errors, ...cleanupErrors],
+            original.cause,
+        );
+    }
+    return new ArtifactCleanupError(
+        [original, ...cleanupErrors],
+        original,
+    );
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

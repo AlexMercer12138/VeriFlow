@@ -6,6 +6,7 @@ import {
     open,
     readFile,
     readdir,
+    rename,
     rm,
     symlink,
     writeFile,
@@ -320,6 +321,174 @@ test('cleans sibling temporary files when fsync fails', async () => {
     }
 });
 
+test('reports both synchronization and close failures', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-close-'));
+    const syncError = new Error('injected synchronization failure');
+    const closeError = new Error('injected close failure');
+    let closeCalls = 0;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async openExclusive() {
+            return {
+                async writeFile() {},
+                async sync() {
+                    throw syncError;
+                },
+                async close() {
+                    closeCalls += 1;
+                    throw closeError;
+                },
+            };
+        },
+    };
+
+    try {
+        await assert.rejects(
+            writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('partial')]]),
+                [{ path: 'wave.vcd', destination: path.join(root, 'wave.vcd') }],
+                { cwd: root, fileSystem },
+            ),
+            error => reportsErrors(error, [syncError, closeError]),
+        );
+        assert.equal(closeCalls, 1);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('reports cleanup unlink failures with the original write failure', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-unlink-'));
+    const writeError = new Error('injected write failure');
+    const cleanupError = new Error('injected unlink failure');
+    const fileSystem: ArtifactWriterFileSystem = {
+        async openExclusive() {
+            return {
+                async writeFile() {
+                    throw writeError;
+                },
+                async sync() {},
+                async close() {},
+            };
+        },
+        async unlink() {
+            throw cleanupError;
+        },
+    };
+
+    try {
+        await assert.rejects(
+            writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('partial')]]),
+                [{ path: 'wave.vcd', destination: path.join(root, 'wave.vcd') }],
+                { cwd: root, fileSystem },
+            ),
+            error => reportsErrors(error, [writeError, cleanupError]),
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('reports non-Error cleanup failures without replacing them', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-null-cleanup-'));
+    const writeError = new Error('injected write failure');
+    const cleanupError = undefined;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async openExclusive() {
+            return {
+                async writeFile() {
+                    throw writeError;
+                },
+                async sync() {},
+                async close() {},
+            };
+        },
+        async unlink() {
+            throw cleanupError;
+        },
+    };
+
+    try {
+        await assert.rejects(
+            writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('partial')]]),
+                [{ path: 'wave.vcd', destination: path.join(root, 'wave.vcd') }],
+                { cwd: root, fileSystem },
+            ),
+            error => reportsErrors(error, [writeError, cleanupError]),
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('cleans uncommitted temporary files after a later rename fails', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-rename-'));
+    const renameError = new Error('injected rename failure');
+    let renames = 0;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async rename(oldPath, newPath) {
+            renames += 1;
+            if (renames === 2) throw renameError;
+            await rename(oldPath, newPath);
+        },
+    };
+
+    try {
+        await assert.rejects(
+            writeRequestedArtifacts(new Map([
+                ['first.vcd', Buffer.from('first')],
+                ['second.vcd', Buffer.from('second')],
+            ]), [
+                { path: 'first.vcd', destination: path.join(root, 'first.vcd') },
+                { path: 'second.vcd', destination: path.join(root, 'second.vcd') },
+            ], { cwd: root, fileSystem }),
+            error => error === renameError,
+        );
+        assert.equal(await readFile(path.join(root, 'first.vcd'), 'utf8'), 'first');
+        await assert.rejects(lstat(path.join(root, 'second.vcd')), { code: 'ENOENT' });
+        assert.deepEqual(await readdir(root), ['first.vcd']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('stops committing artifacts when aborted between renames', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-rename-abort-'));
+    const controller = new AbortController();
+    let renames = 0;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async rename(oldPath, newPath) {
+            renames += 1;
+            await rename(oldPath, newPath);
+            if (renames === 1) controller.abort();
+        },
+    };
+
+    try {
+        await assert.rejects(
+            writeRequestedArtifacts(new Map([
+                ['first.vcd', Buffer.from('first')],
+                ['second.vcd', Buffer.from('second')],
+            ]), [
+                { path: 'first.vcd', destination: path.join(root, 'first.vcd') },
+                { path: 'second.vcd', destination: path.join(root, 'second.vcd') },
+            ], {
+                cwd: root,
+                signal: controller.signal,
+                fileSystem,
+            }),
+            error => error instanceof Error && error.name === 'AbortError',
+        );
+        assert.equal(renames, 1);
+        assert.equal(await readFile(path.join(root, 'first.vcd'), 'utf8'), 'first');
+        await assert.rejects(lstat(path.join(root, 'second.vcd')), { code: 'ENOENT' });
+        assert.deepEqual(await readdir(root), ['first.vcd']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('cleans staged temporary files when aborted before commit', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-abort-'));
     const controller = new AbortController();
@@ -370,3 +539,14 @@ test('does not create missing artifact destination directories', async () => {
         await rm(root, { recursive: true, force: true });
     }
 });
+
+function reportsErrors(error: unknown, expected: readonly unknown[]): boolean {
+    assert.ok(error instanceof Error);
+    const reported = error as Error & {
+        cause?: unknown;
+        errors?: readonly unknown[];
+    };
+    assert.deepEqual(reported.errors, expected);
+    assert.equal(reported.cause, expected[0]);
+    return true;
+}

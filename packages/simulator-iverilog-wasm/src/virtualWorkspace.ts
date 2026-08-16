@@ -47,6 +47,7 @@ export async function buildVirtualWorkspace(
 ): Promise<VirtualWorkspace> {
     const context = pathContext(input.cwd);
     const readHostFile = fileSystem.readFile ?? readFile;
+    const canonicalizeHostPath = fileSystem.realpath ?? realpath;
     const cwd = normalizeHostPath(input.cwd, context);
     const roots = configuredRoots(cwd, input.includeDirs, context);
     const sources = input.files.map(
@@ -58,7 +59,7 @@ export async function buildVirtualWorkspace(
     const mappedFiles = [...sources, ...runtimeFiles];
 
     assertUniqueVirtualPaths(mappedFiles);
-    await assertUniqueHostFiles(mappedFiles, fileSystem.realpath, context);
+    await assertUniqueHostFiles(mappedFiles, canonicalizeHostPath, context);
 
     const dataByHostPath = new Map<string, Promise<Uint8Array>>();
     const files = await Promise.all(mappedFiles.map(async mapped => {
