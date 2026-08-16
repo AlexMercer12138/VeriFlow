@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,6 +17,7 @@ import type { LegacySimulationExecution as RootLegacyExecution } from '@veriflow
 import {
     LegacyNativeSimulatorBackend,
     NativeSimulatorBackend,
+    NodeCommandExecutor,
 } from '@veriflow/flow-core/nativeSimulatorBackend';
 import {
     createSimulationRequest,
@@ -27,6 +28,7 @@ import {
     type SimulationExecution,
     type SimulationRequest,
 } from '@veriflow/flow-core/simulation';
+import { SimulatorBackendRegistry } from '@veriflow/flow-core/simulatorBackendRegistry';
 import type { SimulatorConfig } from '@veriflow/flow-core/types';
 
 type Capture = {
@@ -104,6 +106,25 @@ function successfulExecutor(): CommandExecutor {
             };
         },
     };
+}
+
+function processExists(processId: number): boolean {
+    try {
+        process.kill(processId, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForFile(filepath: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!existsSync(filepath)) {
+        if (Date.now() >= deadline) {
+            throw new Error(`Timed out waiting for ${filepath}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
 }
 
 async function assertBackendTypeBoundaries(
@@ -276,7 +297,9 @@ test('normalized native results report backend, stage, commands, timings, and ar
 
         assert.equal(result.backendId, 'native:fake');
         assert.equal(result.stage, 'run');
-        assert.deepEqual(result.timings, {});
+        assert.ok((result.timings.compile ?? -1) >= 0);
+        assert.ok((result.timings.run ?? -1) >= 0);
+        assert.ok((result.timings.artifact ?? -1) >= 0);
         assert.match(result.commands.compile ?? '', / compile "top\.out" "child\.v" "top\.v"$/);
         assert.match(result.commands.run ?? '', / run "top\.out"$/);
         assert.deepEqual(artifact, {
@@ -289,6 +312,184 @@ test('normalized native results report backend, stage, commands, timings, and ar
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('native execution forwards the request signal and records separate stage timings', async () => {
+    const controller = new AbortController();
+    const calls: Array<{ timeoutSeconds: number; signal?: AbortSignal }> = [];
+    const executor: CommandExecutor = {
+        async execute(_command, _cwd, timeoutSeconds, signal) {
+            calls.push({ timeoutSeconds, signal });
+            return {
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                elapsedTime: calls.length === 1 ? 0.125 : 0.25,
+            };
+        },
+    };
+    const input = createSimulationRequest({
+        files: ['/workspace/top.v'],
+        output: '/workspace/top.out',
+        cwd: '/workspace',
+        timeoutMs: 1_500,
+        signal: controller.signal,
+    });
+
+    const result = await new NativeSimulatorBackend(
+        'native:fake',
+        { name: 'fake', compileCmd: 'compile {files}', runCmd: 'run {output}' },
+        executor
+    ).compileAndRun(input);
+
+    assert.deepEqual(calls, [
+        { timeoutSeconds: 1.5, signal: controller.signal },
+        { timeoutSeconds: 1.5, signal: controller.signal },
+    ]);
+    assert.deepEqual(result.timings, { compile: 0.125, run: 0.25 });
+    assert.equal(result.elapsedTime, 0.375);
+});
+
+test('configured native backends remain compatible with registry providers', async () => {
+    const registry = new SimulatorBackendRegistry();
+    registry.register('native:fake', () => new NativeSimulatorBackend(
+        'native:fake',
+        { name: 'fake', compileCmd: 'compile {files}', runCmd: 'run {output}' },
+        successfulExecutor()
+    ));
+
+    const result = await registry.run(
+        'native:fake',
+        normalizedRequest('/workspace')
+    );
+
+    assert.equal(result.backendId, 'native:fake');
+    assert.equal(result.success, true);
+});
+
+test('native execution reports a requested VCD in place without copying it', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-artifact-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const sourcePath = path.join(root, 'wave.vcd');
+    const destination = path.join(root, 'copied', 'wave.vcd');
+    const simulator = simulatorConfig(capturePath);
+    simulator.runCmd = simulator.runCmd.replace(
+        ' run "{output}"',
+        ' run-artifact "{output}" "wave.vcd"'
+    );
+    try {
+        const input = normalizedRequest(root);
+        input.artifacts.push({ kind: 'vcd', path: 'wave.vcd', destination });
+
+        const result = await new NativeSimulatorBackend(
+            'native:fake',
+            simulator
+        ).compileAndRun(input);
+
+        assert.equal(readFileSync(sourcePath, 'utf8'), 'VCD DATA\n');
+        assert.equal(existsSync(destination), false);
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: 'wave.vcd',
+            destination,
+            written: true,
+            size: 9,
+        }]);
+        assert.ok((result.timings.artifact ?? -1) >= 0);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('aborting native execution terminates the process and returns infrastructure failure', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-abort-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const pidPath = path.join(root, 'simulator.pid');
+    const controller = new AbortController();
+    const simulator = simulatorConfig(capturePath, 'wait');
+    simulator.compileCmd += ` ${quote(pidPath)}`;
+    try {
+        const running = new NativeSimulatorBackend(
+            'native:fake',
+            simulator
+        ).compileAndRun(createSimulationRequest({
+            files: [path.join(root, 'top.v')],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 5_000,
+            signal: controller.signal,
+        }));
+        await waitForFile(pidPath, 2_000);
+        const processId = Number(readFileSync(pidPath, 'utf8'));
+
+        controller.abort();
+        const result = await running;
+
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.match(result.stderr, /aborted/i);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(processExists(processId), false);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('native timeout is infrastructure failure while HDL exit remains a compile failure', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'veriflow-native-timeout-'));
+    const capturePath = path.join(root, 'calls.jsonl');
+    const timeoutPidPath = path.join(root, 'timeout.pid');
+    const timedOutSimulator = simulatorConfig(capturePath, 'wait');
+    timedOutSimulator.compileCmd += ` ${quote(timeoutPidPath)}`;
+    try {
+        const timedOut = await new NativeSimulatorBackend(
+            'native:fake',
+            timedOutSimulator
+        ).compileAndRun(createSimulationRequest({
+            files: [path.join(root, 'top.v')],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 50,
+        }));
+        const hdlFailure = await new NativeSimulatorBackend(
+            'native:fake',
+            simulatorConfig(capturePath, 'compile-fail')
+        ).compileAndRun(normalizedRequest(root));
+
+        assert.equal(timedOut.stage, 'infrastructure');
+        assert.match(timedOut.stderr, /timed out/i);
+        assert.equal(hdlFailure.stage, 'compile');
+        assert.equal(hdlFailure.exitCode, 2);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('node command executor removes abort listeners after completion', async () => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const originalAdd = signal.addEventListener.bind(signal);
+    const originalRemove = signal.removeEventListener.bind(signal);
+    let activeAbortListeners = 0;
+    signal.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions) => {
+        if (type === 'abort') activeAbortListeners += 1;
+        originalAdd(type, listener, options);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((type: string, listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions) => {
+        if (type === 'abort') activeAbortListeners -= 1;
+        originalRemove(type, listener, options);
+    }) as typeof signal.removeEventListener;
+
+    await new NodeCommandExecutor().execute(
+        `${quote(process.execPath)} -e ""`,
+        process.cwd(),
+        1,
+        signal
+    );
+
+    assert.equal(activeAbortListeners, 0);
 });
 
 test('normalized native results omit legacy command aliases', async () => {
@@ -424,7 +625,7 @@ test('normalized native compile failures retain contract metadata', async () => 
 
         assert.equal(result.success, false);
         assert.equal(result.stage, 'compile');
-        assert.deepEqual(result.timings, {});
+        assert.ok((result.timings.compile ?? -1) >= 0);
         assert.match(result.commands.compile ?? '', / compile-fail "top\.out"/);
         assert.equal(result.commands.run, undefined);
         assert.deepEqual(result.artifacts, [{

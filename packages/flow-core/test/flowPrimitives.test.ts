@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { LogParser } from '@veriflow/flow-core/logParser';
 import { relativeDisplayPath } from '@veriflow/flow-core/pathStyle';
+import { DEFAULT_SIMULATORS } from '@veriflow/flow-core/defaults';
 import { TemplateEngine } from '@veriflow/flow-core/templateEngine';
 import {
     DependencyResult,
@@ -57,6 +58,67 @@ test('template engine preserves placeholders, quoting, and command names', () =>
         TemplateEngine.renderWave('viewer "{wave_file}"', 'waves/top.vcd'),
         'viewer "waves/top.vcd"'
     );
+});
+
+test('compile templates render defines and include directories only when requested', () => {
+    const variables = {
+        defines: { TRACE: true, WIDTH: 8, DISABLED: false },
+        includeDirs: ['rtl/include', 'vendor headers'],
+    };
+
+    assert.equal(
+        TemplateEngine.renderCompile(
+            'iverilog -o {output} {files}',
+            'top.out',
+            ['top.v'],
+            'top',
+            variables.defines,
+            variables.includeDirs
+        ),
+        'iverilog -o top.out "top.v"'
+    );
+    assert.equal(
+        TemplateEngine.renderCompile(
+            'compile {defines} {include_dirs} -o {output} {files}',
+            'top.out',
+            ['top.v'],
+            'top',
+            variables.defines,
+            variables.includeDirs
+        ),
+        'compile -D"TRACE" -D"WIDTH=8" -D"DISABLED=0" '
+            + '-I"rtl/include" -I"vendor headers" -o top.out "top.v"'
+    );
+});
+
+test('default native simulator templates preserve their command rendering', () => {
+    assert.deepEqual(Object.fromEntries(
+        Object.entries(DEFAULT_SIMULATORS).map(([id, simulator]) => [id, {
+            compile: TemplateEngine.renderCompile(
+                simulator.compileCmd,
+                'top.out',
+                ['child.v', 'top.v'],
+                'top',
+                { TRACE: true },
+                ['include']
+            ),
+            run: TemplateEngine.renderRun(simulator.runCmd, 'top.out'),
+        }])
+    ), {
+        iverilog: {
+            compile: 'iverilog -o "top.out" "child.v" "top.v"',
+            run: 'vvp "top.out"',
+        },
+        vcs: {
+            compile: 'vcs -full64 -o "top.out" "child.v" "top.v"',
+            run: './"top.out"',
+        },
+        xsim: {
+            compile: 'xvlog "child.v" "top.v" && xelab top -snapshot "top.out"',
+            run: 'xsim "top.out" --runall',
+        },
+        custom: { compile: '', run: '' },
+    });
 });
 
 test('path display remains host neutral for POSIX, drive, and UNC paths', () => {

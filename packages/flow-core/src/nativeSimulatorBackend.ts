@@ -1,4 +1,5 @@
-import { exec } from 'node:child_process';
+import { exec, execFileSync } from 'node:child_process';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
@@ -16,12 +17,50 @@ import { createSimulationRequest } from './simulation';
 import { TemplateEngine } from './templateEngine';
 import type { SimulatorConfig } from './types';
 
-const PROCESS_TIMEOUT_SECONDS = 300;
-
 type ExecFailure = Error & {
     code?: number | string;
-    killed?: boolean;
 };
+
+function descendantProcessIds(processId: number): number[] {
+    if (process.platform === 'win32') return [];
+    try {
+        const children = new Map<number, number[]>();
+        const processes = execFileSync('ps', ['-eo', 'pid=,ppid='], {
+            encoding: 'utf8',
+            windowsHide: true,
+        });
+        for (const line of processes.split('\n')) {
+            const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+            if (match === null) continue;
+            const child = Number(match[1]);
+            const parent = Number(match[2]);
+            const siblings = children.get(parent);
+            if (siblings === undefined) children.set(parent, [child]);
+            else siblings.push(child);
+        }
+        const descendants: number[] = [];
+        const visit = (parent: number): void => {
+            for (const child of children.get(parent) ?? []) {
+                visit(child);
+                descendants.push(child);
+            }
+        };
+        visit(processId);
+        return descendants;
+    } catch {
+        return [];
+    }
+}
+
+function killProcessTree(processId: number | undefined): void {
+    if (processId === undefined) return;
+    for (const descendant of descendantProcessIds(processId)) {
+        try {
+            process.kill(descendant, 'SIGTERM');
+        } catch {
+        }
+    }
+}
 
 function hasOwnProperty(value: object, property: PropertyKey): boolean {
     return Object.prototype.hasOwnProperty.call(value, property);
@@ -58,26 +97,59 @@ function normalizeLegacyRequest(request: LegacyNativeSimulationRequest): Simulat
 }
 
 export class NodeCommandExecutor implements CommandExecutor {
-    execute(command: string, cwd: string, timeoutSeconds: number): Promise<ProcessExecution> {
+    execute(
+        command: string,
+        cwd: string,
+        timeoutSeconds: number,
+        signal?: AbortSignal
+    ): Promise<ProcessExecution> {
         const started = performance.now();
         return new Promise(resolve => {
-            exec(command, {
+            let termination: ProcessExecution['termination'] = signal?.aborted
+                ? 'abort'
+                : undefined;
+            const commandController = new AbortController();
+            const child = exec(command, {
                 cwd,
                 encoding: 'utf8',
                 maxBuffer: 50 * 1024 * 1024,
-                timeout: timeoutSeconds * 1_000,
+                signal: commandController.signal,
                 windowsHide: true,
             }, (error, stdout, stderr) => {
+                clearTimeout(timeout);
+                signal?.removeEventListener('abort', onAbort);
                 const failure = error as ExecFailure | null;
+                const terminationMessage = termination === 'abort'
+                    ? 'Simulation aborted'
+                    : termination === 'timeout'
+                        ? `Simulation timed out after ${timeoutSeconds} seconds`
+                        : '';
                 resolve({
                     exitCode: failure === null
                         ? 0
                         : typeof failure.code === 'number' ? failure.code : -1,
                     stdout,
-                    stderr,
+                    stderr: [stderr, terminationMessage].filter(Boolean).join(
+                        stderr.endsWith('\n') || !stderr ? '' : '\n'
+                    ),
                     elapsedTime: (performance.now() - started) / 1_000,
+                    ...(termination === undefined ? {} : { termination }),
                 });
             });
+            const terminate = (): void => {
+                killProcessTree(child.pid);
+                commandController.abort();
+            };
+            const onAbort = (): void => {
+                termination ??= 'abort';
+                terminate();
+            };
+            const timeout = setTimeout(() => {
+                termination ??= 'timeout';
+                terminate();
+            }, timeoutSeconds * 1_000);
+            signal?.addEventListener('abort', onAbort, { once: true });
+            if (termination === 'abort') terminate();
         });
     }
 }
@@ -90,6 +162,24 @@ function executionPath(filepath: string, cwd: string): string {
         : relative === '' ? path.basename(absolute) : absolute;
 }
 
+async function inspectArtifacts(
+    request: SimulationRequest
+): Promise<{ artifacts: SimulationExecution['artifacts']; elapsedTime: number }> {
+    const started = performance.now();
+    const artifacts = await Promise.all(request.artifacts.map(async artifact => {
+        try {
+            const metadata = await stat(path.resolve(request.cwd, artifact.path));
+            return { ...artifact, written: metadata.isFile(), size: metadata.size };
+        } catch {
+            return { ...artifact, written: false, size: 0 };
+        }
+    }));
+    return {
+        artifacts,
+        elapsedTime: (performance.now() - started) / 1_000,
+    };
+}
+
 async function executeNativeSimulation(
     backendId: string,
     simulator: SimulatorConfig,
@@ -97,7 +187,7 @@ async function executeNativeSimulation(
     request: SimulationRequest
 ): Promise<SimulationExecution> {
     const logParser = new LogParser();
-    const artifacts = request.artifacts.map(artifact => ({
+    const initialArtifacts = request.artifacts.map(artifact => ({
         ...artifact,
         written: false,
         size: 0,
@@ -110,16 +200,21 @@ async function executeNativeSimulation(
         simulator.compileCmd,
         output,
         files,
-        request.topModule ?? ''
+        request.topModule ?? '',
+        request.defines,
+        request.includeDirs
     );
     const compile = await executor.execute(
         compileCommand,
         request.cwd,
-        PROCESS_TIMEOUT_SECONDS
+        request.timeoutMs / 1_000,
+        request.signal
     );
     const compileEntries = logParser.parse(`${compile.stdout}\n${compile.stderr}`);
     const compileResult: SimulationExecution = {
-        success: compile.exitCode === 0 && !logParser.hasErrors(compile.stderr),
+        success: compile.termination === undefined
+            && compile.exitCode === 0
+            && !logParser.hasErrors(compile.stderr),
         exitCode: compile.exitCode,
         stdout: compile.stdout,
         stderr: compile.stderr,
@@ -127,10 +222,10 @@ async function executeNativeSimulation(
         waveFile: null,
         elapsedTime: compile.elapsedTime,
         backendId,
-        stage: 'compile',
-        timings: {},
+        stage: compile.termination === undefined ? 'compile' : 'infrastructure',
+        timings: { compile: compile.elapsedTime },
         commands: { compile: compileCommand },
-        artifacts,
+        artifacts: initialArtifacts,
     };
     if (!compileResult.success) {
         return compileResult;
@@ -140,10 +235,15 @@ async function executeNativeSimulation(
     const run = await executor.execute(
         runCommand,
         request.cwd,
-        PROCESS_TIMEOUT_SECONDS
+        request.timeoutMs / 1_000,
+        request.signal
     );
+    const inspected = await inspectArtifacts(request);
+    const artifactTiming = request.artifacts.length === 0
+        ? {}
+        : { artifact: inspected.elapsedTime };
     const runResult: SimulationExecution = {
-        success: run.exitCode === 0,
+        success: run.termination === undefined && run.exitCode === 0,
         exitCode: run.exitCode,
         stdout: run.stdout,
         stderr: run.stderr,
@@ -154,10 +254,14 @@ async function executeNativeSimulation(
         waveFile: null,
         elapsedTime: compile.elapsedTime + run.elapsedTime,
         backendId,
-        stage: 'run',
-        timings: {},
+        stage: run.termination === undefined ? 'run' : 'infrastructure',
+        timings: {
+            compile: compile.elapsedTime,
+            run: run.elapsedTime,
+            ...artifactTiming,
+        },
         commands: { compile: compileCommand, run: runCommand },
-        artifacts,
+        artifacts: inspected.artifacts,
     };
     return runResult;
 }

@@ -11,12 +11,20 @@ export class TemplateEngine {
         compileCmd: string,
         output: string,
         files: string[],
-        topModule: string = ''
+        topModule: string = '',
+        defines: Readonly<Record<string, string | number | boolean>> = {},
+        includeDirs: readonly string[] = []
     ): string {
         return TemplateEngine.render(compileCmd, {
             output,
             files: files.map(f => `"${f}"`).join(' '),
             top_module: topModule,
+            defines: Object.entries(defines).map(([name, value]) => (
+                value === true
+                    ? `-D"${name}"`
+                    : `-D"${name}=${value === false ? 0 : value}"`
+            )).join(' '),
+            include_dirs: includeDirs.map(directory => `-I"${directory}"`).join(' '),
         });
     }
 

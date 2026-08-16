@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 
 const [capturePath, action, ...args] = process.argv.slice(2);
 appendFileSync(capturePath, `${JSON.stringify({ action, args, cwd: process.cwd() })}\n`);
@@ -14,6 +14,14 @@ switch (action) {
         break;
     case 'run':
         process.stdout.write('RUN OK\n');
+        break;
+    case 'run-artifact':
+        writeFileSync(args[1], 'VCD DATA\n');
+        process.stdout.write('RUN OK\n');
+        break;
+    case 'wait':
+        writeFileSync(args.at(-1), String(process.pid));
+        setInterval(() => {}, 1_000);
         break;
     default:
         process.stderr.write(`unknown fake simulator action: ${action}\n`);

@@ -8,10 +8,16 @@ export interface ProcessExecution {
     stdout: string;
     stderr: string;
     elapsedTime: number;
+    termination?: 'abort' | 'timeout';
 }
 
 export interface CommandExecutor {
-    execute(command: string, cwd: string, timeoutSeconds: number): Promise<ProcessExecution>;
+    execute(
+        command: string,
+        cwd: string,
+        timeoutSeconds: number,
+        signal?: AbortSignal,
+    ): Promise<ProcessExecution>;
 }
 
 export type SimulationStage = 'input' | 'compile' | 'run' | 'infrastructure';
