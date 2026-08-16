@@ -531,19 +531,19 @@ test('SIGINT uses one signal for dependency scan and simulation through host dis
         simulator: 'builtin',
     });
 
-    const originalListeners = new Set(process.listeners('SIGINT'));
+    const originalListeners = process.listeners('SIGINT');
+    let existingListenerCalls = 0;
+    const existingListener = (): void => { existingListenerCalls += 1; };
+    process.on('SIGINT', existingListener);
+    const baselineListenerCount = process.listenerCount('SIGINT');
     let scanSignal: AbortSignal | undefined;
     let simulationSignal: AbortSignal | undefined;
-    let interrupt: NodeJS.SignalsListener | undefined;
     let listenerPresentDuringDispose = false;
     const backend: SimulatorBackend = {
         compileAndRun(request): Promise<SimulationExecution> {
             simulationSignal = request.signal;
-            interrupt = process.listeners('SIGINT').find(listener => (
-                !originalListeners.has(listener)
-            ));
-            assert.ok(interrupt);
-            interrupt('SIGINT');
+            assert.equal(process.listenerCount('SIGINT'), baselineListenerCount + 1);
+            process.emit('SIGINT');
             assert.equal(request.signal?.aborted, true);
             return Promise.resolve(successfulExecution('builtin'));
         },
@@ -560,8 +560,9 @@ test('SIGINT uses one signal for dependency scan and simulation through host dis
                 return Promise.resolve(dependencyResult('top', [topFile]));
             },
             dispose() {
-                listenerPresentDuringDispose = interrupt !== undefined
-                    && process.listeners('SIGINT').includes(interrupt);
+                listenerPresentDuringDispose = (
+                    process.listenerCount('SIGINT') === baselineListenerCount + 1
+                );
                 return Promise.resolve();
             },
         }),
@@ -572,10 +573,130 @@ test('SIGINT uses one signal for dependency scan and simulation through host dis
         assert.equal(scanSignal, simulationSignal);
         assert.equal(scanSignal?.aborted, true);
         assert.equal(listenerPresentDuringDispose, true);
-        assert.ok(interrupt);
-        assert.equal(process.listeners('SIGINT').includes(interrupt), false);
+        assert.equal(existingListenerCalls, 1);
+        assert.equal(process.listenerCount('SIGINT'), baselineListenerCount);
     } finally {
-        if (interrupt) process.off('SIGINT', interrupt);
+        process.off('SIGINT', existingListener);
+        assert.deepEqual(process.listeners('SIGINT'), originalListeners);
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('SIGINT listener survives simulation rejection through dependency disposal', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-sigint-reject-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'sigint-reject',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+    });
+
+    const originalListeners = process.listeners('SIGINT');
+    const baselineListenerCount = process.listenerCount('SIGINT');
+    let listenerPresentDuringDispose = false;
+    let stderr = '';
+    const backend: SimulatorBackend = {
+        compileAndRun(request): Promise<SimulationExecution> {
+            process.emit('SIGINT');
+            assert.equal(request.signal?.aborted, true);
+            return Promise.reject(new Error('simulation rejected'));
+        },
+    };
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: () => undefined,
+        stderr: (text: string) => { stderr += text; },
+        simulationBackendOptions: { builtinProvider: () => backend },
+        dependencySessionFactory: () => ({
+            scan: () => Promise.resolve(dependencyResult('top', [topFile])),
+            dispose() {
+                listenerPresentDuringDispose = (
+                    process.listenerCount('SIGINT') === baselineListenerCount + 1
+                );
+                return Promise.resolve();
+            },
+        }),
+    } satisfies CliEnvironment;
+
+    try {
+        assert.equal(await runCli(['sim', '--project', 'project.json'], environment), 1);
+        assert.equal(stderr, 'Error: simulation rejected\n');
+        assert.equal(listenerPresentDuringDispose, true);
+        assert.deepEqual(process.listeners('SIGINT'), originalListeners);
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('concurrent simulations abort independently and remove only their own listeners', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-sigint-concurrent-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const topFile = path.join(rootDir, 'top.v');
+    mkdirSync(rootDir, { recursive: true });
+    writeFileSync(topFile, 'module top; endmodule\n', 'utf8');
+    writeProject(path.join(cwd, 'project.json'), {
+        project_name: 'sigint-concurrent',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+    });
+
+    const originalListeners = process.listeners('SIGINT');
+    const baselineListenerCount = process.listenerCount('SIGINT');
+    const signals: AbortSignal[] = [];
+    const listenerCountsDuringDispose: number[] = [];
+    let markBothStarted: (() => void) | undefined;
+    const bothStarted = new Promise<void>(resolve => { markBothStarted = resolve; });
+    let releaseBackends: (() => void) | undefined;
+    const released = new Promise<void>(resolve => { releaseBackends = resolve; });
+    const backend: SimulatorBackend = {
+        async compileAndRun(request): Promise<SimulationExecution> {
+            assert.ok(request.signal);
+            signals.push(request.signal);
+            if (signals.length === 2) markBothStarted?.();
+            await released;
+            return successfulExecution('builtin');
+        },
+    };
+    const environment = {
+        cwd,
+        homeDir: path.join(caseRoot, 'home'),
+        stdout: () => undefined,
+        stderr: () => undefined,
+        simulationBackendOptions: { builtinProvider: () => backend },
+        dependencySessionFactory: () => ({
+            scan: () => Promise.resolve(dependencyResult('top', [topFile])),
+            dispose() {
+                listenerCountsDuringDispose.push(process.listenerCount('SIGINT'));
+                return Promise.resolve();
+            },
+        }),
+    } satisfies CliEnvironment;
+
+    try {
+        const runs = [
+            runCli(['sim', '--project', 'project.json'], environment),
+            runCli(['sim', '--project', 'project.json'], environment),
+        ];
+        await bothStarted;
+        assert.equal(process.listenerCount('SIGINT'), baselineListenerCount + 2);
+        process.emit('SIGINT');
+        assert.deepEqual(signals.map(signal => signal.aborted), [true, true]);
+        releaseBackends?.();
+        assert.deepEqual(await Promise.all(runs), [0, 0]);
+        assert.ok(listenerCountsDuringDispose.every(count => (
+            count > baselineListenerCount
+        )));
+        assert.deepEqual(process.listeners('SIGINT'), originalListeners);
+    } finally {
+        releaseBackends?.();
         rmSync(caseRoot, { recursive: true, force: true });
     }
 });

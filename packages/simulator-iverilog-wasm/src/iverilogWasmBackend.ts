@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import {
     LogParser,
     createSimulationRequest,
@@ -11,10 +13,11 @@ import {
 
 import {
     ArtifactWriteError,
+    validateArtifactPath,
     writeRequestedArtifacts,
     type ArtifactWriterFileSystem,
 } from './artifactWriter';
-import type { IverilogApi, RunResult } from './iverilogApi';
+import type { IverilogApi, RunResult, VirtualFile } from './iverilogApi';
 import { loadIverilog } from './loadIverilog';
 import {
     buildVirtualWorkspace,
@@ -48,6 +51,8 @@ export class IverilogWasmBackend implements SimulatorBackend {
             );
         }
 
+        const artifactPaths = validateArtifactPaths(request.artifacts);
+
         let workspace: VirtualWorkspace;
         try {
             workspace = await buildVirtualWorkspace({
@@ -70,20 +75,24 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 (performance.now() - started) / 1_000,
             );
         }
+        const stagedFiles = stageArtifactDirectories(
+            workspace.files,
+            artifactPaths,
+        );
 
         let result: RunResult;
 
         try {
             const api = await this.loadApi();
             result = await api.simulate({
-                files: workspace.files,
+                files: stagedFiles,
                 sources: workspace.sources,
                 includeDirs: workspace.includeDirs,
                 generation: '2005',
                 top: request.topModule,
                 defines: request.defines,
                 plusargs: request.plusargs,
-                artifacts: request.artifacts.map(artifact => artifact.path),
+                artifacts: artifactPaths,
                 timeoutMs: request.timeoutMs,
                 signal: request.signal,
             });
@@ -174,6 +183,68 @@ export class IverilogWasmBackend implements SimulatorBackend {
             cause: { code: 'ARTIFACT_MISSING', message },
         };
     }
+}
+
+function validateArtifactPaths(
+    artifacts: readonly SimulationRequest['artifacts'][number][],
+): string[] {
+    const paths: string[] = [];
+    for (const artifact of artifacts) {
+        const artifactPath = validateArtifactPath(artifact.path);
+        for (const existing of paths) {
+            if (artifactPath === existing) {
+                throw new Error(`Duplicate artifact path: ${artifactPath}`);
+            }
+            if (pathsConflict(artifactPath, existing)) {
+                throw new Error(
+                    `Artifact paths conflict: ${existing} and ${artifactPath}`,
+                );
+            }
+        }
+        paths.push(artifactPath);
+    }
+    return paths;
+}
+
+function stageArtifactDirectories(
+    files: readonly VirtualFile[],
+    artifactPaths: readonly string[],
+): VirtualFile[] {
+    const occupiedPaths = [
+        ...files.map(file => file.path),
+        ...artifactPaths,
+    ];
+    for (const artifactPath of artifactPaths) {
+        for (const file of files) {
+            if (pathsConflict(artifactPath, file.path)) {
+                throw new Error(`Artifact path aliases a source path: ${artifactPath}`);
+            }
+        }
+    }
+
+    const parentDirectories = [...new Set(artifactPaths.map(artifactPath => (
+        path.posix.dirname(artifactPath)
+    )).filter(parent => parent !== '.'))];
+    const markers = parentDirectories.map(parent => {
+        let suffix = 0;
+        let markerPath: string;
+        do {
+            markerPath = path.posix.join(
+                parent,
+                `.veriflow-artifact-dir${suffix === 0 ? '' : `-${suffix}`}`,
+            );
+            suffix += 1;
+        } while (occupiedPaths.some(existing => pathsConflict(markerPath, existing)));
+        occupiedPaths.push(markerPath);
+        return { path: markerPath, data: new Uint8Array() };
+    });
+    return [...files, ...markers];
+}
+
+function pathsConflict(left: string, right: string): boolean {
+    return left === right
+        || left.startsWith(`${right}/`)
+        || right.startsWith(`${left}/`);
 }
 
 interface MappedOutput {

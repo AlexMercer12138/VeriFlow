@@ -187,7 +187,7 @@ export async function simulate(
     )(searchDirectories, parserDefines(project.defines));
     const controller = new AbortController();
     const interrupt = (): void => controller.abort();
-    process.once('SIGINT', interrupt);
+    process.on('SIGINT', interrupt);
     try {
         const dependencies = await dependencySession.scan(
             project.topModule,

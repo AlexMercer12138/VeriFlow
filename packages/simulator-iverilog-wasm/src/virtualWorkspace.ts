@@ -54,7 +54,7 @@ export async function buildVirtualWorkspace(
         hostPath => mapHostFile(hostPath, cwd, roots, context),
     );
     const runtimeFiles = input.runtimeFiles.map(
-        hostPath => mapHostFile(hostPath, cwd, roots, context),
+        hostPath => mapRuntimeFile(hostPath, cwd, roots, context),
     );
     const mappedFiles = [...sources, ...runtimeFiles];
 
@@ -82,7 +82,11 @@ export async function buildVirtualWorkspace(
     return {
         files,
         sources: sources.map(source => source.virtualPath),
-        includeDirs: input.includeDirs.map((_, index) => `libraries/${index}`),
+        includeDirs: input.includeDirs.map(includeDir => mapHostPath(
+            normalizeHostPath(includeDir, context, cwd),
+            roots,
+            context,
+        )),
         hostPathByVirtualPath,
     };
 }
@@ -137,6 +141,30 @@ function mapHostFile(
     context: PathContext,
 ): MappedHostFile {
     const normalizedHostPath = normalizeHostPath(hostPath, context, cwd);
+    const virtualPath = mapHostPath(normalizedHostPath, roots, context);
+
+    return { hostPath: normalizedHostPath, normalizedHostPath, virtualPath };
+}
+
+function mapRuntimeFile(
+    hostPath: string,
+    cwd: string,
+    roots: readonly ConfiguredRoot[],
+    context: PathContext,
+): MappedHostFile {
+    const normalizedHostPath = normalizeHostPath(hostPath, context, cwd);
+    const relativePath = context.implementation.relative(cwd, normalizedHostPath);
+    const virtualPath = isContained(relativePath, context) && relativePath !== ''
+        ? joinVirtualPath('', relativePath, context)
+        : mapHostPath(normalizedHostPath, roots, context);
+    return { hostPath: normalizedHostPath, normalizedHostPath, virtualPath };
+}
+
+function mapHostPath(
+    normalizedHostPath: string,
+    roots: readonly ConfiguredRoot[],
+    context: PathContext,
+): string {
     const matchingRoots = roots
         .map(root => ({
             root,
@@ -154,8 +182,7 @@ function mapHostFile(
     const virtualPath = match === undefined
         ? externalVirtualPath(normalizedHostPath, context)
         : joinVirtualPath(match.root.virtualPath, match.relativePath, context);
-
-    return { hostPath: normalizedHostPath, normalizedHostPath, virtualPath };
+    return virtualPath;
 }
 
 function isContained(relativePath: string, context: PathContext): boolean {
@@ -208,6 +235,14 @@ async function assertUniqueHostFiles(
     canonicalize: VirtualWorkspaceFileSystem['realpath'],
     context: PathContext,
 ): Promise<void> {
+    const normalizedPaths = new Set<string>();
+    for (const file of files) {
+        const key = comparable(file.normalizedHostPath, context);
+        if (normalizedPaths.has(key)) {
+            throw new Error(`Duplicate host file: ${file.normalizedHostPath}`);
+        }
+        normalizedPaths.add(key);
+    }
     if (canonicalize === undefined) return;
 
     const canonicalPaths = await Promise.all(files.map(async file => (

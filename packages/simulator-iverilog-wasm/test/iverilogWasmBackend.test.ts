@@ -68,8 +68,9 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-forward-'));
     const sourceDir = path.join(root, 'rtl');
     const includeDir = path.join(root, 'include');
+    const dataDir = path.join(root, 'data');
     const source = path.join(sourceDir, 'top.v');
-    const header = path.join(includeDir, 'config.vh');
+    const runtimeData = path.join(dataDir, 'input.hex');
     const waveFile = path.join(root, 'top.vcd');
     const controller = new AbortController();
     const requests: SimulateRequest[] = [];
@@ -87,15 +88,16 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
         await Promise.all([
             mkdir(sourceDir),
             mkdir(includeDir),
+            mkdir(dataDir),
         ]);
         await Promise.all([
-            writeFile(source, '`include "config.vh"\nmodule top; endmodule\n'),
-            writeFile(header, '`define WIDTH 8\n'),
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(runtimeData, '2a\n'),
         ]);
 
         const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
             files: [source],
-            runtimeFiles: [header],
+            runtimeFiles: [runtimeData],
             includeDirs: [includeDir],
             defines: { TRACE: true, WIDTH: 8 },
             plusargs: ['+seed=42'],
@@ -120,8 +122,8 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
                     data: new Uint8Array(await readFile(source)),
                 },
                 {
-                    path: 'libraries/0/config.vh',
-                    data: new Uint8Array(await readFile(header)),
+                    path: 'data/input.hex',
+                    data: new Uint8Array(await readFile(runtimeData)),
                 },
             ],
             sources: ['workspace/rtl/top.v'],
@@ -158,6 +160,117 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
         }]);
         assert.equal(result.waveFile, waveFile);
         assert.equal(await readFile(waveFile, 'utf8'), '$date\n$end\n');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('stages nested artifact directories without adding marker files to sources', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-artifact-dir-');
+    const destinationDir = path.join(root, 'host-waves');
+    const destination = path.join(destinationDir, 'top.vcd');
+    const requests: SimulateRequest[] = [];
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'PASS\n',
+        stderr: '',
+        timings: { preprocess: 1, compile: 1, run: 1 },
+        artifacts: new Map([['waves/top.vcd', Buffer.from('nested vcd')]]),
+    }, requests);
+
+    try {
+        await mkdir(destinationDir);
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'waves/top.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            topModule: 'top',
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(requests.length, 1);
+        assert.deepEqual(requests[0].sources, ['workspace/top.v']);
+        const marker = requests[0].files.find(file => file.path.startsWith('waves/'));
+        assert.ok(marker);
+        assert.match(marker.path, /^waves\/\.veriflow-artifact-dir(?:-\d+)?$/);
+        assert.equal((marker.data as Uint8Array).byteLength, 0);
+        assert.equal(requests[0].sources.includes(marker.path), false);
+        assert.equal(result.success, true);
+        assert.equal(await readFile(destination, 'utf8'), 'nested vcd');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('rejects unsafe or conflicting artifact paths before calling the API', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-artifact-input-'));
+    const source = path.join(root, 'top.v');
+    const runtimeFile = path.join(root, 'vectors', 'input.hex');
+    let apiCalls = 0;
+    const api: IverilogApi = {
+        compile: async () => { throw new Error('compile() must not be called'); },
+        run: async () => { throw new Error('run() must not be called'); },
+        async simulate(): Promise<RunResult> {
+            apiCalls += 1;
+            return {
+                success: true,
+                stage: 'run',
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                timings: {},
+                artifacts: new Map(),
+            };
+        },
+    };
+
+    try {
+        await mkdir(path.dirname(runtimeFile), { recursive: true });
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(runtimeFile, '2a\n'),
+        ]);
+        const invalidArtifactSets = [
+            ['../escape.vcd'],
+            ['workspace/top.v'],
+            ['vectors/input.hex'],
+            ['waves/top.vcd', 'waves/top.vcd'],
+            ['waves', 'waves/top.vcd'],
+        ];
+
+        for (const artifactPaths of invalidArtifactSets) {
+            await assert.rejects(
+                new IverilogWasmBackend(providerFor(api)).compileAndRun({
+                    files: [source],
+                    runtimeFiles: [runtimeFile],
+                    includeDirs: [],
+                    defines: {},
+                    plusargs: [],
+                    artifacts: artifactPaths.map((artifactPath, index) => ({
+                        kind: 'file' as const,
+                        path: artifactPath,
+                        destination: path.join(root, `artifact-${index}`),
+                    })),
+                    output: path.join(root, 'top.out'),
+                    cwd: root,
+                    timeoutMs: 1_000,
+                }),
+                /artifact path|duplicate artifact|aliases a source/i,
+            );
+        }
+        assert.equal(apiCalls, 0);
     } finally {
         await rm(root, { recursive: true, force: true });
     }

@@ -51,7 +51,7 @@ test('maps project sources in dependency order and keeps runtime data out of sou
         ]);
         assert.deepEqual(
             workspace.files.map(file => file.path),
-            [...workspace.sources, 'workspace/data/memory.bin'],
+            [...workspace.sources, 'data/memory.bin'],
         );
         assert.deepEqual([...workspace.files[1].data], [0xff, 0x00, 0x31]);
         assert.deepEqual([...workspace.files[2].data], [0x80, 0x00, 0x7f]);
@@ -62,6 +62,39 @@ test('maps project sources in dependency order and keeps runtime data out of sou
         assert.equal(
             workspace.files.some(file => file.path.includes('unrequested.hex')),
             false,
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps runtime files under cwd to VVP working-directory-relative paths', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-runtime-path-'));
+    const source = path.join(root, 'top.v');
+    const runtimeFile = path.join(root, 'vectors', 'input.hex');
+
+    try {
+        await mkdir(path.dirname(runtimeFile), { recursive: true });
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(runtimeFile, '2a\n'),
+        ]);
+
+        const workspace = await buildVirtualWorkspace({
+            cwd: root,
+            files: [source],
+            runtimeFiles: [runtimeFile],
+            includeDirs: [],
+        });
+
+        assert.deepEqual(workspace.sources, ['workspace/top.v']);
+        assert.deepEqual(workspace.files.map(file => file.path), [
+            'workspace/top.v',
+            'vectors/input.hex',
+        ]);
+        assert.equal(
+            workspace.hostPathByVirtualPath.get('vectors/input.hex'),
+            runtimeFile,
         );
     } finally {
         await rm(root, { recursive: true, force: true });
@@ -119,6 +152,34 @@ test('uses the longest configured root and preserves include-root indexes', asyn
             'libraries/1/narrow.vh',
         ]);
         assert.deepEqual(workspace.includeDirs, ['libraries/0', 'libraries/1']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps an include root equal to cwd to the workspace namespace', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-cwd-include-'));
+    const source = path.join(root, 'top.v');
+    const header = path.join(root, 'defs.vh');
+
+    try {
+        await Promise.all([
+            writeFile(source, '`include "defs.vh"\nmodule top; endmodule\n'),
+            writeFile(header, '`define WIDTH 8\n'),
+        ]);
+
+        const workspace = await buildVirtualWorkspace({
+            cwd: root,
+            files: [source, header],
+            runtimeFiles: [],
+            includeDirs: [root],
+        });
+
+        assert.deepEqual(workspace.sources, [
+            'workspace/top.v',
+            'workspace/defs.vh',
+        ]);
+        assert.deepEqual(workspace.includeDirs, ['workspace']);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -244,7 +305,7 @@ test('rejects duplicate logical paths before reading host files', async () => {
                 return Buffer.alloc(0);
             },
         }),
-        /duplicate virtual path.*workspace\/top\.v/i,
+        /duplicate (?:host file|virtual path)/i,
     );
     assert.equal(reads, 0);
 });
