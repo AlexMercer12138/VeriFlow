@@ -207,6 +207,51 @@ test('contract normalization handles Windows separators without replacing lookal
     });
 });
 
+test('project new persists builtin simulation defaults', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-node-cli-project-new-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const homeDir = path.join(caseRoot, 'home');
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    try {
+        let stdout = '';
+        let stderr = '';
+        const exitCode = await runCli(
+            ['project', 'new', '--name', 'builtin-demo'],
+            {
+                cwd,
+                homeDir,
+                stdout: text => { stdout += text; },
+                stderr: text => { stderr += text; },
+            }
+        );
+        const project = JSON.parse(readFileSync(
+            path.join(cwd, 'builtin-demo.json'),
+            'utf8'
+        ));
+
+        assert.equal(exitCode, 0);
+        assert.equal(stdout, 'Project created: builtin-demo.json\n');
+        assert.equal(stderr, '');
+        assert.equal(project.simulator, 'builtin');
+        assert.deepEqual(project.defines, {});
+        assert.deepEqual(project.simulation_files, []);
+        assert.deepEqual(project.simulators.iverilog, {
+            compile_cmd: 'iverilog -o "{output}" {files}',
+            run_cmd: 'vvp "{output}"',
+        });
+        assert.deepEqual(project.simulators['native-iverilog'], {
+            compile_cmd: (
+                'iverilog -g2005 -o "{output}" '
+                + '{defines} {include_dirs} {files}'
+            ),
+            run_cmd: 'vvp "{output}"',
+        });
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
 assert.equal(configurationCases.length, 78);
 
 for (const contractCase of configurationCases) {

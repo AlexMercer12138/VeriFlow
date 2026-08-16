@@ -35,6 +35,32 @@ function temporaryDirectory(prefix: string): string {
     return mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+test('new projects use builtin simulation with Verilog-2005 native defaults', () => {
+    const root = temporaryDirectory('veriflow-project-defaults-');
+    try {
+        const project = new ProjectStore().create('demo', root);
+
+        assert.equal(project.simulator, 'builtin');
+        assert.deepEqual(project.defines, {});
+        assert.deepEqual(project.simulationFiles, []);
+        assert.deepEqual(project.simulators.iverilog, {
+            name: 'iverilog',
+            compileCmd: 'iverilog -o "{output}" {files}',
+            runCmd: 'vvp "{output}"',
+        });
+        assert.deepEqual(project.simulators['native-iverilog'], {
+            name: 'native-iverilog',
+            compileCmd: (
+                'iverilog -g2005 -o "{output}" '
+                + '{defines} {include_dirs} {files}'
+            ),
+            runCmd: 'vvp "{output}"',
+        });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('project store loads current and legacy projects with defaults', () => {
     const root = temporaryDirectory('veriflow-project-load-');
     try {
@@ -68,8 +94,92 @@ test('project store loads current and legacy projects with defaults', () => {
         assert.equal(legacy.rootDir, path.join(root, 'legacy-root'));
         assert.equal(legacy.topModule, '');
         assert.equal(legacy.simulator, 'iverilog');
+        assert.deepEqual(legacy.defines, {});
+        assert.deepEqual(legacy.simulationFiles, []);
         assert.equal(legacy.waveViewers.builtin.launchCmd, '');
         assert.equal(legacy.waveViewers.surfer.launchCmd, 'surfer "{wave_file}"');
+
+        const explicitIverilogFile = path.join(root, 'explicit-iverilog.json');
+        writeFileSync(explicitIverilogFile, JSON.stringify({
+            project_name: 'external',
+            simulator: 'iverilog',
+        }));
+        const explicitIverilog = store.open(explicitIverilogFile);
+        assert.equal(explicitIverilog.simulator, 'iverilog');
+        assert.deepEqual(explicitIverilog.simulators.iverilog, {
+            name: 'iverilog',
+            compileCmd: 'iverilog -o "{output}" {files}',
+            runCmd: 'vvp "{output}"',
+        });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('project store resolves and round trips simulation inputs and unknown keys', () => {
+    const root = temporaryDirectory('veriflow-project-simulation-inputs-');
+    try {
+        const sourceFile = path.join(root, 'configs', 'source.json');
+        const savedFile = path.join(root, 'saved', 'project.json');
+        mkdirSync(path.dirname(sourceFile), { recursive: true });
+        writeFileSync(sourceFile, JSON.stringify({
+            project_name: 'simulation-inputs',
+            defines: {
+                TARGET: 'fpga',
+                WIDTH: 32,
+                TRACE: true,
+                DISABLED: false,
+            },
+            simulation_files: [
+                '../runtime/firmware.hex',
+                '../runtime/config.bin',
+            ],
+            future_simulation_option: { keep: true },
+        }));
+
+        const store = new ProjectStore();
+        const project = store.open(sourceFile);
+        assert.deepEqual(project.defines, {
+            TARGET: 'fpga',
+            WIDTH: 32,
+            TRACE: true,
+            DISABLED: false,
+        });
+        assert.deepEqual(project.simulationFiles, [
+            path.join(root, 'runtime', 'firmware.hex'),
+            path.join(root, 'runtime', 'config.bin'),
+        ]);
+        assert.deepEqual(project.extra, {
+            future_simulation_option: { keep: true },
+        });
+
+        store.save(project, savedFile, { preserveUnknown: true });
+        const saved = JSON.parse(readFileSync(savedFile, 'utf8'));
+        assert.deepEqual(saved.defines, project.defines);
+        assert.deepEqual(saved.simulation_files, [
+            '../runtime/firmware.hex',
+            '../runtime/config.bin',
+        ]);
+        assert.deepEqual(saved.future_simulation_option, { keep: true });
+
+        const reopened = store.open(savedFile);
+        assert.deepEqual(reopened.defines, project.defines);
+        assert.deepEqual(reopened.simulationFiles, project.simulationFiles);
+        assert.deepEqual(reopened.extra, project.extra);
+
+        store.save(project, path.join(root, 'without-unknown.json'), {
+            preserveUnknown: false,
+        });
+        const withoutUnknown = JSON.parse(readFileSync(
+            path.join(root, 'without-unknown.json'),
+            'utf8'
+        ));
+        assert.deepEqual(withoutUnknown.defines, project.defines);
+        assert.deepEqual(withoutUnknown.simulation_files, [
+            'runtime/firmware.hex',
+            'runtime/config.bin',
+        ]);
+        assert.equal('future_simulation_option' in withoutUnknown, false);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -104,6 +214,8 @@ test('project store saves snake case, relative paths, exact JSON, and unknown ke
             'simulators',
             'wave_viewers',
             'file_order',
+            'defines',
+            'simulation_files',
             'analyze_status',
             'simulate_status',
             'custom_metadata',

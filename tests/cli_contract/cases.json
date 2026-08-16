@@ -109,6 +109,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -129,12 +133,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/configs/demo.json": "{\n  \"project_name\": \"demo\",\n  \"project_root\": \"../rtl\",\n  \"lib_dirs\": [\n    \"../rtl\",\n    \"../libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"gtkwave\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/configs/demo.json": "{\n  \"project_name\": \"demo\",\n  \"project_root\": \"../rtl\",\n  \"lib_dirs\": [\n    \"../rtl\",\n    \"../libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"gtkwave\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -529,6 +535,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -549,12 +559,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"replacement_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"replacement_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -1350,6 +1362,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -1370,12 +1386,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/long-demo.json": "{\n  \"project_name\": \"long_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"rtl\",\n    \"libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"surfer\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/long-demo.json": "{\n  \"project_name\": \"long_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"rtl\",\n    \"libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"surfer\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -1445,6 +1463,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -1465,12 +1487,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -1552,6 +1576,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -1572,12 +1600,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [
           {
@@ -2633,6 +2663,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -2653,12 +2687,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"long_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/project\"\n  ],\n  \"top_module\": \"long_top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"builtin\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -2784,6 +2820,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -2804,12 +2844,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -2891,6 +2933,10 @@
                 "compile_cmd": "iverilog -o \"{output}\" {files}",
                 "run_cmd": "vvp \"{output}\""
               },
+              "native-iverilog": {
+                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
+                "run_cmd": "vvp \"{output}\""
+              },
               "vcs": {
                 "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
                 "run_cmd": "./\"{output}\""
@@ -2911,12 +2957,14 @@
               "custom": ""
             },
             "file_order": [],
+            "defines": {},
+            "simulation_files": [],
             "analyze_status": "idle",
             "simulate_status": "idle"
           }
         },
         "observed_text": {
-          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/project.json": "{\n  \"project_name\": \"contract_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"libs/override\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"fake\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"fake\": {\n      \"compile_cmd\": \"fake-compile -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"fake-run \\\"{output}\\\"\"\n    },\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [
           {

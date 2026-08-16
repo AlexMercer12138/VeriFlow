@@ -14,6 +14,8 @@ export interface Project {
     waveFileTemplate: string;
     testbenchOutputDir: string;
     fileOrder: string[];
+    defines: Record<string, string | number | boolean>;
+    simulationFiles: string[];
     simulators: Record<string, SimulatorConfig>;
     waveViewers: Record<string, WaveViewerConfig>;
     interfaceProtocolFiles: string[];

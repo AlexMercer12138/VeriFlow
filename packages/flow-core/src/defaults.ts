@@ -6,6 +6,11 @@ export const DEFAULT_SIMULATORS: Readonly<Record<string, SimulatorConfig>> = {
         compileCmd: 'iverilog -o "{output}" {files}',
         runCmd: 'vvp "{output}"',
     },
+    'native-iverilog': {
+        name: 'native-iverilog',
+        compileCmd: 'iverilog -g2005 -o "{output}" {defines} {include_dirs} {files}',
+        runCmd: 'vvp "{output}"',
+    },
     vcs: {
         name: 'vcs',
         compileCmd: 'vcs -full64 -o "{output}" {files}',

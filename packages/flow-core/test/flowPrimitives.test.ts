@@ -138,6 +138,13 @@ test('default native simulator templates preserve their command rendering', () =
             compile: 'iverilog -o "top.out" "child.v" "top.v"',
             run: 'vvp "top.out"',
         },
+        'native-iverilog': {
+            compile: (
+                'iverilog -g2005 -o "top.out" '
+                + "'-DTRACE' '-Iinclude' \"child.v\" \"top.v\""
+            ),
+            run: 'vvp "top.out"',
+        },
         vcs: {
             compile: 'vcs -full64 -o "top.out" "child.v" "top.v"',
             run: './"top.out"',

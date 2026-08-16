@@ -17,6 +17,8 @@ const PROJECT_KEYS = new Set([
     'simulators',
     'wave_viewers',
     'file_order',
+    'defines',
+    'simulation_files',
     'dependency_result',
     'analyze_status',
     'simulate_status',
@@ -62,6 +64,17 @@ function stringArrayField(data: JsonObject, field: string): string[] {
         throw new TypeError(`${field} must be an array of strings`);
     }
     return [...value];
+}
+
+function parseDefines(value: unknown): Record<string, string | number | boolean> {
+    if (value === undefined) return {};
+    const source = requireObject(value, 'defines');
+    return Object.fromEntries(Object.entries(source).map(([name, candidate]) => {
+        if (!['string', 'number', 'boolean'].includes(typeof candidate)) {
+            throw new TypeError(`defines.${name} must be a string, number, or boolean`);
+        }
+        return [name, candidate as string | number | boolean];
+    }));
 }
 
 function parseSimulators(value: unknown): Record<string, SimulatorConfig> {
@@ -151,6 +164,8 @@ function serializeProject(project: Project, base: string): JsonObject {
             ([name, config]) => [name, config.launchCmd]
         )),
         file_order: [...project.fileOrder],
+        defines: { ...project.defines },
+        simulation_files: project.simulationFiles.map(filepath => storedPath(filepath, base)),
         analyze_status: project.analyzeStatus,
         simulate_status: project.simulateStatus,
     };
@@ -179,11 +194,13 @@ export class ProjectStore {
             rootDir,
             libDirs: [],
             topModule: '',
-            simulator: 'iverilog',
+            simulator: 'builtin',
             waveViewer: 'builtin',
             waveFileTemplate: '{top_module}.vcd',
             testbenchOutputDir: '.',
             fileOrder: [],
+            defines: {},
+            simulationFiles: [],
             simulators: withDefaults({}, DEFAULT_SIMULATORS),
             waveViewers: withDefaults({}, DEFAULT_WAVE_VIEWERS),
             interfaceProtocolFiles: [],
@@ -226,6 +243,10 @@ export class ProjectStore {
             waveFileTemplate: stringField(data, 'wave_file_template', '{top_module}.vcd'),
             testbenchOutputDir: stringField(data, 'testbench_output_dir', '.'),
             fileOrder: stringArrayField(data, 'file_order'),
+            defines: parseDefines(data.defines),
+            simulationFiles: stringArrayField(data, 'simulation_files').map(value =>
+                absolutePath(value, base)
+            ),
             simulators,
             waveViewers,
             interfaceProtocolFiles: parseInterfaceProtocolFiles(data.schematic).map(value =>
