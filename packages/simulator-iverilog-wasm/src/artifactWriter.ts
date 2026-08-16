@@ -32,6 +32,7 @@ export interface ArtifactWriterFileSystem {
     realpath?(hostPath: string): Promise<string>;
     rename?(oldPath: string, newPath: string): Promise<void>;
     unlink?(hostPath: string): Promise<void>;
+    pathComparisonKey?(hostPath: string): string;
 }
 
 export interface ArtifactWriterOptions {
@@ -64,24 +65,29 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
     const canonicalizePath = fileSystem.realpath ?? realpath;
     const movePath = fileSystem.rename ?? rename;
     const removePath = fileSystem.unlink ?? unlink;
+    const pathComparisonKey = fileSystem.pathComparisonKey
+        ?? nativePathComparisonKey;
+    const comparePath = (hostPath: string): string => (
+        pathComparisonKey(path.normalize(hostPath))
+    );
     const protectedVirtualPaths = new Set(
         (options.protectedVirtualPaths ?? []).map(validateArtifactPath),
     );
-    const protectedHostPaths = new Set(
-        (options.protectedHostPaths ?? []).map(
-            hostPath => normalizeDestination(hostPath, options.cwd),
-        ),
+    const protectedHostPaths = (options.protectedHostPaths ?? []).map(
+        hostPath => normalizeDestination(hostPath, options.cwd),
     );
+    const protectedHostPathKeys = new Set(protectedHostPaths.map(comparePath));
     const artifactPaths = new Set<string>();
     const destinations = new Set<string>();
 
     const validated = requests.map(request => {
         const artifactPath = validateArtifactPath(request.path);
         const destination = normalizeDestination(request.destination, options.cwd);
+        const destinationKey = comparePath(destination);
         if (artifactPaths.has(artifactPath)) {
             throw new Error(`Duplicate artifact path: ${artifactPath}`);
         }
-        if (destinations.has(destination)) {
+        if (destinations.has(destinationKey)) {
             throw new Error(`Duplicate artifact destination: ${request.destination}`);
         }
         for (const sourcePath of protectedVirtualPaths) {
@@ -89,13 +95,13 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
                 throw new Error(`Artifact path aliases a source path: ${artifactPath}`);
             }
         }
-        if (protectedHostPaths.has(destination)) {
+        if (protectedHostPathKeys.has(destinationKey)) {
             throw new Error(
                 `Artifact destination aliases a source destination: ${request.destination}`,
             );
         }
         artifactPaths.add(artifactPath);
-        destinations.add(destination);
+        destinations.add(destinationKey);
         return { request, artifactPath, destination };
     });
 
@@ -103,9 +109,10 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
 
     const produced = validated.filter(entry => artifacts.has(entry.artifactPath));
     const canonicalProtectedPaths = new Set(await Promise.all(
-        [...protectedHostPaths].map(hostPath => canonicalExistingPath(
+        protectedHostPaths.map(hostPath => canonicalExistingPath(
             hostPath,
             canonicalizePath,
+            comparePath,
         )),
     ));
     const canonicalDestinations = new Set<string>();
@@ -118,6 +125,7 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
             destination,
             metadata !== undefined,
             canonicalizePath,
+            comparePath,
         );
         if (canonicalProtectedPaths.has(canonicalDestination)) {
             throw new Error(
@@ -213,7 +221,7 @@ function normalizeDestination(destination: string, cwd = process.cwd()): string 
         throw new TypeError('Artifact destination must not contain NUL bytes');
     }
     const normalized = path.resolve(cwd, destination);
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    return normalized;
 }
 
 function pathsConflict(left: string, right: string): boolean {
@@ -244,12 +252,13 @@ async function optionalLstat(
 async function canonicalExistingPath(
     hostPath: string,
     canonicalizePath: (hostPath: string) => Promise<string>,
+    comparePath: (hostPath: string) => string,
 ): Promise<string> {
     try {
-        return destinationKey(await canonicalizePath(hostPath));
+        return comparePath(await canonicalizePath(hostPath));
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-            return destinationKey(hostPath);
+            return comparePath(hostPath);
         }
         throw error;
     }
@@ -259,15 +268,15 @@ async function canonicalArtifactDestination(
     destination: string,
     exists: boolean,
     canonicalizePath: (hostPath: string) => Promise<string>,
+    comparePath: (hostPath: string) => string,
 ): Promise<string> {
-    if (exists) return destinationKey(await canonicalizePath(destination));
+    if (exists) return comparePath(await canonicalizePath(destination));
     const parent = await canonicalizePath(path.dirname(destination));
-    return destinationKey(path.join(parent, path.basename(destination)));
+    return comparePath(path.join(parent, path.basename(destination)));
 }
 
-function destinationKey(hostPath: string): string {
-    const normalized = path.normalize(hostPath);
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+function nativePathComparisonKey(hostPath: string): string {
+    return process.platform === 'win32' ? hostPath.toLowerCase() : hostPath;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

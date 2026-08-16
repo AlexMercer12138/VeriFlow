@@ -10,7 +10,7 @@ export interface VirtualWorkspaceInput {
 }
 
 export interface VirtualWorkspaceFileSystem {
-    readFile(hostPath: string): Promise<Uint8Array>;
+    readFile?(hostPath: string): Promise<Uint8Array>;
     realpath?(hostPath: string): Promise<string>;
 }
 
@@ -46,6 +46,7 @@ export async function buildVirtualWorkspace(
     fileSystem: VirtualWorkspaceFileSystem = defaultFileSystem,
 ): Promise<VirtualWorkspace> {
     const context = pathContext(input.cwd);
+    const readHostFile = fileSystem.readFile ?? readFile;
     const cwd = normalizeHostPath(input.cwd, context);
     const roots = configuredRoots(cwd, input.includeDirs, context);
     const sources = input.files.map(
@@ -64,7 +65,7 @@ export async function buildVirtualWorkspace(
         const comparisonPath = comparable(mapped.normalizedHostPath, context);
         let data = dataByHostPath.get(comparisonPath);
         if (data === undefined) {
-            data = Promise.resolve(fileSystem.readFile(mapped.hostPath))
+            data = Promise.resolve(readHostFile(mapped.hostPath))
                 .then(contents => new Uint8Array(contents));
             dataByHostPath.set(comparisonPath, data);
         }

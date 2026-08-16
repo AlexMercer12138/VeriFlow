@@ -69,6 +69,28 @@ test('maps project sources in dependency order and keeps runtime data out of sou
     }
 });
 
+test('uses the Node reader when filesystem overrides are empty', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-default-reader-'));
+    const source = path.join(root, 'top.v');
+
+    try {
+        await writeFile(source, 'module top; endmodule\n');
+        const workspace = await buildVirtualWorkspace({
+            cwd: root,
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+        }, {});
+
+        assert.equal(
+            new TextDecoder().decode(workspace.files[0].data),
+            'module top; endmodule\n',
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('uses the longest configured root and preserves include-root indexes', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-roots-'));
     const broadRoot = path.join(root, 'vendor');

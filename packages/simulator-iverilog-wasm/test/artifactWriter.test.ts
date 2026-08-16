@@ -146,6 +146,74 @@ test('rejects duplicate and source-aliasing artifact requests before writing', a
     }
 });
 
+test('folds Windows comparison keys without changing filesystem I/O paths', async () => {
+    const ioPaths: Array<{ operation: string; path: string }> = [];
+    const fileSystem = {
+        pathComparisonKey(hostPath: string) {
+            return hostPath.toLowerCase();
+        },
+        async lstat(hostPath: string): Promise<never> {
+            ioPaths.push({ operation: 'lstat', path: hostPath });
+            throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        },
+        async realpath(hostPath: string): Promise<string> {
+            ioPaths.push({ operation: 'realpath', path: hostPath });
+            return hostPath;
+        },
+        async openExclusive(tempPath: string) {
+            ioPaths.push({ operation: 'open', path: tempPath });
+            return {
+                async writeFile() {},
+                async sync() {},
+                async close() {},
+            };
+        },
+        async rename(oldPath: string, newPath: string) {
+            ioPaths.push({ operation: 'rename-from', path: oldPath });
+            ioPaths.push({ operation: 'rename-to', path: newPath });
+        },
+        async unlink(hostPath: string) {
+            ioPaths.push({ operation: 'unlink', path: hostPath });
+        },
+    } satisfies ArtifactWriterFileSystem & {
+        pathComparisonKey(hostPath: string): string;
+    };
+    const cwd = path.join(path.parse(process.cwd()).root, 'WorkspaceRoot');
+    const upperDestination = path.join(cwd, 'CaseSensitive', 'WaveCase.VCD');
+    const lowerDestination = path.join(cwd, 'casesensitive', 'wavecase.vcd');
+
+    await assert.rejects(
+        writeRequestedArtifacts(new Map([
+            ['first.vcd', Buffer.from('first')],
+            ['second.vcd', Buffer.from('second')],
+        ]), [
+            { path: 'first.vcd', destination: upperDestination },
+            { path: 'second.vcd', destination: lowerDestination },
+        ], { cwd, fileSystem }),
+        /duplicate artifact destination/i,
+    );
+    assert.equal(ioPaths.length, 0);
+
+    await writeRequestedArtifacts(
+        new Map([['wave.vcd', Buffer.from('wave')]]),
+        [{ path: 'wave.vcd', destination: upperDestination }],
+        { cwd, fileSystem },
+    );
+
+    assert.equal(
+        ioPaths.find(entry => entry.operation === 'lstat')?.path,
+        upperDestination,
+    );
+    assert.equal(
+        ioPaths.find(entry => entry.operation === 'rename-to')?.path,
+        upperDestination,
+    );
+    const tempPath = ioPaths.find(entry => entry.operation === 'open')?.path;
+    assert.ok(tempPath !== undefined);
+    assert.equal(path.dirname(tempPath), path.dirname(upperDestination));
+    assert.match(path.basename(tempPath), /^\.WaveCase\.VCD\./);
+});
+
 test('rejects symlink destinations without modifying their targets', async t => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-link-'));
     const target = path.join(root, 'target.vcd');
