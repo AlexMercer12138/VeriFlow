@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { build, type BuildOptions } from 'esbuild';
+import { rename as renameFile } from 'fs/promises';
 
 type PackageNotice = {
     name: string;
@@ -16,6 +17,7 @@ type PackageNotice = {
 
 type RuntimePackage = {
     packageRoot: string;
+    mode: number;
     files: Array<{ relativePath: string; source: string; mode: number }>;
     notice: PackageNotice;
 };
@@ -43,7 +45,11 @@ type BuildSupport = {
             provenanceFile: string;
         }
     ): Promise<RuntimePackage>;
-    copyRuntimePackage(runtimePackage: RuntimePackage, destination: string): Promise<void>;
+    copyRuntimePackage(
+        runtimePackage: RuntimePackage,
+        destination: string,
+        fileSystem?: { rename(source: string, destination: string): Promise<void> }
+    ): Promise<void>;
 };
 
 type BrowserBuildConfig = {
@@ -447,6 +453,172 @@ async function testRuntimePackageSafety(support: BuildSupport): Promise<void> {
     }
 }
 
+async function testRuntimePackageRootMode(support: BuildSupport): Promise<void> {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-mode-'));
+    const packageRoot = path.join(fixtureRoot, 'package');
+    const destination = path.join(fixtureRoot, 'published');
+    const expectedMode = 0o751;
+    try {
+        fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+        fs.chmodSync(packageRoot, expectedMode);
+        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+            name: 'fixture-runtime',
+            version: '1.0.0',
+            license: 'MIT',
+            engines: { node: '>=18.15.0' },
+            exports: { '.': { import: './dist/index.js' } },
+            files: ['dist', 'LICENSE'],
+        }));
+        fs.writeFileSync(path.join(packageRoot, 'LICENSE'), 'fixture license\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'SOURCE.md'), 'fixture source\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'index.js'), 'export {};\n');
+        const runtimePackage = await support.collectRuntimePackage(packageRoot, {
+            name: 'fixture-runtime',
+            version: '1.0.0',
+            license: 'MIT',
+            nodeEngine: '>=18.15.0',
+            entry: 'dist/index.js',
+            declaredFiles: ['dist', 'LICENSE'],
+            requiredFiles: ['package.json', 'LICENSE', 'dist/SOURCE.md', 'dist/index.js'],
+            nonemptyFiles: ['LICENSE', 'dist/SOURCE.md'],
+            provenanceFile: 'dist/SOURCE.md',
+        });
+
+        assert.strictEqual(runtimePackage.mode, expectedMode);
+        await support.copyRuntimePackage(runtimePackage, destination);
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, expectedMode);
+    } finally {
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+}
+
+async function testRuntimePackageReplacement(support: BuildSupport): Promise<void> {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-replace-'));
+    const packageRoot = path.join(fixtureRoot, 'package');
+    const destination = path.join(fixtureRoot, 'published');
+    try {
+        fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+            name: 'fixture-runtime', version: '1.0.0', license: 'MIT',
+            engines: { node: '>=18.15.0' },
+            exports: { '.': { import: './dist/index.js' } },
+            files: ['dist', 'LICENSE'],
+        }));
+        fs.writeFileSync(path.join(packageRoot, 'LICENSE'), 'fixture license\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'SOURCE.md'), 'fixture source\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'index.js'), 'export {};\n');
+        fs.chmodSync(packageRoot, 0o555);
+        const runtimePackage = await support.collectRuntimePackage(packageRoot, {
+            name: 'fixture-runtime', version: '1.0.0', license: 'MIT',
+            nodeEngine: '>=18.15.0', entry: 'dist/index.js',
+            declaredFiles: ['dist', 'LICENSE'],
+            requiredFiles: ['package.json', 'LICENSE', 'dist/SOURCE.md', 'dist/index.js'],
+            nonemptyFiles: ['LICENSE', 'dist/SOURCE.md'], provenanceFile: 'dist/SOURCE.md',
+        });
+        const ownedEntries = (): string[] => fs.readdirSync(fixtureRoot)
+            .filter(entry => entry.startsWith('.runtime-package-'));
+
+        fs.mkdirSync(destination);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'trusted old content\n');
+        await support.copyRuntimePackage(runtimePackage, destination);
+        assert.strictEqual(fs.existsSync(path.join(destination, 'old.txt')), false);
+        assert.strictEqual(fs.readFileSync(
+            path.join(destination, 'dist', 'index.js'),
+            'utf8'
+        ), 'export {};\n');
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
+        assert.deepStrictEqual(ownedEntries(), []);
+
+        fs.chmodSync(destination, 0o755);
+        fs.rmSync(destination, { recursive: true, force: true });
+        fs.mkdirSync(destination);
+        fs.chmodSync(destination, 0o750);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'trusted old content\n');
+        let renameCalls = 0;
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async rename(source, target) {
+                    renameCalls += 1;
+                    if (renameCalls === 2) throw new Error('injected publish rename failure');
+                    await renameFile(source, target);
+                },
+            }),
+            /injected publish rename failure/
+        );
+        assert.strictEqual(renameCalls, 3, 'failed publish must restore the backup');
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o750);
+        assert.strictEqual(
+            fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'),
+            'trusted old content\n'
+        );
+        assert.deepStrictEqual(fs.readdirSync(destination), ['old.txt']);
+        assert.deepStrictEqual(ownedEntries(), []);
+
+        fs.rmSync(destination, { recursive: true, force: true });
+        let absentRenameCalls = 0;
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async rename() {
+                    absentRenameCalls += 1;
+                    throw new Error('injected absent publish failure');
+                },
+            }),
+            /injected absent publish failure/
+        );
+        assert.strictEqual(absentRenameCalls, 1);
+        assert.strictEqual(fs.existsSync(destination), false);
+        assert.deepStrictEqual(ownedEntries(), []);
+
+        fs.mkdirSync(destination);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'only recoverable copy\n');
+        let restoreRenameCalls = 0;
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async rename(source, target) {
+                    restoreRenameCalls += 1;
+                    if (restoreRenameCalls > 1) {
+                        throw new Error(
+                            restoreRenameCalls === 2
+                                ? 'injected publish failure'
+                                : 'injected restore failure'
+                        );
+                    }
+                    await renameFile(source, target);
+                },
+            }),
+            error => {
+                const failure = error as Error & { errors?: Error[] };
+                assert.strictEqual(failure.name, 'AggregateError');
+                assert.match(failure.message, /restore.*\.runtime-package-backup-/i);
+                assert.deepStrictEqual(
+                    failure.errors?.map(item => item.message),
+                    ['injected publish failure', 'injected restore failure']
+                );
+                return true;
+            }
+        );
+        assert.strictEqual(fs.existsSync(destination), false);
+        const recoveryEntries = ownedEntries();
+        assert.strictEqual(recoveryEntries.length, 1);
+        assert.match(recoveryEntries[0], /^\.runtime-package-backup-/);
+        const recoverable = path.join(fixtureRoot, recoveryEntries[0], 'previous');
+        assert.strictEqual(
+            fs.readFileSync(path.join(recoverable, 'old.txt'), 'utf8'),
+            'only recoverable copy\n'
+        );
+        assert.deepStrictEqual(fs.readdirSync(recoverable), ['old.txt']);
+    } finally {
+        if (fs.existsSync(packageRoot)) fs.chmodSync(packageRoot, 0o755);
+        if (fs.existsSync(destination)) fs.chmodSync(destination, 0o755);
+        for (const entry of fs.readdirSync(fixtureRoot)) {
+            if (entry.startsWith('.runtime-package-')) {
+                fs.chmodSync(path.join(fixtureRoot, entry), 0o755);
+            }
+        }
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+}
+
 async function testSchematicAssets(): Promise<void> {
     const support = await loadEsmModule<BuildSupport>(pathToFileURL(
         path.join(extensionRoot, 'scripts', 'build-support.mjs')
@@ -455,6 +627,8 @@ async function testSchematicAssets(): Promise<void> {
     testNoticeFormatting(support);
     await testRuntimePackageCollection(support);
     await testRuntimePackageSafety(support);
+    await testRuntimePackageRootMode(support);
+    await testRuntimePackageReplacement(support);
 
     for (const relative of [
         'index.js',

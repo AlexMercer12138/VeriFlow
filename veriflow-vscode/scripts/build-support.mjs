@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+    chmod,
     lstat,
     mkdir,
     mkdtemp,
@@ -220,6 +221,10 @@ async function rejectUndeclaredEntries(packageRoot, declarations) {
 }
 
 export async function collectRuntimePackage(packageRoot, expectations) {
+    const packageDetails = await lstat(packageRoot);
+    if (packageDetails.isSymbolicLink() || !packageDetails.isDirectory()) {
+        throw new Error(`Runtime package root is not a directory: ${packageRoot}`);
+    }
     const manifestPath = path.join(packageRoot, 'package.json');
     const manifestDetails = await lstat(manifestPath);
     if (manifestDetails.isSymbolicLink() || !manifestDetails.isFile()) {
@@ -285,6 +290,7 @@ export async function collectRuntimePackage(packageRoot, expectations) {
 
     return {
         packageRoot,
+        mode: packageDetails.mode & 0o777,
         files,
         notice: {
             name: manifest.name,
@@ -296,10 +302,14 @@ export async function collectRuntimePackage(packageRoot, expectations) {
     };
 }
 
-export async function copyRuntimePackage(runtimePackage, destination) {
+export async function copyRuntimePackage(runtimePackage, destination, fileSystem = {}) {
     const parent = path.dirname(destination);
+    const renamePath = fileSystem.rename ?? rename;
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(path.join(parent, '.runtime-package-'));
+    let backupRoot;
+    let backupPath;
+    let preserveBackup = false;
     try {
         for (const file of runtimePackage.files) {
             const relativePath = normalizedPackagePath(file.relativePath, 'Runtime package file');
@@ -308,11 +318,45 @@ export async function copyRuntimePackage(runtimePackage, destination) {
                 path.join(staging, ...relativePath.split('/'))
             );
         }
-        await rm(destination, { recursive: true, force: true });
-        await rename(staging, destination);
-    } catch (error) {
+        await chmod(staging, runtimePackage.mode);
+        let destinationExists = false;
+        try {
+            await lstat(destination);
+            destinationExists = true;
+        } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+        }
+        if (destinationExists) {
+            backupRoot = await mkdtemp(path.join(parent, '.runtime-package-backup-'));
+            backupPath = path.join(backupRoot, 'previous');
+            await renamePath(destination, backupPath);
+        }
+        try {
+            await renamePath(staging, destination);
+        } catch (publishError) {
+            if (backupPath) {
+                try {
+                    await renamePath(backupPath, destination);
+                    backupPath = undefined;
+                } catch (restoreError) {
+                    preserveBackup = true;
+                    throw new AggregateError(
+                        [publishError, restoreError],
+                        `Failed to publish runtime package ${destination}; `
+                            + `restore failed and previous package remains at ${backupPath}`
+                    );
+                }
+            }
+            throw publishError;
+        }
+    } finally {
+        await chmod(staging, runtimePackage.mode | 0o700).catch(error => {
+            if (error?.code !== 'ENOENT') throw error;
+        });
         await rm(staging, { recursive: true, force: true });
-        throw error;
+        if (backupRoot && !preserveBackup) {
+            await rm(backupRoot, { recursive: true, force: true });
+        }
     }
 }
 
