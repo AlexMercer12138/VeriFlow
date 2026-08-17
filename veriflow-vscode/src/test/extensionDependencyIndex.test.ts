@@ -222,6 +222,7 @@ const EXTENSION_CORE_RUNTIME_IMPORTS = [
     'formatDuplicateSummary',
     'toSimulationArtifactPosixPath',
     'toWorkspaceRelativePosixPath',
+    'validateWaveArtifactDestination',
 ] as const;
 
 function extensionCoreRuntimeImports(): string[] {
@@ -615,6 +616,7 @@ function createExtensionHarness(
             }
             return relative;
         },
+        validateWaveArtifactDestination: async () => undefined,
         LogParser: class {},
         formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
         listVerilogFiles: () => [],

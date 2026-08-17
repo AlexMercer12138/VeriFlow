@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { lstat } from 'fs/promises';
 
 import {
     ConfiguredNativeSimulatorBackend,
@@ -113,7 +114,17 @@ export interface SimulationServiceOptions extends SimulationBackendRegistryOptio
     registryFactory?: (
         settings: SimulationBackendSettings
     ) => SimulatorBackendRegistry;
+    artifactLstat?: WaveArtifactLstat;
 }
+
+export interface WaveArtifactFileStatus {
+    isFile(): boolean;
+    isSymbolicLink(): boolean;
+}
+
+export type WaveArtifactLstat = (
+    targetPath: string
+) => Promise<WaveArtifactFileStatus>;
 
 type ActiveRun = {
     runId: number;
@@ -125,6 +136,7 @@ export class SimulationService {
     private readonly registryFactory: (
         settings: SimulationBackendSettings
     ) => SimulatorBackendRegistry;
+    private readonly artifactLstat: WaveArtifactLstat;
     private activeRun: ActiveRun | undefined;
     private readonly inFlightRuns = new Set<ActiveRun>();
     private latestRunId = 0;
@@ -135,6 +147,7 @@ export class SimulationService {
         this.registryFactory = options.registryFactory ?? (settings => (
             createSimulationBackendRegistry(settings, options)
         ));
+        this.artifactLstat = options.artifactLstat ?? lstat;
     }
 
     get activeRunId(): number | undefined {
@@ -167,20 +180,24 @@ export class SimulationService {
             if (token?.isCancellationRequested) {
                 controller.abort();
             }
+            const artifact = input.waveFile === undefined ? undefined : {
+                kind: 'vcd' as const,
+                path: input.backendId === 'builtin'
+                    ? toWorkspaceRelativePosixPath(input.workspaceRoot, input.waveFile)
+                    : toSimulationArtifactPosixPath(input.workspaceRoot, input.waveFile),
+                destination: input.waveFile,
+                required: false,
+            };
+            if (input.waveFile !== undefined) {
+                await validateWaveArtifactDestination(input.waveFile, this.artifactLstat);
+            }
             const request = createSimulationRequest({
                 files: input.files,
                 runtimeFiles: [],
                 includeDirs: resolveIncludeDirs(input.workspaceRoot, input.libDirs),
                 defines: input.defines,
                 plusargs: [],
-                artifacts: input.waveFile === undefined ? [] : [{
-                    kind: 'vcd',
-                    path: input.backendId === 'builtin'
-                        ? toWorkspaceRelativePosixPath(input.workspaceRoot, input.waveFile)
-                        : toSimulationArtifactPosixPath(input.workspaceRoot, input.waveFile),
-                    destination: input.waveFile,
-                    required: false,
-                }],
+                artifacts: artifact === undefined ? [] : [artifact],
                 output: path.join(input.workspaceRoot, `${input.topModule}.out`),
                 cwd: input.workspaceRoot,
                 topModule: input.topModule,
@@ -233,6 +250,26 @@ export class SimulationService {
             runs.map(run => run.promise)
         ).then(() => undefined);
         return this.disposePromise;
+    }
+}
+
+export async function validateWaveArtifactDestination(
+    targetPath: string,
+    inspect: WaveArtifactLstat = lstat
+): Promise<void> {
+    let status: WaveArtifactFileStatus;
+    try {
+        status = await inspect(targetPath);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return;
+        }
+        throw error;
+    }
+    if (!status.isFile() || status.isSymbolicLink()) {
+        throw new Error(
+            `Waveform artifact destination must be a regular file when it exists: ${targetPath}`
+        );
     }
 }
 

@@ -692,7 +692,12 @@ async function testSimulationServiceBuildsNormalizedRequestAndAwaitsBackend(): P
     };
     const registry = new SimulatorBackendRegistry();
     registry.register('builtin', () => backend);
-    const service = new SimulationService({ registryFactory: () => registry });
+    const service = new SimulationService({
+        registryFactory: () => registry,
+        artifactLstat: async () => {
+            throw Object.assign(new Error('missing future artifact'), { code: 'ENOENT' });
+        },
+    });
 
     let settled = false;
     const run = service.run({
@@ -801,10 +806,15 @@ async function testSimulationServiceUsesLogicalArtifactPathsForEveryBackend(): P
 
 async function testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend(): Promise<void> {
     const workspaceRoot = copyFixture();
+    const directoryWaveFile = path.join(workspaceRoot, 'waves');
+    fs.mkdirSync(directoryWaveFile);
+    const regularWaveFile = path.join(workspaceRoot, 'existing.vcd');
+    fs.writeFileSync(regularWaveFile, '$date today $end\n');
+    const symlinkDirectoryWaveFile = path.join(workspaceRoot, 'linked-directory.vcd');
     let backendCalls = 0;
     const artifactPaths: string[] = [];
     const registry = new SimulatorBackendRegistry();
-    for (const backendId of ['builtin', 'iverilog']) {
+    for (const backendId of ['builtin', 'native-iverilog', 'iverilog']) {
         registry.register(backendId, () => ({
             async compileAndRun(request) {
                 backendCalls++;
@@ -813,7 +823,13 @@ async function testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend()
             },
         }));
     }
-    const service = new SimulationService({ registryFactory: () => registry });
+    const service = new SimulationService({
+        registryFactory: () => registry,
+        artifactLstat: async targetPath => targetPath === symlinkDirectoryWaveFile ? {
+            isFile: () => false,
+            isSymbolicLink: () => true,
+        } : fs.promises.lstat(targetPath),
+    });
     const input = {
         workspaceRoot,
         topModule: 'uart_tb',
@@ -829,6 +845,23 @@ async function testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend()
             /waveform artifact.*file path/i
         );
     }
+    for (const backendId of ['builtin', 'native-iverilog']) {
+        await assert.rejects(
+            service.run({ ...input, backendId, waveFile: directoryWaveFile }),
+            /waveform artifact.*regular file/i
+        );
+        await assert.rejects(
+            service.run({ ...input, backendId, waveFile: symlinkDirectoryWaveFile }),
+            /waveform artifact.*regular file/i
+        );
+    }
+    assert.strictEqual(backendCalls, 0);
+    await service.run({
+        ...input,
+        backendId: 'builtin',
+        waveFile: regularWaveFile,
+    });
+    assert.strictEqual(backendCalls, 1);
     assert.throws(
         () => toWorkspaceRelativePosixPath(workspaceRoot, workspaceRoot),
         /waveform artifact.*file path/i
@@ -864,10 +897,11 @@ async function testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend()
         waveFile: '\\\\server\\other-share\\uart_tb.vcd',
     });
     assert.deepStrictEqual(artifactPaths, [
+        'existing.vcd',
         'E:/waves/uart_tb.vcd',
         '//server/other-share/uart_tb.vcd',
     ]);
-    assert.strictEqual(backendCalls, 2);
+    assert.strictEqual(backendCalls, 3);
     await service.dispose();
 }
 

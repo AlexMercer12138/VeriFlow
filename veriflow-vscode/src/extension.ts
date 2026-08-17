@@ -28,6 +28,7 @@ import * as output from './output';
 import {
     DependencyAnalyzer, ExternalWaveViewerLauncher, SimulationService,
     SIMULATION_BACKEND_IDS, toSimulationArtifactPosixPath, toWorkspaceRelativePosixPath,
+    validateWaveArtifactDestination,
     ModuleScanResult, ModuleDefinitionEntry, DependencyResult,
     WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
@@ -2959,12 +2960,14 @@ async function cmdSimulate(
         } else {
             toSimulationArtifactPosixPath(root, waveFile);
         }
+        await validateWaveArtifactDestination(waveFile);
     } catch (error) {
         await reportConfigurationError(
             error instanceof Error ? error.message : String(error)
         );
         return;
     }
+    if (!isCurrent()) { return; }
 
     output.clear();
     output.show(true);
@@ -3211,7 +3214,8 @@ async function _doOpenWave(
 
     let wavePathIsFile: boolean;
     try {
-        wavePathIsFile = fs.statSync(waveFile).isFile();
+        const status = fs.lstatSync(waveFile);
+        wavePathIsFile = status.isFile() && !status.isSymbolicLink();
     } catch {
         output.appendError(`Wave file not found: ${waveFile}`);
         return;

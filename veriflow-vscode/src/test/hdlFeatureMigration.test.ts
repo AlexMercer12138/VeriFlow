@@ -4,7 +4,10 @@ import Module = require('module');
 import * as path from 'path';
 
 import { ExternalWaveViewerLauncher as RealExternalWaveViewerLauncher } from '../core/externalWaveViewerLauncher';
-import { SimulationService as RealSimulationService } from '../core/simulationService';
+import {
+    SimulationService as RealSimulationService,
+    validateWaveArtifactDestination as realValidateWaveArtifactDestination,
+} from '../core/simulationService';
 
 type Definition = {
     key: string;
@@ -543,6 +546,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let viewerLaunchCalls = 0;
     const wavePathExists = true;
     let wavePathIsFile = true;
+    const directoryWavePaths = new Set<string>();
+    let nextWaveDestinationGate: ReturnType<typeof createScanGate> | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
     let nextOpenDialogGate: ReturnType<typeof createScanGate> | undefined;
@@ -1375,6 +1380,18 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             }
             return relative;
         },
+        async validateWaveArtifactDestination(target: string): Promise<void> {
+            const gate = nextWaveDestinationGate;
+            nextWaveDestinationGate = undefined;
+            if (gate) {
+                gate.markStarted();
+                await gate.release;
+            }
+            await realValidateWaveArtifactDestination(target, async () => ({
+                isFile: () => !directoryWavePaths.has(target),
+                isSymbolicLink: () => false,
+            }));
+        },
         LogParser: class {},
         listVerilogFiles: () => [], readText: () => '',
         preprocessVerilog: (value: string) => value, removeComments: (value: string) => value,
@@ -1461,8 +1478,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         },
         fs: {
             existsSync(): boolean { return wavePathExists; },
-            statSync(): { isFile(): boolean } {
-                return { isFile: () => wavePathIsFile };
+            lstatSync(target: string): { isFile(): boolean; isSymbolicLink(): boolean } {
+                return {
+                    isFile: () => wavePathIsFile && !directoryWavePaths.has(target),
+                    isSymbolicLink: () => false,
+                };
             },
             readFileSync(): Buffer { return Buffer.from(''); },
         },
@@ -2285,6 +2305,75 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             ));
         }
         settings.waveFileTemplate = '{top_module}.vcd';
+
+        const directoryWaveFile = path.win32.resolve(workspaceRoot, 'waves');
+        directoryWavePaths.add(directoryWaveFile);
+        settings.waveFileTemplate = 'waves';
+        settings.simulator = 'builtin';
+        const runnerCallsBeforeDirectoryTemplate = runnerCalls;
+        const dependencyCallsBeforeDirectoryTemplate = resolvedDefinitionKeys.length;
+        const openWithBeforeDirectoryTemplate = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        const viewerCallsBeforeDirectoryTemplate = viewerLaunchCalls;
+        const errorsBeforeDirectoryTemplate = errors.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'reject existing directory wave destination'
+        );
+        assert.strictEqual(simulateStatus, 'error');
+        assert.strictEqual(runnerCalls, runnerCallsBeforeDirectoryTemplate);
+        assert.strictEqual(
+            resolvedDefinitionKeys.length,
+            dependencyCallsBeforeDirectoryTemplate
+        );
+        assert.ok(errors.slice(errorsBeforeDirectoryTemplate).some(message =>
+            /configuration error.*waveform artifact.*regular file/i.test(message)
+        ));
+        simulateStatus = 'completed';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'reject existing directory built-in wave open'
+        );
+        settings.waveViewer = 'custom';
+        settings.waveViewerCmd = 'viewer "{wave_file}"';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'reject existing directory external wave open'
+        );
+        simulateStatus = 'error';
+        settings.waveViewer = 'builtin';
+        settings.waveViewerCmd = '';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'reject pending directory wave simulation'
+        );
+        assert.strictEqual(runnerCalls, runnerCallsBeforeDirectoryTemplate);
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeDirectoryTemplate
+        );
+        assert.strictEqual(viewerLaunchCalls, viewerCallsBeforeDirectoryTemplate);
+        directoryWavePaths.delete(directoryWaveFile);
+        settings.waveFileTemplate = '{top_module}.vcd';
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'builtin',
+            commands: {},
+        };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'direct simulation after rejected pending directory wave'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeDirectoryTemplate
+        );
+        assert.strictEqual(viewerLaunchCalls, viewerCallsBeforeDirectoryTemplate);
 
         settings.simulator = 'builtin';
         nextSimulationExecution = {
@@ -3139,6 +3228,40 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'analysis before stale simulation resolve'
         );
         assert.strictEqual(analyzeStatus, 'completed');
+        const runnersBeforeStaleDestination = runnerCalls;
+        const dependenciesBeforeStaleDestination = resolvedDefinitionKeys.length;
+        const outputClearsBeforeStaleDestination = outputClearCount;
+        const staleDestinationGate = createScanGate();
+        nextWaveDestinationGate = staleDestinationGate;
+        const staleDestinationSimulation = Promise.resolve(
+            commands.get('veriflow.simulate')!()
+        );
+        await withTimeout(
+            staleDestinationGate.started,
+            'stale simulation wave destination validation'
+        );
+        const latestDestinationSimulation = Promise.resolve(
+            commands.get('veriflow.simulate')!()
+        );
+        await withTimeout(
+            latestDestinationSimulation,
+            'latest simulation after wave destination validation'
+        );
+        staleDestinationGate.allow();
+        await withTimeout(
+            staleDestinationSimulation,
+            'stale wave destination simulation'
+        );
+        assert.strictEqual(runnerCalls, runnersBeforeStaleDestination + 1);
+        assert.strictEqual(
+            resolvedDefinitionKeys.length,
+            dependenciesBeforeStaleDestination + 1
+        );
+        assert.strictEqual(
+            outputClearCount,
+            outputClearsBeforeStaleDestination + 1
+        );
+        assert.strictEqual(simulateStatus, 'completed');
         const runnersBeforeStaleResolve = runnerCalls;
         const simulateResolveGate = createScanGate();
         nextResolveGate = simulateResolveGate;

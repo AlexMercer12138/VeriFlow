@@ -13,6 +13,7 @@ export {
     createSimulationBackendRegistry,
     toSimulationArtifactPosixPath,
     toWorkspaceRelativePosixPath,
+    validateWaveArtifactDestination,
 } from './simulationService';
 export type {
     CancellationTokenLike,
@@ -22,6 +23,8 @@ export type {
     SimulationServiceOptions,
     SimulationServiceRunInput,
     SimulationServiceRunResult,
+    WaveArtifactFileStatus,
+    WaveArtifactLstat,
 } from './simulationService';
 export { ExternalWaveViewerLauncher } from './externalWaveViewerLauncher';
 export type {
