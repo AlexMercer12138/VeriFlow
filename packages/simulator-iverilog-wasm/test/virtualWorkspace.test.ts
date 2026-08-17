@@ -103,6 +103,41 @@ test('maps runtime files under cwd to VVP working-directory-relative paths', asy
     }
 });
 
+test('treats backslashes in a POSIX cwd component as literal characters', async t => {
+    if (process.platform === 'win32') {
+        t.skip('backslashes are separators on Windows');
+        return;
+    }
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-posix-backslash-'));
+    const cwd = path.join(root, 'dir\\name');
+    const source = path.join(cwd, 'top.v');
+    let workspace: Awaited<ReturnType<typeof buildVirtualWorkspace>> | undefined;
+
+    try {
+        await mkdir(cwd, { recursive: true });
+        await writeFile(source, 'module top; endmodule\n');
+
+        await assert.doesNotReject(async () => {
+            workspace = await buildVirtualWorkspace({
+                cwd,
+                files: [source],
+                runtimeFiles: [],
+                includeDirs: [],
+            });
+        });
+
+        assert.ok(workspace);
+        assert.equal(workspace.runCwd, 'workspace');
+        assert.deepEqual(workspace.sources, ['workspace/top.v']);
+        assert.equal(
+            workspace.hostPathByVirtualPath.get('workspace/top.v'),
+            source,
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('preserves sibling runtime paths beneath a common virtual ancestor', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-runtime-sibling-'));
     const cwd = path.join(root, 'demo', 'rtl');

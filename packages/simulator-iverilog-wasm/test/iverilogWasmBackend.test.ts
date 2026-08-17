@@ -3,6 +3,7 @@ import {
     copyFile,
     mkdtemp,
     mkdir,
+    open,
     readFile,
     rename,
     rm,
@@ -534,6 +535,81 @@ test('preflights artifact destinations through symlink parents before simulation
         assert.equal(result.success, false);
         assert.equal(result.stage, 'infrastructure');
         assert.equal(apiCalls, 0);
+        assert.equal(await readFile(source, 'utf8'), 'module top; endmodule\n');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('does not overwrite a protected source when an artifact parent link changes', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-parent-race-'));
+    const safeDirectory = path.join(root, 'safe');
+    const sourceDirectory = path.join(root, 'source');
+    const linkedDirectory = path.join(root, 'linked');
+    const replacementLink = path.join(root, 'replacement-link');
+    const source = path.join(sourceDirectory, 'top.v');
+    let apiCalls = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 1, run: 1 },
+        artifacts: new Map([['workspace/wave.vcd', Buffer.from('replacement')]]),
+    });
+    const backend = new IverilogWasmBackend(async () => {
+        apiCalls += 1;
+        return api;
+    }, {
+        artifactFileSystem: {
+            async openExclusive(tempPath) {
+                await rename(replacementLink, linkedDirectory);
+                return open(tempPath, 'wx', 0o600);
+            },
+        },
+    });
+
+    try {
+        await Promise.all([
+            mkdir(safeDirectory),
+            mkdir(sourceDirectory),
+        ]);
+        await writeFile(source, 'module top; endmodule\n');
+        try {
+            await Promise.all([
+                symlink(safeDirectory, linkedDirectory, 'dir'),
+                symlink(sourceDirectory, replacementLink, 'dir'),
+            ]);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination: path.join(linkedDirectory, 'top.v'),
+                required: true,
+            }],
+            output: path.join(sourceDirectory, 'top.out'),
+            cwd: sourceDirectory,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(apiCalls, 1);
         assert.equal(await readFile(source, 'utf8'), 'module top; endmodule\n');
     } finally {
         await rm(root, { recursive: true, force: true });

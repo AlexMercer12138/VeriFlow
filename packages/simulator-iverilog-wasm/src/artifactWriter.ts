@@ -66,6 +66,7 @@ export interface ArtifactWriterOptions {
 interface StagedArtifact {
     request: ArtifactWriteRequest;
     destination: string;
+    parentIdentity: ArtifactParentIdentity;
     tempPath: string;
     size: number;
 }
@@ -74,6 +75,15 @@ interface PreparedArtifact<T extends ArtifactWriteRequest> {
     request: T;
     artifactPath: string;
     destination: string;
+    parentIdentity?: ArtifactParentIdentity;
+}
+
+interface ArtifactParentIdentity {
+    lexicalPath: string;
+    canonicalPath: string;
+    canonicalKey: string;
+    device?: number;
+    inode?: number;
 }
 
 class ArtifactCleanupError extends Error {
@@ -99,8 +109,15 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
 ): Promise<Array<T & { written: boolean; size: number }>> {
     const fileSystem = options.fileSystem ?? {};
     const openExclusive = fileSystem.openExclusive ?? defaultOpenExclusive;
+    const inspectPath = fileSystem.lstat ?? lstat;
+    const canonicalizePath = fileSystem.realpath ?? realpath;
     const movePath = fileSystem.rename ?? rename;
     const removePath = fileSystem.unlink ?? unlink;
+    const pathComparisonKey = fileSystem.pathComparisonKey
+        ?? nativePathComparisonKey;
+    const comparePath = (hostPath: string): string => (
+        pathComparisonKey(path.normalize(hostPath))
+    );
     const producedPaths = new Set(artifacts.keys());
     const validated = await prepareRequestedArtifacts(
         requests,
@@ -115,6 +132,11 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
     try {
         for (const entry of produced) {
             throwIfAborted(options.signal);
+            if (entry.parentIdentity === undefined) {
+                throw new Error(
+                    `Artifact destination was not prepared: ${entry.request.destination}`,
+                );
+            }
             const data = artifacts.get(entry.artifactPath)!;
             const tempPath = temporarySibling(entry.destination);
             temporaryPaths.push(tempPath);
@@ -140,6 +162,7 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
             staged.push({
                 request: entry.request,
                 destination: entry.destination,
+                parentIdentity: entry.parentIdentity,
                 tempPath,
                 size: data.byteLength,
             });
@@ -148,6 +171,13 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
         throwIfAborted(options.signal);
         for (const artifact of staged) {
             throwIfAborted(options.signal);
+            await assertStableArtifactParent(
+                artifact.parentIdentity,
+                artifact.request.destination,
+                inspectPath,
+                canonicalizePath,
+                comparePath,
+            );
             await movePath(artifact.tempPath, artifact.destination);
             committed.set(artifact.request.path, artifact);
         }
@@ -245,26 +275,30 @@ async function prepareRequestedArtifacts<T extends ArtifactWriteRequest>(
         )),
     ));
     const canonicalDestinations = new Set<string>();
-    for (const { destination } of inspected) {
+    for (const entry of inspected) {
+        const { destination } = entry;
         const metadata = await optionalLstat(destination, inspectPath);
         if (metadata?.isSymbolicLink()) {
             throw new Error(`Artifact destination must not be a symbolic link: ${destination}`);
         }
-        const canonicalDestination = await canonicalArtifactDestination(
+        const preparedDestination = await prepareArtifactDestination(
             destination,
             metadata !== undefined,
+            inspectPath,
             canonicalizePath,
             comparePath,
         );
-        if (canonicalProtectedPaths.has(canonicalDestination)) {
+        if (canonicalProtectedPaths.has(preparedDestination.destinationKey)) {
             throw new Error(
                 `Artifact destination aliases a source destination: ${destination}`,
             );
         }
-        if (canonicalDestinations.has(canonicalDestination)) {
+        if (canonicalDestinations.has(preparedDestination.destinationKey)) {
             throw new Error(`Duplicate artifact destination: ${destination}`);
         }
-        canonicalDestinations.add(canonicalDestination);
+        canonicalDestinations.add(preparedDestination.destinationKey);
+        entry.destination = preparedDestination.destination;
+        entry.parentIdentity = preparedDestination.parentIdentity;
     }
     return validated;
 }
@@ -383,15 +417,106 @@ async function canonicalExistingPath(
     }
 }
 
-async function canonicalArtifactDestination(
+async function prepareArtifactDestination(
     destination: string,
     exists: boolean,
+    inspectPath: (hostPath: string) => Promise<Stats>,
     canonicalizePath: (hostPath: string) => Promise<string>,
     comparePath: (hostPath: string) => string,
-): Promise<string> {
-    if (exists) return comparePath(await canonicalizePath(destination));
-    const parent = await canonicalizePath(path.dirname(destination));
-    return comparePath(path.join(parent, path.basename(destination)));
+): Promise<{
+    destination: string;
+    destinationKey: string;
+    parentIdentity: ArtifactParentIdentity;
+}> {
+    const lexicalParent = path.dirname(destination);
+    const canonicalParent = await canonicalizePath(lexicalParent);
+    const canonicalParentKey = comparePath(canonicalParent);
+    const parentMetadata = await optionalLstat(canonicalParent, inspectPath);
+    const stableMetadata = stableDirectoryIdentity(parentMetadata);
+    const parentIsAliased = comparePath(lexicalParent) !== canonicalParentKey;
+    if (parentIsAliased && stableMetadata === undefined) {
+        throw new Error(
+            `Artifact destination parent symbolic link identity cannot be verified: ${destination}`,
+        );
+    }
+
+    const canonicalDestination = exists
+        ? await canonicalizePath(destination)
+        : path.join(canonicalParent, path.basename(destination));
+    if (comparePath(path.dirname(canonicalDestination)) !== canonicalParentKey) {
+        throw new Error(
+            `Artifact destination parent changed during validation: ${destination}`,
+        );
+    }
+    return {
+        destination: canonicalDestination,
+        destinationKey: comparePath(canonicalDestination),
+        parentIdentity: {
+            lexicalPath: lexicalParent,
+            canonicalPath: canonicalParent,
+            canonicalKey: canonicalParentKey,
+            ...(stableMetadata === undefined ? {} : stableMetadata),
+        },
+    };
+}
+
+async function assertStableArtifactParent(
+    identity: ArtifactParentIdentity,
+    requestedDestination: string,
+    inspectPath: (hostPath: string) => Promise<Stats>,
+    canonicalizePath: (hostPath: string) => Promise<string>,
+    comparePath: (hostPath: string) => string,
+): Promise<void> {
+    let lexicalParent: string;
+    let canonicalParent: string;
+    try {
+        [lexicalParent, canonicalParent] = await Promise.all([
+            canonicalizePath(identity.lexicalPath),
+            canonicalizePath(identity.canonicalPath),
+        ]);
+    } catch (error) {
+        throw parentVerificationError(requestedDestination, error);
+    }
+    if (comparePath(lexicalParent) !== identity.canonicalKey
+        || comparePath(canonicalParent) !== identity.canonicalKey) {
+        throw parentVerificationError(requestedDestination);
+    }
+
+    if (identity.device === undefined || identity.inode === undefined) return;
+    let metadata: Stats | undefined;
+    try {
+        metadata = await optionalLstat(identity.canonicalPath, inspectPath);
+    } catch (error) {
+        throw parentVerificationError(requestedDestination, error);
+    }
+    const currentIdentity = stableDirectoryIdentity(metadata);
+    if (currentIdentity?.device !== identity.device
+        || currentIdentity.inode !== identity.inode) {
+        throw parentVerificationError(requestedDestination);
+    }
+}
+
+function stableDirectoryIdentity(
+    metadata: Stats | undefined,
+): { device: number; inode: number } | undefined {
+    if (metadata === undefined || !metadata.isDirectory()) return undefined;
+    if (!Number.isSafeInteger(metadata.dev)
+        || !Number.isSafeInteger(metadata.ino)
+        || (metadata.dev === 0 && metadata.ino === 0)) {
+        return undefined;
+    }
+    return { device: metadata.dev, inode: metadata.ino };
+}
+
+function parentVerificationError(
+    destination: string,
+    cause?: unknown,
+): Error {
+    const error = new Error(
+        `Artifact destination parent changed after validation: ${destination}`,
+    ) as Error & { cause?: unknown };
+    if (cause !== undefined) error.cause = cause;
+    return error;
 }
 
 function nativePathComparisonKey(hostPath: string): string {

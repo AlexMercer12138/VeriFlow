@@ -12,6 +12,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runCli } from '../src/main';
+import { builtinArtifactLogicalPath } from '../src/commands/sim';
 
 test('builtin CLI simulates Verilog-2005 and writes VCD without native Icarus in PATH', async () => {
     const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-builtin-'));
@@ -272,6 +273,121 @@ endmodule
     } finally {
         rmSync(caseRoot, { recursive: true, force: true });
     }
+});
+
+test('builtin CLI writes a physical sibling VCD through a linked project root', async t => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-link-wave-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const physicalProject = path.join(caseRoot, 'physical', 'demo');
+    const physicalRoot = path.join(physicalProject, 'rtl');
+    const rootDir = path.join(cwd, 'rtl-link');
+    const wavesDir = path.join(physicalProject, 'waves');
+    const waveFile = path.join(wavesDir, 'top.vcd');
+    const homeDir = path.join(caseRoot, 'home');
+    const emptyPath = path.join(caseRoot, 'empty-path');
+    mkdirSync(physicalRoot, { recursive: true });
+    mkdirSync(wavesDir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(emptyPath, { recursive: true });
+
+    try {
+        try {
+            symlinkSync(
+                physicalRoot,
+                rootDir,
+                process.platform === 'win32' ? 'junction' : 'dir',
+            );
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+        writeFileSync(path.join(physicalRoot, 'top.v'), `
+module top;
+    initial begin
+        $dumpfile("../waves/top.vcd");
+        $dumpvars(0, top);
+        $display("PASS");
+        #1 $finish;
+    end
+endmodule
+`, 'utf8');
+        writeFileSync(path.join(cwd, 'project.json'), JSON.stringify({
+            project_name: 'builtin-link-wave',
+            project_root: 'rtl-link',
+            top_module: 'top',
+            simulator: 'builtin',
+            wave_file_template: waveFile,
+        }, null, 2), 'utf8');
+
+        let stdout = '';
+        let stderr = '';
+        const originalPath = process.env.PATH;
+        process.env.PATH = emptyPath;
+        try {
+            const exitCode = await runCli(['sim', '--project', 'project.json'], {
+                cwd,
+                homeDir,
+                stdout: text => { stdout += text; },
+                stderr: text => { stderr += text; },
+                commandExecutor: {
+                    execute(): never {
+                        throw new Error('native command execution was attempted');
+                    },
+                },
+            });
+
+            assert.equal(exitCode, 0, stderr || stdout);
+            assert.match(stdout, /PASS/);
+            assert.doesNotMatch(stdout, /Unable to open|FAIL/);
+            assert.equal(stderr, '');
+            assert.equal(existsSync(waveFile), true);
+        } finally {
+            if (originalPath === undefined) delete process.env.PATH;
+            else process.env.PATH = originalPath;
+        }
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('builtin artifact paths canonicalize a mocked Windows junction before relative mapping', async () => {
+    const linkedRoot = 'C:\\workspace\\rtl-link';
+    const physicalRoot = 'D:\\physical\\demo\\rtl';
+    const destination = 'D:\\physical\\demo\\waves\\top.vcd';
+    const destinationParent = path.win32.dirname(destination);
+    const canonicalized: string[] = [];
+
+    const logicalPath = await builtinArtifactLogicalPath(
+        linkedRoot,
+        destination,
+        async hostPath => {
+            canonicalized.push(hostPath);
+            const key = path.win32.normalize(hostPath).toLowerCase();
+            if (key === path.win32.normalize(linkedRoot).toLowerCase()) {
+                return physicalRoot;
+            }
+            if (key === path.win32.normalize(destination).toLowerCase()) {
+                throw Object.assign(new Error('missing destination'), { code: 'ENOENT' });
+            }
+            if (key === path.win32.normalize(destinationParent).toLowerCase()) {
+                return destinationParent;
+            }
+            throw new Error(`Unexpected canonicalization path: ${hostPath}`);
+        },
+    );
+
+    assert.equal(logicalPath, '../waves/top.vcd');
+    assert.deepEqual(canonicalized, [
+        linkedRoot,
+        destination,
+        destinationParent,
+    ]);
+    assert.doesNotMatch(logicalPath, /^[A-Za-z]:/);
 });
 
 test('builtin CLI writes an absolute external wave through a safe virtual path', async () => {

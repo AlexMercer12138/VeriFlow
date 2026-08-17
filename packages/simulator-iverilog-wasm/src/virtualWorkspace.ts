@@ -190,7 +190,10 @@ function stableUnique(values: readonly string[]): string[] {
 }
 
 function pathContext(cwd: string): PathContext {
-    const windows = /^[A-Za-z]:[\\/]/.test(cwd) || cwd.includes('\\');
+    const windows = process.platform === 'win32'
+        || /^[A-Za-z]:[\\/]/.test(cwd)
+        || cwd.startsWith('\\\\')
+        || /^\/\/[^/]/.test(cwd);
     return {
         implementation: windows ? path.win32 : path.posix,
         windows,

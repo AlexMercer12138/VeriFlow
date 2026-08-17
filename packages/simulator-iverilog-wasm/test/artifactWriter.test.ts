@@ -318,6 +318,58 @@ test('rejects protected destinations reached through a symlink parent', async t 
     }
 });
 
+test('rejects a destination whose symlink parent changes after validation', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-parent-race-'));
+    const safeDirectory = path.join(root, 'safe');
+    const sourceDirectory = path.join(root, 'source');
+    const linkedDirectory = path.join(root, 'linked');
+    const replacementLink = path.join(root, 'replacement-link');
+    const source = path.join(sourceDirectory, 'top.v');
+    const destination = path.join(linkedDirectory, 'top.v');
+
+    try {
+        await Promise.all([
+            mkdir(safeDirectory),
+            mkdir(sourceDirectory),
+        ]);
+        await writeFile(source, 'module top; endmodule\n');
+        try {
+            await Promise.all([
+                symlink(safeDirectory, linkedDirectory, 'dir'),
+                symlink(sourceDirectory, replacementLink, 'dir'),
+            ]);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        await assert.rejects(
+            writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('replacement')]]),
+                [{ path: 'wave.vcd', destination }],
+                {
+                    cwd: root,
+                    protectedHostPaths: [source],
+                    fileSystem: {
+                        async openExclusive(tempPath) {
+                            await rename(replacementLink, linkedDirectory);
+                            return open(tempPath, 'wx', 0o600);
+                        },
+                    },
+                },
+            ),
+            /symbolic link|destination parent/i,
+        );
+        assert.equal(await readFile(source, 'utf8'), 'module top; endmodule\n');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('cleans sibling temporary files when fsync fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-fail-'));
     const openedPaths: string[] = [];

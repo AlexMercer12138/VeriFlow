@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -155,6 +156,61 @@ function workspaceRelativePath(root: string, filepath: string): string {
     return path.relative(root, filepath).split(path.sep).join('/');
 }
 
+export async function builtinArtifactLogicalPath(
+    root: string,
+    filepath: string,
+    canonicalizePath: (hostPath: string) => Promise<string> = realpath,
+): Promise<string> {
+    const implementation = hostPathImplementation(root, filepath);
+    const canonicalRoot = await canonicalizePath(root);
+    const canonicalFilepath = await canonicalArtifactDestination(
+        filepath,
+        canonicalizePath,
+        implementation,
+    );
+    const relativePath = implementation.relative(canonicalRoot, canonicalFilepath);
+    if (implementation.isAbsolute(relativePath)) {
+        throw new Error(
+            'Builtin artifact destination must be on the same volume as the project root',
+        );
+    }
+    return relativePath.split(implementation.sep).join('/');
+}
+
+async function canonicalArtifactDestination(
+    filepath: string,
+    canonicalizePath: (hostPath: string) => Promise<string>,
+    implementation: typeof path.posix | typeof path.win32,
+): Promise<string> {
+    const missingComponents: string[] = [];
+    let candidate = filepath;
+    while (true) {
+        try {
+            const canonicalParent = await canonicalizePath(candidate);
+            return implementation.resolve(canonicalParent, ...missingComponents);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            const parent = implementation.dirname(candidate);
+            if (parent === candidate) throw error;
+            missingComponents.unshift(implementation.basename(candidate));
+            candidate = parent;
+        }
+    }
+}
+
+function hostPathImplementation(
+    ...hostPaths: readonly string[]
+): typeof path.posix | typeof path.win32 {
+    if (process.platform === 'win32' || hostPaths.some(isExplicitWindowsPath)) {
+        return path.win32;
+    }
+    return path.posix;
+}
+
+function isExplicitWindowsPath(hostPath: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(hostPath) || /^(?:\\\\|\/\/)[^\\/]/.test(hostPath);
+}
+
 export async function simulate(
     options: CommandOptions,
     environment: CliEnvironment
@@ -205,6 +261,9 @@ export async function simulate(
         }
 
         const waveFile = resolveWaveFile(project);
+        const artifactPath = project.simulator === 'builtin'
+            ? await builtinArtifactLogicalPath(project.rootDir, waveFile)
+            : workspaceRelativePath(project.rootDir, waveFile);
         const request = createSimulationRequest({
             files: dependencies.files,
             runtimeFiles: project.simulationFiles,
@@ -213,7 +272,7 @@ export async function simulate(
             plusargs: [],
             artifacts: [{
                 kind: 'vcd',
-                path: workspaceRelativePath(project.rootDir, waveFile),
+                path: artifactPath,
                 destination: waveFile,
                 required: false,
             }],
