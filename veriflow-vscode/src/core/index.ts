@@ -11,6 +11,7 @@ export {
     SIMULATION_BACKEND_IDS,
     SimulationService,
     createSimulationBackendRegistry,
+    toSimulationArtifactPosixPath,
     toWorkspaceRelativePosixPath,
 } from './simulationService';
 export type {
@@ -23,7 +24,10 @@ export type {
     SimulationServiceRunResult,
 } from './simulationService';
 export { ExternalWaveViewerLauncher } from './externalWaveViewerLauncher';
-export type { ExternalWaveViewerLauncherOptions } from './externalWaveViewerLauncher';
+export type {
+    ExternalWaveViewerLauncherOptions,
+    WaveViewerChildProcess,
+} from './externalWaveViewerLauncher';
 export { formatModuleInstantiation } from './moduleInstantiationFormatter';
 export type { NamedConnection, ModuleInstantiationOptions } from './moduleInstantiationFormatter';
 export { buildModuleInstantiationChoices } from './moduleInstantiationChoices';

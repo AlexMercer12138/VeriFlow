@@ -27,7 +27,7 @@ import {
 import * as output from './output';
 import {
     DependencyAnalyzer, ExternalWaveViewerLauncher, SimulationService,
-    SIMULATION_BACKEND_IDS, toWorkspaceRelativePosixPath,
+    SIMULATION_BACKEND_IDS, toSimulationArtifactPosixPath, toWorkspaceRelativePosixPath,
     ModuleScanResult, ModuleDefinitionEntry, DependencyResult,
     WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
@@ -192,15 +192,14 @@ class HdlStoppingError extends Error {
 let _analyzeStatus: string = 'idle';
 let _simulateStatus: string = 'idle';
 let _lastDepFileHashes: Record<string, string> = {};
-let _pendingSimulateAfterAnalyze = false;
-let _pendingWaveAfterSimulate = false;
-let _pendingWaveAfterAnalyze = false;
+let hdlWaveIntentGeneration = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
     _resetSchematicIndexes();
     hdlStopping = false;
     hdlLifecycleGeneration++;
     hdlSimulationGeneration++;
+    hdlWaveIntentGeneration++;
     hdlActiveContext = context;
     hdlAbortController = new AbortController();
     if (hdlParser && hdlParserExtensionPath !== context.extensionPath) {
@@ -1516,6 +1515,7 @@ export async function deactivate(): Promise<void> {
     hdlPresentationGeneration++;
     hdlWorkflowGeneration++;
     hdlSimulationGeneration++;
+    hdlWaveIntentGeneration++;
     hdlTopIntentVersion++;
     hdlInstantiationIntentVersion++;
     hdlAbortController.abort();
@@ -1524,9 +1524,6 @@ export async function deactivate(): Promise<void> {
     hdlPreparationInFlight = undefined;
     hdlScanInFlight = undefined;
     hdlPresentationRootIdentity = undefined;
-    _pendingSimulateAfterAnalyze = false;
-    _pendingWaveAfterAnalyze = false;
-    _pendingWaveAfterSimulate = false;
     _resetDependencyIndex();
     const service = simulationService;
     simulationService = undefined;
@@ -1674,9 +1671,15 @@ function _resolveWaveFile(
     settings: ExtensionSettings
 ): string {
     const configured = settings.waveFileTemplate.replace('{top_module}', topModule);
-    return path.isAbsolute(configured)
-        ? path.normalize(configured)
-        : path.resolve(root, configured);
+    const implementation = process.platform === 'win32'
+        || [root, configured].some(value => (
+            /^[A-Za-z]:[\\/]/.test(value) || /^(?:\\\\|\/\/)[^\\/]/.test(value)
+        ))
+        ? path.win32
+        : path.posix;
+    return implementation.isAbsolute(configured)
+        ? implementation.normalize(configured)
+        : implementation.resolve(root, configured);
 }
 
 function _isSimulatorReady(
@@ -1710,9 +1713,7 @@ function _invalidateDependencyPresentation(context: vscode.ExtensionContext): vo
     treeProvider.setAnalyzeResult(null);
     _clearPersistedDependencyResult(context);
     _lastDepFileHashes = {};
-    _pendingSimulateAfterAnalyze = false;
-    _pendingWaveAfterAnalyze = false;
-    _pendingWaveAfterSimulate = false;
+    hdlWaveIntentGeneration++;
 }
 
 function _isCurrentHdlWorkflow(generation: number): boolean {
@@ -2808,7 +2809,10 @@ async function cmdSelectTop(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo(`Top module: ${selection.name}`);
 }
 
-async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
+async function cmdAnalyze(
+    context: vscode.ExtensionContext,
+    continuation?: { waveIntent: number | undefined }
+): Promise<void> {
     if (hdlStopping) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
@@ -2874,26 +2878,20 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
         _setAnalyzeStatus(context, 'error');
     }
 
-    // 如果有挂起的仿真/波形请求，继续执行
-    if (_pendingSimulateAfterAnalyze) {
-        _pendingSimulateAfterAnalyze = false;
+    if (continuation) {
         if (result.missingModules.length === 0 && ambiguousNames.length === 0) {
-            await cmdSimulate(context);
-        }
-        return;
-    }
-    if (_pendingWaveAfterAnalyze) {
-        _pendingWaveAfterAnalyze = false;
-        if (result.missingModules.length === 0 && ambiguousNames.length === 0) {
-            _pendingWaveAfterSimulate = true;
-            await cmdSimulate(context);
+            await cmdSimulate(context, continuation.waveIntent);
         }
         return;
     }
 }
 
-async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
+async function cmdSimulate(
+    context: vscode.ExtensionContext,
+    waveIntent?: number
+): Promise<void> {
     if (hdlStopping) { return; }
+    if (waveIntent !== undefined && waveIntent !== hdlWaveIntentGeneration) { return; }
     const service = simulationService;
     if (!service) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
@@ -2908,7 +2906,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
         simulationGeneration,
         service,
         serviceRunId
-    );
+    ) && (waveIntent === undefined || waveIntent === hdlWaveIntentGeneration);
     const reportConfigurationError = async (message: string): Promise<void> => {
         if (!isCurrent()) { return; }
         output.show(true);
@@ -2933,9 +2931,8 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
         output.appendInfo(`Analyze status is ${_analyzeStatus}; running analyze -> simulate.`);
-        _pendingSimulateAfterAnalyze = true;
         if (!isCurrent()) { return; }
-        await cmdAnalyze(context);
+        await cmdAnalyze(context, { waveIntent });
         return;
     }
 
@@ -2956,15 +2953,17 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
         return;
     }
     const waveFile = _resolveWaveFile(root, topModule, settings);
-    if (backendId === 'builtin') {
-        try {
+    try {
+        if (backendId === 'builtin') {
             toWorkspaceRelativePosixPath(root, waveFile);
-        } catch (error) {
-            await reportConfigurationError(
-                error instanceof Error ? error.message : String(error)
-            );
-            return;
+        } else {
+            toSimulationArtifactPosixPath(root, waveFile);
         }
+    } catch (error) {
+        await reportConfigurationError(
+            error instanceof Error ? error.message : String(error)
+        );
+        return;
     }
 
     output.clear();
@@ -3037,6 +3036,12 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
     if (!isCurrent()) { return; }
     const result = outcome.execution;
+    if (result.cause?.code === 'ABORTED') {
+        output.appendInfo('Simulation cancelled.');
+        _setSimulateStatus(context, 'idle');
+        output.show();
+        return;
+    }
     const publishCommands = backendId !== 'builtin' && backendId !== 'experimental-ts';
 
     if (publishCommands && result.commands.compile) {
@@ -3050,9 +3055,13 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     if (publishCommands && result.commands.run) {
         output.appendLine(`[CMD] Run: ${result.commands.run}`);
     }
+    const publishedErrors = new Set<string>();
     if (result.stderr) {
         for (const line of result.stderr.split('\n')) {
-            if (line.trim()) { output.appendError(line); }
+            if (line.trim()) {
+                output.appendError(line);
+                publishedErrors.add(line.trim());
+            }
         }
     }
 
@@ -3066,24 +3075,25 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
                 const location = entry.fileRef
                     ? `${entry.fileRef}${entry.lineNo === undefined ? '' : `:${entry.lineNo}`}`
                     : '';
-                output.appendError([location, entry.message].filter(Boolean).join(' '));
+                const diagnostic = [location, entry.message].filter(Boolean).join(' ');
+                if (!publishedErrors.has(diagnostic)) {
+                    output.appendError(diagnostic);
+                    publishedErrors.add(diagnostic);
+                }
             }
         }
         _setSimulateStatus(context, 'error');
     }
     output.show();
 
-    // 如果有挂起的波形请求，继续执行
-    if (_pendingWaveAfterSimulate) {
-        _pendingWaveAfterSimulate = false;
-        if (result.success && isCurrent()) {
-            await _doOpenWave(root, topModule, settings, isCurrent);
-        }
+    if (waveIntent !== undefined && result.success && isCurrent()) {
+        await _doOpenWave(root, topModule, settings, isCurrent);
     }
 }
 
 async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const waveIntent = ++hdlWaveIntentGeneration;
     const lifecycleGeneration = hdlLifecycleGeneration;
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
@@ -3091,7 +3101,7 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     const isCurrent = (): boolean => _isCurrentHdlCommand(
         lifecycleGeneration,
         workflowGeneration
-    );
+    ) && waveIntent === hdlWaveIntentGeneration;
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
@@ -3112,9 +3122,8 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
         output.appendInfo('Analyze is not complete; running analyze -> simulate -> open wave.');
-        _pendingWaveAfterAnalyze = true;
         if (!isCurrent()) { return; }
-        await cmdAnalyze(context);
+        await cmdAnalyze(context, { waveIntent });
         if (!isCurrent()) { return; }
         return;
     }
@@ -3122,9 +3131,8 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     // 检查编译仿真状态
     if (_simulateStatus !== 'completed') {
         output.appendInfo('Simulation is not complete; running simulate -> open wave.');
-        _pendingWaveAfterSimulate = true;
         if (!isCurrent()) { return; }
-        await cmdSimulate(context);
+        await cmdSimulate(context, waveIntent);
         if (!isCurrent()) { return; }
         return;
     }
@@ -3140,9 +3148,8 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     // 波形文件不存在，运行仿真
     output.appendWarning(`Wave file not found: ${waveFile}`);
     output.appendInfo('Running simulate -> open wave to generate waveform first.');
-    _pendingWaveAfterSimulate = true;
     if (!isCurrent()) { return; }
-    await cmdSimulate(context);
+    await cmdSimulate(context, waveIntent);
     if (!isCurrent()) { return; }
 }
 
@@ -3202,8 +3209,15 @@ async function _doOpenWave(
     const waveFile = _resolveWaveFile(root, topModule, settings);
     const viewer = _resolveViewer(settings);
 
-    if (!fs.existsSync(waveFile)) {
+    let wavePathIsFile: boolean;
+    try {
+        wavePathIsFile = fs.statSync(waveFile).isFile();
+    } catch {
         output.appendError(`Wave file not found: ${waveFile}`);
+        return;
+    }
+    if (!wavePathIsFile) {
+        output.appendError(`Wave path is not a file: ${waveFile}`);
         return;
     }
 

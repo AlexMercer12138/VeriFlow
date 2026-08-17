@@ -40,6 +40,7 @@ type StubSimulationExecution = {
     }>;
     backendId: string;
     commands: { compile?: string; run?: string };
+    cause?: { code?: string; message: string };
 };
 
 const extensionRoot = path.resolve(__dirname, '..', '..');
@@ -108,6 +109,10 @@ function testExtensionSimulationPathIsAsyncBackendOnly(): void {
     assert.doesNotMatch(serviceSource, /\bexecSync\b/);
     assert.doesNotMatch(viewerSource, /\bexecSync\b/);
     assert.doesNotMatch(extensionSource, /\bSimulationRunner\b|\bsimRunner\b|\bsimulateProcess\b/);
+    assert.match(
+        extensionSource,
+        /async function cmdSimulate[\s\S]*?if \(waveIntent !== undefined[\s\S]*?return;[\s\S]*?\+\+hdlSimulationGeneration/
+    );
     assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'core', 'simulationRunner.ts')));
     assert.match(extensionSource, /withProgress\([\s\S]*cancellable:\s*true/);
     assert.match(extensionSource, /\bservice\.run\(/);
@@ -491,6 +496,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const events: string[] = [];
     const warnings: string[] = [];
     const errors: string[] = [];
+    const infos: string[] = [];
+    const successes: string[] = [];
     const outputLines: string[] = [];
     const popupWarnings: string[] = [];
     const resolvedDefinitionKeys: string[] = [];
@@ -525,6 +532,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     } | undefined;
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextSimulationExecution: StubSimulationExecution | undefined;
+    let nextSimulationError: Error | undefined;
+    let nextViewerLaunchError: Error | undefined;
+    let viewerLaunchCalls = 0;
+    const wavePathExists = true;
+    let wavePathIsFile = true;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
     let nextOpenDialogGate: ReturnType<typeof createScanGate> | undefined;
@@ -1176,6 +1188,11 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 const backendId = (input as { backendId?: string }).backendId ?? 'unknown';
                 const configuredExecution = nextSimulationExecution;
                 nextSimulationExecution = undefined;
+                const configuredError = nextSimulationError;
+                nextSimulationError = undefined;
+                if (configuredError) {
+                    return Promise.reject(configuredError);
+                }
                 if (backendId === 'experimental-ts' && !configuredExecution) {
                     return Promise.reject(new Error(
                         'experimental-ts is not available in this build; no fallback was attempted'
@@ -1254,7 +1271,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             }
         },
         ExternalWaveViewerLauncher: class {
-            async launch(): Promise<void> {}
+            async launch(): Promise<void> {
+                viewerLaunchCalls++;
+                const error = nextViewerLaunchError;
+                nextViewerLaunchError = undefined;
+                if (error) {
+                    throw error;
+                }
+            }
         },
         SIMULATION_BACKEND_IDS: [
             'builtin',
@@ -1265,14 +1289,46 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'xsim',
             'custom',
         ],
+        toSimulationArtifactPosixPath(root: string, target: string): string {
+            if (!target.trim()) {
+                throw new Error('Waveform artifact must resolve to a file path');
+            }
+            const implementation = process.platform === 'win32'
+                || [root, target].some(value => (
+                    /^[A-Za-z]:[\\/]/.test(value) || /^(?:\\\\|\/\/)[^\\/]/.test(value)
+                ))
+                ? path.win32
+                : path.posix;
+            const resolvedRoot = implementation.resolve(root);
+            const resolvedTarget = implementation.resolve(target);
+            if (implementation === path.win32
+                && path.win32.parse(resolvedRoot).root.toLowerCase()
+                !== path.win32.parse(resolvedTarget).root.toLowerCase()) {
+                return resolvedTarget.replace(/\\/g, '/');
+            }
+            const relative = implementation.relative(
+                resolvedRoot,
+                resolvedTarget
+            )
+                .replace(/\\/g, '/');
+            if (path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative)) {
+                throw new Error('Waveform artifact must resolve to a relative file path');
+            }
+            const basename = path.posix.basename(relative);
+            if (!relative || relative === '.' || !basename || basename === '.' || basename === '..') {
+                throw new Error('Waveform artifact must resolve to a file path');
+            }
+            return relative;
+        },
         toWorkspaceRelativePosixPath(root: string, target: string): string {
-            const relative = path.relative(path.resolve(root), path.resolve(target));
+            const relative = coreStub.toSimulationArtifactPosixPath(root, target);
             if (relative === '..'
-                || relative.startsWith(`..${path.sep}`)
-                || path.isAbsolute(relative)) {
+                || relative.startsWith('../')
+                || path.posix.isAbsolute(relative)
+                || path.win32.isAbsolute(relative)) {
                 throw new Error(`Waveform artifact is outside the workspace: ${target}`);
             }
-            return relative.replace(/\\/g, '/');
+            return relative;
         },
         LogParser: class {},
         listVerilogFiles: () => [], readText: () => '',
@@ -1351,14 +1407,18 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         },
         './output': {
             appendError(message: string): void { errors.push(message); },
-            appendInfo(): void {}, appendLine(message: string): void { outputLines.push(message); },
-            appendSuccess(): void {},
+            appendInfo(message: string): void { infos.push(message); },
+            appendLine(message: string): void { outputLines.push(message); },
+            appendSuccess(message: string): void { successes.push(message); },
             appendWarning(message: string): void { warnings.push(message); },
             clear(): void { outputClearCount++; }, dispose(): void {},
             show(): void { outputShowCount++; },
         },
         fs: {
-            existsSync(): boolean { return true; },
+            existsSync(): boolean { return wavePathExists; },
+            statSync(): { isFile(): boolean } {
+                return { isFile: () => wavePathIsFile };
+            },
             readFileSync(): Buffer { return Buffer.from(''); },
         },
     };
@@ -1938,6 +1998,254 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'dependency analysis'
         );
         assert.deepStrictEqual(resolvedDefinitionKeys, [topDefinition.key]);
+
+        settings.defines = { WAVE_CONFIGURATION_FAILURE: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'invalidate before open wave configuration failure');
+        const openWithBeforeConfigurationFailure = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        settings.simulator = 'custom';
+        settings.simulatorCompileCmd = '';
+        settings.simulatorRunCmd = '';
+        simulateStatus = 'error';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'open wave configuration failure ownership'
+        );
+        settings.simulator = 'iverilog';
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {},
+        };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'direct simulation after open wave configuration failure'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeConfigurationFailure
+        );
+
+        settings.defines = { WAVE_BACKEND_FAILURE: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'invalidate before open wave backend failure');
+        nextSimulationError = new Error('backend rejected pending wave');
+        const openWithBeforeBackendFailure = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'open wave backend rejection ownership'
+        );
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {},
+        };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'direct simulation after open wave backend rejection'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeBackendFailure
+        );
+
+        settings.defines = { WAVE_SUCCESS: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'invalidate before successful owned open wave');
+        const openWithBeforeOwnedWave = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {},
+        };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'successful owned open wave'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeOwnedWave + 1
+        );
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {},
+        };
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'direct simulation after consumed open wave intent'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeOwnedWave + 1
+        );
+
+        settings.defines = { CONCURRENT_WAVE_INTENTS: true };
+        await withTimeout(Promise.resolve(configListener!({
+            affectsConfiguration: section => section === 'veriflow.defines',
+        })), 'invalidate before concurrent open waves');
+        const openWithBeforeConcurrentWaves = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        const firstWaveGate = createScanGate();
+        nextRunnerGate = firstWaveGate;
+        const firstWave = Promise.resolve(commands.get('veriflow.openWave')!());
+        await withTimeout(firstWaveGate.started, 'first concurrent open wave backend');
+        const firstWaveSignal = simulationSignals.at(-1)!;
+
+        const secondWaveGate = createScanGate();
+        nextRunnerGate = secondWaveGate;
+        const secondWave = Promise.resolve(commands.get('veriflow.openWave')!());
+        await withTimeout(secondWaveGate.started, 'second concurrent open wave backend');
+        assert.strictEqual(firstWaveSignal.aborted, true);
+
+        secondWaveGate.allow();
+        await withTimeout(secondWave, 'latest concurrent open wave');
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeConcurrentWaves + 1
+        );
+
+        firstWaveGate.allow();
+        await withTimeout(firstWave, 'stale concurrent open wave');
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeConcurrentWaves + 1
+        );
+        assert.strictEqual(simulateStatus, 'completed');
+
+        nextSimulationExecution = {
+            success: false,
+            exitCode: -1,
+            stdout: '',
+            stderr: 'aborted backend detail',
+            logEntries: [{ level: 'ERROR', message: 'aborted structured detail' }],
+            backendId: 'iverilog',
+            commands: {},
+            cause: { code: 'ABORTED', message: 'cancelled by user' },
+        };
+        const errorsBeforeCancellation = errors.length;
+        const infosBeforeCancellation = infos.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'current user-cancelled simulation'
+        );
+        assert.strictEqual(simulateStatus, 'idle');
+        assert.deepStrictEqual(errors.slice(errorsBeforeCancellation), []);
+        assert.deepStrictEqual(
+            infos.slice(infosBeforeCancellation).filter(message => /cancel/i.test(message)),
+            ['Simulation cancelled.']
+        );
+
+        nextSimulationExecution = {
+            success: false,
+            exitCode: 4,
+            stdout: '',
+            stderr: 'top.sv:9 duplicate diagnostic\r\nraw stderr only',
+            logEntries: [{
+                level: 'ERROR',
+                message: 'duplicate diagnostic',
+                fileRef: 'top.sv',
+                lineNo: 9,
+            }],
+            backendId: 'iverilog',
+            commands: {},
+        };
+        const errorsBeforeDuplicate = errors.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'deduplicated simulation diagnostics'
+        );
+        const duplicateErrors = errors.slice(errorsBeforeDuplicate);
+        assert.strictEqual(
+            duplicateErrors.filter(message => (
+                message.trim() === 'top.sv:9 duplicate diagnostic'
+            )).length,
+            1
+        );
+        assert.strictEqual(
+            duplicateErrors.filter(message => message === 'raw stderr only').length,
+            1
+        );
+
+        settings.waveViewer = 'gtkwave';
+        nextViewerLaunchError = Object.assign(new Error('viewer ENOENT'), { code: 'ENOENT' });
+        const errorsBeforeViewer = errors.length;
+        const successesBeforeViewer = successes.length;
+        const viewerCallsBefore = viewerLaunchCalls;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'external viewer spawn failure'
+        );
+        assert.strictEqual(viewerLaunchCalls, viewerCallsBefore + 1);
+        assert.ok(errors.slice(errorsBeforeViewer).includes(
+            'Failed to open gtkwave: viewer ENOENT'
+        ));
+        assert.ok(!successes.slice(successesBeforeViewer).some(message =>
+            message.startsWith('Opened gtkwave:')
+        ));
+        settings.waveViewer = 'builtin';
+
+        wavePathIsFile = false;
+        const openWithBeforeDirectory = executedCommands.filter(command =>
+            command.name === 'vscode.openWith'
+        ).length;
+        const errorsBeforeDirectory = errors.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.openWave')!()),
+            'reject waveform directory open'
+        );
+        assert.strictEqual(
+            executedCommands.filter(command => command.name === 'vscode.openWith').length,
+            openWithBeforeDirectory
+        );
+        assert.ok(errors.slice(errorsBeforeDirectory).some(message => /not a file/i.test(message)));
+        wavePathIsFile = true;
+
+        const callsBeforeInvalidWaveTemplates = runnerCalls;
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        for (const template of ['', '.', workspaceRoot]) {
+            settings.waveFileTemplate = template;
+            const errorsBeforeTemplate = errors.length;
+            await withTimeout(
+                Promise.resolve(commands.get('veriflow.simulate')!()),
+                `invalid wave template ${JSON.stringify(template)}`
+            );
+            assert.strictEqual(
+                runnerCalls,
+                callsBeforeInvalidWaveTemplates,
+                `invalid wave template reached runner: ${JSON.stringify(template)}`
+            );
+            assert.ok(errors.slice(errorsBeforeTemplate).some(message =>
+                /configuration error.*waveform artifact.*file path/i.test(message)
+            ));
+        }
+        settings.waveFileTemplate = '{top_module}.vcd';
 
         settings.simulator = 'builtin';
         nextSimulationExecution = {

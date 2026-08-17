@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { EventEmitter } from 'events';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import {
@@ -24,6 +25,7 @@ import {
     EXPERIMENTAL_TS_UNAVAILABLE,
     SimulationService,
     createSimulationBackendRegistry,
+    toSimulationArtifactPosixPath,
     toWorkspaceRelativePosixPath,
 } from '../core/simulationService';
 import { VcdParser } from '../core/vcdParser';
@@ -795,6 +797,78 @@ async function testSimulationServiceUsesLogicalArtifactPathsForEveryBackend(): P
     await service.dispose();
 }
 
+async function testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend(): Promise<void> {
+    const workspaceRoot = copyFixture();
+    let backendCalls = 0;
+    const artifactPaths: string[] = [];
+    const registry = new SimulatorBackendRegistry();
+    for (const backendId of ['builtin', 'iverilog']) {
+        registry.register(backendId, () => ({
+            async compileAndRun(request) {
+                backendCalls++;
+                artifactPaths.push(request.artifacts[0].path);
+                return simulationExecution(backendId);
+            },
+        }));
+    }
+    const service = new SimulationService({ registryFactory: () => registry });
+    const input = {
+        workspaceRoot,
+        topModule: 'uart_tb',
+        files: [] as string[],
+        libDirs: [] as string[],
+        defines: {},
+        waveFile: workspaceRoot,
+    };
+
+    for (const backendId of ['builtin', 'iverilog']) {
+        await assert.rejects(
+            service.run({ ...input, backendId }),
+            /waveform artifact.*file path/i
+        );
+    }
+    assert.throws(
+        () => toWorkspaceRelativePosixPath(workspaceRoot, workspaceRoot),
+        /waveform artifact.*file path/i
+    );
+    assert.throws(
+        () => toSimulationArtifactPosixPath(workspaceRoot, workspaceRoot),
+        /waveform artifact.*file path/i
+    );
+    assert.strictEqual(
+        toSimulationArtifactPosixPath(
+            'D:\\Software\\VeriFlow',
+            'D:\\Software\\VeriFlow\\waves\\uart_tb.vcd'
+        ),
+        'waves/uart_tb.vcd'
+    );
+    assert.throws(
+        () => toWorkspaceRelativePosixPath(
+            'D:\\Software\\VeriFlow',
+            'D:\\Software\\outside\\uart_tb.vcd'
+        ),
+        /outside the workspace/i
+    );
+    await service.run({
+        ...input,
+        backendId: 'iverilog',
+        workspaceRoot: 'D:\\Software\\VeriFlow',
+        waveFile: 'E:\\waves\\uart_tb.vcd',
+    });
+    await service.run({
+        ...input,
+        backendId: 'iverilog',
+        workspaceRoot: '\\\\server\\workspace',
+        waveFile: '\\\\server\\other-share\\uart_tb.vcd',
+    });
+    assert.deepStrictEqual(artifactPaths, [
+        'E:/waves/uart_tb.vcd',
+        '//server/other-share/uart_tb.vcd',
+    ]);
+    assert.strictEqual(backendCalls, 2);
+    await service.dispose();
+}
+
 async function testSimulationServiceBackendRegistrySelection(): Promise<void> {
     const builtin: SimulatorBackend = {
         async compileAndRun() { return simulationExecution('builtin'); },
@@ -936,20 +1010,224 @@ async function testSimulationServiceCancellationAndDisposal(): Promise<void> {
     assert.strictEqual(service.activeRunId, undefined);
 }
 
+async function testSimulationServiceDisposalDrainsEveryRunAndIsShared(): Promise<void> {
+    const gates = [createDeferred(), createDeferred()];
+    const signals: AbortSignal[] = [];
+    let call = 0;
+    const registry = new SimulatorBackendRegistry();
+    registry.register('iverilog', () => ({
+        async compileAndRun(request) {
+            const index = call++;
+            signals.push(request.signal!);
+            await gates[index].promise;
+            if (index === 0) {
+                throw new Error('older backend rejected after abort');
+            }
+            return simulationExecution('iverilog');
+        },
+    }));
+    const service = new SimulationService({ registryFactory: () => registry });
+    const input = {
+        backendId: 'iverilog',
+        workspaceRoot: copyFixture(),
+        topModule: 'uart_tb',
+        files: [] as string[],
+        libDirs: [] as string[],
+        defines: {},
+    };
+    const first = service.run(input);
+    const firstSettlement = first.then(
+        () => 'resolved' as const,
+        () => 'rejected' as const
+    );
+    await flushPromises();
+    const second = service.run(input);
+    await flushPromises();
+
+    let firstDisposeSettled = false;
+    let secondDisposeSettled = false;
+    const firstDispose = service.dispose();
+    const secondDispose = service.dispose();
+    void firstDispose.then(() => { firstDisposeSettled = true; });
+    void secondDispose.then(() => { secondDisposeSettled = true; });
+    try {
+        assert.strictEqual(firstDispose, secondDispose);
+        assert.deepStrictEqual(signals.map(signal => signal.aborted), [true, true]);
+        await flushPromises();
+        assert.strictEqual(firstDisposeSettled, false);
+        assert.strictEqual(secondDisposeSettled, false);
+
+        gates[1].resolve();
+        await second;
+        await flushPromises();
+        assert.strictEqual(firstDisposeSettled, false);
+        assert.strictEqual(secondDisposeSettled, false);
+
+        gates[0].resolve();
+        assert.strictEqual(await firstSettlement, 'rejected');
+        await Promise.all([firstDispose, secondDispose]);
+        assert.strictEqual(firstDisposeSettled, true);
+        assert.strictEqual(secondDisposeSettled, true);
+        assert.strictEqual(service.activeRunId, undefined);
+    } finally {
+        gates[0].resolve();
+        gates[1].resolve();
+        await Promise.allSettled([first, second, firstDispose, secondDispose]);
+    }
+}
+
+async function testSimulationServiceClosesCancellationRegistrationWindows(): Promise<void> {
+    const signals: AbortSignal[] = [];
+    const registry = new SimulatorBackendRegistry();
+    registry.register('builtin', () => ({
+        async compileAndRun(request) {
+            signals.push(request.signal!);
+            return simulationExecution('builtin');
+        },
+    }));
+    const service = new SimulationService({ registryFactory: () => registry });
+    let cancellationRequested = false;
+    let listenerDisposed = false;
+    const outcome = await service.run({
+        backendId: 'builtin',
+        workspaceRoot: copyFixture(),
+        topModule: 'uart_tb',
+        files: [],
+        libDirs: [],
+        defines: {},
+    }, {
+        get isCancellationRequested() { return cancellationRequested; },
+        onCancellationRequested() {
+            cancellationRequested = true;
+            return { dispose(): void { listenerDisposed = true; } };
+        },
+    });
+
+    assert.strictEqual(outcome.execution.success, true);
+    assert.strictEqual(signals[0].aborted, true);
+    assert.strictEqual(listenerDisposed, true);
+    await service.dispose();
+}
+
+async function testSimulationServiceCleansUpSynchronousStartupFailures(): Promise<void> {
+    for (const failure of [{
+        message: 'registry construction failed',
+        registryFactory: () => {
+            throw new Error('registry construction failed');
+        },
+    }, {
+        message: 'registry run failed synchronously',
+        registryFactory: () => ({
+            run() { throw new Error('registry run failed synchronously'); },
+        }) as unknown as SimulatorBackendRegistry,
+    }]) {
+        let listenerRegistered = false;
+        let listenerDisposed = false;
+        const service = new SimulationService({
+            registryFactory: failure.registryFactory,
+        });
+        const run = service.run({
+            backendId: 'builtin',
+            workspaceRoot: copyFixture(),
+            topModule: 'uart_tb',
+            files: [],
+            libDirs: [],
+            defines: {},
+        }, {
+            isCancellationRequested: false,
+            onCancellationRequested() {
+                listenerRegistered = true;
+                return { dispose(): void { listenerDisposed = true; } };
+            },
+        });
+
+        await assert.rejects(run, new RegExp(failure.message));
+        assert.strictEqual(listenerRegistered, true);
+        assert.strictEqual(listenerDisposed, true);
+        assert.strictEqual(service.activeRunId, undefined);
+        const firstDispose = service.dispose();
+        const secondDispose = service.dispose();
+        assert.strictEqual(firstDispose, secondDispose);
+        await firstDispose;
+    }
+}
+
+async function testSimulationServiceCleansUpWhenCancellationDisposalThrows(): Promise<void> {
+    const registry = new SimulatorBackendRegistry();
+    registry.register('builtin', () => ({
+        async compileAndRun() { return simulationExecution('builtin'); },
+    }));
+    const service = new SimulationService({ registryFactory: () => registry });
+    const run = service.run({
+        backendId: 'builtin',
+        workspaceRoot: copyFixture(),
+        topModule: 'uart_tb',
+        files: [],
+        libDirs: [],
+        defines: {},
+    }, {
+        isCancellationRequested: false,
+        onCancellationRequested() {
+            return {
+                dispose(): void { throw new Error('cancellation disposal failed'); },
+            };
+        },
+    });
+
+    await assert.rejects(run, /cancellation disposal failed/);
+    assert.strictEqual(service.activeRunId, undefined);
+    await service.dispose();
+}
+
 async function testExternalWaveViewerLauncherAndWorkspaceArtifactPath(): Promise<void> {
     const workspace = path.join(os.tmpdir(), 'veriflow-workspace');
     const waveFile = path.join(workspace, 'waves', 'uart_tb.vcd');
     let launched: { command: string; windowsHide: boolean | undefined } | undefined;
+    const child = new EventEmitter();
     const launcher = new ExternalWaveViewerLauncher({
         launchCommand(command, options) {
             launched = { command, windowsHide: options.windowsHide };
+            return child;
         },
     });
 
-    await launcher.launch(waveFile, {
+    let launchSettled = false;
+    const launch = launcher.launch(waveFile, {
         name: 'gtkwave',
         launchCmd: 'gtkwave "{wave_file}"',
+    }).then(() => { launchSettled = true; });
+    await flushPromises();
+    assert.strictEqual(launchSettled, false);
+    child.emit('spawn');
+    await launch;
+    assert.strictEqual(launchSettled, true);
+
+    const failedChild = new EventEmitter();
+    const failedLauncher = new ExternalWaveViewerLauncher({
+        launchCommand() { return failedChild; },
     });
+    const failedLaunch = assert.rejects(
+        failedLauncher.launch(waveFile, {
+            name: 'missing-viewer',
+            launchCmd: 'missing-viewer "{wave_file}"',
+        }),
+        /ENOENT/
+    );
+    if (failedChild.listenerCount('error') > 0) {
+        failedChild.emit('error', Object.assign(new Error('viewer ENOENT'), { code: 'ENOENT' }));
+    }
+    await failedLaunch;
+
+    const throwingLauncher = new ExternalWaveViewerLauncher({
+        launchCommand() { throw new Error('viewer spawn threw'); },
+    });
+    await assert.rejects(
+        throwingLauncher.launch(waveFile, {
+            name: 'throwing-viewer',
+            launchCmd: 'throwing-viewer "{wave_file}"',
+        }),
+        /viewer spawn threw/
+    );
 
     assert.deepStrictEqual(launched, {
         command: `gtkwave "${waveFile}"`,
@@ -2128,6 +2406,11 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['simulation service latest run ownership', testSimulationServiceLatestRunOwnsActiveState],
     ['simulation service cancellation and disposal', testSimulationServiceCancellationAndDisposal],
     ['external wave viewer launcher', testExternalWaveViewerLauncherAndWorkspaceArtifactPath],
+    ['simulation service startup failure cleanup', testSimulationServiceCleansUpSynchronousStartupFailures],
+    ['simulation service cancellation disposer cleanup', testSimulationServiceCleansUpWhenCancellationDisposalThrows],
+    ['simulation service closes cancellation registration windows', testSimulationServiceClosesCancellationRegistrationWindows],
+    ['simulation service drains all runs with shared disposal', testSimulationServiceDisposalDrainsEveryRunAndIsShared],
+    ['simulation service rejects directory artifacts', testSimulationServiceRejectsDirectoryArtifactPathsBeforeBackend],
     ['vcd parser', testVcdParser],
     ['vcd parser multiline metadata and aliases', testVcdParserMultilineMetadataAndAliases],
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],

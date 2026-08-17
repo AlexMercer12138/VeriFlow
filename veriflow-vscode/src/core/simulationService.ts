@@ -126,8 +126,10 @@ export class SimulationService {
         settings: SimulationBackendSettings
     ) => SimulatorBackendRegistry;
     private activeRun: ActiveRun | undefined;
+    private readonly inFlightRuns = new Set<ActiveRun>();
     private latestRunId = 0;
     private disposed = false;
+    private disposePromise: Promise<void> | undefined;
 
     constructor(options: SimulationServiceOptions = {}) {
         this.registryFactory = options.registryFactory ?? (settings => (
@@ -143,12 +145,12 @@ export class SimulationService {
         return !this.disposed && runId === this.latestRunId;
     }
 
-    async run(
+    run(
         input: SimulationServiceRunInput,
         token?: CancellationTokenLike
     ): Promise<SimulationServiceRunResult> {
         if (this.disposed) {
-            throw new Error('Simulation service is disposed');
+            return Promise.reject(new Error('Simulation service is disposed'));
         }
 
         const runId = ++this.latestRunId;
@@ -157,60 +159,72 @@ export class SimulationService {
         if (token?.isCancellationRequested) {
             controller.abort();
         }
-        const request = createSimulationRequest({
-            files: input.files,
-            runtimeFiles: [],
-            includeDirs: resolveIncludeDirs(input.workspaceRoot, input.libDirs),
-            defines: input.defines,
-            plusargs: [],
-            artifacts: input.waveFile === undefined ? [] : [{
-                kind: 'vcd',
-                path: input.backendId === 'builtin'
-                    ? toWorkspaceRelativePosixPath(input.workspaceRoot, input.waveFile)
-                    : toRelativePosixPath(input.workspaceRoot, input.waveFile),
-                destination: input.waveFile,
-                required: false,
-            }],
-            output: path.join(input.workspaceRoot, `${input.topModule}.out`),
-            cwd: input.workspaceRoot,
-            topModule: input.topModule,
-            timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-            signal: controller.signal,
-        });
-        const registry = this.registryFactory({
-            simulatorCompileCmd: input.simulatorCompileCmd ?? '',
-            simulatorRunCmd: input.simulatorRunCmd ?? '',
-        });
-        const cancellationListener = token?.onCancellationRequested(
-            () => controller.abort()
-        );
-        const promise = registry.run(input.backendId, request);
-        const owner: ActiveRun = { runId, controller, promise };
-        this.activeRun = owner;
-
-        try {
-            return { runId, execution: await promise };
-        } finally {
-            cancellationListener?.dispose();
-            if (this.activeRun === owner) {
-                this.activeRun = undefined;
+        let cancellationListener: { dispose(): void } | undefined;
+        const executionPromise = Promise.resolve().then(async () => {
+            cancellationListener = token?.onCancellationRequested(
+                () => controller.abort()
+            );
+            if (token?.isCancellationRequested) {
+                controller.abort();
             }
-        }
+            const request = createSimulationRequest({
+                files: input.files,
+                runtimeFiles: [],
+                includeDirs: resolveIncludeDirs(input.workspaceRoot, input.libDirs),
+                defines: input.defines,
+                plusargs: [],
+                artifacts: input.waveFile === undefined ? [] : [{
+                    kind: 'vcd',
+                    path: input.backendId === 'builtin'
+                        ? toWorkspaceRelativePosixPath(input.workspaceRoot, input.waveFile)
+                        : toSimulationArtifactPosixPath(input.workspaceRoot, input.waveFile),
+                    destination: input.waveFile,
+                    required: false,
+                }],
+                output: path.join(input.workspaceRoot, `${input.topModule}.out`),
+                cwd: input.workspaceRoot,
+                topModule: input.topModule,
+                timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                signal: controller.signal,
+            });
+            const registry = this.registryFactory({
+                simulatorCompileCmd: input.simulatorCompileCmd ?? '',
+                simulatorRunCmd: input.simulatorRunCmd ?? '',
+            });
+            return registry.run(input.backendId, request);
+        });
+        const owner: ActiveRun = { runId, controller, promise: executionPromise };
+        const promise = executionPromise.finally(() => {
+            try {
+                cancellationListener?.dispose();
+            } finally {
+                this.inFlightRuns.delete(owner);
+                if (this.activeRun === owner) {
+                    this.activeRun = undefined;
+                }
+            }
+        });
+        owner.promise = promise;
+        this.activeRun = owner;
+        this.inFlightRuns.add(owner);
+
+        return promise.then(execution => ({ runId, execution }));
     }
 
-    async dispose(): Promise<void> {
-        if (this.disposed) {
-            return;
+    dispose(): Promise<void> {
+        if (this.disposePromise) {
+            return this.disposePromise;
         }
         this.disposed = true;
         this.latestRunId++;
-        const active = this.activeRun;
-        active?.controller.abort();
-        try {
-            await active?.promise;
-        } catch {
-            // The command owner observes backend failures; disposal only drains it.
+        const runs = [...this.inFlightRuns];
+        for (const run of runs) {
+            run.controller.abort();
         }
+        this.disposePromise = Promise.allSettled(
+            runs.map(run => run.promise)
+        ).then(() => undefined);
+        return this.disposePromise;
     }
 }
 
@@ -218,23 +232,56 @@ export function toWorkspaceRelativePosixPath(
     workspaceRoot: string,
     targetPath: string
 ): string {
-    const relative = toRelativePosixPath(workspaceRoot, targetPath);
+    const relative = toSimulationArtifactPosixPath(workspaceRoot, targetPath);
     if (relative === '..'
         || relative.startsWith('../')
-        || path.isAbsolute(relative)) {
+        || path.posix.isAbsolute(relative)
+        || path.win32.isAbsolute(relative)) {
         throw new Error(`Waveform artifact is outside the workspace: ${targetPath}`);
     }
     return relative;
 }
 
-function toRelativePosixPath(
+export function toSimulationArtifactPosixPath(
     workspaceRoot: string,
     targetPath: string
 ): string {
-    return path.relative(
-        path.resolve(workspaceRoot),
-        path.resolve(targetPath)
+    if (!targetPath.trim()) {
+        throw new Error('Waveform artifact must resolve to a file path');
+    }
+    const implementation = hostPathImplementation(workspaceRoot, targetPath);
+    const resolvedRoot = implementation.resolve(workspaceRoot);
+    const resolvedTarget = implementation.resolve(targetPath);
+    if (implementation === path.win32
+        && path.win32.parse(resolvedRoot).root.toLowerCase()
+        !== path.win32.parse(resolvedTarget).root.toLowerCase()) {
+        return resolvedTarget.replace(/\\/g, '/');
+    }
+    const relative = implementation.relative(
+        resolvedRoot,
+        resolvedTarget
     ).replace(/\\/g, '/');
+    if (path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative)) {
+        throw new Error('Waveform artifact must resolve to a relative file path');
+    }
+    const basename = path.posix.basename(relative);
+    if (!relative || relative === '.' || !basename || basename === '.' || basename === '..') {
+        throw new Error('Waveform artifact must resolve to a file path');
+    }
+    return relative;
+}
+
+function hostPathImplementation(
+    ...hostPaths: readonly string[]
+): typeof path.posix | typeof path.win32 {
+    if (process.platform === 'win32' || hostPaths.some(isExplicitWindowsPath)) {
+        return path.win32;
+    }
+    return path.posix;
+}
+
+function isExplicitWindowsPath(hostPath: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(hostPath) || /^(?:\\\\|\/\/)[^\\/]/.test(hostPath);
 }
 
 function resolveIncludeDirs(

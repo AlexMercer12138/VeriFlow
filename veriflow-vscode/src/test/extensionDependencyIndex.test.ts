@@ -220,6 +220,7 @@ const EXTENSION_CORE_RUNTIME_IMPORTS = [
     'WorkspaceHdlIndex',
     'createHdlParserClient',
     'formatDuplicateSummary',
+    'toSimulationArtifactPosixPath',
     'toWorkspaceRelativePosixPath',
 ] as const;
 
@@ -570,14 +571,49 @@ function createExtensionHarness(
             'xsim',
             'custom',
         ],
+        toSimulationArtifactPosixPath(root: string, target: string): string {
+            if (!target.trim()) {
+                throw new Error('Waveform artifact must resolve to a file path');
+            }
+            const implementation = process.platform === 'win32'
+                || [root, target].some(value => (
+                    /^[A-Za-z]:[\\/]/.test(value) || /^(?:\\\\|\/\/)[^\\/]/.test(value)
+                ))
+                ? path.win32
+                : path.posix;
+            const resolvedRoot = implementation.resolve(root);
+            const resolvedTarget = implementation.resolve(target);
+            if (implementation === path.win32
+                && path.win32.parse(resolvedRoot).root.toLowerCase()
+                !== path.win32.parse(resolvedTarget).root.toLowerCase()) {
+                return resolvedTarget.replace(/\\/g, '/');
+            }
+            const relative = implementation.relative(
+                resolvedRoot,
+                resolvedTarget
+            )
+                .replace(/\\/g, '/');
+            if (path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative)) {
+                throw new Error('Waveform artifact must resolve to a relative file path');
+            }
+            const basename = path.posix.basename(relative);
+            if (!relative || relative === '.' || !basename || basename === '.' || basename === '..') {
+                throw new Error('Waveform artifact must resolve to a file path');
+            }
+            return relative;
+        },
         toWorkspaceRelativePosixPath(root: string, target: string): string {
-            const relative = path.relative(path.resolve(root), path.resolve(target));
+            const relative = (coreStub.toSimulationArtifactPosixPath as (
+                root: string,
+                target: string
+            ) => string)(root, target);
             if (relative === '..'
-                || relative.startsWith(`..${path.sep}`)
-                || path.isAbsolute(relative)) {
+                || relative.startsWith('../')
+                || path.posix.isAbsolute(relative)
+                || path.win32.isAbsolute(relative)) {
                 throw new Error(`Waveform artifact is outside the workspace: ${target}`);
             }
-            return relative.replace(/\\/g, '/');
+            return relative;
         },
         LogParser: class {},
         formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
