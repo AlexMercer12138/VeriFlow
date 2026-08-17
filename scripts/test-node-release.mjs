@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveNpmInvocation } from './lib/npm-command.mjs';
+import { readIverilogSource } from './lib/iverilog-source.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publishable = [
@@ -66,6 +67,11 @@ const publishable = [
         ],
     },
     {
+        name: '@veriflow/simulator-iverilog-wasm',
+        workspace: 'packages/simulator-iverilog-wasm',
+        requiredFiles: ['dist/index.js'],
+    },
+    {
         name: '@veriflow/cli',
         workspace: 'packages/cli',
         requiredFiles: [
@@ -77,6 +83,11 @@ const publishable = [
 ];
 
 const packScript = readFileSync(path.join(repositoryRoot, 'scripts', 'pack-node-release.mjs'), 'utf8');
+assert.match(
+    packScript,
+    /readIverilogSource\(/,
+    'local Node packaging must validate installed Icarus source metadata'
+);
 const packedWorkspaces = [...packScript.matchAll(/^\s{4}'(@veriflow\/[^']+)',$/gm)]
     .map(match => match[1]);
 assert.deepEqual(
@@ -111,12 +122,8 @@ function runNpm(args, cwd = repositoryRoot, environment = process.env) {
     return run(invocation.executable, invocation.args, cwd, environment);
 }
 
-function invokeCli(args, cwd, environment) {
-    const invocation = resolveNpmInvocation(
-        ['exec', '--', 'veriflow', ...args],
-        { npmExecutable: environment.npm_execpath }
-    );
-    return spawnSync(invocation.executable, invocation.args, {
+function invokeCli(cliEntry, args, cwd, environment) {
+    return spawnSync(process.execPath, [cliEntry, ...args], {
         cwd,
         env: environment,
         encoding: 'utf8',
@@ -210,12 +217,46 @@ try {
         'cli'
     ));
     assert.equal(installedPackage.startsWith(realpathSync(installRoot)), true);
+    const installedAdapter = realpathSync(path.join(
+        installRoot,
+        'node_modules',
+        '@veriflow',
+        'simulator-iverilog-wasm'
+    ));
+    assert.equal(installedAdapter.startsWith(realpathSync(installRoot)), true);
+    const installedAdapterManifest = readJson(path.join(installedAdapter, 'package.json'));
+    assert.equal(installedAdapterManifest.version, rootVersion);
     const installedCliManifest = readJson(path.join(installedPackage, 'package.json'));
     assert.equal(
         installedCliManifest.dependencies?.['@veriflow/schematic-core'],
         rootVersion,
         'installed CLI must depend on the published schematic-core version'
     );
+    assert.equal(
+        installedCliManifest.dependencies?.['@veriflow/simulator-iverilog-wasm'],
+        rootVersion,
+        'installed CLI must depend on the published adapter version'
+    );
+    const upstreamVersion = installedAdapterManifest.dependencies?.['@veriflow/iverilog-wasm'];
+    assert.equal(upstreamVersion, '0.1.2', 'supported upstream Icarus package version');
+    const installedUpstream = realpathSync(path.join(
+        installRoot,
+        'node_modules',
+        '@veriflow',
+        'iverilog-wasm'
+    ));
+    const installedProvenance = readIverilogSource({
+        packageRoot: installedUpstream,
+        expectedName: '@veriflow/iverilog-wasm',
+        expectedVersion: upstreamVersion,
+    });
+    for (const relative of ['LICENSE', 'dist/SOURCE.md']) {
+        assert.notEqual(
+            readFileSync(path.join(installedUpstream, relative), 'utf8').trim(),
+            '',
+            `installed upstream ${relative} must be non-empty`
+        );
+    }
     const installedInterfaces = await import(pathToFileURL(path.join(
         installRoot,
         'node_modules',
@@ -253,10 +294,11 @@ try {
             `installed CLI protocol loader is missing ${marker}`
         );
     }
-    const help = invokeCli(['--help'], installRoot, environment);
+    const cliEntry = path.join(installedPackage, 'dist', 'main.js');
+    const help = invokeCli(cliEntry, ['--help'], installRoot, environment);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /VeriFlow - Lightweight Verilog Simulation Manager/);
-    const version = invokeCli(['--version'], installRoot, environment);
+    const version = invokeCli(cliEntry, ['--version'], installRoot, environment);
     assert.equal(version.status, 0, version.stderr);
     assert.equal(version.stdout, `VeriFlow ${rootVersion}\n`);
 
@@ -287,6 +329,7 @@ try {
         presentation: {},
     }, null, 2)}\n`, 'utf8');
     const analyze = invokeCli(
+        cliEntry,
         ['analyze', '--project', 'project.json'],
         projectRoot,
         environment
@@ -294,9 +337,9 @@ try {
     assert.equal(analyze.status, 0, analyze.stderr);
     assert.match(analyze.stdout, /child\.sv/);
     assert.match(analyze.stdout, /top\.sv/);
-    const validateAd = invokeCli(['ad', 'validate', 'soc.ad'], projectRoot, environment);
+    const validateAd = invokeCli(cliEntry, ['ad', 'validate', 'soc.ad'], projectRoot, environment);
     assert.equal(validateAd.status, 0, validateAd.stderr);
-    const exportAd = invokeCli(['ad', 'export', 'soc.ad'], projectRoot, environment);
+    const exportAd = invokeCli(cliEntry, ['ad', 'export', 'soc.ad'], projectRoot, environment);
     assert.equal(exportAd.status, 0, exportAd.stderr);
     assert.match(
         readFileSync(path.join(projectRoot, 'soc.v'), 'utf8'),
@@ -366,11 +409,11 @@ try {
         export: {},
         presentation: {},
     }, null, 2)}\n`, 'utf8');
-    const validateInterfaceAd = invokeCli([
+    const validateInterfaceAd = invokeCli(cliEntry, [
         'ad', 'validate', 'interface.ad', '--project', 'project.json',
     ], interfaceProjectRoot, environment);
     assert.equal(validateInterfaceAd.status, 0, validateInterfaceAd.stderr);
-    const exportInterfaceAd = invokeCli([
+    const exportInterfaceAd = invokeCli(cliEntry, [
         'ad', 'export', 'interface.ad', '--project', 'project.json',
     ], interfaceProjectRoot, environment);
     assert.equal(exportInterfaceAd.status, 0, exportInterfaceAd.stderr);
@@ -380,6 +423,60 @@ try {
     );
     assert.match(interfaceRtl, /^\/\/ vik-veriflow:generated arch-design /);
     assert.match(interfaceRtl, /\.LINK_TAG\(4'ha\)/);
+
+    const simulationProjectRoot = path.join(installRoot, 'builtin-simulation-project');
+    const simulationRtlRoot = path.join(simulationProjectRoot, 'rtl');
+    const emptyPath = path.join(temporaryRoot, 'empty-path');
+    mkdirSync(simulationRtlRoot, { recursive: true });
+    mkdirSync(emptyPath);
+    writeFileSync(path.join(simulationRtlRoot, 'counter.v'), [
+        'module counter(input clk, input reset, output reg [3:0] value);',
+        '  always @(posedge clk) begin',
+        '    if (reset) value <= 0;',
+        '    else value <= value + 1;',
+        '  end',
+        'endmodule',
+        '',
+    ].join('\n'));
+    writeFileSync(path.join(simulationRtlRoot, 'counter_tb.v'), [
+        '`timescale 1ns/1ps',
+        'module counter_tb;',
+        '  reg clk = 0;',
+        '  reg reset = 1;',
+        '  wire [3:0] value;',
+        '  counter dut(.clk(clk), .reset(reset), .value(value));',
+        '  always #5 clk = ~clk;',
+        '  initial begin',
+        '    $dumpfile("counter.vcd");',
+        '    $dumpvars(0, counter_tb);',
+        '    #12 reset = 0;',
+        '    #40;',
+        '    if (value === 4) $display("PASS");',
+        '    else $display("FAIL value=%0d", value);',
+        '    $finish;',
+        '  end',
+        'endmodule',
+        '',
+    ].join('\n'));
+    writeFileSync(path.join(simulationProjectRoot, 'project.json'), JSON.stringify({
+        project_name: 'release-builtin-smoke',
+        project_root: 'rtl',
+        top_module: 'counter_tb',
+        simulator: 'builtin',
+        wave_file_template: 'counter.vcd',
+    }, null, 2));
+    const simulation = invokeCli(
+        cliEntry,
+        ['sim', '--project', 'project.json', '--sim', 'builtin'],
+        simulationProjectRoot,
+        { ...environment, PATH: emptyPath }
+    );
+    assert.equal(simulation.status, 0, simulation.stderr || simulation.stdout);
+    assert.match(simulation.stdout, /PASS/);
+    assert.doesNotMatch(simulation.stdout, /\[CMD\]/);
+    const waveFile = path.join(simulationRtlRoot, 'counter.vcd');
+    assert.equal(readFileSync(waveFile).length > 0, true, 'builtin VCD must be non-empty');
+    assert.match(installedProvenance.revision, /^[0-9a-f]{40}$/);
 } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
 }

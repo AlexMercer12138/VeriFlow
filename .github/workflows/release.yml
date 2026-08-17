@@ -43,6 +43,8 @@ jobs:
     name: Node CLI and VS Code artifacts
     needs: verify-main-ci
     runs-on: ubuntu-latest
+    environment:
+      name: gpl-release-review
 
     steps:
       - name: Checkout
@@ -57,6 +59,9 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
+
+      - name: Validate installed Icarus source provenance
+        run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.2
 
       - name: Verify release tag
         run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
@@ -75,6 +80,12 @@ jobs:
           mkdir -p release-assets
           cp dist/npm/*.tgz release-assets/
           cp veriflow-vscode/*.vsix release-assets/
+
+      - name: Create Icarus corresponding-source archive
+        run: node scripts/lib/iverilog-source.mjs archive --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.2 --destination release-assets
+
+      - name: Verify Icarus corresponding-source archive
+        run: test -s release-assets/iverilog-wasm-source-*.tar.gz
 
       - name: Upload Node and VS Code artifacts
         uses: actions/upload-artifact@v4
