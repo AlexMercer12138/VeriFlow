@@ -587,6 +587,7 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         fs.writeFileSync(path.join(packageRoot, 'LICENSE'), 'fixture license\n');
         fs.writeFileSync(path.join(packageRoot, 'dist', 'SOURCE.md'), 'fixture source\n');
         fs.writeFileSync(path.join(packageRoot, 'dist', 'index.js'), 'export {};\n');
+        fs.chmodSync(path.join(packageRoot, 'dist'), 0o511);
         fs.chmodSync(packageRoot, 0o555);
         const runtimePackage = await support.collectRuntimePackage(packageRoot, {
             name: 'fixture-runtime', version: '1.0.0', license: 'MIT',
@@ -662,6 +663,9 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         fs.rmSync(destination, { recursive: true, force: true });
         fs.mkdirSync(destination);
         fs.writeFileSync(path.join(destination, 'old.txt'), 'cleanup retained content\n');
+        fs.mkdirSync(path.join(destination, 'dist', 'runtime'), { recursive: true });
+        fs.chmodSync(path.join(destination, 'dist'), 0o511);
+        fs.chmodSync(path.join(destination, 'dist', 'runtime'), 0o501);
         fs.chmodSync(destination, 0o555);
         let cleanupRemoveCalls = 0;
         await assert.rejects(
@@ -685,13 +689,19 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
             }
         );
         assert.strictEqual(cleanupRemoveCalls, 2);
-        const retainedBackup = ownedEntries().find(entry =>
-            entry.startsWith('.runtime-package-backup-')
-        );
-        assert.ok(retainedBackup);
+        const retainedEntries = ownedEntries();
+        assert.strictEqual(retainedEntries.length, 1);
+        assert.match(retainedEntries[0], /^\.runtime-package-backup-/);
+        const retainedBackup = retainedEntries[0];
+        const retainedPrevious = path.join(fixtureRoot, retainedBackup, 'previous');
         assert.strictEqual(
-            fs.statSync(path.join(fixtureRoot, retainedBackup, 'previous')).mode & 0o777,
+            fs.statSync(retainedPrevious).mode & 0o777,
             0o555
+        );
+        assert.strictEqual(fs.statSync(path.join(retainedPrevious, 'dist')).mode & 0o777, 0o511);
+        assert.strictEqual(
+            fs.statSync(path.join(retainedPrevious, 'dist', 'runtime')).mode & 0o777,
+            0o501
         );
         makeTreeWritableForCleanup(path.join(fixtureRoot, retainedBackup));
         fs.rmSync(path.join(fixtureRoot, retainedBackup), { recursive: true, force: true });
@@ -718,7 +728,8 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
                 async rename() {
                     throw cleanupPublishError;
                 },
-                async remove() {
+                async remove(target, options) {
+                    await fs.promises.rm(path.join(target, 'dist'), options);
                     throw new Error('injected staging cleanup failure');
                 },
             }),
@@ -735,8 +746,11 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
             }
         );
         assert.strictEqual(ownedEntries().length, 1);
-        makeTreeWritableForCleanup(path.join(fixtureRoot, ownedEntries()[0]));
-        fs.rmSync(path.join(fixtureRoot, ownedEntries()[0]), {
+        const retainedStaging = path.join(fixtureRoot, ownedEntries()[0]);
+        assert.strictEqual(fs.statSync(retainedStaging).mode & 0o777, 0o555);
+        assert.strictEqual(fs.existsSync(path.join(retainedStaging, 'dist')), false);
+        makeTreeWritableForCleanup(retainedStaging);
+        fs.rmSync(retainedStaging, {
             recursive: true,
             force: true,
         });

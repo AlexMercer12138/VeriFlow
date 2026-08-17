@@ -332,7 +332,7 @@ export async function collectRuntimePackage(packageRoot, expectations) {
     };
 }
 
-async function makeOwnedDirectoryTreeWritable(root) {
+async function makeOwnedDirectoryTreeWritable(root, changedModes) {
     let details;
     try {
         details = await lstat(root);
@@ -344,15 +344,58 @@ async function makeOwnedDirectoryTreeWritable(root) {
     const writableMode = (details.mode & 0o777) | 0o700;
     if ((details.mode & 0o777) !== writableMode) {
         await chmod(root, writableMode);
+        changedModes.push({ path: root, mode: details.mode & 0o777 });
     }
     for (const entry of await readdir(root)) {
-        await makeOwnedDirectoryTreeWritable(path.join(root, entry));
+        await makeOwnedDirectoryTreeWritable(path.join(root, entry), changedModes);
+    }
+}
+
+async function restoreOwnedDirectoryModes(changedModes) {
+    const errors = [];
+    for (const changed of [...changedModes].reverse()) {
+        let details;
+        try {
+            details = await lstat(changed.path);
+        } catch (error) {
+            if (error?.code === 'ENOENT') continue;
+            errors.push(contextualError(`inspect ${changed.path}`, error));
+            continue;
+        }
+        if (details.isSymbolicLink() || !details.isDirectory()) continue;
+        try {
+            await chmod(changed.path, changed.mode);
+        } catch (error) {
+            if (error?.code !== 'ENOENT') {
+                errors.push(contextualError(`restore mode for ${changed.path}`, error));
+            }
+        }
+    }
+    if (errors.length > 0) {
+        throw new AggregateError(errors, 'Failed to restore owned directory modes');
     }
 }
 
 async function cleanupOwnedTree(root, removePath) {
-    await makeOwnedDirectoryTreeWritable(root);
-    await removePath(root, { recursive: true, force: true });
+    const changedModes = [];
+    let cleanupError;
+    try {
+        await makeOwnedDirectoryTreeWritable(root, changedModes);
+        await removePath(root, { recursive: true, force: true });
+        return;
+    } catch (error) {
+        cleanupError = error;
+    }
+    try {
+        await restoreOwnedDirectoryModes(changedModes);
+    } catch (restoreError) {
+        throw new AggregateError(
+            [cleanupError, ...restoreError.errors],
+            `Failed to clean ${root} and restore its directory modes: ${cleanupError.message}`,
+            { cause: cleanupError }
+        );
+    }
+    throw cleanupError;
 }
 
 function mergeRuntimePackageErrors(operationError, cleanupError, destination) {
