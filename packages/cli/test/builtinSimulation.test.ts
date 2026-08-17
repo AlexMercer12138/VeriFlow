@@ -390,6 +390,61 @@ test('builtin artifact paths canonicalize a mocked Windows junction before relat
     assert.doesNotMatch(logicalPath, /^[A-Za-z]:/);
 });
 
+test('builtin artifact paths reject a different UNC share on the same server', async () => {
+    const linkedRoot = '\\\\server\\share-a\\rtl-link';
+    const physicalRoot = '\\\\server\\share-a\\physical\\rtl';
+    const destination = '\\\\server\\share-b\\waves\\top.vcd';
+    const destinationParent = path.win32.dirname(destination);
+
+    await assert.rejects(
+        builtinArtifactLogicalPath(
+            linkedRoot,
+            destination,
+            async hostPath => {
+                const key = path.win32.normalize(hostPath).toLowerCase();
+                if (key === path.win32.normalize(linkedRoot).toLowerCase()) {
+                    return physicalRoot;
+                }
+                if (key === path.win32.normalize(destination).toLowerCase()) {
+                    throw Object.assign(new Error('missing destination'), { code: 'ENOENT' });
+                }
+                if (key === path.win32.normalize(destinationParent).toLowerCase()) {
+                    return destinationParent;
+                }
+                throw new Error(`Unexpected canonicalization path: ${hostPath}`);
+            },
+        ),
+        /must be on the same volume as the project root/,
+    );
+});
+
+test('builtin artifact paths preserve relative mapping within one UNC share', async () => {
+    const linkedRoot = '\\\\SERVER\\SHARE\\rtl-link';
+    const physicalRoot = '\\\\Server\\Share\\physical\\rtl';
+    const destination = '\\\\server\\share\\physical\\waves\\top.vcd';
+    const destinationParent = path.win32.dirname(destination);
+
+    const logicalPath = await builtinArtifactLogicalPath(
+        linkedRoot,
+        destination,
+        async hostPath => {
+            const key = path.win32.normalize(hostPath).toLowerCase();
+            if (key === path.win32.normalize(linkedRoot).toLowerCase()) {
+                return physicalRoot;
+            }
+            if (key === path.win32.normalize(destination).toLowerCase()) {
+                throw Object.assign(new Error('missing destination'), { code: 'ENOENT' });
+            }
+            if (key === path.win32.normalize(destinationParent).toLowerCase()) {
+                return destinationParent;
+            }
+            throw new Error(`Unexpected canonicalization path: ${hostPath}`);
+        },
+    );
+
+    assert.equal(logicalPath, '../waves/top.vcd');
+});
+
 test('builtin CLI writes an absolute external wave through a safe virtual path', async () => {
     const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-external-wave-'));
     const cwd = path.join(caseRoot, 'workspace');

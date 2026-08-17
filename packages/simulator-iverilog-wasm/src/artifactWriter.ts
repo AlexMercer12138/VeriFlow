@@ -178,6 +178,7 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
                 canonicalizePath,
                 comparePath,
             );
+            throwIfAborted(options.signal);
             await movePath(artifact.tempPath, artifact.destination);
             committed.set(artifact.request.path, artifact);
         }
@@ -283,7 +284,6 @@ async function prepareRequestedArtifacts<T extends ArtifactWriteRequest>(
         }
         const preparedDestination = await prepareArtifactDestination(
             destination,
-            metadata !== undefined,
             inspectPath,
             canonicalizePath,
             comparePath,
@@ -419,7 +419,6 @@ async function canonicalExistingPath(
 
 async function prepareArtifactDestination(
     destination: string,
-    exists: boolean,
     inspectPath: (hostPath: string) => Promise<Stats>,
     canonicalizePath: (hostPath: string) => Promise<string>,
     comparePath: (hostPath: string) => string,
@@ -440,9 +439,10 @@ async function prepareArtifactDestination(
         );
     }
 
-    const canonicalDestination = exists
-        ? await canonicalizePath(destination)
-        : path.join(canonicalParent, path.basename(destination));
+    const canonicalDestination = path.join(
+        canonicalParent,
+        path.basename(destination),
+    );
     if (comparePath(path.dirname(canonicalDestination)) !== canonicalParentKey) {
         throw new Error(
             `Artifact destination parent changed during validation: ${destination}`,

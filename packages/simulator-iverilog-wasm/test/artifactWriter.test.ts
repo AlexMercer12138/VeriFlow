@@ -6,6 +6,7 @@ import {
     open,
     readFile,
     readdir,
+    realpath,
     rename,
     rm,
     symlink,
@@ -370,6 +371,71 @@ test('rejects a destination whose symlink parent changes after validation', asyn
     }
 });
 
+test('does not follow a destination leaf replaced by a symlink after inspection', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-leaf-race-'));
+    const destination = path.join(root, 'wave.vcd');
+    const victim = path.join(root, 'victim.vcd');
+    const probe = path.join(root, 'symlink-probe');
+
+    try {
+        await Promise.all([
+            writeFile(destination, 'old destination'),
+            writeFile(victim, 'victim'),
+        ]);
+        try {
+            await symlink(victim, probe, 'file');
+            await unlink(probe);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`file links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        let result: Awaited<ReturnType<typeof writeRequestedArtifacts>> | undefined;
+        let writeError: unknown;
+        try {
+            result = await writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('replacement')]]),
+                [{ path: 'wave.vcd', destination }],
+                {
+                    cwd: root,
+                    fileSystem: {
+                        async lstat(hostPath) {
+                            const metadata = await lstat(hostPath);
+                            if (hostPath === destination) {
+                                await unlink(destination);
+                                await symlink(victim, destination, 'file');
+                            }
+                            return metadata;
+                        },
+                    },
+                },
+            );
+        } catch (error) {
+            writeError = error;
+        }
+
+        assert.equal(await readFile(victim, 'utf8'), 'victim');
+        if (writeError === undefined) {
+            assert.deepEqual(result, [{
+                path: 'wave.vcd',
+                destination,
+                written: true,
+                size: 11,
+            }]);
+            assert.equal((await lstat(destination)).isSymbolicLink(), false);
+            assert.equal(await readFile(destination, 'utf8'), 'replacement');
+        } else {
+            assert.equal(result, undefined);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('cleans sibling temporary files when fsync fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-fail-'));
     const openedPaths: string[] = [];
@@ -625,6 +691,54 @@ test('stops committing artifacts when aborted between renames', async () => {
         assert.equal(await readFile(path.join(root, 'first.vcd'), 'utf8'), 'first');
         await assert.rejects(lstat(path.join(root, 'second.vcd')), { code: 'ENOENT' });
         assert.deepEqual(await readdir(root), ['first.vcd']);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('does not rename after aborting during artifact parent verification', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-parent-abort-'));
+    const destination = path.join(root, 'wave.vcd');
+    const controller = new AbortController();
+    let canonicalizations = 0;
+    let renames = 0;
+    const fileSystem: ArtifactWriterFileSystem = {
+        async realpath(hostPath) {
+            const canonicalPath = await realpath(hostPath);
+            canonicalizations += 1;
+            if (canonicalizations === 2) controller.abort();
+            return canonicalPath;
+        },
+        async rename(oldPath, newPath) {
+            renames += 1;
+            await rename(oldPath, newPath);
+        },
+    };
+
+    try {
+        let result: Awaited<ReturnType<typeof writeRequestedArtifacts>> | undefined;
+        let writeError: unknown;
+        try {
+            result = await writeRequestedArtifacts(
+                new Map([['wave.vcd', Buffer.from('wave')]]),
+                [{ path: 'wave.vcd', destination }],
+                {
+                    cwd: root,
+                    signal: controller.signal,
+                    fileSystem,
+                },
+            );
+        } catch (error) {
+            writeError = error;
+        }
+
+        assert.equal(controller.signal.aborted, true);
+        assert.equal(renames, 0);
+        assert.equal(result, undefined);
+        assert.ok(writeError instanceof Error);
+        assert.equal(writeError.name, 'AbortError');
+        await assert.rejects(readFile(destination), { code: 'ENOENT' });
+        assert.deepEqual(await readdir(root), []);
     } finally {
         await rm(root, { recursive: true, force: true });
     }

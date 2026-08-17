@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import {
     copyFile,
+    lstat,
     mkdtemp,
     mkdir,
     open,
     readFile,
+    readdir,
     rename,
     rm,
     symlink,
@@ -616,6 +618,108 @@ test('does not overwrite a protected source when an artifact parent link changes
     }
 });
 
+test('does not follow an artifact leaf replaced by a symlink after inspection', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-leaf-race-'));
+    const source = path.join(root, 'top.v');
+    const destination = path.join(root, 'wave.vcd');
+    const victim = path.join(root, 'victim.vcd');
+    const probe = path.join(root, 'symlink-probe');
+    let destinationInspections = 0;
+    let apiCalls = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 1, run: 1 },
+        artifacts: new Map([['workspace/wave.vcd', Buffer.from('replacement')]]),
+    });
+    const backend = new IverilogWasmBackend(async () => {
+        apiCalls += 1;
+        return api;
+    }, {
+        artifactFileSystem: {
+            async lstat(hostPath) {
+                const metadata = await lstat(hostPath);
+                if (hostPath === destination) {
+                    destinationInspections += 1;
+                    if (destinationInspections === 2) {
+                        await unlink(destination);
+                        await symlink(victim, destination, 'file');
+                    }
+                }
+                return metadata;
+            },
+        },
+    });
+
+    try {
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(destination, 'old destination'),
+            writeFile(victim, 'victim'),
+        ]);
+        try {
+            await symlink(victim, probe, 'file');
+            await unlink(probe);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`file links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(apiCalls, 1);
+        assert.equal(await readFile(victim, 'utf8'), 'victim');
+        if (result.success) {
+            assert.equal((await lstat(destination)).isSymbolicLink(), false);
+            assert.equal(await readFile(destination, 'utf8'), 'replacement');
+            assert.deepEqual(result.artifacts, [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination,
+                required: true,
+                written: true,
+                size: 11,
+            }]);
+            assert.equal(result.waveFile, destination);
+        } else {
+            assert.equal(result.stage, 'infrastructure');
+            assert.deepEqual(result.artifacts, [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination,
+                required: true,
+                written: false,
+                size: 0,
+            }]);
+            assert.equal(result.waveFile, null);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('keeps compile and run stage timings separate and maps diagnostics to host paths', async () => {
     const { root, source } = await createSourceRoot('veriflow-wasm-diagnostic-');
     const api = apiReturning({
@@ -1020,6 +1124,89 @@ test('maps abort after simulation settle and before artifact commit as aborted i
         assert.equal(result.cause?.code, 'ABORTED');
         assert.ok((result.timings.artifact ?? -1) >= 0);
         await assert.rejects(readFile(destination), { code: 'ENOENT' });
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps abort during artifact parent verification without renaming the destination', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-parent-abort-');
+    const destination = path.join(root, 'aborted.vcd');
+    const controller = new AbortController();
+    let apiCalls = 0;
+    let parentInspections = 0;
+    let renames = 0;
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timings: { preprocess: 1, compile: 2, run: 3 },
+        artifacts: new Map([[
+            'workspace/aborted.vcd',
+            Buffer.from('not committed'),
+        ]]),
+    });
+    const backend = new IverilogWasmBackend(async () => {
+        apiCalls += 1;
+        return api;
+    }, {
+        artifactFileSystem: {
+            async lstat(hostPath) {
+                const metadata = await lstat(hostPath);
+                if (hostPath === root) {
+                    parentInspections += 1;
+                    if (parentInspections === 3) controller.abort();
+                }
+                return metadata;
+            },
+            async rename(oldPath, newPath) {
+                renames += 1;
+                await rename(oldPath, newPath);
+            },
+        },
+    });
+
+    try {
+        const result = await backend.compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'aborted.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+            signal: controller.signal,
+        });
+
+        assert.equal(apiCalls, 1);
+        assert.equal(controller.signal.aborted, true);
+        assert.equal(renames, 0);
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.deepEqual(result.cause, {
+            code: 'ABORTED',
+            message: 'Artifact writing aborted',
+        });
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: 'aborted.vcd',
+            destination,
+            required: true,
+            written: false,
+            size: 0,
+        }]);
+        assert.equal(result.waveFile, null);
+        await assert.rejects(readFile(destination), { code: 'ENOENT' });
+        assert.deepEqual(await readdir(root), ['top.v']);
     } finally {
         await rm(root, { recursive: true, force: true });
     }

@@ -168,6 +168,12 @@ export async function builtinArtifactLogicalPath(
         canonicalizePath,
         implementation,
     );
+    if (implementation === path.win32
+        && windowsVolumeKey(canonicalRoot) !== windowsVolumeKey(canonicalFilepath)) {
+        throw new Error(
+            'Builtin artifact destination must be on the same volume as the project root',
+        );
+    }
     const relativePath = implementation.relative(canonicalRoot, canonicalFilepath);
     if (implementation.isAbsolute(relativePath)) {
         throw new Error(
@@ -175,6 +181,11 @@ export async function builtinArtifactLogicalPath(
         );
     }
     return relativePath.split(implementation.sep).join('/');
+}
+
+function windowsVolumeKey(hostPath: string): string {
+    const normalizedPath = path.win32.normalize(hostPath);
+    return path.win32.normalize(path.win32.parse(normalizedPath).root).toLowerCase();
 }
 
 async function canonicalArtifactDestination(
