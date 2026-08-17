@@ -191,7 +191,15 @@ export class SimulationService {
                 simulatorCompileCmd: input.simulatorCompileCmd ?? '',
                 simulatorRunCmd: input.simulatorRunCmd ?? '',
             });
-            return registry.run(input.backendId, request);
+            const execution = await registry.run(input.backendId, request);
+            return controller.signal.aborted ? {
+                ...execution,
+                success: false,
+                cause: {
+                    code: 'ABORTED',
+                    message: execution.cause?.message ?? 'Simulation cancelled',
+                },
+            } : execution;
         });
         const owner: ActiveRun = { runId, controller, promise: executionPromise };
         const promise = executionPromise.finally(() => {

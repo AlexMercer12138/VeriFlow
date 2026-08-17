@@ -7,7 +7,9 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 import {
     SimulatorBackendRegistry,
+    type CommandExecutor,
     type NormalizedSimulationExecution as SimulationExecution,
+    type ProcessExecution,
     type SimulationRequest,
     type SimulatorBackend,
     type SimulatorConfig,
@@ -1010,6 +1012,61 @@ async function testSimulationServiceCancellationAndDisposal(): Promise<void> {
     assert.strictEqual(service.activeRunId, undefined);
 }
 
+async function testSimulationServiceNormalizesRealNativeCancellation(): Promise<void> {
+    for (const execution of [{
+        exitCode: -1,
+        stdout: 'partial stdout',
+        stderr: 'native abort detail',
+        elapsedTime: 0.01,
+        termination: 'abort' as const,
+    }, {
+        exitCode: 0,
+        stdout: 'completed during abort race',
+        stderr: '',
+        elapsedTime: 0.01,
+    }]) {
+        const commandStarted = createDeferred();
+        let cancellationListener: (() => void) | undefined;
+        const commandExecutor: CommandExecutor = {
+            async execute(_command, _cwd, _timeoutSeconds, signal): Promise<ProcessExecution> {
+                commandStarted.resolve();
+                if (!signal?.aborted) {
+                    await new Promise<void>(resolve => {
+                        signal?.addEventListener('abort', () => resolve(), { once: true });
+                    });
+                }
+                return execution;
+            },
+        };
+        const service = new SimulationService({ commandExecutor });
+        const run = service.run({
+            backendId: 'iverilog',
+            workspaceRoot: copyFixture(),
+            topModule: 'uart_tb',
+            files: [],
+            libDirs: [],
+            defines: {},
+        }, {
+            isCancellationRequested: false,
+            onCancellationRequested(listener) {
+                cancellationListener = listener;
+                return { dispose(): void {} };
+            },
+        });
+
+        await commandStarted.promise;
+        cancellationListener!();
+        const outcome = await run;
+
+        assert.strictEqual(outcome.execution.success, false);
+        assert.strictEqual(outcome.execution.cause?.code, 'ABORTED');
+        assert.match(outcome.execution.cause?.message ?? '', /cancel/i);
+        assert.strictEqual(outcome.execution.stdout, execution.stdout);
+        assert.strictEqual(outcome.execution.stderr, execution.stderr);
+        await service.dispose();
+    }
+}
+
 async function testSimulationServiceDisposalDrainsEveryRunAndIsShared(): Promise<void> {
     const gates = [createDeferred(), createDeferred()];
     const signals: AbortSignal[] = [];
@@ -1103,7 +1160,8 @@ async function testSimulationServiceClosesCancellationRegistrationWindows(): Pro
         },
     });
 
-    assert.strictEqual(outcome.execution.success, true);
+    assert.strictEqual(outcome.execution.success, false);
+    assert.strictEqual(outcome.execution.cause?.code, 'ABORTED');
     assert.strictEqual(signals[0].aborted, true);
     assert.strictEqual(listenerDisposed, true);
     await service.dispose();
@@ -1183,11 +1241,20 @@ async function testExternalWaveViewerLauncherAndWorkspaceArtifactPath(): Promise
     const workspace = path.join(os.tmpdir(), 'veriflow-workspace');
     const waveFile = path.join(workspace, 'waves', 'uart_tb.vcd');
     let launched: { command: string; windowsHide: boolean | undefined } | undefined;
+    let confirmation: (() => void) | undefined;
+    let cancelledConfirmations = 0;
     const child = new EventEmitter();
     const launcher = new ExternalWaveViewerLauncher({
         launchCommand(command, options) {
             launched = { command, windowsHide: options.windowsHide };
             return child;
+        },
+        scheduler: {
+            schedule(callback) {
+                confirmation = callback;
+                return 1;
+            },
+            cancel() { cancelledConfirmations++; },
         },
     });
 
@@ -1199,8 +1266,59 @@ async function testExternalWaveViewerLauncherAndWorkspaceArtifactPath(): Promise
     await flushPromises();
     assert.strictEqual(launchSettled, false);
     child.emit('spawn');
+    await flushPromises();
+    assert.strictEqual(launchSettled, false);
+    confirmation!();
     await launch;
     assert.strictEqual(launchSettled, true);
+    assert.strictEqual(cancelledConfirmations, 0);
+    assert.strictEqual(child.listenerCount('spawn'), 0);
+    assert.strictEqual(child.listenerCount('error'), 0);
+    assert.strictEqual(child.listenerCount('exit'), 0);
+    assert.strictEqual(child.listenerCount('close'), 0);
+
+    for (const event of ['exit', 'close'] as const) {
+        const earlyFailure = new EventEmitter();
+        let timerCancelled = false;
+        const failedAfterSpawn = new ExternalWaveViewerLauncher({
+            launchCommand() { return earlyFailure; },
+            scheduler: {
+                schedule() { return 1; },
+                cancel() { timerCancelled = true; },
+            },
+        });
+        const failedLaunch = assert.rejects(
+            failedAfterSpawn.launch(waveFile, {
+                name: 'missing-viewer',
+                launchCmd: 'missing-viewer "{wave_file}"',
+            }),
+            /exited.*127/i
+        );
+        earlyFailure.emit('spawn');
+        earlyFailure.emit(event, 127, null);
+        await failedLaunch;
+        assert.strictEqual(timerCancelled, true);
+        assert.strictEqual(earlyFailure.eventNames().length, 0);
+    }
+
+    const quickSuccess = new EventEmitter();
+    let quickTimerCancelled = false;
+    const quickLauncher = new ExternalWaveViewerLauncher({
+        launchCommand() { return quickSuccess; },
+        scheduler: {
+            schedule() { return 1; },
+            cancel() { quickTimerCancelled = true; },
+        },
+    });
+    const quickLaunch = quickLauncher.launch(waveFile, {
+        name: 'wrapper',
+        launchCmd: 'wrapper "{wave_file}"',
+    });
+    quickSuccess.emit('spawn');
+    quickSuccess.emit('close', 0, null);
+    await quickLaunch;
+    assert.strictEqual(quickTimerCancelled, true);
+    assert.strictEqual(quickSuccess.eventNames().length, 0);
 
     const failedChild = new EventEmitter();
     const failedLauncher = new ExternalWaveViewerLauncher({
@@ -1227,6 +1345,17 @@ async function testExternalWaveViewerLauncherAndWorkspaceArtifactPath(): Promise
             launchCmd: 'throwing-viewer "{wave_file}"',
         }),
         /viewer spawn threw/
+    );
+
+    const realMissingLauncher = new ExternalWaveViewerLauncher({
+        confirmationTimeoutMs: 1_000,
+    });
+    await assert.rejects(
+        realMissingLauncher.launch(waveFile, {
+            name: 'missing-viewer',
+            launchCmd: `veriflow-viewer-does-not-exist-${process.pid} "{wave_file}"`,
+        }),
+        /exited/i
     );
 
     assert.deepStrictEqual(launched, {
@@ -2405,6 +2534,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['simulation service backend registry', testSimulationServiceBackendRegistrySelection],
     ['simulation service latest run ownership', testSimulationServiceLatestRunOwnsActiveState],
     ['simulation service cancellation and disposal', testSimulationServiceCancellationAndDisposal],
+    ['simulation service real native cancellation normalization', testSimulationServiceNormalizesRealNativeCancellation],
     ['external wave viewer launcher', testExternalWaveViewerLauncherAndWorkspaceArtifactPath],
     ['simulation service startup failure cleanup', testSimulationServiceCleansUpSynchronousStartupFailures],
     ['simulation service cancellation disposer cleanup', testSimulationServiceCleansUpWhenCancellationDisposalThrows],

@@ -27,6 +27,7 @@ export { ExternalWaveViewerLauncher } from './externalWaveViewerLauncher';
 export type {
     ExternalWaveViewerLauncherOptions,
     WaveViewerChildProcess,
+    WaveViewerLaunchScheduler,
 } from './externalWaveViewerLauncher';
 export { formatModuleInstantiation } from './moduleInstantiationFormatter';
 export type { NamedConnection, ModuleInstantiationOptions } from './moduleInstantiationFormatter';

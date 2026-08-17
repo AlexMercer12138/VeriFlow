@@ -3,6 +3,9 @@ import * as fs from 'fs';
 import Module = require('module');
 import * as path from 'path';
 
+import { ExternalWaveViewerLauncher as RealExternalWaveViewerLauncher } from '../core/externalWaveViewerLauncher';
+import { SimulationService as RealSimulationService } from '../core/simulationService';
+
 type Definition = {
     key: string;
     kind: 'module';
@@ -533,7 +536,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
     let nextSimulationExecution: StubSimulationExecution | undefined;
     let nextSimulationError: Error | undefined;
-    let nextViewerLaunchError: Error | undefined;
+    let useRealNativeCancellation = false;
+    let realNativeCommandStarted: ReturnType<typeof createScanGate> | undefined;
+    let cancelNextProgressAfterCommandStart = false;
+    let useRealMissingViewer = false;
     let viewerLaunchCalls = 0;
     const wavePathExists = true;
     let wavePathIsFile = true;
@@ -1008,13 +1014,21 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             ) => {
                 assert.strictEqual(options.cancellable, true);
                 const listeners = new Set<() => void>();
-                return task({}, {
+                const result = Promise.resolve(task({}, {
                     isCancellationRequested: false,
                     onCancellationRequested(listener) {
                         listeners.add(listener);
                         return { dispose(): void { listeners.delete(listener); } };
                     },
-                });
+                }));
+                if (cancelNextProgressAfterCommandStart) {
+                    cancelNextProgressAfterCommandStart = false;
+                    const gate = realNativeCommandStarted;
+                    if (!gate) { throw new Error('Missing real native command gate'); }
+                    await gate.started;
+                    for (const listener of listeners) { listener(); }
+                }
+                return result;
             },
             showOpenDialog: async () => {
                 const gate = nextOpenDialogGate;
@@ -1186,6 +1200,36 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             }): Promise<unknown> {
                 runnerCalls++;
                 const backendId = (input as { backendId?: string }).backendId ?? 'unknown';
+                if (useRealNativeCancellation) {
+                    useRealNativeCancellation = false;
+                    const runId = ++this.latestRunId;
+                    const gate = createScanGate();
+                    realNativeCommandStarted = gate;
+                    const service = new RealSimulationService({
+                        commandExecutor: {
+                            async execute(_command, _cwd, _timeoutSeconds, signal) {
+                                gate.markStarted();
+                                if (!signal?.aborted) {
+                                    await new Promise<void>(resolve => {
+                                        signal?.addEventListener('abort', () => resolve(), {
+                                            once: true,
+                                        });
+                                    });
+                                }
+                                return {
+                                    exitCode: -1,
+                                    stdout: 'partial native stdout',
+                                    stderr: 'native abort detail',
+                                    elapsedTime: 0.01,
+                                    termination: 'abort' as const,
+                                };
+                            },
+                        },
+                    });
+                    return service.run(input as Parameters<RealSimulationService['run']>[0], token)
+                        .then(outcome => ({ runId, execution: outcome.execution }))
+                        .finally(() => service.dispose());
+                }
                 const configuredExecution = nextSimulationExecution;
                 nextSimulationExecution = undefined;
                 const configuredError = nextSimulationError;
@@ -1271,12 +1315,13 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             }
         },
         ExternalWaveViewerLauncher: class {
-            async launch(): Promise<void> {
+            async launch(waveFile: string, viewer: { name: string; launchCmd: string }): Promise<void> {
                 viewerLaunchCalls++;
-                const error = nextViewerLaunchError;
-                nextViewerLaunchError = undefined;
-                if (error) {
-                    throw error;
+                if (useRealMissingViewer) {
+                    useRealMissingViewer = false;
+                    await new RealExternalWaveViewerLauncher({
+                        confirmationTimeoutMs: 1_000,
+                    }).launch(waveFile, viewer);
                 }
             }
         },
@@ -2139,16 +2184,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         );
         assert.strictEqual(simulateStatus, 'completed');
 
-        nextSimulationExecution = {
-            success: false,
-            exitCode: -1,
-            stdout: '',
-            stderr: 'aborted backend detail',
-            logEntries: [{ level: 'ERROR', message: 'aborted structured detail' }],
-            backendId: 'iverilog',
-            commands: {},
-            cause: { code: 'ABORTED', message: 'cancelled by user' },
-        };
+        useRealNativeCancellation = true;
+        cancelNextProgressAfterCommandStart = true;
         const errorsBeforeCancellation = errors.length;
         const infosBeforeCancellation = infos.length;
         await withTimeout(
@@ -2193,8 +2230,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             1
         );
 
-        settings.waveViewer = 'gtkwave';
-        nextViewerLaunchError = Object.assign(new Error('viewer ENOENT'), { code: 'ENOENT' });
+        settings.waveViewer = 'custom';
+        settings.waveViewerCmd = `veriflow-viewer-does-not-exist-${process.pid} "{wave_file}"`;
+        useRealMissingViewer = true;
         const errorsBeforeViewer = errors.length;
         const successesBeforeViewer = successes.length;
         const viewerCallsBefore = viewerLaunchCalls;
@@ -2203,13 +2241,14 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'external viewer spawn failure'
         );
         assert.strictEqual(viewerLaunchCalls, viewerCallsBefore + 1);
-        assert.ok(errors.slice(errorsBeforeViewer).includes(
-            'Failed to open gtkwave: viewer ENOENT'
+        assert.ok(errors.slice(errorsBeforeViewer).some(message =>
+            /Failed to open custom: Wave viewer exited with code 127/i.test(message)
         ));
         assert.ok(!successes.slice(successesBeforeViewer).some(message =>
-            message.startsWith('Opened gtkwave:')
+            message.startsWith('Opened custom:')
         ));
         settings.waveViewer = 'builtin';
+        settings.waveViewerCmd = '';
 
         wavePathIsFile = false;
         const openWithBeforeDirectory = executedCommands.filter(command =>
