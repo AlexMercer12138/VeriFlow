@@ -13,7 +13,9 @@ import {
 
 import {
     ArtifactWriteError,
+    preflightRequestedArtifacts,
     validateArtifactPath,
+    validateLogicalArtifactPath,
     writeRequestedArtifacts,
     type ArtifactWriterFileSystem,
 } from './artifactWriter';
@@ -60,6 +62,7 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 files: request.files,
                 runtimeFiles: request.runtimeFiles,
                 includeDirs: request.includeDirs,
+                writableFiles: artifactPaths,
             }, this.options.workspaceFileSystem);
         } catch (error) {
             return infrastructureFailure(
@@ -75,13 +78,30 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 (performance.now() - started) / 1_000,
             );
         }
-        const upstreamPaths = upstreamArtifactPaths(
-            artifactPaths,
-            workspace.runCwd,
+        const upstreamPaths = validateUpstreamArtifactPaths(
+            workspace.writableFiles,
         );
-        const stagedFiles = stageArtifactDirectories(
+        try {
+            await preflightRequestedArtifacts(request.artifacts, {
+                cwd: request.cwd,
+                signal: request.signal,
+                protectedHostPaths: [
+                    ...request.files,
+                    ...request.runtimeFiles,
+                ],
+                fileSystem: this.options.artifactFileSystem,
+            });
+        } catch (error) {
+            return infrastructureFailure(
+                request,
+                artifactFailureCause(error),
+                (performance.now() - started) / 1_000,
+            );
+        }
+        const stagedFiles = stageRequiredDirectories(
             workspace.files,
             upstreamPaths,
+            workspace.runCwd,
         );
 
         let result: RunResult;
@@ -189,15 +209,6 @@ export class IverilogWasmBackend implements SimulatorBackend {
     }
 }
 
-function upstreamArtifactPaths(
-    artifactPaths: readonly string[],
-    runCwd: string,
-): string[] {
-    return artifactPaths.map(artifactPath => (
-        path.posix.join(runCwd, artifactPath)
-    ));
-}
-
 function remapArtifacts(
     artifacts: ReadonlyMap<string, Uint8Array>,
     artifactPaths: readonly string[],
@@ -214,10 +225,26 @@ function remapArtifacts(
 function validateArtifactPaths(
     artifacts: readonly SimulationRequest['artifacts'][number][],
 ): string[] {
-    const paths: string[] = [];
-    for (const artifact of artifacts) {
-        const artifactPath = validateArtifactPath(artifact.path);
-        for (const existing of paths) {
+    const paths = artifacts.map(artifact => (
+        validateLogicalArtifactPath(artifact.path)
+    ));
+    assertNonConflictingArtifactPaths(paths);
+    return paths;
+}
+
+function validateUpstreamArtifactPaths(
+    artifactPaths: readonly string[],
+): string[] {
+    const validated = artifactPaths.map(validateArtifactPath);
+    assertNonConflictingArtifactPaths(validated);
+    return validated;
+}
+
+function assertNonConflictingArtifactPaths(
+    artifactPaths: readonly string[],
+): void {
+    for (const [index, artifactPath] of artifactPaths.entries()) {
+        for (const existing of artifactPaths.slice(0, index)) {
             if (artifactPath === existing) {
                 throw new Error(`Duplicate artifact path: ${artifactPath}`);
             }
@@ -227,19 +254,19 @@ function validateArtifactPaths(
                 );
             }
         }
-        paths.push(artifactPath);
     }
-    return paths;
 }
 
-function stageArtifactDirectories(
+function stageRequiredDirectories(
     files: readonly VirtualFile[],
     artifactPaths: readonly string[],
+    runCwd: string,
 ): VirtualFile[] {
     const occupiedPaths = [
         ...files.map(file => file.path),
         ...artifactPaths,
     ];
+    const stagedPaths = files.map(file => file.path);
     for (const artifactPath of artifactPaths) {
         for (const file of files) {
             if (pathsConflict(artifactPath, file.path)) {
@@ -248,22 +275,36 @@ function stageArtifactDirectories(
         }
     }
 
-    const parentDirectories = [...new Set(artifactPaths.map(artifactPath => (
-        path.posix.dirname(artifactPath)
-    )).filter(parent => parent !== '.'))];
-    const markers = parentDirectories.map(parent => {
+    const requiredDirectories = [
+        ...artifactPaths.map(artifactPath => ({
+            path: path.posix.dirname(artifactPath),
+            markerName: '.veriflow-artifact-dir',
+        })).filter(directory => directory.path !== '.'),
+        { path: runCwd, markerName: '.veriflow-run-cwd' },
+    ];
+    const markers: VirtualFile[] = [];
+    for (const directory of requiredDirectories) {
+        if (stagedPaths.some(existing => (
+            existing.startsWith(`${directory.path}/`)
+        ))) continue;
+        if (occupiedPaths.includes(directory.path)) {
+            throw new Error(
+                `Virtual directory aliases a staged file: ${directory.path}`,
+            );
+        }
         let suffix = 0;
         let markerPath: string;
         do {
             markerPath = path.posix.join(
-                parent,
-                `.veriflow-artifact-dir${suffix === 0 ? '' : `-${suffix}`}`,
+                directory.path,
+                `${directory.markerName}${suffix === 0 ? '' : `-${suffix}`}`,
             );
             suffix += 1;
         } while (occupiedPaths.some(existing => pathsConflict(markerPath, existing)));
         occupiedPaths.push(markerPath);
-        return { path: markerPath, data: new Uint8Array() };
-    });
+        stagedPaths.push(markerPath);
+        markers.push({ path: markerPath, data: new Uint8Array() });
+    }
     return [...files, ...markers];
 }
 

@@ -32,11 +32,12 @@ test('rejects unsafe artifact names before touching destinations', async () => {
     const invalidNames = [
         '/absolute.vcd',
         'C:\\absolute.vcd',
-        '../escape.vcd',
+        '../',
         'nested/../escape.vcd',
         'bad\0name.vcd',
         '.iverilog',
         '.iverilog/program.vvp',
+        '../.iverilog/program.vvp',
     ];
 
     try {
@@ -52,6 +53,30 @@ test('rejects unsafe artifact names before touching destinations', async () => {
             );
             await assert.rejects(lstat(destination), { code: 'ENOENT' });
         }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('writes artifacts keyed by normalized leading parent paths', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-artifact-parent-'));
+    const destination = path.join(root, 'copied.vcd');
+    const logicalPath = '../../external/wave.vcd';
+
+    try {
+        const results = await writeRequestedArtifacts(
+            new Map([[logicalPath, Buffer.from('vcd')]]),
+            [{ path: logicalPath, destination }],
+            { cwd: path.join(root, 'project', 'rtl') },
+        );
+
+        assert.equal(await readFile(destination, 'utf8'), 'vcd');
+        assert.deepEqual(results, [{
+            path: logicalPath,
+            destination,
+            written: true,
+            size: 3,
+        }]);
     } finally {
         await rm(root, { recursive: true, force: true });
     }

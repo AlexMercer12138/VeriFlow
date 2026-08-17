@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -186,6 +193,147 @@ endmodule
         assert.equal(stderr, '');
         assert.equal(existsSync(path.join(wavesDir, 'top.vcd')), true);
     } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('builtin CLI preserves runtime paths through a symlink project root', async t => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-link-cwd-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const physicalProject = path.join(caseRoot, 'physical', 'demo');
+    const physicalRoot = path.join(physicalProject, 'rtl');
+    const rootDir = path.join(cwd, 'rtl-link');
+    const vectorsDir = path.join(physicalProject, 'vectors');
+    const homeDir = path.join(caseRoot, 'home');
+    const emptyPath = path.join(caseRoot, 'empty-path');
+    mkdirSync(physicalRoot, { recursive: true });
+    mkdirSync(vectorsDir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(emptyPath, { recursive: true });
+
+    try {
+        try {
+            symlinkSync(physicalRoot, rootDir, 'dir');
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+        writeFileSync(path.join(vectorsDir, 'input.hex'), '2a\n', 'utf8');
+        writeFileSync(path.join(physicalRoot, 'top.v'), `
+module top;
+    reg [7:0] memory [0:0];
+    initial begin
+        $readmemh("../vectors/input.hex", memory);
+        #1;
+        if (memory[0] === 8'h2a) $display("PASS");
+        else $display("FAIL %h", memory[0]);
+        $finish;
+    end
+endmodule
+`, 'utf8');
+        writeFileSync(path.join(cwd, 'project.json'), JSON.stringify({
+            project_name: 'builtin-link-cwd',
+            project_root: 'rtl-link',
+            top_module: 'top',
+            simulator: 'builtin',
+            simulation_files: ['../physical/demo/vectors/input.hex'],
+        }, null, 2), 'utf8');
+
+        let stdout = '';
+        let stderr = '';
+        const originalPath = process.env.PATH;
+        process.env.PATH = emptyPath;
+        try {
+            const exitCode = await runCli(['sim', '--project', 'project.json'], {
+                cwd,
+                homeDir,
+                stdout: text => { stdout += text; },
+                stderr: text => { stderr += text; },
+                commandExecutor: {
+                    execute(): never {
+                        throw new Error('native command execution was attempted');
+                    },
+                },
+            });
+
+            assert.equal(exitCode, 0, stderr || stdout);
+            assert.match(stdout, /PASS/);
+            assert.doesNotMatch(stdout, /Unable to open|FAIL/);
+            assert.equal(stderr, '');
+        } finally {
+            if (originalPath === undefined) delete process.env.PATH;
+            else process.env.PATH = originalPath;
+        }
+    } finally {
+        rmSync(caseRoot, { recursive: true, force: true });
+    }
+});
+
+test('builtin CLI writes an absolute external wave through a safe virtual path', async () => {
+    const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-external-wave-'));
+    const cwd = path.join(caseRoot, 'workspace');
+    const rootDir = path.join(cwd, 'rtl');
+    const externalDir = path.join(caseRoot, 'external');
+    const waveFile = path.join(externalDir, 'top.vcd');
+    const homeDir = path.join(caseRoot, 'home');
+    const emptyPath = path.join(caseRoot, 'empty-path');
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(externalDir, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(emptyPath, { recursive: true });
+
+    writeFileSync(path.join(rootDir, 'top.v'), `
+module top;
+    initial begin
+        $dumpfile("../../external/top.vcd");
+        $dumpvars(0, top);
+        $display("PASS");
+        #1 $finish;
+    end
+endmodule
+`, 'utf8');
+    writeFileSync(path.join(cwd, 'project.json'), JSON.stringify({
+        project_name: 'builtin-external-wave',
+        project_root: 'rtl',
+        top_module: 'top',
+        simulator: 'builtin',
+        wave_file_template: waveFile,
+    }, null, 2), 'utf8');
+
+    let stdout = '';
+    let stderr = '';
+    const originalPath = process.env.PATH;
+    process.env.PATH = emptyPath;
+    try {
+        const exitCode = await runCli(['sim', '--project', 'project.json'], {
+            cwd,
+            homeDir,
+            stdout: text => { stdout += text; },
+            stderr: text => { stderr += text; },
+            commandExecutor: {
+                execute(): never {
+                    throw new Error('native command execution was attempted');
+                },
+            },
+        });
+
+        assert.equal(exitCode, 0, stderr || stdout);
+        assert.match(stdout, /PASS/);
+        assert.doesNotMatch(stdout, /Unable to open|FAIL/);
+        assert.equal(stderr, '');
+        assert.equal(existsSync(waveFile), true);
+        assert.equal(
+            existsSync(path.join(externalDir, '.veriflow-artifact-dir')),
+            false,
+        );
+    } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
         rmSync(caseRoot, { recursive: true, force: true });
     }
 });

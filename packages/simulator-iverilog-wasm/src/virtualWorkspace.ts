@@ -7,6 +7,7 @@ export interface VirtualWorkspaceInput {
     files: readonly string[];
     runtimeFiles: readonly string[];
     includeDirs: readonly string[];
+    writableFiles?: readonly string[];
 }
 
 export interface VirtualWorkspaceFileSystem {
@@ -19,6 +20,7 @@ export interface VirtualWorkspace {
     sources: string[];
     includeDirs: string[];
     runCwd: string;
+    writableFiles: string[];
     hostPathByVirtualPath: ReadonlyMap<string, string>;
 }
 
@@ -28,15 +30,20 @@ interface PathContext {
 }
 
 interface ConfiguredRoot {
-    hostPath: string;
+    mappingPath: string;
     comparisonPath: string;
     virtualPath: string;
     order: number;
 }
 
+interface ResolvedHostPath {
+    hostPath: string;
+    mappingPath: string;
+}
+
 interface MappedHostFile {
     hostPath: string;
-    normalizedHostPath: string;
+    mappingPath: string;
     virtualPath: string;
 }
 
@@ -49,34 +56,74 @@ export async function buildVirtualWorkspace(
     const context = pathContext(input.cwd);
     const readHostFile = fileSystem.readFile ?? readFile;
     const canonicalizeHostPath = fileSystem.realpath ?? realpath;
-    const cwd = normalizeHostPath(input.cwd, context);
-    const normalizedRuntimeFiles = input.runtimeFiles.map(hostPath => (
-        normalizeHostPath(hostPath, context, cwd)
+    const cwdHostPath = normalizeHostPath(input.cwd, context);
+    const sourceHostPaths = input.files.map(hostPath => (
+        normalizeHostPath(hostPath, context, cwdHostPath)
     ));
-    const runtimeRoot = commonAncestor(
-        [cwd, ...normalizedRuntimeFiles],
+    const runtimeHostPaths = input.runtimeFiles.map(hostPath => (
+        normalizeHostPath(hostPath, context, cwdHostPath)
+    ));
+    assertUniqueNormalizedHostPaths(
+        [...sourceHostPaths, ...runtimeHostPaths],
+        context,
+    );
+    const includeHostPaths = input.includeDirs.map(includeDir => (
+        normalizeHostPath(includeDir, context, cwdHostPath)
+    ));
+    const canonicalize = cachedCanonicalizer(canonicalizeHostPath, context);
+    const cwd = await resolveHostPath(cwdHostPath, canonicalize);
+    const [includeDirs, sourceFiles, runtimeFiles] = await Promise.all([
+        Promise.all(includeHostPaths.map(hostPath => (
+            resolveHostPath(hostPath, canonicalize)
+        ))),
+        Promise.all(sourceHostPaths.map(hostPath => (
+            resolveHostPath(hostPath, canonicalize)
+        ))),
+        Promise.all(runtimeHostPaths.map(hostPath => (
+            resolveHostPath(hostPath, canonicalize)
+        ))),
+    ]);
+    const writableFiles = (input.writableFiles ?? []).map(logicalPath => ({
+        logicalPath,
+        mappingPath: resolveLogicalHostPath(
+            cwd.mappingPath,
+            logicalPath,
+            context,
+        ),
+    }));
+    const workspaceRoot = commonAncestor(
+        [
+            cwd.mappingPath,
+            ...runtimeFiles.map(file => file.mappingPath),
+            ...writableFiles.map(file => file.mappingPath),
+        ],
         context,
     );
     const runCwd = joinVirtualPath(
         'workspace',
-        context.implementation.relative(runtimeRoot, cwd),
+        context.implementation.relative(workspaceRoot, cwd.mappingPath),
         context,
     );
-    const roots = configuredRoots(cwd, input.includeDirs, runCwd, context);
-    const sources = input.files.map(
-        hostPath => mapHostFile(hostPath, cwd, roots, context),
+    const roots = configuredRoots(cwd, includeDirs, runCwd, context);
+    const sources = sourceFiles.map(
+        hostPath => mapHostFile(hostPath, roots, context),
     );
-    const runtimeFiles = normalizedRuntimeFiles.map(
-        hostPath => mapRuntimeFile(hostPath, runtimeRoot, context),
+    const mappedRuntimeFiles = runtimeFiles.map(
+        hostPath => mapWorkspaceFile(hostPath, workspaceRoot, context),
     );
-    const mappedFiles = [...sources, ...runtimeFiles];
+    const mappedWritableFiles = writableFiles.map(file => joinVirtualPath(
+        'workspace',
+        context.implementation.relative(workspaceRoot, file.mappingPath),
+        context,
+    ));
+    const mappedFiles = [...sources, ...mappedRuntimeFiles];
 
     assertUniqueVirtualPaths(mappedFiles);
-    await assertUniqueHostFiles(mappedFiles, canonicalizeHostPath, context);
+    assertUniqueHostFiles(mappedFiles, context);
 
     const dataByHostPath = new Map<string, Promise<Uint8Array>>();
     const files = await Promise.all(mappedFiles.map(async mapped => {
-        const comparisonPath = comparable(mapped.normalizedHostPath, context);
+        const comparisonPath = comparable(mapped.mappingPath, context);
         let data = dataByHostPath.get(comparisonPath);
         if (data === undefined) {
             data = Promise.resolve(readHostFile(mapped.hostPath))
@@ -95,14 +142,47 @@ export async function buildVirtualWorkspace(
     return {
         files,
         sources: sources.map(source => source.virtualPath),
-        includeDirs: stableUnique(input.includeDirs.map(includeDir => mapHostPath(
-            normalizeHostPath(includeDir, context, cwd),
+        includeDirs: stableUnique(includeDirs.map(includeDir => mapHostPath(
+            includeDir.mappingPath,
             roots,
             context,
         ))),
         runCwd,
+        writableFiles: mappedWritableFiles,
         hostPathByVirtualPath,
     };
+}
+
+function resolveLogicalHostPath(
+    cwd: string,
+    logicalPath: string,
+    context: PathContext,
+): string {
+    return context.implementation.resolve(cwd, ...logicalPath.split('/'));
+}
+
+function cachedCanonicalizer(
+    canonicalizeHostPath: NonNullable<VirtualWorkspaceFileSystem['realpath']>,
+    context: PathContext,
+): (hostPath: string) => Promise<string> {
+    const canonicalPaths = new Map<string, Promise<string>>();
+    return hostPath => {
+        const key = comparable(hostPath, context);
+        let canonicalPath = canonicalPaths.get(key);
+        if (canonicalPath === undefined) {
+            canonicalPath = Promise.resolve(canonicalizeHostPath(hostPath))
+                .then(result => normalizeHostPath(result, context));
+            canonicalPaths.set(key, canonicalPath);
+        }
+        return canonicalPath;
+    };
+}
+
+async function resolveHostPath(
+    hostPath: string,
+    canonicalize: (hostPath: string) => Promise<string>,
+): Promise<ResolvedHostPath> {
+    return { hostPath, mappingPath: await canonicalize(hostPath) };
 }
 
 function stableUnique(values: readonly string[]): string[] {
@@ -135,48 +215,45 @@ function comparable(hostPath: string, context: PathContext): string {
 }
 
 function configuredRoots(
-    cwd: string,
-    includeDirs: readonly string[],
+    cwd: ResolvedHostPath,
+    includeDirs: readonly ResolvedHostPath[],
     runCwd: string,
     context: PathContext,
 ): ConfiguredRoot[] {
     return [
-        { hostPath: cwd, virtualPath: runCwd, order: -1 },
+        { mappingPath: cwd.mappingPath, virtualPath: runCwd, order: -1 },
         ...includeDirs.map((includeDir, index) => ({
-            hostPath: normalizeHostPath(includeDir, context, cwd),
+            mappingPath: includeDir.mappingPath,
             virtualPath: `libraries/${index}`,
             order: index,
         })),
     ].map(root => ({
         ...root,
-        comparisonPath: comparable(root.hostPath, context),
+        comparisonPath: comparable(root.mappingPath, context),
     }));
 }
 
 function mapHostFile(
-    hostPath: string,
-    cwd: string,
+    hostPath: ResolvedHostPath,
     roots: readonly ConfiguredRoot[],
     context: PathContext,
 ): MappedHostFile {
-    const normalizedHostPath = normalizeHostPath(hostPath, context, cwd);
-    const virtualPath = mapHostPath(normalizedHostPath, roots, context);
+    const virtualPath = mapHostPath(hostPath.mappingPath, roots, context);
 
-    return { hostPath: normalizedHostPath, normalizedHostPath, virtualPath };
+    return { ...hostPath, virtualPath };
 }
 
-function mapRuntimeFile(
-    normalizedHostPath: string,
-    runtimeRoot: string,
+function mapWorkspaceFile(
+    hostPath: ResolvedHostPath,
+    workspaceRoot: string,
     context: PathContext,
 ): MappedHostFile {
     const relativePath = context.implementation.relative(
-        runtimeRoot,
-        normalizedHostPath,
+        workspaceRoot,
+        hostPath.mappingPath,
     );
     return {
-        hostPath: normalizedHostPath,
-        normalizedHostPath,
+        ...hostPath,
         virtualPath: joinVirtualPath('workspace', relativePath, context),
     };
 }
@@ -236,7 +313,7 @@ function mapHostPath(
         .map(root => ({
             root,
             relativePath: context.implementation.relative(
-                root.hostPath,
+                root.mappingPath,
                 normalizedHostPath,
             ),
         }))
@@ -297,29 +374,29 @@ function assertUniqueVirtualPaths(files: readonly MappedHostFile[]): void {
     }
 }
 
-async function assertUniqueHostFiles(
-    files: readonly MappedHostFile[],
-    canonicalize: VirtualWorkspaceFileSystem['realpath'],
+function assertUniqueNormalizedHostPaths(
+    hostPaths: readonly string[],
     context: PathContext,
-): Promise<void> {
+): void {
     const normalizedPaths = new Set<string>();
-    for (const file of files) {
-        const key = comparable(file.normalizedHostPath, context);
+    for (const hostPath of hostPaths) {
+        const key = comparable(hostPath, context);
         if (normalizedPaths.has(key)) {
-            throw new Error(`Duplicate host file: ${file.normalizedHostPath}`);
+            throw new Error(`Duplicate host file: ${hostPath}`);
         }
         normalizedPaths.add(key);
     }
-    if (canonicalize === undefined) return;
+}
 
-    const canonicalPaths = await Promise.all(files.map(async file => (
-        canonicalize(file.normalizedHostPath)
-    )));
+function assertUniqueHostFiles(
+    files: readonly MappedHostFile[],
+    context: PathContext,
+): void {
     const hostPaths = new Set<string>();
-    for (const hostPath of canonicalPaths) {
-        const key = comparable(context.implementation.normalize(hostPath), context);
+    for (const file of files) {
+        const key = comparable(file.mappingPath, context);
         if (hostPaths.has(key)) {
-            throw new Error(`Duplicate host file: ${hostPath}`);
+            throw new Error(`Duplicate host file: ${file.hostPath}`);
         }
         hostPaths.add(key);
     }

@@ -144,6 +144,45 @@ test('preserves sibling runtime paths beneath a common virtual ancestor', async 
     }
 });
 
+test('maps multi-level writable paths without reading their host destinations', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-writable-path-'));
+    const cwd = path.join(root, 'demo', 'project', 'rtl');
+    const source = path.join(cwd, 'top.v');
+    let reads = 0;
+
+    try {
+        await mkdir(cwd, { recursive: true });
+        await writeFile(source, 'module top; endmodule\n');
+
+        const workspace = await buildVirtualWorkspace({
+            cwd,
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            writableFiles: ['../../waves/top.vcd'],
+        }, {
+            async readFile(hostPath) {
+                reads += 1;
+                return readFile(hostPath);
+            },
+        });
+
+        assert.equal(workspace.runCwd, 'workspace/project/rtl');
+        assert.deepEqual(workspace.sources, ['workspace/project/rtl/top.v']);
+        assert.deepEqual(workspace.writableFiles, ['workspace/waves/top.vcd']);
+        assert.equal(
+            path.posix.relative(
+                workspace.runCwd,
+                workspace.writableFiles[0],
+            ),
+            '../../waves/top.vcd',
+        );
+        assert.equal(reads, 1);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('uses the Node reader when filesystem overrides are empty', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-default-reader-'));
     const source = path.join(root, 'top.v');
@@ -417,6 +456,103 @@ test('keeps external sources hashed when runtime files widen the workspace root'
         assert.equal(workspace.runCwd, 'workspace/rtl');
         assert.deepEqual(workspace.sources, [`external/${digest}/outside.v`]);
         assert.equal(workspace.files[1].path, 'workspace/vectors/input.hex');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('uses canonical cwd relationships while retaining symlink host paths', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-symlink-cwd-'));
+    const physicalProject = path.join(root, 'physical', 'demo');
+    const physicalCwd = path.join(physicalProject, 'rtl');
+    const linkedCwd = path.join(root, 'linked-rtl');
+    const source = path.join(linkedCwd, 'top.v');
+    const physicalSource = path.join(physicalCwd, 'top.v');
+    const runtimeFile = path.join(physicalProject, 'vectors', 'input.hex');
+
+    try {
+        await Promise.all([
+            mkdir(physicalCwd, { recursive: true }),
+            mkdir(path.dirname(runtimeFile), { recursive: true }),
+        ]);
+        await Promise.all([
+            writeFile(physicalSource, 'module top; endmodule\n'),
+            writeFile(runtimeFile, '2a\n'),
+        ]);
+        try {
+            await symlink(physicalCwd, linkedCwd, 'dir');
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const workspace = await buildVirtualWorkspace({
+            cwd: linkedCwd,
+            files: [source],
+            runtimeFiles: [runtimeFile],
+            includeDirs: [],
+        });
+
+        assert.equal(workspace.runCwd, 'workspace/rtl');
+        assert.deepEqual(workspace.sources, ['workspace/rtl/top.v']);
+        assert.equal(workspace.files[1].path, 'workspace/vectors/input.hex');
+        assert.equal(
+            workspace.hostPathByVirtualPath.get('workspace/rtl/top.v'),
+            source,
+        );
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps physical files through a canonical symlink include root', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-symlink-include-'));
+    const cwd = path.join(root, 'rtl');
+    const physicalInclude = path.join(root, 'physical-include');
+    const linkedInclude = path.join(root, 'linked-include');
+    const source = path.join(cwd, 'top.v');
+    const header = path.join(physicalInclude, 'defs.vh');
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(physicalInclude, { recursive: true }),
+        ]);
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(header, '`define WIDTH 8\n'),
+        ]);
+        try {
+            await symlink(physicalInclude, linkedInclude, 'dir');
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const workspace = await buildVirtualWorkspace({
+            cwd,
+            files: [source, header],
+            runtimeFiles: [],
+            includeDirs: [linkedInclude],
+        });
+
+        assert.deepEqual(workspace.sources, [
+            'workspace/top.v',
+            'libraries/0/defs.vh',
+        ]);
+        assert.deepEqual(workspace.includeDirs, ['libraries/0']);
+        assert.equal(
+            workspace.hostPathByVirtualPath.get('libraries/0/defs.vh'),
+            header,
+        );
     } finally {
         await rm(root, { recursive: true, force: true });
     }

@@ -70,6 +70,12 @@ interface StagedArtifact {
     size: number;
 }
 
+interface PreparedArtifact<T extends ArtifactWriteRequest> {
+    request: T;
+    artifactPath: string;
+    destination: string;
+}
+
 class ArtifactCleanupError extends Error {
     readonly cleanupErrors: readonly unknown[];
     readonly cause: unknown;
@@ -93,82 +99,15 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
 ): Promise<Array<T & { written: boolean; size: number }>> {
     const fileSystem = options.fileSystem ?? {};
     const openExclusive = fileSystem.openExclusive ?? defaultOpenExclusive;
-    const inspectPath = fileSystem.lstat ?? lstat;
-    const canonicalizePath = fileSystem.realpath ?? realpath;
     const movePath = fileSystem.rename ?? rename;
     const removePath = fileSystem.unlink ?? unlink;
-    const pathComparisonKey = fileSystem.pathComparisonKey
-        ?? nativePathComparisonKey;
-    const comparePath = (hostPath: string): string => (
-        pathComparisonKey(path.normalize(hostPath))
+    const producedPaths = new Set(artifacts.keys());
+    const validated = await prepareRequestedArtifacts(
+        requests,
+        options,
+        producedPaths,
     );
-    const protectedVirtualPaths = new Set(
-        (options.protectedVirtualPaths ?? []).map(validateArtifactPath),
-    );
-    const protectedHostPaths = (options.protectedHostPaths ?? []).map(
-        hostPath => normalizeDestination(hostPath, options.cwd),
-    );
-    const protectedHostPathKeys = new Set(protectedHostPaths.map(comparePath));
-    const artifactPaths = new Set<string>();
-    const destinations = new Set<string>();
-
-    const validated = requests.map(request => {
-        const artifactPath = validateArtifactPath(request.path);
-        const destination = normalizeDestination(request.destination, options.cwd);
-        const destinationKey = comparePath(destination);
-        if (artifactPaths.has(artifactPath)) {
-            throw new Error(`Duplicate artifact path: ${artifactPath}`);
-        }
-        if (destinations.has(destinationKey)) {
-            throw new Error(`Duplicate artifact destination: ${request.destination}`);
-        }
-        for (const sourcePath of protectedVirtualPaths) {
-            if (pathsConflict(artifactPath, sourcePath)) {
-                throw new Error(`Artifact path aliases a source path: ${artifactPath}`);
-            }
-        }
-        if (protectedHostPathKeys.has(destinationKey)) {
-            throw new Error(
-                `Artifact destination aliases a source destination: ${request.destination}`,
-            );
-        }
-        artifactPaths.add(artifactPath);
-        destinations.add(destinationKey);
-        return { request, artifactPath, destination };
-    });
-
-    throwIfAborted(options.signal);
-
     const produced = validated.filter(entry => artifacts.has(entry.artifactPath));
-    const canonicalProtectedPaths = new Set(await Promise.all(
-        protectedHostPaths.map(hostPath => canonicalExistingPath(
-            hostPath,
-            canonicalizePath,
-            comparePath,
-        )),
-    ));
-    const canonicalDestinations = new Set<string>();
-    for (const { destination } of produced) {
-        const metadata = await optionalLstat(destination, inspectPath);
-        if (metadata?.isSymbolicLink()) {
-            throw new Error(`Artifact destination must not be a symbolic link: ${destination}`);
-        }
-        const canonicalDestination = await canonicalArtifactDestination(
-            destination,
-            metadata !== undefined,
-            canonicalizePath,
-            comparePath,
-        );
-        if (canonicalProtectedPaths.has(canonicalDestination)) {
-            throw new Error(
-                `Artifact destination aliases a source destination: ${destination}`,
-            );
-        }
-        if (canonicalDestinations.has(canonicalDestination)) {
-            throw new Error(`Duplicate artifact destination: ${destination}`);
-        }
-        canonicalDestinations.add(canonicalDestination);
-    }
 
     const staged: StagedArtifact[] = [];
     const committed = new Map<string, StagedArtifact>();
@@ -237,6 +176,99 @@ export async function writeRequestedArtifacts<T extends ArtifactWriteRequest>(
     return artifactResults(requests, committed);
 }
 
+export async function preflightRequestedArtifacts<T extends ArtifactWriteRequest>(
+    requests: readonly T[],
+    options: ArtifactWriterOptions,
+): Promise<void> {
+    await prepareRequestedArtifacts(requests, options);
+}
+
+async function prepareRequestedArtifacts<T extends ArtifactWriteRequest>(
+    requests: readonly T[],
+    options: ArtifactWriterOptions,
+    inspectedArtifactPaths?: ReadonlySet<string>,
+): Promise<Array<PreparedArtifact<T>>> {
+    const fileSystem = options.fileSystem ?? {};
+    const inspectPath = fileSystem.lstat ?? lstat;
+    const canonicalizePath = fileSystem.realpath ?? realpath;
+    const pathComparisonKey = fileSystem.pathComparisonKey
+        ?? nativePathComparisonKey;
+    const comparePath = (hostPath: string): string => (
+        pathComparisonKey(path.normalize(hostPath))
+    );
+    const protectedVirtualPaths = new Set(
+        (options.protectedVirtualPaths ?? []).map(validateArtifactPath),
+    );
+    const protectedHostPaths = (options.protectedHostPaths ?? []).map(
+        hostPath => normalizeDestination(hostPath, options.cwd),
+    );
+    const protectedHostPathKeys = new Set(protectedHostPaths.map(comparePath));
+    const artifactPaths = new Set<string>();
+    const destinations = new Set<string>();
+
+    const validated: Array<PreparedArtifact<T>> = requests.map(request => {
+        const artifactPath = validateLogicalArtifactPath(request.path);
+        const destination = normalizeDestination(request.destination, options.cwd);
+        const destinationKey = comparePath(destination);
+        if (artifactPaths.has(artifactPath)) {
+            throw new Error(`Duplicate artifact path: ${artifactPath}`);
+        }
+        if (destinations.has(destinationKey)) {
+            throw new Error(`Duplicate artifact destination: ${request.destination}`);
+        }
+        for (const sourcePath of protectedVirtualPaths) {
+            if (pathsConflict(artifactPath, sourcePath)) {
+                throw new Error(`Artifact path aliases a source path: ${artifactPath}`);
+            }
+        }
+        if (protectedHostPathKeys.has(destinationKey)) {
+            throw new Error(
+                `Artifact destination aliases a source destination: ${request.destination}`,
+            );
+        }
+        artifactPaths.add(artifactPath);
+        destinations.add(destinationKey);
+        return { request, artifactPath, destination };
+    });
+
+    throwIfAborted(options.signal);
+
+    const inspected = inspectedArtifactPaths === undefined
+        ? validated
+        : validated.filter(entry => inspectedArtifactPaths.has(entry.artifactPath));
+    if (inspected.length === 0) return validated;
+    const canonicalProtectedPaths = new Set(await Promise.all(
+        protectedHostPaths.map(hostPath => canonicalExistingPath(
+            hostPath,
+            canonicalizePath,
+            comparePath,
+        )),
+    ));
+    const canonicalDestinations = new Set<string>();
+    for (const { destination } of inspected) {
+        const metadata = await optionalLstat(destination, inspectPath);
+        if (metadata?.isSymbolicLink()) {
+            throw new Error(`Artifact destination must not be a symbolic link: ${destination}`);
+        }
+        const canonicalDestination = await canonicalArtifactDestination(
+            destination,
+            metadata !== undefined,
+            canonicalizePath,
+            comparePath,
+        );
+        if (canonicalProtectedPaths.has(canonicalDestination)) {
+            throw new Error(
+                `Artifact destination aliases a source destination: ${destination}`,
+            );
+        }
+        if (canonicalDestinations.has(canonicalDestination)) {
+            throw new Error(`Duplicate artifact destination: ${destination}`);
+        }
+        canonicalDestinations.add(canonicalDestination);
+    }
+    return validated;
+}
+
 function artifactResults<T extends ArtifactWriteRequest>(
     requests: readonly T[],
     committed: ReadonlyMap<string, StagedArtifact>,
@@ -252,6 +284,40 @@ function artifactResults<T extends ArtifactWriteRequest>(
 }
 
 export function validateArtifactPath(value: string): string {
+    validateArtifactPathPrefix(value);
+    const components = value.split('/');
+    if (components.some(component => (
+        component === '' || component === '.' || component === '..'
+    ))) {
+        throw new TypeError('Artifact path contains an invalid component');
+    }
+    if (value === '.iverilog' || value.startsWith('.iverilog/')) {
+        throw new TypeError('Artifact path uses the reserved .iverilog prefix');
+    }
+    return value;
+}
+
+export function validateLogicalArtifactPath(value: string): string {
+    validateArtifactPathPrefix(value);
+    if (path.posix.normalize(value) !== value) {
+        throw new TypeError('Artifact path must be normalized');
+    }
+    const components = value.split('/');
+    const firstPathComponent = components.findIndex(component => component !== '..');
+    if (firstPathComponent === -1
+        || components.slice(firstPathComponent).some(component => (
+            component === '' || component === '.' || component === '..'
+        ))) {
+        throw new TypeError('Artifact path contains an invalid component');
+    }
+    const relativePath = components.slice(firstPathComponent).join('/');
+    if (relativePath === '.iverilog' || relativePath.startsWith('.iverilog/')) {
+        throw new TypeError('Artifact path uses the reserved .iverilog prefix');
+    }
+    return value;
+}
+
+function validateArtifactPathPrefix(value: string): void {
     if (typeof value !== 'string' || value.length === 0) {
         throw new TypeError('Artifact path must be a non-empty string');
     }
@@ -264,16 +330,6 @@ export function validateArtifactPath(value: string): string {
     if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
         throw new TypeError('Artifact path must be relative');
     }
-    const components = value.split('/');
-    if (components.some(component => (
-        component === '' || component === '.' || component === '..'
-    ))) {
-        throw new TypeError('Artifact path contains an invalid component');
-    }
-    if (value === '.iverilog' || value.startsWith('.iverilog/')) {
-        throw new TypeError('Artifact path uses the reserved .iverilog prefix');
-    }
-    return value;
 }
 
 function normalizeDestination(destination: string, cwd = process.cwd()): string {

@@ -6,6 +6,7 @@ import {
     readFile,
     rename,
     rm,
+    symlink,
     unlink,
     writeFile,
 } from 'node:fs/promises';
@@ -128,10 +129,6 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
                     path: 'workspace/data/input.hex',
                     data: new Uint8Array(await readFile(runtimeData)),
                 },
-                {
-                    path: 'workspace/rtl/.veriflow-artifact-dir',
-                    data: new Uint8Array(),
-                },
             ],
             sources: ['workspace/rtl/top.v'],
             includeDirs: ['libraries/0'],
@@ -232,6 +229,132 @@ test('stages nested artifact directories without adding marker files to sources'
     }
 });
 
+test('stages an otherwise empty run cwd without adding its marker to sources', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-run-cwd-'));
+    const cwd = path.join(root, 'project');
+    const sourceRoot = path.join(root, 'external');
+    const source = path.join(sourceRoot, 'top.v');
+    const requests: SimulateRequest[] = [];
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'PASS\n',
+        stderr: '',
+        timings: { preprocess: 1, compile: 1, run: 1 },
+        artifacts: new Map(),
+    }, requests);
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(sourceRoot, { recursive: true }),
+        ]);
+        await writeFile(source, [
+            'module top;',
+            '  initial begin',
+            '    $display("PASS");',
+            '    $finish;',
+            '  end',
+            'endmodule',
+            '',
+        ].join('\n'));
+
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(cwd, 'top.out'),
+            cwd,
+            topModule: 'top',
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.success, true);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].runCwd, 'workspace');
+        assert.match(requests[0].sources[0], /^external\/[0-9a-f]{64}\/top\.v$/);
+        const marker = requests[0].files.find(file => (
+            /^workspace\/\.veriflow-run-cwd(?:-\d+)?$/.test(file.path)
+        ));
+        assert.ok(marker);
+        assert.equal((marker.data as Uint8Array).byteLength, 0);
+        assert.equal(requests[0].sources.includes(marker.path), false);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('maps a multi-level logical artifact path to a safe upstream key', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-external-wave-'));
+    const cwd = path.join(root, 'demo', 'project', 'rtl');
+    const source = path.join(cwd, 'top.v');
+    const destinationDir = path.join(root, 'copied');
+    const destination = path.join(destinationDir, 'top.vcd');
+    const requests: SimulateRequest[] = [];
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'PASS\n',
+        stderr: '',
+        timings: { preprocess: 1, compile: 1, run: 1 },
+        artifacts: new Map([[
+            'workspace/waves/top.vcd',
+            Buffer.from('external vcd'),
+        ]]),
+    }, requests);
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(destinationDir, { recursive: true }),
+        ]);
+        await writeFile(source, 'module top; endmodule\n');
+
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: '../../waves/top.vcd',
+                destination,
+                required: true,
+            }],
+            output: path.join(cwd, 'top.out'),
+            cwd,
+            topModule: 'top',
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].runCwd, 'workspace/project/rtl');
+        assert.deepEqual(requests[0].artifacts, ['workspace/waves/top.vcd']);
+        assert.ok(requests[0].files.some(file => (
+            /^workspace\/waves\/\.veriflow-artifact-dir(?:-\d+)?$/.test(file.path)
+        )));
+        assert.equal(result.success, true);
+        assert.deepEqual(result.artifacts, [{
+            kind: 'vcd',
+            path: '../../waves/top.vcd',
+            destination,
+            required: true,
+            written: true,
+            size: 12,
+        }]);
+        assert.equal(result.waveFile, destination);
+        assert.equal(await readFile(destination, 'utf8'), 'external vcd');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('rejects unsafe or conflicting artifact paths before calling the API', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-artifact-input-'));
     const source = path.join(root, 'top.v');
@@ -261,7 +384,8 @@ test('rejects unsafe or conflicting artifact paths before calling the API', asyn
             writeFile(runtimeFile, '2a\n'),
         ]);
         const invalidArtifactSets = [
-            ['../escape.vcd'],
+            ['../'],
+            ['waves/../escape.vcd'],
             ['top.v'],
             ['vectors/input.hex'],
             ['waves/top.vcd', 'waves/top.vcd'],
@@ -289,6 +413,128 @@ test('rejects unsafe or conflicting artifact paths before calling the API', asyn
             );
         }
         assert.equal(apiCalls, 0);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('preflights duplicate and protected artifact destinations before simulation', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-destination-input-');
+    let apiCalls = 0;
+    const api: IverilogApi = {
+        compile: async () => { throw new Error('compile() must not be called'); },
+        run: async () => { throw new Error('run() must not be called'); },
+        async simulate(): Promise<RunResult> {
+            apiCalls += 1;
+            return {
+                success: true,
+                stage: 'run',
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                timings: {},
+                artifacts: new Map(),
+            };
+        },
+    };
+
+    try {
+        const destination = path.join(root, 'same.vcd');
+        const requests = [
+            [
+                { kind: 'file' as const, path: 'first.vcd', destination },
+                {
+                    kind: 'file' as const,
+                    path: 'second.vcd',
+                    destination: path.join(root, '.', 'same.vcd'),
+                },
+            ],
+            [{ kind: 'file' as const, path: 'wave.vcd', destination: source }],
+        ];
+
+        for (const artifacts of requests) {
+            const result = await new IverilogWasmBackend(
+                providerFor(api),
+            ).compileAndRun({
+                files: [source],
+                runtimeFiles: [],
+                includeDirs: [],
+                defines: {},
+                plusargs: [],
+                artifacts,
+                output: path.join(root, 'top.out'),
+                cwd: root,
+                timeoutMs: 1_000,
+            });
+
+            assert.equal(result.success, false);
+            assert.equal(result.stage, 'infrastructure');
+        }
+        assert.equal(apiCalls, 0);
+        assert.equal(await readFile(source, 'utf8'), 'module top; endmodule\n');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('preflights artifact destinations through symlink parents before simulation', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-destination-link-'));
+    const physicalRoot = path.join(root, 'physical');
+    const linkedRoot = path.join(root, 'linked');
+    const source = path.join(physicalRoot, 'top.v');
+    let apiCalls = 0;
+    const api: IverilogApi = {
+        compile: async () => { throw new Error('compile() must not be called'); },
+        run: async () => { throw new Error('run() must not be called'); },
+        async simulate(): Promise<RunResult> {
+            apiCalls += 1;
+            return {
+                success: true,
+                stage: 'run',
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                timings: {},
+                artifacts: new Map([['workspace/wave.vcd', Buffer.from('wave')]]),
+            };
+        },
+    };
+
+    try {
+        await mkdir(physicalRoot, { recursive: true });
+        await writeFile(source, 'module top; endmodule\n');
+        try {
+            await symlink(physicalRoot, linkedRoot, 'dir');
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [{
+                kind: 'vcd',
+                path: 'wave.vcd',
+                destination: path.join(linkedRoot, 'top.v'),
+                required: true,
+            }],
+            output: path.join(physicalRoot, 'top.out'),
+            cwd: physicalRoot,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.success, false);
+        assert.equal(result.stage, 'infrastructure');
+        assert.equal(apiCalls, 0);
+        assert.equal(await readFile(source, 'utf8'), 'module top; endmodule\n');
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -1385,6 +1631,106 @@ test('real Icarus runs Verilog-2005 and writes non-empty VCD bytes', async () =>
         assert.match(result.stdout, /(^|\n)PASS\n/);
         assert.ok((await readFile(destination)).byteLength > 0);
         assert.equal(result.waveFile, destination);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('real Icarus resolves a physical header through a symlink include root', async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-link-include-'));
+    const sourceRoot = path.join(root, 'rtl');
+    const physicalInclude = path.join(root, 'physical-include');
+    const linkedInclude = path.join(root, 'linked-include');
+    const source = path.join(sourceRoot, 'top.v');
+    const header = path.join(physicalInclude, 'defs.vh');
+
+    try {
+        await Promise.all([
+            mkdir(sourceRoot, { recursive: true }),
+            mkdir(physicalInclude, { recursive: true }),
+        ]);
+        await Promise.all([
+            writeFile(source, [
+                '`include "defs.vh"',
+                'module top;',
+                '  initial begin',
+                '    if (`EXPECTED == 7) $display("PASS");',
+                '    else $display("FAIL");',
+                '    $finish;',
+                '  end',
+                'endmodule',
+                '',
+            ].join('\n')),
+            writeFile(header, '`define EXPECTED 7\n'),
+        ]);
+        try {
+            await symlink(physicalInclude, linkedInclude, 'dir');
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+                t.skip(`directory links are unavailable: ${code}`);
+                return;
+            }
+            throw error;
+        }
+
+        const result = await new IverilogWasmBackend().compileAndRun({
+            files: [source, header],
+            runtimeFiles: [],
+            includeDirs: [linkedInclude],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(root, 'top.out'),
+            cwd: sourceRoot,
+            topModule: 'top',
+            timeoutMs: 10_000,
+        });
+
+        assert.equal(result.success, true, result.stderr);
+        assert.match(result.stdout, /(^|\n)PASS\n/);
+        assert.doesNotMatch(result.stderr, /Include file defs\.vh not found/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('real Icarus runs an external-only source from an explicitly staged cwd', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-wasm-external-cwd-'));
+    const cwd = path.join(root, 'project');
+    const sourceRoot = path.join(root, 'external');
+    const source = path.join(sourceRoot, 'top.v');
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(sourceRoot, { recursive: true }),
+        ]);
+        await writeFile(source, [
+            'module top;',
+            '  initial begin',
+            '    $display("PASS");',
+            '    $finish;',
+            '  end',
+            'endmodule',
+            '',
+        ].join('\n'));
+
+        const result = await new IverilogWasmBackend().compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(cwd, 'top.out'),
+            cwd,
+            topModule: 'top',
+            timeoutMs: 10_000,
+        });
+
+        assert.equal(result.success, true, result.stderr);
+        assert.match(result.stdout, /(^|\n)PASS\n/);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
