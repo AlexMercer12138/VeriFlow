@@ -736,6 +736,65 @@ async function testSimulationServiceBuildsNormalizedRequestAndAwaitsBackend(): P
     await service.dispose();
 }
 
+async function testSimulationServiceUsesLogicalArtifactPathsForEveryBackend(): Promise<void> {
+    const workspaceRoot = copyFixture();
+    const insideWaveFile = path.join(workspaceRoot, 'waves', 'uart_tb.vcd');
+    const outsideWaveFile = path.join(
+        path.dirname(workspaceRoot),
+        'external-waves',
+        'uart_tb.vcd'
+    );
+    const requests: Array<{ backendId: string; request: SimulationRequest }> = [];
+    const registry = new SimulatorBackendRegistry();
+    for (const backendId of ['builtin', 'native-iverilog', 'iverilog']) {
+        registry.register(backendId, () => ({
+            async compileAndRun(request) {
+                requests.push({ backendId, request });
+                return simulationExecution(backendId);
+            },
+        }));
+    }
+    const service = new SimulationService({ registryFactory: () => registry });
+    const input = {
+        workspaceRoot,
+        topModule: 'uart_tb',
+        files: [] as string[],
+        libDirs: [] as string[],
+        defines: {},
+    };
+
+    await service.run({ ...input, backendId: 'builtin', waveFile: insideWaveFile });
+    await service.run({ ...input, backendId: 'native-iverilog', waveFile: insideWaveFile });
+    await service.run({ ...input, backendId: 'iverilog', waveFile: outsideWaveFile });
+
+    assert.deepStrictEqual(requests.map(({ backendId, request }) => ({
+        backendId,
+        path: request.artifacts[0].path,
+        destination: request.artifacts[0].destination,
+    })), [{
+        backendId: 'builtin',
+        path: 'waves/uart_tb.vcd',
+        destination: insideWaveFile,
+    }, {
+        backendId: 'native-iverilog',
+        path: 'waves/uart_tb.vcd',
+        destination: insideWaveFile,
+    }, {
+        backendId: 'iverilog',
+        path: path.relative(workspaceRoot, outsideWaveFile).replace(/\\/g, '/'),
+        destination: outsideWaveFile,
+    }]);
+    assert.match(requests[2].request.artifacts[0].path, /^\.\.\//);
+
+    const callsBeforeRejectedBuiltin = requests.length;
+    await assert.rejects(
+        service.run({ ...input, backendId: 'builtin', waveFile: outsideWaveFile }),
+        /outside the workspace/i
+    );
+    assert.strictEqual(requests.length, callsBeforeRejectedBuiltin);
+    await service.dispose();
+}
+
 async function testSimulationServiceBackendRegistrySelection(): Promise<void> {
     const builtin: SimulatorBackend = {
         async compileAndRun() { return simulationExecution('builtin'); },
@@ -2064,6 +2123,7 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['testbench generator own overrides', testTestbenchGeneratorUsesOnlyOwnOverrides],
     ['log parser', testLogParser],
     ['simulation service normalized request', testSimulationServiceBuildsNormalizedRequestAndAwaitsBackend],
+    ['simulation service logical artifact paths', testSimulationServiceUsesLogicalArtifactPathsForEveryBackend],
     ['simulation service backend registry', testSimulationServiceBackendRegistrySelection],
     ['simulation service latest run ownership', testSimulationServiceLatestRunOwnsActiveState],
     ['simulation service cancellation and disposal', testSimulationServiceCancellationAndDisposal],

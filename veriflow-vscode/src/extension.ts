@@ -3037,8 +3037,9 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     }
     if (!isCurrent()) { return; }
     const result = outcome.execution;
+    const publishCommands = backendId !== 'builtin' && backendId !== 'experimental-ts';
 
-    if (result.commands.compile) {
+    if (publishCommands && result.commands.compile) {
         output.appendLine(`[CMD] Compile: ${result.commands.compile}`);
     }
     if (result.stdout) {
@@ -3046,7 +3047,7 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
             if (line.trim()) { output.appendLine(line); }
         }
     }
-    if (result.commands.run) {
+    if (publishCommands && result.commands.run) {
         output.appendLine(`[CMD] Run: ${result.commands.run}`);
     }
     if (result.stderr) {
@@ -3062,7 +3063,10 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
         output.appendError(`Simulation FAILED (exit=${result.exitCode})`);
         for (const entry of result.logEntries) {
             if (entry.level === 'ERROR') {
-                output.appendError(entry.message);
+                const location = entry.fileRef
+                    ? `${entry.fileRef}${entry.lineNo === undefined ? '' : `:${entry.lineNo}`}`
+                    : '';
+                output.appendError([location, entry.message].filter(Boolean).join(' '));
             }
         }
         _setSimulateStatus(context, 'error');

@@ -182,6 +182,7 @@ type ExtensionHarness = {
     hooks: IndexHooks;
     folder: { uri: FakeUri };
     analyze(): Promise<void>;
+    simulate(): Promise<void>;
     scan(): Promise<void>;
     setFile(uri: string, text: string): void;
     setNextCommitGate(gate: ScanGate): void;
@@ -210,6 +211,28 @@ type WatcherRecord = {
 type ModuleScanResult = {
     definitions: Array<{ name: string }>;
 };
+
+const EXTENSION_CORE_RUNTIME_IMPORTS = [
+    'DependencyAnalyzer',
+    'ExternalWaveViewerLauncher',
+    'SIMULATION_BACKEND_IDS',
+    'SimulationService',
+    'WorkspaceHdlIndex',
+    'createHdlParserClient',
+    'formatDuplicateSummary',
+    'toWorkspaceRelativePosixPath',
+] as const;
+
+function extensionCoreRuntimeImports(): string[] {
+    const extensionSource = require('fs').readFileSync(
+        require.resolve('../extension'),
+        'utf8'
+    ) as string;
+    return [...extensionSource.matchAll(/core_1\.([A-Za-z0-9_]+)/g)]
+        .map(match => match[1])
+        .filter((name, index, names) => names.indexOf(name) === index)
+        .sort();
+}
 
 function createScanGate(): ScanGate {
     let markStarted!: () => void;
@@ -384,6 +407,7 @@ function createExtensionHarness(
         RelativePattern: FakeRelativePattern,
         FileType: { File: 1, Directory: 2 },
         StatusBarAlignment: { Left: 1 },
+        ProgressLocation: { Notification: 15 },
         window: {
             createTreeView: () => ({ ...disposable, onDidChangeVisibility(): void {} }),
             registerWebviewViewProvider: () => disposable,
@@ -394,6 +418,13 @@ function createExtensionHarness(
             showInformationMessage: async () => undefined,
             showErrorMessage: async () => undefined,
             showQuickPick: async () => undefined,
+            withProgress: async (
+                _options: unknown,
+                task: (progress: unknown, token: unknown) => Promise<unknown>
+            ) => task({}, {
+                isCancellationRequested: false,
+                onCancellationRequested: () => disposable,
+            }),
         },
         commands: {
             registerCommand(name: string, command: () => Promise<void>) {
@@ -489,15 +520,65 @@ function createExtensionHarness(
             realIndexes.push(this);
         }
     }
-    const coreStub = {
+    const coreStub: Record<string, unknown> = {
         DependencyAnalyzer: FakeDependencyAnalyzer,
         WorkspaceHdlIndex: useRealIndex
             ? TrackingRealWorkspaceHdlIndex
             : class extends FakeWorkspaceHdlIndex {
                 constructor(options: IndexOptions) { super(options, hooks, events); }
             },
-        SimulationService: class { async dispose(): Promise<void> {} },
+        SimulationService: class {
+            private latestRunId = 0;
+
+            async run(input: { backendId: string }): Promise<unknown> {
+                const runId = ++this.latestRunId;
+                events.push(`simulate:${input.backendId}`);
+                return {
+                    runId,
+                    execution: {
+                        success: true,
+                        exitCode: 0,
+                        stdout: '',
+                        stderr: '',
+                        logEntries: [],
+                        waveFile: null,
+                        elapsedTime: 0,
+                        backendId: input.backendId,
+                        stage: 'run',
+                        timings: {},
+                        commands: {},
+                        artifacts: [],
+                    },
+                };
+            }
+
+            isCurrentRun(runId: number): boolean {
+                return runId === this.latestRunId;
+            }
+
+            async dispose(): Promise<void> {
+                this.latestRunId++;
+            }
+        },
         ExternalWaveViewerLauncher: class {},
+        SIMULATION_BACKEND_IDS: [
+            'builtin',
+            'native-iverilog',
+            'experimental-ts',
+            'iverilog',
+            'vcs',
+            'xsim',
+            'custom',
+        ],
+        toWorkspaceRelativePosixPath(root: string, target: string): string {
+            const relative = path.relative(path.resolve(root), path.resolve(target));
+            if (relative === '..'
+                || relative.startsWith(`..${path.sep}`)
+                || path.isAbsolute(relative)) {
+                throw new Error(`Waveform artifact is outside the workspace: ${target}`);
+            }
+            return relative.replace(/\\/g, '/');
+        },
         LogParser: class {},
         formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
         listVerilogFiles: () => [],
@@ -509,6 +590,16 @@ function createExtensionHarness(
             : () => new FakeParserClient(),
         HdlParserClient: useRealIndex ? HdlParserClient : FakeParserClient,
     };
+    assert.deepStrictEqual(
+        extensionCoreRuntimeImports(),
+        [...EXTENSION_CORE_RUNTIME_IMPORTS].sort()
+    );
+    for (const importedName of EXTENSION_CORE_RUNTIME_IMPORTS) {
+        assert.ok(
+            Object.prototype.hasOwnProperty.call(coreStub, importedName),
+            `core stub is missing extension runtime import ${importedName}`
+        );
+    }
     const dependencyStubs: Record<string, unknown> = {
         './config': configStub,
         './core': coreStub,
@@ -575,6 +666,7 @@ function createExtensionHarness(
         hooks,
         folder,
         analyze: () => commands.get('veriflow.analyze')!(),
+        simulate: () => commands.get('veriflow.simulate')!(),
         scan: () => commands.get('veriflow.scanModules')!(),
         setFile,
         setNextCommitGate(gate: ScanGate): void { nextCommitGate = gate; },
@@ -598,6 +690,17 @@ function createExtensionHarness(
             delete require.cache[require.resolve('../extension')];
         },
     };
+}
+
+async function testCoreStubSupportsExtensionSimulationImports(): Promise<void> {
+    const harness = createExtensionHarness();
+    try {
+        await harness.analyze();
+        await harness.simulate();
+        assert.ok(harness.events.includes('simulate:iverilog'));
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testDependencyPreparationIsSingleFlight(): Promise<void> {
@@ -1037,6 +1140,7 @@ async function testAbsoluteIncludeReviewCases(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    await testCoreStubSupportsExtensionSimulationImports();
     await testRejectedIndexLoadCanRetry();
     await testProvisionalWatcherFailureDisposesCandidateAndRetries();
     await testProvisionalResolvedExternalWatcherAdmitsPreCommitChange();

@@ -167,7 +167,7 @@ export class SimulationService {
                 kind: 'vcd',
                 path: input.backendId === 'builtin'
                     ? toWorkspaceRelativePosixPath(input.workspaceRoot, input.waveFile)
-                    : input.waveFile,
+                    : toRelativePosixPath(input.workspaceRoot, input.waveFile),
                 destination: input.waveFile,
                 required: false,
             }],
@@ -218,15 +218,23 @@ export function toWorkspaceRelativePosixPath(
     workspaceRoot: string,
     targetPath: string
 ): string {
-    const root = path.resolve(workspaceRoot);
-    const target = path.resolve(targetPath);
-    const relative = path.relative(root, target);
+    const relative = toRelativePosixPath(workspaceRoot, targetPath);
     if (relative === '..'
-        || relative.startsWith(`..${path.sep}`)
+        || relative.startsWith('../')
         || path.isAbsolute(relative)) {
         throw new Error(`Waveform artifact is outside the workspace: ${targetPath}`);
     }
-    return relative.replace(/\\/g, '/');
+    return relative;
+}
+
+function toRelativePosixPath(
+    workspaceRoot: string,
+    targetPath: string
+): string {
+    return path.relative(
+        path.resolve(workspaceRoot),
+        path.resolve(targetPath)
+    ).replace(/\\/g, '/');
 }
 
 function resolveIncludeDirs(

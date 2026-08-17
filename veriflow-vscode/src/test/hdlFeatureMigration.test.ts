@@ -27,6 +27,21 @@ type ModuleDefinitionEntry = {
 
 type TopModuleSelection = { definitionKey: string; name: string };
 
+type StubSimulationExecution = {
+    success: boolean;
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    logEntries: Array<{
+        level: 'ERROR' | 'WARNING' | 'INFO';
+        message: string;
+        fileRef?: string;
+        lineNo?: number;
+    }>;
+    backendId: string;
+    commands: { compile?: string; run?: string };
+};
+
 const extensionRoot = path.resolve(__dirname, '..', '..');
 
 async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -476,6 +491,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const events: string[] = [];
     const warnings: string[] = [];
     const errors: string[] = [];
+    const outputLines: string[] = [];
     const popupWarnings: string[] = [];
     const resolvedDefinitionKeys: string[] = [];
     const commands = new Map<string, (...args: unknown[]) => unknown>();
@@ -508,6 +524,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         gate: ReturnType<typeof createScanGate>;
     } | undefined;
     let nextRunnerGate: ReturnType<typeof createScanGate> | undefined;
+    let nextSimulationExecution: StubSimulationExecution | undefined;
     let nextQuickPickGate: ReturnType<typeof createScanGate> | undefined;
     const queuedQuickPickGates: Array<ReturnType<typeof createScanGate>> = [];
     let nextOpenDialogGate: ReturnType<typeof createScanGate> | undefined;
@@ -1156,8 +1173,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 onCancellationRequested(listener: () => void): { dispose(): void };
             }): Promise<unknown> {
                 runnerCalls++;
-                const backendId = (input as { backendId?: string }).backendId;
-                if (backendId === 'experimental-ts') {
+                const backendId = (input as { backendId?: string }).backendId ?? 'unknown';
+                const configuredExecution = nextSimulationExecution;
+                nextSimulationExecution = undefined;
+                if (backendId === 'experimental-ts' && !configuredExecution) {
                     return Promise.reject(new Error(
                         'experimental-ts is not available in this build; no fallback was attempted'
                     ));
@@ -1200,7 +1219,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                             stderr: '',
                             elapsedTime: 0.01,
                             logEntries: [],
-                            backendId: 'iverilog',
+                            backendId,
                             stage: 'run',
                             timings: {},
                             commands: {
@@ -1209,6 +1228,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                             },
                             artifacts: [],
                             waveFile: null,
+                            ...configuredExecution,
                         },
                     };
                 })();
@@ -1331,7 +1351,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         },
         './output': {
             appendError(message: string): void { errors.push(message); },
-            appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
+            appendInfo(): void {}, appendLine(message: string): void { outputLines.push(message); },
+            appendSuccess(): void {},
             appendWarning(message: string): void { warnings.push(message); },
             clear(): void { outputClearCount++; }, dispose(): void {},
             show(): void { outputShowCount++; },
@@ -1917,6 +1938,106 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'dependency analysis'
         );
         assert.deepStrictEqual(resolvedDefinitionKeys, [topDefinition.key]);
+
+        settings.simulator = 'builtin';
+        nextSimulationExecution = {
+            success: false,
+            exitCode: 2,
+            stdout: 'builtin stdout one\nbuiltin stdout two',
+            stderr: 'builtin stderr one\nbuiltin stderr two',
+            logEntries: [{
+                level: 'ERROR',
+                message: 'builtin diagnostic error',
+                fileRef: 'top.sv',
+                lineNo: 7,
+            }],
+            backendId: 'iverilog',
+            commands: {
+                compile: 'malicious builtin compile command',
+                run: 'malicious builtin run command',
+            },
+        };
+        let outputStart = outputLines.length;
+        let errorStart = errors.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'builtin output contract'
+        );
+        const builtinLines = outputLines.slice(outputStart);
+        const builtinErrors = errors.slice(errorStart);
+        assert.ok(builtinLines.includes('builtin stdout one'));
+        assert.ok(builtinLines.includes('builtin stdout two'));
+        assert.ok(!builtinLines.some(line => line.startsWith('[CMD]')));
+        assert.ok(builtinErrors.includes('builtin stderr one'));
+        assert.ok(builtinErrors.includes('builtin stderr two'));
+        assert.ok(builtinErrors.includes('Simulation FAILED (exit=2)'));
+        assert.ok(builtinErrors.includes('top.sv:7 builtin diagnostic error'));
+
+        settings.simulator = 'experimental-ts';
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: 'experimental stdout',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {
+                compile: 'malicious experimental compile command',
+                run: 'malicious experimental run command',
+            },
+        };
+        outputStart = outputLines.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'experimental output contract'
+        );
+        const experimentalLines = outputLines.slice(outputStart);
+        assert.ok(experimentalLines.includes('experimental stdout'));
+        assert.ok(!experimentalLines.some(line => line.startsWith('[CMD]')));
+
+        settings.simulator = 'iverilog';
+        nextSimulationExecution = {
+            success: false,
+            exitCode: 3,
+            stdout: 'native stdout one\nnative stdout two',
+            stderr: 'native stderr one\nnative stderr two',
+            logEntries: [{ level: 'ERROR', message: 'native diagnostic one' }, {
+                level: 'ERROR',
+                message: 'native diagnostic two',
+            }],
+            backendId: 'builtin',
+            commands: {
+                compile: 'iverilog -o top.out top.sv',
+                run: 'vvp top.out',
+            },
+        };
+        outputStart = outputLines.length;
+        errorStart = errors.length;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'native output contract'
+        );
+        const nativeLines = outputLines.slice(outputStart);
+        const nativeErrors = errors.slice(errorStart);
+        assert.ok(nativeLines.includes('[CMD] Compile: iverilog -o top.out top.sv'));
+        assert.ok(nativeLines.includes('[CMD] Run: vvp top.out'));
+        assert.ok(nativeLines.includes('native stdout one'));
+        assert.ok(nativeLines.includes('native stdout two'));
+        assert.ok(nativeErrors.includes('native stderr one'));
+        assert.ok(nativeErrors.includes('native stderr two'));
+        assert.ok(nativeErrors.includes('Simulation FAILED (exit=3)'));
+        assert.ok(nativeErrors.includes('native diagnostic one'));
+        assert.ok(nativeErrors.includes('native diagnostic two'));
+
+        nextSimulationExecution = {
+            success: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            logEntries: [],
+            backendId: 'iverilog',
+            commands: {},
+        };
         await withTimeout(
             Promise.resolve(commands.get('veriflow.simulate')!()),
             'completed simulation before config change'
