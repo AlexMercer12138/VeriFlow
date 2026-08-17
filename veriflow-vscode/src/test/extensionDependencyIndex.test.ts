@@ -496,7 +496,8 @@ function createExtensionHarness(
             : class extends FakeWorkspaceHdlIndex {
                 constructor(options: IndexOptions) { super(options, hooks, events); }
             },
-        SimulationRunner: class {},
+        SimulationService: class { async dispose(): Promise<void> {} },
+        ExternalWaveViewerLauncher: class {},
         LogParser: class {},
         formatDuplicateSummary: () => ({ outputLines: [], statusText: '' }),
         listVerilogFiles: () => [],

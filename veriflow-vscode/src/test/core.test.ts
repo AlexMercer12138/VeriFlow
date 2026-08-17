@@ -4,6 +4,14 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+import {
+    SimulatorBackendRegistry,
+    type NormalizedSimulationExecution as SimulationExecution,
+    type SimulationRequest,
+    type SimulatorBackend,
+    type SimulatorConfig,
+} from '@veriflow/flow-core';
+
 import { DependencyAnalyzer } from '../core/dependencyAnalyzer';
 import { toModuleInfo } from '../core/hdl/legacyModelAdapter';
 import { defaultModuleInstanceIdentifier } from '../core/moduleInstantiationIdentifier';
@@ -11,7 +19,13 @@ import { formatModuleInstantiation } from '../core/moduleInstantiationFormatter'
 import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
 import { TestbenchGenerator, TbConfig } from '../core/testbenchGenerator';
 import { LogParser } from '../core/logParser';
-import { SimulationRunner } from '../core/simulationRunner';
+import { ExternalWaveViewerLauncher } from '../core/externalWaveViewerLauncher';
+import {
+    EXPERIMENTAL_TS_UNAVAILABLE,
+    SimulationService,
+    createSimulationBackendRegistry,
+    toWorkspaceRelativePosixPath,
+} from '../core/simulationService';
 import { VcdParser } from '../core/vcdParser';
 import { WaveformLayoutStore } from '../core/waveformLayoutStore';
 import {
@@ -617,38 +631,276 @@ function testLogParser(): void {
     assert.strictEqual(entries[0].lineNo, golden.log_sample.first_line);
 }
 
-function testSimulationRunnerPathResolution(): void {
-    const projectDir = copyFixture();
-    const external = path.join(os.tmpdir(), 'veriflow-external-lib.v');
-    const runner = new SimulationRunner() as any;
-    const resolved = runner._resolveFilePaths([
-        path.join(projectDir, 'uart_tb.v'),
-        external,
-    ], projectDir);
-
-    assert.strictEqual(resolved[0], 'uart_tb.v');
-    assert.strictEqual(path.resolve(resolved[1]), path.resolve(external));
+function simulationExecution(
+    backendId: string,
+    overrides: Partial<SimulationExecution> = {}
+): SimulationExecution {
+    return {
+        success: true,
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        logEntries: [],
+        waveFile: null,
+        elapsedTime: 0.01,
+        backendId,
+        stage: 'run',
+        timings: { compile: 0.005, run: 0.005 },
+        commands: {},
+        artifacts: [],
+        ...overrides,
+    };
 }
 
-function testSimulationRunnerCommandLogging(): void {
-    const projectDir = copyFixture();
-    const runner = new SimulationRunner();
-    const result = runner.compileAndRun(
-        [],
-        path.join(projectDir, 'fake.out'),
-        {
-            name: 'custom',
-            compileCmd: 'node -e "console.log(\'compile ok\')"',
-            runCmd: 'node -e "console.log(\'run ok\')"',
-        },
-        projectDir,
-        'uart_tb'
-    );
+function createDeferred(): {
+    promise: Promise<void>;
+    resolve(): void;
+} {
+    let resolve!: () => void;
+    return {
+        promise: new Promise<void>(done => { resolve = done; }),
+        resolve,
+    };
+}
 
-    assert.strictEqual(result.success, true);
-    assert.ok(result.stdout.includes('[CMD] Compile:'));
-    assert.ok(result.stdout.includes('[CMD] Run:'));
-    assert.ok(result.stdout.includes('run ok'));
+async function flushPromises(): Promise<void> {
+    await new Promise<void>(resolve => setImmediate(resolve));
+}
+
+async function testSimulationServiceBuildsNormalizedRequestAndAwaitsBackend(): Promise<void> {
+    const projectDir = copyFixture();
+    const relativeLib = path.join('relative', 'lib');
+    const absoluteLib = path.join(os.tmpdir(), 'veriflow-absolute-lib');
+    const waveFile = path.join(projectDir, 'waves', 'uart_tb.vcd');
+    const outputFile = path.join(projectDir, 'uart_tb.out');
+    const files = [
+        path.join(projectDir, 'uart.v'),
+        path.join(projectDir, 'uart_tb.v'),
+    ];
+    const gate = createDeferred();
+    let received: SimulationRequest | undefined;
+    const backend: SimulatorBackend = {
+        async compileAndRun(request) {
+            received = request;
+            await gate.promise;
+            return simulationExecution('builtin');
+        },
+    };
+    const registry = new SimulatorBackendRegistry();
+    registry.register('builtin', () => backend);
+    const service = new SimulationService({ registryFactory: () => registry });
+
+    let settled = false;
+    const run = service.run({
+        backendId: 'builtin',
+        workspaceRoot: projectDir,
+        topModule: 'uart_tb',
+        files,
+        libDirs: [relativeLib, absoluteLib],
+        defines: { FEATURE: true, WIDTH: '8' },
+        waveFile,
+    }).then(result => {
+        settled = true;
+        return result;
+    });
+    await flushPromises();
+
+    assert.strictEqual(settled, false);
+    assert.deepStrictEqual(received?.files, files);
+    assert.deepStrictEqual(received?.runtimeFiles, []);
+    assert.deepStrictEqual(received?.includeDirs, [
+        projectDir,
+        path.resolve(projectDir, relativeLib),
+        path.resolve(absoluteLib),
+    ]);
+    assert.deepStrictEqual(received?.defines, { FEATURE: true, WIDTH: '8' });
+    assert.deepStrictEqual(received?.plusargs, []);
+    assert.deepStrictEqual(received?.artifacts, [{
+        kind: 'vcd',
+        path: 'waves/uart_tb.vcd',
+        destination: waveFile,
+        required: false,
+    }]);
+    assert.strictEqual(received?.output, outputFile);
+    assert.strictEqual(received?.cwd, projectDir);
+    assert.strictEqual(received?.topModule, 'uart_tb');
+    assert.strictEqual(received?.timeoutMs, 300_000);
+    assert.strictEqual(received?.signal?.aborted, false);
+
+    gate.resolve();
+    const outcome = await run;
+    assert.strictEqual(outcome.runId, 1);
+    assert.strictEqual(outcome.execution.backendId, 'builtin');
+    assert.strictEqual(service.isCurrentRun(outcome.runId), true);
+    assert.strictEqual(service.activeRunId, undefined);
+    await service.dispose();
+}
+
+async function testSimulationServiceBackendRegistrySelection(): Promise<void> {
+    const builtin: SimulatorBackend = {
+        async compileAndRun() { return simulationExecution('builtin'); },
+    };
+    const nativeConfigs = new Map<string, SimulatorConfig>();
+    const registry = createSimulationBackendRegistry({
+        simulatorCompileCmd: 'custom-compile {files}',
+        simulatorRunCmd: 'custom-run {output}',
+    }, {
+        builtinProvider: () => builtin,
+        nativeBackendFactory: (id, simulator) => {
+            nativeConfigs.set(id, simulator);
+            return {
+                async compileAndRun() { return simulationExecution(id); },
+            };
+        },
+    });
+
+    assert.strictEqual(await registry.resolve('builtin'), builtin);
+    for (const id of ['native-iverilog', 'iverilog', 'vcs', 'xsim', 'custom']) {
+        await registry.resolve(id);
+    }
+    assert.strictEqual(nativeConfigs.get('native-iverilog')?.name, 'native-iverilog');
+    assert.strictEqual(nativeConfigs.get('iverilog')?.name, 'iverilog');
+    assert.notStrictEqual(
+        nativeConfigs.get('native-iverilog')?.compileCmd,
+        nativeConfigs.get('iverilog')?.compileCmd
+    );
+    assert.deepStrictEqual(nativeConfigs.get('custom'), {
+        name: 'custom',
+        compileCmd: 'custom-compile {files}',
+        runCmd: 'custom-run {output}',
+    });
+    await assert.rejects(registry.resolve('experimental-ts'), new RegExp(EXPERIMENTAL_TS_UNAVAILABLE));
+    await assert.rejects(registry.resolve('unknown'), /Unknown simulation backend: unknown/);
+}
+
+async function testSimulationServiceLatestRunOwnsActiveState(): Promise<void> {
+    const gates = [createDeferred(), createDeferred()];
+    const signals: AbortSignal[] = [];
+    let call = 0;
+    const registry = new SimulatorBackendRegistry();
+    registry.register('iverilog', () => ({
+        async compileAndRun(request) {
+            const index = call++;
+            signals.push(request.signal!);
+            await gates[index].promise;
+            return simulationExecution('iverilog', index === 0 ? {
+                success: false,
+                exitCode: -1,
+                stage: 'infrastructure',
+                cause: { code: 'ABORTED', message: 'aborted' },
+            } : {});
+        },
+    }));
+    const service = new SimulationService({ registryFactory: () => registry });
+    const input = {
+        backendId: 'iverilog',
+        workspaceRoot: copyFixture(),
+        topModule: 'uart_tb',
+        files: [] as string[],
+        libDirs: [] as string[],
+        defines: {},
+    };
+
+    const first = service.run(input);
+    await flushPromises();
+    const second = service.run(input);
+    await flushPromises();
+
+    assert.strictEqual(signals[0].aborted, true);
+    assert.strictEqual(signals[1].aborted, false);
+    assert.strictEqual(service.activeRunId, 2);
+
+    gates[0].resolve();
+    const firstOutcome = await first;
+    assert.strictEqual(firstOutcome.runId, 1);
+    assert.strictEqual(service.isCurrentRun(firstOutcome.runId), false);
+    assert.strictEqual(service.activeRunId, 2);
+
+    gates[1].resolve();
+    const secondOutcome = await second;
+    assert.strictEqual(secondOutcome.runId, 2);
+    assert.strictEqual(service.isCurrentRun(secondOutcome.runId), true);
+    assert.strictEqual(service.activeRunId, undefined);
+    await service.dispose();
+}
+
+async function testSimulationServiceCancellationAndDisposal(): Promise<void> {
+    const cancellationGate = createDeferred();
+    const disposeGate = createDeferred();
+    const signals: AbortSignal[] = [];
+    let cancellationListener: (() => void) | undefined;
+    let listenerDisposed = false;
+    let call = 0;
+    const registry = new SimulatorBackendRegistry();
+    registry.register('builtin', () => ({
+        async compileAndRun(request) {
+            const index = call++;
+            signals.push(request.signal!);
+            await (index === 0 ? cancellationGate.promise : disposeGate.promise);
+            return simulationExecution('builtin');
+        },
+    }));
+    const service = new SimulationService({ registryFactory: () => registry });
+    const input = {
+        backendId: 'builtin',
+        workspaceRoot: copyFixture(),
+        topModule: 'uart_tb',
+        files: [] as string[],
+        libDirs: [] as string[],
+        defines: {},
+    };
+
+    const cancelledRun = service.run(input, {
+        isCancellationRequested: false,
+        onCancellationRequested(listener) {
+            cancellationListener = listener;
+            return { dispose(): void { listenerDisposed = true; } };
+        },
+    });
+    await flushPromises();
+    cancellationListener!();
+    assert.strictEqual(signals[0].aborted, true);
+    cancellationGate.resolve();
+    await cancelledRun;
+    assert.strictEqual(listenerDisposed, true);
+
+    const activeRun = service.run(input);
+    await flushPromises();
+    let disposed = false;
+    const disposal = service.dispose().then(() => { disposed = true; });
+    await flushPromises();
+    assert.strictEqual(signals[1].aborted, true);
+    assert.strictEqual(disposed, false);
+    disposeGate.resolve();
+    await Promise.all([activeRun, disposal]);
+    assert.strictEqual(disposed, true);
+    assert.strictEqual(service.activeRunId, undefined);
+}
+
+async function testExternalWaveViewerLauncherAndWorkspaceArtifactPath(): Promise<void> {
+    const workspace = path.join(os.tmpdir(), 'veriflow-workspace');
+    const waveFile = path.join(workspace, 'waves', 'uart_tb.vcd');
+    let launched: { command: string; windowsHide: boolean | undefined } | undefined;
+    const launcher = new ExternalWaveViewerLauncher({
+        launchCommand(command, options) {
+            launched = { command, windowsHide: options.windowsHide };
+        },
+    });
+
+    await launcher.launch(waveFile, {
+        name: 'gtkwave',
+        launchCmd: 'gtkwave "{wave_file}"',
+    });
+
+    assert.deepStrictEqual(launched, {
+        command: `gtkwave "${waveFile}"`,
+        windowsHide: false,
+    });
+    assert.strictEqual(toWorkspaceRelativePosixPath(workspace, waveFile), 'waves/uart_tb.vcd');
+    assert.throws(
+        () => toWorkspaceRelativePosixPath(workspace, `${workspace}-sibling/uart_tb.vcd`),
+        /outside the workspace/i
+    );
 }
 
 function testVcdParser(): void {
@@ -1811,8 +2063,11 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     ['testbench generator', testTestbenchGenerator],
     ['testbench generator own overrides', testTestbenchGeneratorUsesOnlyOwnOverrides],
     ['log parser', testLogParser],
-    ['simulation runner paths', testSimulationRunnerPathResolution],
-    ['simulation runner command logging', testSimulationRunnerCommandLogging],
+    ['simulation service normalized request', testSimulationServiceBuildsNormalizedRequestAndAwaitsBackend],
+    ['simulation service backend registry', testSimulationServiceBackendRegistrySelection],
+    ['simulation service latest run ownership', testSimulationServiceLatestRunOwnsActiveState],
+    ['simulation service cancellation and disposal', testSimulationServiceCancellationAndDisposal],
+    ['external wave viewer launcher', testExternalWaveViewerLauncherAndWorkspaceArtifactPath],
     ['vcd parser', testVcdParser],
     ['vcd parser multiline metadata and aliases', testVcdParserMultilineMetadataAndAliases],
     ['vcd parser declared signals and final time', testVcdParserKeepsDeclaredSignalsAndFinalTime],

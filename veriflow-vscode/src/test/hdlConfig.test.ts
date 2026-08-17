@@ -5,6 +5,7 @@ import * as path from 'path';
 
 type ExtensionSettings = {
     defines: Record<string, string | boolean>;
+    simulator: string;
 };
 
 type ConfigModule = {
@@ -28,6 +29,7 @@ async function testExtensionLifecycle(): Promise<void> {
         | undefined;
     let parserCreations = 0;
     let outputDisposals = 0;
+    let simulationServiceDisposals = 0;
 
     class FakeParserClient {
         clearCacheCalls = 0;
@@ -42,16 +44,25 @@ async function testExtensionLifecycle(): Promise<void> {
         }
     }
 
+    class FakeSimulationService {
+        async dispose(): Promise<void> {
+            simulationServiceDisposals++;
+        }
+    }
+
     const parsers: FakeParserClient[] = [];
     const disposable = { dispose(): void {} };
     const vscodeStub = {
         StatusBarAlignment: { Left: 1 },
+        ProgressLocation: { Notification: 15 },
         window: {
             createTreeView: () => ({ ...disposable, onDidChangeVisibility(): void {} }),
             registerWebviewViewProvider: () => disposable,
             registerCustomEditorProvider: () => disposable,
             createStatusBarItem: () => ({ ...disposable, show(): void {}, text: '' }),
             onDidChangeWindowState: () => disposable,
+            withProgress: async (_options: unknown, task: (progress: unknown, token: unknown) => unknown) =>
+                task({}, { isCancellationRequested: false, onCancellationRequested: () => disposable }),
         },
         commands: {
             registerCommand: () => disposable,
@@ -79,7 +90,7 @@ async function testExtensionLifecycle(): Promise<void> {
         getSettings: () => ({
             libDirs: [],
             defines: {},
-            simulator: 'iverilog',
+            simulator: 'builtin',
             waveViewer: 'builtin',
             simulatorCompileCmd: '',
             simulatorRunCmd: '',
@@ -96,7 +107,8 @@ async function testExtensionLifecycle(): Promise<void> {
     };
     const coreStub = {
         DependencyAnalyzer: class {},
-        SimulationRunner: class {},
+        SimulationService: FakeSimulationService,
+        ExternalWaveViewerLauncher: class {},
         LogParser: class {},
         createHdlParserClient: (_context: { extensionPath: string }) => {
             parserCreations++;
@@ -212,6 +224,7 @@ async function testExtensionLifecycle(): Promise<void> {
         await extension.deactivate();
         assert.strictEqual(parser.disposeCalls, 1);
         assert.strictEqual(outputDisposals, 1);
+        assert.strictEqual(simulationServiceDisposals, 1);
 
         assert.throws(() => extension.getHdlParser(context), /stopping/i);
         extension.activate(context);
@@ -220,6 +233,7 @@ async function testExtensionLifecycle(): Promise<void> {
         assert.strictEqual(parserCreations, 2);
         await extension.deactivate();
         assert.strictEqual(replacement.disposeCalls, 1);
+        assert.strictEqual(simulationServiceDisposals, 2);
     } finally {
         moduleLoader._load = originalLoad;
         delete require.cache[require.resolve('../extension')];
@@ -241,6 +255,7 @@ async function main(): Promise<void> {
     };
 
     let configuredDefines: unknown;
+    let configuredSimulator: unknown;
     let workerConstructions = 0;
     const vscodeStub = {
         workspace: {
@@ -250,6 +265,8 @@ async function main(): Promise<void> {
                     get<T>(key: string, fallback: T): T {
                         return (key === 'defines' && configuredDefines !== undefined
                             ? configuredDefines
+                            : key === 'simulator' && configuredSimulator !== undefined
+                                ? configuredSimulator
                             : fallback) as T;
                     },
                 };
@@ -286,6 +303,9 @@ async function main(): Promise<void> {
         const { getSettings } = require('../config') as ConfigModule;
 
         assert.deepStrictEqual(getSettings().defines, {});
+        assert.strictEqual(getSettings().simulator, 'builtin');
+        configuredSimulator = 'experimental-ts';
+        assert.strictEqual(getSettings().simulator, 'experimental-ts');
 
         const rawDefines = Object.create({ inherited: 'ignored' }) as Record<string, unknown>;
         rawDefines.STRING_VALUE = '8';
@@ -366,6 +386,30 @@ async function main(): Promise<void> {
             additionalProperties: { type: ['string', 'boolean'] },
             description: 'SystemVerilog preprocessor defines used by VeriFlow structural parsing',
         }
+    );
+    assert.deepStrictEqual(
+        manifest.contributes.configuration.properties['veriflow.simulator'],
+        {
+            type: 'string',
+            enum: [
+                'builtin',
+                'native-iverilog',
+                'experimental-ts',
+                'iverilog',
+                'vcs',
+                'xsim',
+                'custom',
+            ],
+            default: 'builtin',
+            description: 'Simulation backend to use. experimental-ts is incomplete and requires explicit opt-in.',
+        }
+    );
+    const manifestWithDependencies = manifest as typeof manifest & {
+        dependencies: Record<string, string>;
+    };
+    assert.strictEqual(
+        manifestWithDependencies.dependencies['@veriflow/simulator-iverilog-wasm'],
+        '1.4.2'
     );
     assert.strictEqual(manifest.engines.vscode, '^1.82.0');
     assert.strictEqual(manifest.engines.node, undefined);

@@ -75,6 +75,29 @@ function testExtensionNoLongerContainsLegacyModuleScanner(): void {
     assert.ok(!source.includes('_scanModulesInternal'));
 }
 
+function testExtensionSimulationPathIsAsyncBackendOnly(): void {
+    const extensionSource = fs.readFileSync(
+        path.join(extensionRoot, 'src', 'extension.ts'),
+        'utf8'
+    );
+    const serviceSource = fs.readFileSync(
+        path.join(extensionRoot, 'src', 'core', 'simulationService.ts'),
+        'utf8'
+    );
+    const viewerSource = fs.readFileSync(
+        path.join(extensionRoot, 'src', 'core', 'externalWaveViewerLauncher.ts'),
+        'utf8'
+    );
+
+    assert.doesNotMatch(extensionSource, /\bexecSync\b/);
+    assert.doesNotMatch(serviceSource, /\bexecSync\b/);
+    assert.doesNotMatch(viewerSource, /\bexecSync\b/);
+    assert.doesNotMatch(extensionSource, /\bSimulationRunner\b|\bsimRunner\b|\bsimulateProcess\b/);
+    assert.ok(!fs.existsSync(path.join(extensionRoot, 'src', 'core', 'simulationRunner.ts')));
+    assert.match(extensionSource, /withProgress\([\s\S]*cancellable:\s*true/);
+    assert.match(extensionSource, /\bservice\.run\(/);
+}
+
 function testAllStructuralConsumersUseWorkspaceIndex(): void {
     const structuralConsumers = [
         'src/extension.ts',
@@ -452,6 +475,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     ];
     const events: string[] = [];
     const warnings: string[] = [];
+    const errors: string[] = [];
     const popupWarnings: string[] = [];
     const resolvedDefinitionKeys: string[] = [];
     const commands = new Map<string, (...args: unknown[]) => unknown>();
@@ -512,6 +536,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let instantiationPickerCalls = 0;
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
+    const simulationSignals: AbortSignal[] = [];
+    let simulationServiceDisposeCalls = 0;
     let schematicGetIndex: ((
         document: { uri: FakeUri },
         owner?: object
@@ -930,6 +956,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
         RelativePattern: FakeRelativePattern,
         FileType: { File: 1, Directory: 2 },
         StatusBarAlignment: { Left: 1 },
+        ProgressLocation: { Notification: 15 },
         window: {
             get activeTextEditor() { return activeTextEditor; },
             createTreeView: () => ({ ...disposable, onDidChangeVisibility(): void {} }),
@@ -939,7 +966,27 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             onDidChangeWindowState: () => disposable,
             showWarningMessage: async (message: string) => { popupWarnings.push(message); },
             showInformationMessage: async () => undefined,
-            showErrorMessage: async () => undefined,
+            showErrorMessage: async (message: string) => { errors.push(message); },
+            withProgress: async (
+                options: { cancellable?: boolean },
+                task: (
+                    progress: unknown,
+                    token: {
+                        isCancellationRequested: boolean;
+                        onCancellationRequested(listener: () => void): { dispose(): void };
+                    }
+                ) => unknown
+            ) => {
+                assert.strictEqual(options.cancellable, true);
+                const listeners = new Set<() => void>();
+                return task({}, {
+                    isCancellationRequested: false,
+                    onCancellationRequested(listener) {
+                        listeners.add(listener);
+                        return { dispose(): void { listeners.delete(listener); } };
+                    },
+                });
+            },
             showOpenDialog: async () => {
                 const gate = nextOpenDialogGate;
                 nextOpenDialogGate = undefined;
@@ -1096,26 +1143,118 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     const coreStub = {
         DependencyAnalyzer: FakeDependencyAnalyzer,
         WorkspaceHdlIndex: FakeIndex,
-        SimulationRunner: class {
-            compileAndRun() {
+        SimulationService: class {
+            private latestRunId = 0;
+            private active: {
+                runId: number;
+                controller: AbortController;
+                promise: Promise<unknown>;
+            } | undefined;
+
+            run(input: unknown, token?: {
+                isCancellationRequested: boolean;
+                onCancellationRequested(listener: () => void): { dispose(): void };
+            }): Promise<unknown> {
                 runnerCalls++;
-                const result = {
-                    success: true,
-                    exitCode: 0,
-                    stdout: '',
-                    stderr: '',
-                    elapsedTime: 0.01,
-                    logEntries: [],
-                };
+                const backendId = (input as { backendId?: string }).backendId;
+                if (backendId === 'experimental-ts') {
+                    return Promise.reject(new Error(
+                        'experimental-ts is not available in this build; no fallback was attempted'
+                    ));
+                }
+                const runId = ++this.latestRunId;
+                this.active?.controller.abort();
+                const controller = new AbortController();
+                simulationSignals.push(controller.signal);
+                if (token?.isCancellationRequested) {
+                    controller.abort();
+                }
+                const cancellation = token?.onCancellationRequested(() => controller.abort());
                 const gate = nextRunnerGate;
                 nextRunnerGate = undefined;
-                if (!gate) {
-                    return result;
-                }
-                gate.markStarted();
-                return gate.release.then(() => result);
+                const promise = (async () => {
+                    if (gate) {
+                        gate.markStarted();
+                        await gate.release;
+                    }
+                    return {
+                        runId,
+                        execution: controller.signal.aborted ? {
+                            success: false,
+                            exitCode: -1,
+                            stdout: '',
+                            stderr: 'aborted',
+                            elapsedTime: 0.01,
+                            logEntries: [],
+                            backendId: 'iverilog',
+                            stage: 'infrastructure',
+                            timings: {},
+                            commands: {},
+                            artifacts: [],
+                            waveFile: null,
+                            cause: { code: 'ABORTED', message: 'aborted' },
+                        } : {
+                            success: true,
+                            exitCode: 0,
+                            stdout: '',
+                            stderr: '',
+                            elapsedTime: 0.01,
+                            logEntries: [],
+                            backendId: 'iverilog',
+                            stage: 'run',
+                            timings: {},
+                            commands: {
+                                compile: 'iverilog -o top.out top.sv',
+                                run: 'vvp top.out',
+                            },
+                            artifacts: [],
+                            waveFile: null,
+                        },
+                    };
+                })();
+                this.active = { runId, controller, promise };
+                return promise.finally(() => {
+                    cancellation?.dispose();
+                    if (this.active?.runId === runId) {
+                        this.active = undefined;
+                    }
+                });
             }
-        }, LogParser: class {},
+
+            isCurrentRun(runId: number): boolean {
+                return runId === this.latestRunId;
+            }
+
+            async dispose(): Promise<void> {
+                simulationServiceDisposeCalls++;
+                this.latestRunId++;
+                const active = this.active;
+                active?.controller.abort();
+                await active?.promise;
+            }
+        },
+        ExternalWaveViewerLauncher: class {
+            async launch(): Promise<void> {}
+        },
+        SIMULATION_BACKEND_IDS: [
+            'builtin',
+            'native-iverilog',
+            'experimental-ts',
+            'iverilog',
+            'vcs',
+            'xsim',
+            'custom',
+        ],
+        toWorkspaceRelativePosixPath(root: string, target: string): string {
+            const relative = path.relative(path.resolve(root), path.resolve(target));
+            if (relative === '..'
+                || relative.startsWith(`..${path.sep}`)
+                || path.isAbsolute(relative)) {
+                throw new Error(`Waveform artifact is outside the workspace: ${target}`);
+            }
+            return relative.replace(/\\/g, '/');
+        },
+        LogParser: class {},
         listVerilogFiles: () => [], readText: () => '',
         preprocessVerilog: (value: string) => value, removeComments: (value: string) => value,
         createHdlParserClient: () => {
@@ -1191,7 +1330,8 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             },
         },
         './output': {
-            appendError(): void {}, appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
+            appendError(message: string): void { errors.push(message); },
+            appendInfo(): void {}, appendLine(): void {}, appendSuccess(): void {},
             appendWarning(message: string): void { warnings.push(message); },
             clear(): void { outputClearCount++; }, dispose(): void {},
             show(): void { outputShowCount++; },
@@ -1782,7 +1922,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             'completed simulation before config change'
         );
         assert.strictEqual(analyzeStatus, 'completed');
-        assert.strictEqual(simulateStatus, 'completed');
+        assert.strictEqual(simulateStatus, 'completed', errors.join('\n'));
 
         const resolvesBeforeConfigOpen = resolvedDefinitionKeys.length;
         settings.defines = { CONFIG_CHANGED: true };
@@ -2591,12 +2731,93 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             Promise.resolve(commands.get('veriflow.analyze')!()),
             'analysis before failed root identity'
         );
-        await withTimeout(
-            Promise.resolve(commands.get('veriflow.simulate')!()),
-            'simulation before failed root identity'
+        const firstConcurrentSimulationGate = createScanGate();
+        nextRunnerGate = firstConcurrentSimulationGate;
+        const firstConcurrentSimulation = Promise.resolve(
+            commands.get('veriflow.simulate')!()
         );
+        await withTimeout(
+            firstConcurrentSimulationGate.started,
+            'first concurrent simulation backend'
+        );
+        const firstConcurrentSignal = simulationSignals.at(-1)!;
+
+        const secondConcurrentSimulationGate = createScanGate();
+        nextRunnerGate = secondConcurrentSimulationGate;
+        const secondConcurrentSimulation = Promise.resolve(
+            commands.get('veriflow.simulate')!()
+        );
+        await withTimeout(
+            secondConcurrentSimulationGate.started,
+            'second concurrent simulation backend'
+        );
+        assert.strictEqual(firstConcurrentSignal.aborted, true);
+
+        secondConcurrentSimulationGate.allow();
+        await withTimeout(secondConcurrentSimulation, 'latest concurrent simulation');
+        assert.strictEqual(simulateStatus, 'completed');
+
+        firstConcurrentSimulationGate.allow();
+        await withTimeout(firstConcurrentSimulation, 'stale aborted concurrent simulation');
+        assert.strictEqual(simulateStatus, 'completed');
         assert.strictEqual(analyzeStatus, 'completed');
         assert.strictEqual(simulateStatus, 'completed');
+
+        const callsBeforeInvalidBackends = runnerCalls;
+        settings.simulator = 'builtin';
+        settings.waveFileTemplate = '../outside/{top_module}.vcd';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'builtin outside-workspace artifact rejection'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends);
+        assert.strictEqual(simulateStatus, 'error');
+        assert.ok(errors.some(message => /outside the workspace/i.test(message)));
+
+        settings.waveFileTemplate = path.join(path.sep, 'outside', '{top_module}.vcd');
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'builtin absolute outside-workspace artifact rejection'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends);
+        assert.strictEqual(simulateStatus, 'error');
+
+        settings.simulator = 'custom';
+        settings.waveFileTemplate = '{top_module}.vcd';
+        settings.simulatorCompileCmd = '';
+        settings.simulatorRunCmd = '';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'custom backend command validation'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends);
+        assert.ok(errors.some(message => /custom.*compile or run command/i.test(message)));
+
+        settings.simulator = 'not-a-backend';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'unknown backend rejection'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends);
+        assert.ok(errors.some(message => /unknown simulation backend/i.test(message)));
+
+        settings.simulator = 'experimental-ts';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'unavailable experimental backend rejection'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends + 1);
+        assert.ok(errors.some(message => /experimental-ts.*not available.*no fallback/i.test(message)));
+
+        settings.simulator = 'iverilog';
+        settings.waveFileTemplate = '../outside/{top_module}.vcd';
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.simulate')!()),
+            'legacy native outside-workspace artifact preservation'
+        );
+        assert.strictEqual(runnerCalls, callsBeforeInvalidBackends + 2);
+        assert.strictEqual(simulateStatus, 'completed');
+        settings.waveFileTemplate = '{top_module}.vcd';
 
         const failedRoots = JSON.stringify([workspaceRootUri]);
         failedScanRoots.add(failedRoots);
@@ -2918,6 +3139,39 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             openWithBeforeStaleDialog + 1
         );
 
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.analyze')!()),
+            'analysis before active simulation deactivation'
+        );
+        const activeSimulationGate = createScanGate();
+        nextRunnerGate = activeSimulationGate;
+        const activeSimulation = Promise.resolve(commands.get('veriflow.simulate')!());
+        await withTimeout(activeSimulationGate.started, 'active simulation before deactivation');
+        const activeSimulationSignal = simulationSignals.at(-1)!;
+        let activeSimulationDeactivationSettled = false;
+        const activeSimulationDeactivation = extension.deactivate().then(() => {
+            activeSimulationDeactivationSettled = true;
+            extensionDeactivated = true;
+        });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.strictEqual(activeSimulationSignal.aborted, true);
+        assert.strictEqual(activeSimulationDeactivationSettled, false);
+        activeSimulationGate.allow();
+        await withTimeout(
+            Promise.all([activeSimulation, activeSimulationDeactivation]),
+            'deactivation drains active simulation backend'
+        );
+        assert.ok(simulationServiceDisposeCalls > 0);
+
+        analyzeStatus = 'outdated';
+        simulateStatus = 'outdated';
+        extension.activate(context);
+        extensionDeactivated = false;
+        await withTimeout(
+            Promise.resolve(commands.get('veriflow.scanModules')!()),
+            'scan after active simulation deactivation'
+        );
+
         const deactivationPersistenceGate = createScanGate();
         nextDependencyPersistenceGate = deactivationPersistenceGate;
         const deferredDeactivationSimulation = Promise.resolve(
@@ -3028,6 +3282,7 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
 async function main(): Promise<void> {
     const tests: Array<[string, () => void | Promise<void>]> = [
         ['legacy scanner removal', testExtensionNoLongerContainsLegacyModuleScanner],
+        ['async simulation backend migration', testExtensionSimulationPathIsAsyncBackendOnly],
         ['all structural consumers use workspace index', testAllStructuralConsumersUseWorkspaceIndex],
         ['duplicate presentation', testDuplicateSummaryIsMergedAndHasNoPopup],
         ['exact module tree definitions', testModuleTreeKeepsEveryExactDefinition],

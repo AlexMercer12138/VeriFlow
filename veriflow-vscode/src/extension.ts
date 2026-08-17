@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import {
@@ -27,13 +26,16 @@ import {
 } from './schematic';
 import * as output from './output';
 import {
-    DependencyAnalyzer, SimulationRunner,
+    DependencyAnalyzer, ExternalWaveViewerLauncher, SimulationService,
+    SIMULATION_BACKEND_IDS, toWorkspaceRelativePosixPath,
     ModuleScanResult, ModuleDefinitionEntry, DependencyResult,
-    SimulatorConfig, WaveViewerConfig, formatDuplicateSummary,
+    WaveViewerConfig, formatDuplicateSummary,
     HdlParserClient, createHdlParserClient, WorkspaceHdlIndex,
 } from './core';
 import type {
     HdlDefinitionSummary,
+    SimulationBackendId,
+    SimulationServiceRunResult,
     WorkspaceHdlIncludeWatchContext,
 } from './core';
 import {
@@ -42,29 +44,6 @@ import {
 } from './core/hdl/preprocessor';
 import { WorkspaceIndexStore } from './core/hdl/workspaceIndexStore';
 import { relativeDisplayPath } from './core/pathStyle';
-
-const DEFAULT_SIMULATORS: Record<string, SimulatorConfig> = {
-    iverilog: {
-        name: 'iverilog',
-        compileCmd: 'iverilog -o "{output}" {files}',
-        runCmd: 'vvp "{output}"',
-    },
-    vcs: {
-        name: 'vcs',
-        compileCmd: 'vcs -full64 -o "{output}" {files}',
-        runCmd: './"{output}"',
-    },
-    xsim: {
-        name: 'xsim',
-        compileCmd: 'xvlog {files} && xelab {top_module} -snapshot "{output}"',
-        runCmd: 'xsim "{output}" --runall',
-    },
-    custom: {
-        name: 'custom',
-        compileCmd: '',
-        runCmd: '',
-    },
-};
 
 const DEFAULT_VIEWERS: Record<string, WaveViewerConfig> = {
     builtin: { name: 'builtin', launchCmd: '' },
@@ -84,9 +63,9 @@ type HdlTopSelectionPersistenceChain = {
 let treeProvider: ModuleTreeProvider;
 let tbPanelProvider: TestbenchPanelProvider;
 let statusBarItem: vscode.StatusBarItem;
-let simulateProcess: child_process.ChildProcess | null = null;
 let depAnalyzer: DependencyAnalyzer | undefined;
-const simRunner = new SimulationRunner();
+let simulationService: SimulationService | undefined;
+let externalWaveViewerLauncher: ExternalWaveViewerLauncher | undefined;
 let hdlParser: HdlParserClient | undefined;
 let hdlParserExtensionPath: string | undefined;
 let hdlIndex: WorkspaceHdlIndex | undefined;
@@ -158,6 +137,7 @@ let hdlPresentationGeneration = 0;
 let hdlPresentationRootIdentity: string | undefined;
 let hdlRootGeneration = 0;
 let hdlWorkflowGeneration = 0;
+let hdlSimulationGeneration = 0;
 let hdlTopIntentVersion = 0;
 let hdlInstantiationIntentVersion = 0;
 let hdlLifecycleGeneration = 0;
@@ -220,6 +200,7 @@ export function activate(context: vscode.ExtensionContext): void {
     _resetSchematicIndexes();
     hdlStopping = false;
     hdlLifecycleGeneration++;
+    hdlSimulationGeneration++;
     hdlActiveContext = context;
     hdlAbortController = new AbortController();
     if (hdlParser && hdlParserExtensionPath !== context.extensionPath) {
@@ -227,6 +208,8 @@ export function activate(context: vscode.ExtensionContext): void {
             'HDL parser belongs to a different extension path; call deactivate() before reactivating'
         );
     }
+    simulationService = new SimulationService();
+    externalWaveViewerLauncher = new ExternalWaveViewerLauncher();
     treeProvider = new ModuleTreeProvider();
     tbPanelProvider = new TestbenchPanelProvider(
         context,
@@ -1532,6 +1515,7 @@ export async function deactivate(): Promise<void> {
     hdlLifecycleGeneration++;
     hdlPresentationGeneration++;
     hdlWorkflowGeneration++;
+    hdlSimulationGeneration++;
     hdlTopIntentVersion++;
     hdlInstantiationIntentVersion++;
     hdlAbortController.abort();
@@ -1544,11 +1528,11 @@ export async function deactivate(): Promise<void> {
     _pendingWaveAfterAnalyze = false;
     _pendingWaveAfterSimulate = false;
     _resetDependencyIndex();
-    if (simulateProcess) {
-        simulateProcess.kill();
-        simulateProcess = null;
-    }
-    await _drainHdlWork();
+    const service = simulationService;
+    simulationService = undefined;
+    externalWaveViewerLauncher = undefined;
+    const simulationDisposal = service?.dispose();
+    await Promise.all([_drainHdlWork(), simulationDisposal]);
     hdlOperationTail = Promise.resolve();
     hdlTopPersistenceTail = Promise.resolve();
     hdlTopPersistencePending = 0;
@@ -1670,15 +1654,11 @@ function _markOutdatedIfCompleted(context: vscode.ExtensionContext): void {
     }
 }
 
-function _resolveSimulator(settings: ExtensionSettings): SimulatorConfig {
-    if (settings.simulator === 'custom') {
-        return {
-            name: 'custom',
-            compileCmd: settings.simulatorCompileCmd || '',
-            runCmd: settings.simulatorRunCmd || '',
-        };
+function _resolveSimulator(settings: ExtensionSettings): SimulationBackendId {
+    if (!(SIMULATION_BACKEND_IDS as readonly string[]).includes(settings.simulator)) {
+        throw new Error(`Unknown simulation backend: ${settings.simulator}`);
     }
-    return DEFAULT_SIMULATORS[settings.simulator] || DEFAULT_SIMULATORS.iverilog;
+    return settings.simulator as SimulationBackendId;
 }
 
 function _resolveViewer(settings: ExtensionSettings): WaveViewerConfig {
@@ -1688,8 +1668,24 @@ function _resolveViewer(settings: ExtensionSettings): WaveViewerConfig {
     return DEFAULT_VIEWERS[settings.waveViewer] || DEFAULT_VIEWERS.builtin;
 }
 
-function _isSimulatorReady(simulator: SimulatorConfig): boolean {
-    return Boolean(simulator.compileCmd?.trim() && simulator.runCmd?.trim());
+function _resolveWaveFile(
+    root: string,
+    topModule: string,
+    settings: ExtensionSettings
+): string {
+    const configured = settings.waveFileTemplate.replace('{top_module}', topModule);
+    return path.isAbsolute(configured)
+        ? path.normalize(configured)
+        : path.resolve(root, configured);
+}
+
+function _isSimulatorReady(
+    backendId: SimulationBackendId,
+    settings: ExtensionSettings
+): boolean {
+    return backendId !== 'custom' || Boolean(
+        settings.simulatorCompileCmd.trim() && settings.simulatorRunCmd.trim()
+    );
 }
 
 function _duplicateModuleGroups(
@@ -1729,6 +1725,18 @@ function _isCurrentHdlCommand(
 ): boolean {
     return _isCurrentHdlLifecycle(lifecycleGeneration)
         && _isCurrentHdlWorkflow(workflowGeneration);
+}
+
+function _isCurrentSimulationCommand(
+    lifecycleGeneration: number,
+    workflowGeneration: number,
+    simulationGeneration: number,
+    service: SimulationService,
+    runId?: number
+): boolean {
+    return _isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)
+        && simulationGeneration === hdlSimulationGeneration
+        && (runId === undefined || service.isCurrentRun(runId));
 }
 
 function _isCurrentHdlPresentation(
@@ -2886,15 +2894,34 @@ async function cmdAnalyze(context: vscode.ExtensionContext): Promise<void> {
 
 async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     if (hdlStopping) { return; }
+    const service = simulationService;
+    if (!service) { return; }
     const lifecycleGeneration = hdlLifecycleGeneration;
+    const simulationGeneration = ++hdlSimulationGeneration;
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
+    let serviceRunId: number | undefined;
+    const isCurrent = (): boolean => _isCurrentSimulationCommand(
+        lifecycleGeneration,
+        workflowGeneration,
+        simulationGeneration,
+        service,
+        serviceRunId
+    );
+    const reportConfigurationError = async (message: string): Promise<void> => {
+        if (!isCurrent()) { return; }
+        output.show(true);
+        output.appendError(`Simulation configuration error: ${message}`);
+        _setSimulateStatus(context, 'error');
+        await vscode.window.showErrorMessage(`VeriFlow simulation configuration error: ${message}`);
+    };
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
+        if (!isCurrent()) { return; }
         await cmdSelectTop(context);
-        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
+        if (!isCurrent()) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -2907,31 +2934,51 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     if (_analyzeStatus !== 'completed') {
         output.appendInfo(`Analyze status is ${_analyzeStatus}; running analyze -> simulate.`);
         _pendingSimulateAfterAnalyze = true;
+        if (!isCurrent()) { return; }
         await cmdAnalyze(context);
         return;
     }
 
     const settings = getSettings();
-    const simulator = _resolveSimulator(settings);
-    if (!_isSimulatorReady(simulator)) {
-        output.show(true);
-        output.appendError(`Simulator "${settings.simulator}" is missing compile or run command. Check VeriFlow settings.`);
-        vscode.window.showErrorMessage(`VeriFlow simulator "${settings.simulator}" is missing compile or run command.`);
-        _setSimulateStatus(context, 'error');
+    let backendId: SimulationBackendId;
+    try {
+        backendId = _resolveSimulator(settings);
+    } catch (error) {
+        await reportConfigurationError(
+            error instanceof Error ? error.message : String(error)
+        );
         return;
+    }
+    if (!_isSimulatorReady(backendId, settings)) {
+        await reportConfigurationError(
+            'Custom simulation backend is missing compile or run command. Check VeriFlow settings.'
+        );
+        return;
+    }
+    const waveFile = _resolveWaveFile(root, topModule, settings);
+    if (backendId === 'builtin') {
+        try {
+            toWorkspaceRelativePosixPath(root, waveFile);
+        } catch (error) {
+            await reportConfigurationError(
+                error instanceof Error ? error.message : String(error)
+            );
+            return;
+        }
     }
 
     output.clear();
     output.show(true);
     output.appendInfo('========================================');
     output.appendInfo(`Simulation: ${topModule}`);
-    output.appendInfo(`Simulator: ${simulator.name}`);
+    output.appendInfo(`Simulator: ${backendId}`);
     output.appendInfo(`Root: ${root}`);
     output.appendInfo('========================================');
     statusBarItem.text = '$(run) VeriFlow: simulating...';
 
     let depResult: DependencyResult;
     try {
+        if (!isCurrent()) { return; }
         depResult = await _resolveDependencies(
             context,
             root,
@@ -2939,10 +2986,10 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
             topSelection.definitionKey
         );
     } catch (error) {
-        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
+        if (!isCurrent()) { return; }
         throw error;
     }
-    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
+    if (!isCurrent()) { return; }
     const ambiguousNames = Object.keys(depResult.ambiguousModules);
     if (depResult.missingModules.length > 0 || ambiguousNames.length > 0) {
         if (depResult.missingModules.length > 0) {
@@ -2960,18 +3007,47 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     output.appendInfo(`Resolved ${depResult.files.length} file(s)`);
     output.appendInfo('Running compile -> simulate.');
     output.appendLine('');
-    const outFile = path.join(root, `${topModule}.out`);
 
-    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
-    const result = await Promise.resolve(simRunner.compileAndRun(
-        depResult.files, outFile, simulator, root, topModule
-    ));
-    if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
+    let outcome: SimulationServiceRunResult;
+    try {
+        if (!isCurrent()) { return; }
+        outcome = await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `VeriFlow: Simulating ${topModule}`,
+            cancellable: true,
+        }, (_progress, token) => service.run({
+            backendId,
+            workspaceRoot: root,
+            topModule,
+            files: depResult.files,
+            libDirs: settings.libDirs,
+            defines: settings.defines,
+            waveFile,
+            simulatorCompileCmd: settings.simulatorCompileCmd,
+            simulatorRunCmd: settings.simulatorRunCmd,
+        }, token));
+        serviceRunId = outcome.runId;
+    } catch (error) {
+        if (!isCurrent()) { return; }
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendError(`Simulation backend failed: ${message}`);
+        _setSimulateStatus(context, 'error');
+        await vscode.window.showErrorMessage(`VeriFlow simulation failed: ${message}`);
+        return;
+    }
+    if (!isCurrent()) { return; }
+    const result = outcome.execution;
 
+    if (result.commands.compile) {
+        output.appendLine(`[CMD] Compile: ${result.commands.compile}`);
+    }
     if (result.stdout) {
         for (const line of result.stdout.split('\n')) {
             if (line.trim()) { output.appendLine(line); }
         }
+    }
+    if (result.commands.run) {
+        output.appendLine(`[CMD] Run: ${result.commands.run}`);
     }
     if (result.stderr) {
         for (const line of result.stderr.split('\n')) {
@@ -2996,8 +3072,8 @@ async function cmdSimulate(context: vscode.ExtensionContext): Promise<void> {
     // 如果有挂起的波形请求，继续执行
     if (_pendingWaveAfterSimulate) {
         _pendingWaveAfterSimulate = false;
-        if (result.success && _isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) {
-            await _doOpenWave(context, root, topModule, settings, lifecycleGeneration);
+        if (result.success && isCurrent()) {
+            await _doOpenWave(root, topModule, settings, isCurrent);
         }
     }
 }
@@ -3008,11 +3084,16 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) { vscode.window.showWarningMessage('No workspace folder open.'); return; }
     const workflowGeneration = hdlWorkflowGeneration;
+    const isCurrent = (): boolean => _isCurrentHdlCommand(
+        lifecycleGeneration,
+        workflowGeneration
+    );
 
     let topSelection = _coerceTopSelection(treeProvider.topModule);
     if (!topSelection) {
+        if (!isCurrent()) { return; }
         await cmdSelectTop(context);
-        if (!_isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) { return; }
+        if (!isCurrent()) { return; }
         topSelection = _coerceTopSelection(treeProvider.topModule);
     }
     if (!topSelection) { vscode.window.showWarningMessage('Please select a top module.'); return; }
@@ -3022,13 +3103,15 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     _checkDepFilesChanged(context);
 
     const settings = getSettings();
-    const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
+    const waveFile = _resolveWaveFile(root, topModule, settings);
 
     // 检查分析依赖状态
     if (_analyzeStatus !== 'completed') {
         output.appendInfo('Analyze is not complete; running analyze -> simulate -> open wave.');
         _pendingWaveAfterAnalyze = true;
+        if (!isCurrent()) { return; }
         await cmdAnalyze(context);
+        if (!isCurrent()) { return; }
         return;
     }
 
@@ -3036,14 +3119,17 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     if (_simulateStatus !== 'completed') {
         output.appendInfo('Simulation is not complete; running simulate -> open wave.');
         _pendingWaveAfterSimulate = true;
+        if (!isCurrent()) { return; }
         await cmdSimulate(context);
+        if (!isCurrent()) { return; }
         return;
     }
 
     // 都已完成
     if (fs.existsSync(waveFile)
-        && _isCurrentHdlCommand(lifecycleGeneration, workflowGeneration)) {
-        await _doOpenWave(context, root, topModule, settings, lifecycleGeneration);
+        && isCurrent()) {
+        await _doOpenWave(root, topModule, settings, isCurrent);
+        if (!isCurrent()) { return; }
         return;
     }
 
@@ -3051,7 +3137,9 @@ async function cmdOpenWave(context: vscode.ExtensionContext): Promise<void> {
     output.appendWarning(`Wave file not found: ${waveFile}`);
     output.appendInfo('Running simulate -> open wave to generate waveform first.');
     _pendingWaveAfterSimulate = true;
+    if (!isCurrent()) { return; }
     await cmdSimulate(context);
+    if (!isCurrent()) { return; }
 }
 
 async function cmdOpenVcdViewer(uri?: vscode.Uri): Promise<void> {
@@ -3101,14 +3189,13 @@ async function cmdOpenSchematic(uri?: vscode.Uri): Promise<void> {
 }
 
 async function _doOpenWave(
-    context: vscode.ExtensionContext,
     root: string,
     topModule: string,
     settings: ExtensionSettings,
-    lifecycleGeneration: number
+    isCurrent: () => boolean
 ): Promise<void> {
-    if (!_isCurrentHdlLifecycle(lifecycleGeneration)) { return; }
-    const waveFile = path.join(root, settings.waveFileTemplate.replace('{top_module}', topModule));
+    if (!isCurrent()) { return; }
+    const waveFile = _resolveWaveFile(root, topModule, settings);
     const viewer = _resolveViewer(settings);
 
     if (!fs.existsSync(waveFile)) {
@@ -3118,21 +3205,26 @@ async function _doOpenWave(
 
     if (viewer.name === 'builtin') {
         output.appendInfo(`Opening built-in waveform viewer: ${waveFile}`);
+        if (!isCurrent()) { return; }
         await vscode.commands.executeCommand(
             'vscode.openWith',
             vscode.Uri.file(waveFile),
             WaveformEditorProvider.viewType
         );
-        if (!_isCurrentHdlLifecycle(lifecycleGeneration)) { return; }
+        if (!isCurrent()) { return; }
         output.appendSuccess(`Opened built-in waveform viewer: ${waveFile}`);
         return;
     }
 
     output.appendInfo(`Opening ${viewer.name}: ${waveFile}`);
     try {
-        simRunner.openWave(waveFile, viewer);
+        const launcher = externalWaveViewerLauncher;
+        if (!launcher || !isCurrent()) { return; }
+        await launcher.launch(waveFile, viewer);
+        if (!isCurrent()) { return; }
         output.appendSuccess(`Opened ${viewer.name}: ${waveFile}`);
     } catch (error: unknown) {
+        if (!isCurrent()) { return; }
         const message = error instanceof Error ? error.message : String(error);
         output.appendError(`Failed to open ${viewer.name}: ${message}`);
     }

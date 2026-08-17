@@ -317,13 +317,16 @@
         "veriflow.simulator": {
           "type": "string",
           "enum": [
+            "builtin",
+            "native-iverilog",
+            "experimental-ts",
             "iverilog",
             "vcs",
             "xsim",
             "custom"
           ],
-          "default": "iverilog",
-          "description": "Verilog simulator to use"
+          "default": "builtin",
+          "description": "Simulation backend to use. experimental-ts is incomplete and requires explicit opt-in."
         },
         "veriflow.simulatorCompileCmd": {
           "type": "string",
@@ -383,6 +386,7 @@
     "@veriflow/hdl-core": "1.4.2",
     "@veriflow/hdl-runtime": "1.4.2",
     "@veriflow/schematic-core": "1.4.2",
+    "@veriflow/simulator-iverilog-wasm": "1.4.2",
     "@veriflow/waveform-runtime": "1.4.2",
     "lucide": "1.28.0",
     "web-tree-sitter": "0.26.11"

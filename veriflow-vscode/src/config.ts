@@ -120,7 +120,7 @@ export function getSettings(resource?: vscode.Uri): ExtensionSettings {
     return {
         libDirs: config.get<string[]>('libDirs', []),
         defines: normalizeDefines(config.get<unknown>('defines', {})),
-        simulator: config.get<string>('simulator', 'iverilog'),
+        simulator: config.get<string>('simulator', 'builtin'),
         waveViewer: config.get<string>('waveViewer', 'builtin'),
         simulatorCompileCmd: config.get<string>('simulatorCompileCmd', ''),
         simulatorRunCmd: config.get<string>('simulatorRunCmd', ''),
