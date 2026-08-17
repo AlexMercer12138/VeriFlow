@@ -1,9 +1,13 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
     buildBundles,
+    collectBundledPackageLicenses,
+    collectRuntimePackage,
+    copyRuntimePackage,
+    formatThirdPartyNotices,
     runWatch,
     verifyAndCopyParserAssets,
 } from './build-support.mjs';
@@ -11,6 +15,7 @@ import {
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distRoot = path.join(extensionRoot, 'dist');
 const workerRoot = path.join(distRoot, 'workers');
+const vendorRoot = path.join(distRoot, 'vendor', 'iverilog-wasm');
 const parserRoot = path.join(extensionRoot, 'media', 'parsers');
 const workspaceRequire = createRequire(import.meta.url);
 const grammarPackageRoot = path.dirname(workspaceRequire.resolve(
@@ -19,6 +24,52 @@ const grammarPackageRoot = path.dirname(workspaceRequire.resolve(
 const webTreeSitterPackageRoot = path.dirname(workspaceRequire.resolve(
     'web-tree-sitter/web-tree-sitter.wasm'
 ));
+const iverilogEntryUrl = import.meta.resolve('@veriflow/iverilog-wasm');
+const iverilogEntryPath = fileURLToPath(iverilogEntryUrl);
+const iverilogPackageRoot = path.resolve(path.dirname(iverilogEntryPath), '..');
+const schematicSourceRoot = path.join(
+    extensionRoot,
+    '..',
+    'packages',
+    'schematic-webview',
+    'src'
+);
+
+const iverilogExpectations = {
+    name: '@veriflow/iverilog-wasm',
+    version: '0.1.2',
+    license: 'GPL-2.0-or-later',
+    nodeEngine: '>=18.15.0',
+    entry: 'dist/index.js',
+    declaredFiles: ['dist', 'README.md', 'LICENSE'],
+    requiredFiles: [
+        'package.json',
+        'LICENSE',
+        'README.md',
+        'dist/SOURCE.md',
+        'dist/index.js',
+        'dist/worker.js',
+        'dist/runtime/ivl.mjs',
+        'dist/runtime/ivl.wasm',
+        'dist/runtime/ivlpp.mjs',
+        'dist/runtime/ivlpp.wasm',
+        'dist/runtime/vvp.mjs',
+        'dist/runtime/vvp.wasm',
+    ],
+    nonemptyFiles: [
+        'LICENSE',
+        'dist/SOURCE.md',
+        'dist/index.js',
+        'dist/worker.js',
+        'dist/runtime/ivl.mjs',
+        'dist/runtime/ivl.wasm',
+        'dist/runtime/ivlpp.mjs',
+        'dist/runtime/ivlpp.wasm',
+        'dist/runtime/vvp.mjs',
+        'dist/runtime/vvp.wasm',
+    ],
+    provenanceFile: 'dist/SOURCE.md',
+};
 
 const parserAssets = [
     {
@@ -86,6 +137,65 @@ async function prepareParserAssets() {
     await verifyAndCopyParserAssets(parserAssets);
 }
 
+async function prepareRuntimePackage() {
+    if (path.resolve(iverilogEntryPath) !== path.join(
+        iverilogPackageRoot,
+        iverilogExpectations.entry
+    )) {
+        throw new Error(
+            `@veriflow/iverilog-wasm resolved to unexpected entry: ${iverilogEntryPath}`
+        );
+    }
+    const runtimePackage = await collectRuntimePackage(
+        iverilogPackageRoot,
+        iverilogExpectations
+    );
+    await copyRuntimePackage(runtimePackage, vendorRoot);
+    return runtimePackage;
+}
+
+async function collectSchematicPackageNotices() {
+    const [result] = await buildBundles([{
+        bundle: true,
+        platform: 'browser',
+        format: 'iife',
+        target: 'es2020',
+        minify: false,
+        metafile: true,
+        sourcemap: false,
+        legalComments: 'none',
+        absWorkingDir: path.resolve(extensionRoot, '..'),
+        entryPoints: [path.join(schematicSourceRoot, 'index.ts')],
+        write: false,
+        logLevel: 'silent',
+    }]);
+    if (!result.metafile) {
+        throw new Error('The schematic browser bundle did not produce an esbuild metafile');
+    }
+    return collectBundledPackageLicenses(
+        result.metafile,
+        path.resolve(extensionRoot, '..')
+    );
+}
+
+async function writeThirdPartyNotices(runtimePackage) {
+    const parserPackages = await Promise.all(parserAssets.map(async asset => ({
+        name: asset.name,
+        version: asset.version,
+        license: asset.licenseDeclaration,
+        licenseText: await readFile(asset.licensePath, 'utf8'),
+    })));
+    const frontendPackages = await collectSchematicPackageNotices();
+    await writeFile(
+        path.join(extensionRoot, 'THIRD_PARTY_NOTICES.md'),
+        formatThirdPartyNotices(
+            [...parserPackages, runtimePackage.notice],
+            frontendPackages
+        ),
+        'utf8'
+    );
+}
+
 async function prepareDist() {
     await rm(distRoot, { recursive: true, force: true });
     await mkdir(workerRoot, { recursive: true });
@@ -94,12 +204,16 @@ async function prepareDist() {
 async function runBuild() {
     await prepareParserAssets();
     await prepareDist();
+    const runtimePackage = await prepareRuntimePackage();
     await buildBundles(nodeBundleOptions);
+    await writeThirdPartyNotices(runtimePackage);
 }
 
 async function runWatchMode() {
     await prepareParserAssets();
     await prepareDist();
+    const runtimePackage = await prepareRuntimePackage();
+    await writeThirdPartyNotices(runtimePackage);
     process.exitCode = await runWatch({
         bundleOptions: nodeBundleOptions,
         cwd: extensionRoot,

@@ -11,6 +11,9 @@ tsconfig.json
 **/*.ts
 **/*.map
 
+# The external ESM worker and WASM runtime is copied into dist verbatim.
+!dist/vendor/**
+
 # Generated web assets are required in the packaged extension.
 media/waveform/**
 !media/waveform/index.html

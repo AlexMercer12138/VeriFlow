@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir } from 'node:fs/promises';
+import {
+    lstat,
+    mkdir,
+    mkdtemp,
+    readFile,
+    readdir,
+    rename,
+    rm,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
 import { copyFilePreservingMode } from '../../scripts/lib/files.mjs';
@@ -98,6 +106,11 @@ function normalizeLineEndings(text) {
     return text.replace(/\r\n?/g, '\n');
 }
 
+function noticeText(text) {
+    const normalized = normalizeLineEndings(text);
+    return normalized.endsWith('\n') ? normalized : `${normalized}\n`;
+}
+
 export function formatThirdPartyNotices(parserPackages, frontendPackages) {
     const frontendByIdentity = new Map();
     for (const packageNotice of frontendPackages) {
@@ -112,11 +125,195 @@ export function formatThirdPartyNotices(parserPackages, frontendPackages) {
         const declaration = declaredLicense
             ? `Declared license: ${declaredLicense}\n\n`
             : '';
+        const provenance = packageNotice.provenanceText?.trim()
+            ? `\n${noticeText(packageNotice.provenanceText)}`
+            : '';
         return `## ${packageNotice.name} ${packageNotice.version}\n\n`
             + declaration
-            + `${normalizeLineEndings(packageNotice.licenseText).trim()}\n`;
+            + noticeText(packageNotice.licenseText)
+            + provenance;
     });
     return `# Third-Party Notices\n\n${sections.join('\n')}`;
+}
+
+function normalizedPackagePath(value, label) {
+    if (typeof value !== 'string' || value.length === 0 || value.includes('\\')) {
+        throw new Error(`${label} must be a non-empty slash-normalized relative path`);
+    }
+    if (path.posix.isAbsolute(value) || path.posix.normalize(value) !== value) {
+        throw new Error(`${label} is unsafe or contains path traversal: ${value}`);
+    }
+    const segments = value.split('/');
+    if (segments.some(segment => segment === '' || segment === '.' || segment === '..')) {
+        throw new Error(`${label} is unsafe or contains path traversal: ${value}`);
+    }
+    return value;
+}
+
+function assertExpectedManifest(manifest, manifestPath, expectations) {
+    for (const [field, expected] of [
+        ['name', expectations.name],
+        ['version', expectations.version],
+        ['license', expectations.license],
+    ]) {
+        if (manifest[field] !== expected) {
+            throw new Error(
+                `${manifestPath} ${field} mismatch: expected ${expected}, received ${manifest[field]}`
+            );
+        }
+    }
+    if (manifest.engines?.node !== expectations.nodeEngine) {
+        throw new Error(
+            `${manifestPath} engines.node mismatch: expected ${expectations.nodeEngine}`
+        );
+    }
+    if (manifest.exports?.['.']?.import !== `./${expectations.entry}`) {
+        throw new Error(
+            `${manifestPath} import export must be ./${expectations.entry}`
+        );
+    }
+    if (!Array.isArray(manifest.files)) {
+        throw new Error(`${manifestPath} files must be an array`);
+    }
+    if (JSON.stringify(manifest.files) !== JSON.stringify(expectations.declaredFiles)) {
+        throw new Error(
+            `${manifestPath} files mismatch: expected ${JSON.stringify(expectations.declaredFiles)}`
+        );
+    }
+}
+
+async function collectDeclaredEntry(packageRoot, relativePath, files, seen) {
+    const normalized = normalizedPackagePath(relativePath, 'Declared package file');
+    const source = path.join(packageRoot, ...normalized.split('/'));
+    const details = await lstat(source);
+    if (details.isSymbolicLink()) {
+        throw new Error(`Declared package entry is a symbolic link: ${normalized}`);
+    }
+    if (details.isDirectory()) {
+        const children = (await readdir(source)).sort(compareText);
+        for (const child of children) {
+            await collectDeclaredEntry(packageRoot, `${normalized}/${child}`, files, seen);
+        }
+        return;
+    }
+    if (!details.isFile()) {
+        throw new Error(`Declared package entry is not a regular file: ${normalized}`);
+    }
+    if (seen.has(normalized)) {
+        throw new Error(`Duplicate or colliding declared package file: ${normalized}`);
+    }
+    seen.add(normalized);
+    files.push({ relativePath: normalized, source, mode: details.mode & 0o777 });
+}
+
+function declarationContains(declaration, candidate) {
+    return candidate === declaration || candidate.startsWith(`${declaration}/`);
+}
+
+async function rejectUndeclaredEntries(packageRoot, declarations) {
+    for (const entry of await readdir(packageRoot, { withFileTypes: true })) {
+        if (entry.name === 'package.json') continue;
+        if (!declarations.some(declaration => declarationContains(declaration, entry.name))) {
+            throw new Error(`Runtime package contains undeclared entry: ${entry.name}`);
+        }
+    }
+}
+
+export async function collectRuntimePackage(packageRoot, expectations) {
+    const manifestPath = path.join(packageRoot, 'package.json');
+    const manifestDetails = await lstat(manifestPath);
+    if (manifestDetails.isSymbolicLink() || !manifestDetails.isFile()) {
+        throw new Error(`Runtime package manifest is not a regular file: ${manifestPath}`);
+    }
+    let manifest;
+    try {
+        manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    } catch (error) {
+        throw new Error(`Invalid runtime package manifest ${manifestPath}: ${error.message}`);
+    }
+    assertExpectedManifest(manifest, manifestPath, expectations);
+
+    const declarations = manifest.files.map((entry, index) =>
+        normalizedPackagePath(entry, `package.json files[${index}]`)
+    );
+    const declarationSet = new Set();
+    for (const declaration of declarations) {
+        if ([...declarationSet].some(existing =>
+            declarationContains(existing, declaration)
+            || declarationContains(declaration, existing)
+        )) {
+            throw new Error(`Duplicate or colliding package.json files entry: ${declaration}`);
+        }
+        declarationSet.add(declaration);
+    }
+    await rejectUndeclaredEntries(packageRoot, declarations);
+
+    const files = [{
+        relativePath: 'package.json',
+        source: manifestPath,
+        mode: manifestDetails.mode & 0o777,
+    }];
+    const seen = new Set(['package.json']);
+    for (const declaration of declarations) {
+        await collectDeclaredEntry(packageRoot, declaration, files, seen);
+    }
+    files.sort((left, right) => compareText(left.relativePath, right.relativePath));
+
+    const filesByPath = new Map(files.map(file => [file.relativePath, file]));
+    for (const required of expectations.requiredFiles) {
+        const normalized = normalizedPackagePath(required, 'Required package file');
+        if (!filesByPath.has(normalized)) {
+            throw new Error(`Runtime package is missing required file: ${normalized}`);
+        }
+    }
+    for (const required of expectations.nonemptyFiles) {
+        const normalized = normalizedPackagePath(required, 'Non-empty package file');
+        const file = filesByPath.get(normalized);
+        if (!file || (await lstat(file.source)).size === 0) {
+            throw new Error(`Runtime package file must be non-empty: ${normalized}`);
+        }
+    }
+
+    const licenseFile = filesByPath.get('LICENSE');
+    const provenanceFile = filesByPath.get(expectations.provenanceFile);
+    const licenseText = licenseFile && await readFile(licenseFile.source, 'utf8');
+    const provenanceText = provenanceFile && await readFile(provenanceFile.source, 'utf8');
+    if (!licenseText?.trim()) throw new Error(`${expectations.name} LICENSE is blank`);
+    if (!provenanceText?.trim()) {
+        throw new Error(`${expectations.name} provenance is blank`);
+    }
+
+    return {
+        packageRoot,
+        files,
+        notice: {
+            name: manifest.name,
+            version: manifest.version,
+            license: manifest.license,
+            licenseText,
+            provenanceText,
+        },
+    };
+}
+
+export async function copyRuntimePackage(runtimePackage, destination) {
+    const parent = path.dirname(destination);
+    await mkdir(parent, { recursive: true });
+    const staging = await mkdtemp(path.join(parent, '.runtime-package-'));
+    try {
+        for (const file of runtimePackage.files) {
+            const relativePath = normalizedPackagePath(file.relativePath, 'Runtime package file');
+            await copyFilePreservingMode(
+                file.source,
+                path.join(staging, ...relativePath.split('/'))
+            );
+        }
+        await rm(destination, { recursive: true, force: true });
+        await rename(staging, destination);
+    } catch (error) {
+        await rm(staging, { recursive: true, force: true });
+        throw error;
+    }
 }
 
 async function verifyParserAssets(assets) {

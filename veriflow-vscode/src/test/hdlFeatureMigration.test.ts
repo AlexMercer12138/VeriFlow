@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import Module = require('module');
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 import { ExternalWaveViewerLauncher as RealExternalWaveViewerLauncher } from '../core/externalWaveViewerLauncher';
 import {
@@ -576,6 +577,9 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let instantiationPickerCalls = 0;
     let instantiationPickerSideEffects = 0;
     let runnerCalls = 0;
+    let builtinProvider: (() => unknown) | undefined;
+    let trustedIverilogRoot: URL | undefined;
+    let packagedIverilogEntry: string | URL | undefined;
     const simulationSignals: AbortSignal[] = [];
     let simulationServiceDisposeCalls = 0;
     let schematicGetIndex: ((
@@ -1199,6 +1203,10 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
                 promise: Promise<unknown>;
             } | undefined;
 
+            constructor(options?: { builtinProvider?: () => unknown }) {
+                builtinProvider = options?.builtinProvider;
+            }
+
             run(input: unknown, token?: {
                 isCancellationRequested: boolean;
                 onCancellationRequested(listener: () => void): { dispose(): void };
@@ -1476,6 +1484,20 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
             clear(): void { outputClearCount++; }, dispose(): void {},
             show(): void { outputShowCount++; },
         },
+        '@veriflow/simulator-iverilog-wasm': {
+            IverilogWasmBackend: class {
+                constructor(readonly loadApi: () => Promise<unknown>) {}
+            },
+            createExtensionIverilogLoader: (root: URL) => {
+                trustedIverilogRoot = root;
+                return {
+                    load: async (entry: string | URL) => {
+                        packagedIverilogEntry = entry;
+                        return { simulate(): void {} };
+                    },
+                };
+            },
+        },
         fs: {
             existsSync(): boolean { return wavePathExists; },
             lstatSync(target: string): { isFile(): boolean; isSymbolicLink(): boolean } {
@@ -1500,6 +1522,22 @@ async function testScanWatcherAndConfigUseOneExactIndex(): Promise<void> {
     let extensionDeactivated = false;
     try {
         extension.activate(context);
+        assert.ok(builtinProvider, 'extension activation must configure the builtin provider');
+        const builtinBackend = builtinProvider() as { loadApi(): Promise<unknown> };
+        await builtinBackend.loadApi();
+        assert.strictEqual(
+            trustedIverilogRoot?.href,
+            pathToFileURL(`${context.extensionPath}${path.sep}`).href
+        );
+        assert.strictEqual(
+            packagedIverilogEntry instanceof URL
+                ? packagedIverilogEntry.href
+                : packagedIverilogEntry,
+            new URL(
+                'dist/vendor/iverilog-wasm/dist/index.js',
+                trustedIverilogRoot
+            ).href
+        );
         pendingWatcherConstructionError = {
             remainingSuccessfulConstructions: 0,
             error: new Error('initial index watcher construction failed'),

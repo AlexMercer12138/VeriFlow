@@ -11,6 +11,13 @@ type PackageNotice = {
     version: string;
     license: string;
     licenseText: string;
+    provenanceText?: string;
+};
+
+type RuntimePackage = {
+    packageRoot: string;
+    files: Array<{ relativePath: string; source: string; mode: number }>;
+    notice: PackageNotice;
 };
 
 type BuildSupport = {
@@ -22,6 +29,21 @@ type BuildSupport = {
         parserPackages: PackageNotice[],
         frontendPackages: PackageNotice[]
     ): string;
+    collectRuntimePackage(
+        packageRoot: string,
+        expectations: {
+            name: string;
+            version: string;
+            license: string;
+            nodeEngine: string;
+            entry: string;
+            declaredFiles: string[];
+            requiredFiles: string[];
+            nonemptyFiles: string[];
+            provenanceFile: string;
+        }
+    ): Promise<RuntimePackage>;
+    copyRuntimePackage(runtimePackage: RuntimePackage, destination: string): Promise<void>;
 };
 
 type BrowserBuildConfig = {
@@ -288,12 +310,151 @@ function testNoticeFormatting(support: BuildSupport): void {
     assert.ok(notices.endsWith('ZETA TWO\n'));
 }
 
+async function testRuntimePackageCollection(support: BuildSupport): Promise<void> {
+    const packageRoot = path.join(
+        repositoryRoot,
+        'node_modules',
+        '@veriflow',
+        'iverilog-wasm'
+    );
+    const runtimePackage = await support.collectRuntimePackage(packageRoot, {
+        name: '@veriflow/iverilog-wasm',
+        version: '0.1.2',
+        license: 'GPL-2.0-or-later',
+        nodeEngine: '>=18.15.0',
+        entry: 'dist/index.js',
+        declaredFiles: ['dist', 'README.md', 'LICENSE'],
+        requiredFiles: [
+            'package.json',
+            'LICENSE',
+            'README.md',
+            'dist/SOURCE.md',
+            'dist/index.js',
+            'dist/worker.js',
+            'dist/runtime/ivl.mjs',
+            'dist/runtime/ivl.wasm',
+            'dist/runtime/ivlpp.mjs',
+            'dist/runtime/ivlpp.wasm',
+            'dist/runtime/vvp.mjs',
+            'dist/runtime/vvp.wasm',
+        ],
+        nonemptyFiles: [
+            'LICENSE',
+            'dist/SOURCE.md',
+            'dist/runtime/ivl.wasm',
+            'dist/runtime/ivlpp.wasm',
+            'dist/runtime/vvp.wasm',
+        ],
+        provenanceFile: 'dist/SOURCE.md',
+    });
+    const expectedFiles = [
+        'package.json',
+        ...fs.readdirSync(path.join(packageRoot, 'dist'), {
+            recursive: true,
+            withFileTypes: true,
+        }).filter(entry => entry.isFile()).map(entry => path.relative(
+            packageRoot,
+            path.join(entry.parentPath, entry.name)
+        ).replace(/\\/g, '/')),
+        'README.md',
+        'LICENSE',
+    ].sort();
+    assert.deepStrictEqual(
+        runtimePackage.files.map(file => file.relativePath),
+        expectedFiles
+    );
+    assert.strictEqual(runtimePackage.notice.name, '@veriflow/iverilog-wasm');
+    assert.strictEqual(runtimePackage.notice.version, '0.1.2');
+    assert.strictEqual(runtimePackage.notice.license, 'GPL-2.0-or-later');
+    assert.match(runtimePackage.notice.licenseText, /GNU GENERAL PUBLIC LICENSE/);
+    assert.match(runtimePackage.notice.provenanceText ?? '', /Corresponding Source/);
+
+    const destinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-copy-'));
+    try {
+        await support.copyRuntimePackage(runtimePackage, destinationRoot);
+        for (const file of runtimePackage.files) {
+            const copied = path.join(destinationRoot, file.relativePath);
+            assert.deepStrictEqual(fs.readFileSync(copied), fs.readFileSync(file.source));
+            assert.strictEqual(fs.statSync(copied).mode & 0o777, file.mode);
+        }
+    } finally {
+        fs.rmSync(destinationRoot, { recursive: true, force: true });
+    }
+}
+
+async function testRuntimePackageSafety(support: BuildSupport): Promise<void> {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-safety-'));
+    const expectations = {
+        name: 'fixture-runtime',
+        version: '1.0.0',
+        license: 'MIT',
+        nodeEngine: '>=18.15.0',
+        entry: 'dist/index.js',
+        declaredFiles: ['dist', 'LICENSE'],
+        requiredFiles: ['package.json', 'LICENSE', 'dist/SOURCE.md', 'dist/index.js'],
+        nonemptyFiles: ['LICENSE', 'dist/SOURCE.md'],
+        provenanceFile: 'dist/SOURCE.md',
+    };
+    const writeFixture = (files: string[]): void => {
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+        fs.mkdirSync(path.join(fixtureRoot, 'dist'), { recursive: true });
+        fs.writeFileSync(path.join(fixtureRoot, 'package.json'), JSON.stringify({
+            name: expectations.name,
+            version: expectations.version,
+            license: expectations.license,
+            engines: { node: expectations.nodeEngine },
+            exports: { '.': { import: './dist/index.js' } },
+            files,
+        }));
+        fs.writeFileSync(path.join(fixtureRoot, 'LICENSE'), 'fixture license\n');
+        fs.writeFileSync(path.join(fixtureRoot, 'dist', 'SOURCE.md'), 'fixture source\n');
+        fs.writeFileSync(path.join(fixtureRoot, 'dist', 'index.js'), 'export {};\n');
+    };
+    try {
+        writeFixture(['dist', 'LICENSE']);
+        fs.writeFileSync(path.join(fixtureRoot, 'undeclared.txt'), 'not declared\n');
+        await assert.rejects(
+            support.collectRuntimePackage(fixtureRoot, expectations),
+            /undeclared/i
+        );
+
+        writeFixture(['dist', 'LICENSE']);
+        fs.symlinkSync('../LICENSE', path.join(fixtureRoot, 'dist', 'linked-license'));
+        await assert.rejects(
+            support.collectRuntimePackage(fixtureRoot, expectations),
+            /symbolic link/i
+        );
+
+        writeFixture(['../outside', 'dist', 'LICENSE']);
+        await assert.rejects(
+            support.collectRuntimePackage(fixtureRoot, {
+                ...expectations,
+                declaredFiles: ['../outside', 'dist', 'LICENSE'],
+            }),
+            /unsafe|traversal|relative/i
+        );
+
+        writeFixture(['dist', 'dist/index.js', 'LICENSE']);
+        await assert.rejects(
+            support.collectRuntimePackage(fixtureRoot, {
+                ...expectations,
+                declaredFiles: ['dist', 'dist/index.js', 'LICENSE'],
+            }),
+            /duplicate|collision/i
+        );
+    } finally {
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+}
+
 async function testSchematicAssets(): Promise<void> {
     const support = await loadEsmModule<BuildSupport>(pathToFileURL(
         path.join(extensionRoot, 'scripts', 'build-support.mjs')
     ).href);
     await testLicenseFailure(support);
     testNoticeFormatting(support);
+    await testRuntimePackageCollection(support);
+    await testRuntimePackageSafety(support);
 
     for (const relative of [
         'index.js',
@@ -748,6 +909,19 @@ async function testSchematicAssets(): Promise<void> {
     assert.ok(notices.includes('@antv/x6 3.1.7'));
     assert.ok(!notices.includes('@dagrejs/dagre'));
     assert.ok(notices.includes('lucide 1.28.0'));
+    assert.ok(notices.includes('## @veriflow/iverilog-wasm 0.1.2'));
+    assert.ok(notices.includes('Declared license: GPL-2.0-or-later'));
+    assert.ok(notices.includes('# Corresponding Source'));
+    for (const relative of ['LICENSE', 'dist/SOURCE.md']) {
+        const completeText = fs.readFileSync(
+            path.join(repositoryRoot, 'node_modules', '@veriflow', 'iverilog-wasm', relative),
+            'utf8'
+        ).replace(/\r\n?/g, '\n');
+        assert.ok(
+            notices.includes(completeText),
+            `notices must embed complete ${relative} text`
+        );
+    }
 
     const bundle = await build({
         absWorkingDir: repositoryRoot,

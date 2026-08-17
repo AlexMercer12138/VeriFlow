@@ -13,10 +13,35 @@ import {
 const extensionRoot = path.resolve(__dirname, '..', '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
 
+const upstreamRuntimeRoot = path.join(
+    repositoryRoot,
+    'node_modules',
+    '@veriflow',
+    'iverilog-wasm'
+);
+
+function packageFiles(root: string, relative = ''): string[] {
+    return fs.readdirSync(path.join(root, relative), { withFileTypes: true }).flatMap(entry => {
+        const child = path.posix.join(relative.replace(/\\/g, '/'), entry.name);
+        if (entry.isDirectory()) return packageFiles(root, child);
+        assert.ok(entry.isFile(), `upstream runtime contains non-file entry ${child}`);
+        return [child];
+    });
+}
+
+const expectedVendorFiles = [
+    'package.json',
+    ...packageFiles(upstreamRuntimeRoot).filter(relative => relative !== 'package.json'),
+].sort();
+const expectedVendorEntries = expectedVendorFiles.map(
+    relative => `extension/dist/vendor/iverilog-wasm/${relative}`
+);
+
 const expectedRuntimeEntries = [
     'extension/dist/extension.js',
     'extension/dist/workers/hdlParserWorker.js',
     'extension/dist/workers/waveformWorker.js',
+    ...expectedVendorEntries,
     'extension/media/parsers/tree-sitter-systemverilog.wasm',
     'extension/media/parsers/web-tree-sitter.wasm',
     'extension/media/schematic/index.css',
@@ -27,7 +52,7 @@ const expectedRuntimeEntries = [
     'extension/media/waveform/index.js',
     'extension/media/waveform/viewer-core.js',
     'extension/media/waveform/viewer-transport.js',
-];
+].sort();
 
 type ZipEntry = Readonly<{
     name: string;
@@ -86,6 +111,16 @@ function zipCentralDirectoryEntries(archive: Buffer): ZipEntry[] {
         assert.ok(entryEnd <= archive.length, `truncated VSIX central directory entry ${index}`);
         const name = archive.subarray(offset + 46, offset + 46 + nameLength).toString('utf8');
         assert.ok(!name.includes('\\'), `VSIX entry is not slash-normalized: ${name}`);
+        assert.ok(!path.posix.isAbsolute(name), `VSIX entry is absolute: ${name}`);
+        assert.strictEqual(
+            path.posix.normalize(name),
+            name,
+            `VSIX entry contains path traversal or redundant segments: ${name}`
+        );
+        assert.ok(
+            !name.split('/').includes('..'),
+            `VSIX entry contains path traversal: ${name}`
+        );
         entries.push({
             name,
             compressionMethod: archive.readUInt16LE(offset + 10),
@@ -288,6 +323,9 @@ function run(): void {
         }
 
         const extensionBundle = entryText('extension/dist/extension.js');
+        assert.ok(extensionBundle.length < 2_000_000, 'extension bundle unexpectedly inlines WASM');
+        assert.doesNotMatch(extensionBundle, /data:application\/wasm/i);
+        assert.doesNotMatch(extensionBundle, /AGFzbQE[A-Za-z0-9+/=]{100,}/);
         for (const marker of [
             'vik-veriflow.arch-design',
             'veriflow.archDesignEditor',
@@ -351,6 +389,51 @@ function run(): void {
             ].join('\n')
         );
 
+        for (const relative of expectedVendorFiles) {
+            const entryName = `extension/dist/vendor/iverilog-wasm/${relative}`;
+            const entry = zipEntries.find(candidate => candidate.name === entryName);
+            assert.ok(entry, `VSIX is missing ${entryName}`);
+            assert.deepStrictEqual(
+                zipEntryContents(archive, entry),
+                fs.readFileSync(path.join(upstreamRuntimeRoot, relative)),
+                `VSIX vendor file differs from upstream: ${relative}`
+            );
+        }
+        const extractedRuntimeRoot = path.join(isolated.temporaryRoot, 'extracted-runtime');
+        const emptyPath = path.join(isolated.temporaryRoot, 'empty-path');
+        fs.mkdirSync(emptyPath);
+        for (const relative of expectedVendorFiles) {
+            const entryName = `extension/dist/vendor/iverilog-wasm/${relative}`;
+            const entry = zipEntries.find(candidate => candidate.name === entryName)!;
+            const destination = path.join(extractedRuntimeRoot, relative);
+            const destinationRelative = path.relative(extractedRuntimeRoot, destination);
+            assert.ok(
+                destinationRelative !== '..'
+                && !destinationRelative.startsWith(`..${path.sep}`)
+                && !path.isAbsolute(destinationRelative),
+                `unsafe extraction destination for ${entryName}`
+            );
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.writeFileSync(destination, zipEntryContents(archive, entry));
+        }
+        const smoke = spawnSync(process.execPath, [
+            path.join(extensionRoot, 'out', 'test', 'builtinSimulatorAssets.test.js'),
+        ], {
+            cwd: isolated.temporaryRoot,
+            encoding: 'utf8',
+            timeout: 60_000,
+            env: {
+                ...process.env,
+                PATH: emptyPath,
+                VERIFLOW_BUILTIN_ASSETS_ROOT: extractedRuntimeRoot,
+            },
+        });
+        assert.strictEqual(smoke.status, 0, [
+            `extracted packaged simulator smoke failed with status ${smoke.status}`,
+            `stdout:\n${String(smoke.stdout ?? '')}`,
+            `stderr:\n${String(smoke.stderr ?? '')}`,
+        ].join('\n'));
+
         for (const forbiddenPrefix of [
             'extension/src/',
             'extension/test/',
@@ -362,6 +445,7 @@ function run(): void {
             'extension/packages/schematic-webview/',
             'extension/packages/schematic-core/',
             'extension/node_modules/@veriflow/schematic-core/',
+            'extension/node_modules/',
         ]) {
             assert.deepStrictEqual(
                 entries.filter(entry => entry.startsWith(forbiddenPrefix)),

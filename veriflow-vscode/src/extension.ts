@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import { pathToFileURL } from 'url';
+import {
+    createExtensionIverilogLoader,
+    IverilogWasmBackend,
+} from '@veriflow/simulator-iverilog-wasm';
 import {
     getWorkspaceRoot, getTopModule, setTopModule, resolveTopModuleSelection,
     getSettings, ExtensionSettings,
@@ -208,7 +213,17 @@ export function activate(context: vscode.ExtensionContext): void {
             'HDL parser belongs to a different extension path; call deactivate() before reactivating'
         );
     }
-    simulationService = new SimulationService();
+    const trustedExtensionRoot = pathToFileURL(`${context.extensionPath}${path.sep}`);
+    const packagedIverilogEntry = new URL(
+        'dist/vendor/iverilog-wasm/dist/index.js',
+        trustedExtensionRoot
+    );
+    const iverilogLoader = createExtensionIverilogLoader(trustedExtensionRoot);
+    simulationService = new SimulationService({
+        builtinProvider: () => new IverilogWasmBackend(
+            () => iverilogLoader.load(packagedIverilogEntry)
+        ),
+    });
     externalWaveViewerLauncher = new ExternalWaveViewerLauncher();
     treeProvider = new ModuleTreeProvider();
     tbPanelProvider = new TestbenchPanelProvider(
