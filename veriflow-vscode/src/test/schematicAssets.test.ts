@@ -50,6 +50,7 @@ type BuildSupport = {
         runtimePackage: RuntimePackage,
         destination: string,
         fileSystem?: {
+            mkdtemp?(prefix: string): Promise<string>;
             rename?(source: string, destination: string): Promise<void>;
             remove?(
                 target: string,
@@ -638,6 +639,33 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
             'trusted old content\n'
         );
         assert.deepStrictEqual(ownedEntries(), []);
+
+        makeTreeWritableForCleanup(destination);
+        fs.rmSync(destination, { recursive: true, force: true });
+        fs.mkdirSync(destination);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'backup temp failure content\n');
+        fs.chmodSync(destination, 0o555);
+        let mkdtempCalls = 0;
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async mkdtemp(prefix) {
+                    mkdtempCalls += 1;
+                    if (mkdtempCalls === 2) {
+                        throw new Error('injected backup temp failure');
+                    }
+                    return fs.promises.mkdtemp(prefix);
+                },
+            }),
+            /injected backup temp failure/
+        );
+        assert.strictEqual(mkdtempCalls, 2);
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
+        assert.strictEqual(
+            fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'),
+            'backup temp failure content\n'
+        );
+        assert.deepStrictEqual(ownedEntries(), []);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'trusted old content\n');
 
         let renameCalls = 0;
         await assert.rejects(

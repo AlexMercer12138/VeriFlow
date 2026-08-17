@@ -425,10 +425,11 @@ function appendRuntimePackageCleanupError(cleanupError, label, error, destinatio
 
 export async function copyRuntimePackage(runtimePackage, destination, fileSystem = {}) {
     const parent = path.dirname(destination);
+    const createTemporaryDirectory = fileSystem.mkdtemp ?? mkdtemp;
     const renamePath = fileSystem.rename ?? rename;
     const removePath = fileSystem.remove ?? rm;
     await mkdir(parent, { recursive: true });
-    const staging = await mkdtemp(path.join(parent, '.runtime-package-'));
+    const staging = await createTemporaryDirectory(path.join(parent, '.runtime-package-'));
     let backupRoot;
     let backupPath;
     let preserveBackup = false;
@@ -475,6 +476,10 @@ export async function copyRuntimePackage(runtimePackage, destination, fileSystem
             if (error?.code !== 'ENOENT') throw error;
         }
         if (destinationDetails) {
+            backupRoot = await createTemporaryDirectory(
+                path.join(parent, '.runtime-package-backup-')
+            );
+            backupPath = path.join(backupRoot, 'previous');
             if (!destinationDetails.isSymbolicLink() && destinationDetails.isDirectory()) {
                 previousMode = destinationDetails.mode & 0o777;
                 const writableMode = previousMode | 0o700;
@@ -483,8 +488,6 @@ export async function copyRuntimePackage(runtimePackage, destination, fileSystem
                     previousModeElevated = true;
                 }
             }
-            backupRoot = await mkdtemp(path.join(parent, '.runtime-package-backup-'));
-            backupPath = path.join(backupRoot, 'previous');
             try {
                 await renamePath(destination, backupPath);
             } catch (moveError) {
