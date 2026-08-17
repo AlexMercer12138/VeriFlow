@@ -71,7 +71,7 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
     const dataDir = path.join(root, 'data');
     const source = path.join(sourceDir, 'top.v');
     const runtimeData = path.join(dataDir, 'input.hex');
-    const waveFile = path.join(root, 'top.vcd');
+    const waveFile = path.join(sourceDir, 'top.vcd');
     const controller = new AbortController();
     const requests: SimulateRequest[] = [];
     const api = apiReturning({
@@ -81,7 +81,10 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
         stdout: 'PASS\n',
         stderr: '',
         timings: { preprocess: 10, compile: 20, run: 30 },
-        artifacts: new Map([['top.vcd', Buffer.from('$date\n$end\n')]]),
+        artifacts: new Map([[
+            'workspace/rtl/top.vcd',
+            Buffer.from('$date\n$end\n'),
+        ]]),
     }, requests);
 
     try {
@@ -108,7 +111,7 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
                 required: true,
             }],
             output: path.join(root, 'top.out'),
-            cwd: root,
+            cwd: sourceDir,
             topModule: 'top',
             timeoutMs: 1_234,
             signal: controller.signal,
@@ -122,17 +125,22 @@ test('forwards the normalized request to one Verilog-2005 simulation', async () 
                     data: new Uint8Array(await readFile(source)),
                 },
                 {
-                    path: 'data/input.hex',
+                    path: 'workspace/data/input.hex',
                     data: new Uint8Array(await readFile(runtimeData)),
+                },
+                {
+                    path: 'workspace/rtl/.veriflow-artifact-dir',
+                    data: new Uint8Array(),
                 },
             ],
             sources: ['workspace/rtl/top.v'],
             includeDirs: ['libraries/0'],
+            runCwd: 'workspace/rtl',
             generation: '2005',
             top: 'top',
             defines: { TRACE: true, WIDTH: 8 },
             plusargs: ['+seed=42'],
-            artifacts: ['top.vcd'],
+            artifacts: ['workspace/rtl/top.vcd'],
             timeoutMs: 1_234,
             signal: controller.signal,
         });
@@ -177,7 +185,10 @@ test('stages nested artifact directories without adding marker files to sources'
         stdout: 'PASS\n',
         stderr: '',
         timings: { preprocess: 1, compile: 1, run: 1 },
-        artifacts: new Map([['waves/top.vcd', Buffer.from('nested vcd')]]),
+        artifacts: new Map([[
+            'workspace/waves/top.vcd',
+            Buffer.from('nested vcd'),
+        ]]),
     }, requests);
 
     try {
@@ -202,9 +213,16 @@ test('stages nested artifact directories without adding marker files to sources'
 
         assert.equal(requests.length, 1);
         assert.deepEqual(requests[0].sources, ['workspace/top.v']);
-        const marker = requests[0].files.find(file => file.path.startsWith('waves/'));
+        assert.equal(requests[0].runCwd, 'workspace');
+        assert.deepEqual(requests[0].artifacts, ['workspace/waves/top.vcd']);
+        const marker = requests[0].files.find(file => (
+            file.path.startsWith('workspace/waves/')
+        ));
         assert.ok(marker);
-        assert.match(marker.path, /^waves\/\.veriflow-artifact-dir(?:-\d+)?$/);
+        assert.match(
+            marker.path,
+            /^workspace\/waves\/\.veriflow-artifact-dir(?:-\d+)?$/,
+        );
         assert.equal((marker.data as Uint8Array).byteLength, 0);
         assert.equal(requests[0].sources.includes(marker.path), false);
         assert.equal(result.success, true);
@@ -244,7 +262,7 @@ test('rejects unsafe or conflicting artifact paths before calling the API', asyn
         ]);
         const invalidArtifactSets = [
             ['../escape.vcd'],
-            ['workspace/top.v'],
+            ['top.v'],
             ['vectors/input.hex'],
             ['waves/top.vcd', 'waves/top.vcd'],
             ['waves', 'waves/top.vcd'],
@@ -592,7 +610,10 @@ test('writes artifacts returned before an expected HDL runtime failure', async (
         stdout: '',
         stderr: 'FATAL: top.v:1: intentional failure\n',
         timings: { preprocess: 1, compile: 2, run: 3 },
-        artifacts: new Map([['failure.vcd', Buffer.from('partial vcd')]]),
+        artifacts: new Map([[
+            'workspace/failure.vcd',
+            Buffer.from('partial vcd'),
+        ]]),
     });
 
     try {
@@ -645,7 +666,10 @@ test('maps abort after simulation settle and before artifact commit as aborted i
                 stdout: '',
                 stderr: '',
                 timings: { preprocess: 1, compile: 2, run: 3 },
-                artifacts: new Map([['aborted.vcd', Buffer.from('not committed')]]),
+                artifacts: new Map([[
+                    'workspace/aborted.vcd',
+                    Buffer.from('not committed'),
+                ]]),
             };
         },
     };
@@ -693,8 +717,8 @@ test('reports artifacts committed before a later artifact rename failure', async
         stderr: '',
         timings: { preprocess: 1, compile: 2, run: 3 },
         artifacts: new Map([
-            ['first.vcd', Buffer.from('first')],
-            ['second.vcd', Buffer.from('second')],
+            ['workspace/first.vcd', Buffer.from('first')],
+            ['workspace/second.vcd', Buffer.from('second')],
         ]),
     });
     const backend = new IverilogWasmBackend(providerFor(api), {
@@ -781,8 +805,8 @@ test('reports cleanup diagnostics after a partial artifact rename failure', asyn
         stderr: '',
         timings: { preprocess: 1, compile: 2, run: 3 },
         artifacts: new Map([
-            ['first.vcd', Buffer.from('first')],
-            ['second.vcd', Buffer.from('second')],
+            ['workspace/first.vcd', Buffer.from('first')],
+            ['workspace/second.vcd', Buffer.from('second')],
         ]),
     });
     const backend = new IverilogWasmBackend(providerFor(api), {
@@ -848,8 +872,8 @@ test('reports cleanup diagnostics after aborting between artifact renames', asyn
         stderr: '',
         timings: { preprocess: 1, compile: 2, run: 3 },
         artifacts: new Map([
-            ['first.vcd', Buffer.from('first')],
-            ['second.vcd', Buffer.from('second')],
+            ['workspace/first.vcd', Buffer.from('first')],
+            ['workspace/second.vcd', Buffer.from('second')],
         ]),
     });
     const backend = new IverilogWasmBackend(providerFor(api), {
@@ -912,7 +936,7 @@ test('preserves cleanup errors with identical messages and distinct codes', asyn
         stdout: '',
         stderr: '',
         timings: { preprocess: 1, compile: 2, run: 3 },
-        artifacts: new Map([['wave.vcd', Buffer.from('wave')]]),
+        artifacts: new Map([['workspace/wave.vcd', Buffer.from('wave')]]),
     });
     const backend = new IverilogWasmBackend(providerFor(api), {
         artifactFileSystem: {
@@ -1000,7 +1024,7 @@ test('does not report AggregateError children as artifact cleanup failures', asy
         stdout: '',
         stderr: '',
         timings: { preprocess: 1, compile: 2, run: 3 },
-        artifacts: new Map([['wave.vcd', Buffer.from('wave')]]),
+        artifacts: new Map([['workspace/wave.vcd', Buffer.from('wave')]]),
     });
     const backend = new IverilogWasmBackend(providerFor(api), {
         artifactFileSystem: {

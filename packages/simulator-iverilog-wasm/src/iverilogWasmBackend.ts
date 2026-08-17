@@ -75,9 +75,13 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 (performance.now() - started) / 1_000,
             );
         }
+        const upstreamPaths = upstreamArtifactPaths(
+            artifactPaths,
+            workspace.runCwd,
+        );
         const stagedFiles = stageArtifactDirectories(
             workspace.files,
-            artifactPaths,
+            upstreamPaths,
         );
 
         let result: RunResult;
@@ -88,11 +92,12 @@ export class IverilogWasmBackend implements SimulatorBackend {
                 files: stagedFiles,
                 sources: workspace.sources,
                 includeDirs: workspace.includeDirs,
+                runCwd: workspace.runCwd,
                 generation: '2005',
                 top: request.topModule,
                 defines: request.defines,
                 plusargs: request.plusargs,
-                artifacts: artifactPaths,
+                artifacts: upstreamPaths,
                 timeoutMs: request.timeoutMs,
                 signal: request.signal,
             });
@@ -111,12 +116,11 @@ export class IverilogWasmBackend implements SimulatorBackend {
         let artifacts: SimulationArtifactResult[];
         try {
             artifacts = await writeRequestedArtifacts(
-                result.artifacts,
+                remapArtifacts(result.artifacts, artifactPaths, upstreamPaths),
                 request.artifacts,
                 {
                     cwd: request.cwd,
                     signal: request.signal,
-                    protectedVirtualPaths: workspace.files.map(file => file.path),
                     protectedHostPaths: [
                         ...request.files,
                         ...request.runtimeFiles,
@@ -183,6 +187,28 @@ export class IverilogWasmBackend implements SimulatorBackend {
             cause: { code: 'ARTIFACT_MISSING', message },
         };
     }
+}
+
+function upstreamArtifactPaths(
+    artifactPaths: readonly string[],
+    runCwd: string,
+): string[] {
+    return artifactPaths.map(artifactPath => (
+        path.posix.join(runCwd, artifactPath)
+    ));
+}
+
+function remapArtifacts(
+    artifacts: ReadonlyMap<string, Uint8Array>,
+    artifactPaths: readonly string[],
+    upstreamPaths: readonly string[],
+): Map<string, Uint8Array> {
+    const remapped = new Map<string, Uint8Array>();
+    for (const [index, upstreamPath] of upstreamPaths.entries()) {
+        const data = artifacts.get(upstreamPath);
+        if (data !== undefined) remapped.set(artifactPaths[index], data);
+    }
+    return remapped;
 }
 
 function validateArtifactPaths(

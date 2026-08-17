@@ -25,6 +25,7 @@ export interface CompileRequest {
 export interface RunRequest {
     program: Uint8Array;
     files?: VirtualFile[];
+    runCwd?: string;
     plusargs?: string[];
     artifacts?: string[];
     signal?: AbortSignal;
@@ -32,6 +33,7 @@ export interface RunRequest {
 }
 
 export interface SimulateRequest extends CompileRequest {
+    runCwd?: string;
     plusargs?: string[];
     artifacts?: string[];
 }

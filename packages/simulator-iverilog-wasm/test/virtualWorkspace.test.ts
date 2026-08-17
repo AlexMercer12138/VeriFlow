@@ -51,8 +51,9 @@ test('maps project sources in dependency order and keeps runtime data out of sou
         ]);
         assert.deepEqual(
             workspace.files.map(file => file.path),
-            [...workspace.sources, 'data/memory.bin'],
+            [...workspace.sources, 'workspace/data/memory.bin'],
         );
+        assert.equal(workspace.runCwd, 'workspace');
         assert.deepEqual([...workspace.files[1].data], [0xff, 0x00, 0x31]);
         assert.deepEqual([...workspace.files[2].data], [0x80, 0x00, 0x7f]);
         assert.deepEqual(workspace.includeDirs, []);
@@ -90,11 +91,53 @@ test('maps runtime files under cwd to VVP working-directory-relative paths', asy
         assert.deepEqual(workspace.sources, ['workspace/top.v']);
         assert.deepEqual(workspace.files.map(file => file.path), [
             'workspace/top.v',
-            'vectors/input.hex',
+            'workspace/vectors/input.hex',
         ]);
         assert.equal(
-            workspace.hostPathByVirtualPath.get('vectors/input.hex'),
+            workspace.hostPathByVirtualPath.get('workspace/vectors/input.hex'),
             runtimeFile,
+        );
+        assert.equal(workspace.runCwd, 'workspace');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('preserves sibling runtime paths beneath a common virtual ancestor', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-runtime-sibling-'));
+    const cwd = path.join(root, 'demo', 'rtl');
+    const source = path.join(cwd, 'top.v');
+    const runtimeFile = path.join(root, 'demo', 'vectors', 'input.hex');
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(path.dirname(runtimeFile), { recursive: true }),
+        ]);
+        await Promise.all([
+            writeFile(source, 'module top; endmodule\n'),
+            writeFile(runtimeFile, '2a\n'),
+        ]);
+
+        const workspace = await buildVirtualWorkspace({
+            cwd,
+            files: [source],
+            runtimeFiles: [runtimeFile],
+            includeDirs: [],
+        });
+
+        assert.equal(workspace.runCwd, 'workspace/rtl');
+        assert.deepEqual(workspace.sources, ['workspace/rtl/top.v']);
+        assert.deepEqual(workspace.files.map(file => file.path), [
+            'workspace/rtl/top.v',
+            'workspace/vectors/input.hex',
+        ]);
+        assert.equal(
+            path.posix.relative(
+                workspace.runCwd,
+                'workspace/vectors/input.hex',
+            ),
+            '../vectors/input.hex',
         );
     } finally {
         await rm(root, { recursive: true, force: true });
@@ -342,6 +385,87 @@ test('maps external files to stable hashes of normalized parent directories', as
     } finally {
         await rm(root, { recursive: true, force: true });
     }
+});
+
+test('keeps external sources hashed when runtime files widen the workspace root', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-external-runtime-'));
+    const cwd = path.join(root, 'demo', 'rtl');
+    const runtimeFile = path.join(root, 'demo', 'vectors', 'input.hex');
+    const externalFile = path.join(root, 'shared', 'outside.v');
+
+    try {
+        await Promise.all([
+            mkdir(cwd, { recursive: true }),
+            mkdir(path.dirname(runtimeFile), { recursive: true }),
+            mkdir(path.dirname(externalFile), { recursive: true }),
+        ]);
+        await Promise.all([
+            writeFile(runtimeFile, '2a\n'),
+            writeFile(externalFile, 'module outside; endmodule\n'),
+        ]);
+        const digest = createHash('sha256')
+            .update(path.dirname(externalFile))
+            .digest('hex');
+
+        const workspace = await buildVirtualWorkspace({
+            cwd,
+            files: [externalFile],
+            runtimeFiles: [runtimeFile],
+            includeDirs: [],
+        });
+
+        assert.equal(workspace.runCwd, 'workspace/rtl');
+        assert.deepEqual(workspace.sources, [`external/${digest}/outside.v`]);
+        assert.equal(workspace.files[1].path, 'workspace/vectors/input.hex');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('preserves Windows same-volume sibling runtime paths', async () => {
+    const workspace = await buildVirtualWorkspace({
+        cwd: 'C:\\demo\\rtl',
+        files: ['c:/demo/rtl/top.v'],
+        runtimeFiles: ['c:\\DEMO\\vectors\\input.hex'],
+        includeDirs: [],
+    }, {
+        async readFile(hostPath) {
+            return Buffer.from(hostPath);
+        },
+        async realpath(hostPath) {
+            return hostPath;
+        },
+    });
+
+    assert.equal(workspace.runCwd, 'workspace/rtl');
+    assert.deepEqual(workspace.sources, ['workspace/rtl/top.v']);
+    assert.deepEqual(workspace.files.map(file => file.path), [
+        'workspace/rtl/top.v',
+        'workspace/vectors/input.hex',
+    ]);
+});
+
+test('rejects Windows runtime files on another volume before reading', async () => {
+    let reads = 0;
+
+    await assert.rejects(
+        buildVirtualWorkspace({
+            cwd: 'C:\\demo\\rtl',
+            files: ['C:\\demo\\rtl\\top.v'],
+            runtimeFiles: ['D:\\vectors\\input.hex'],
+            includeDirs: [],
+        }, {
+            async readFile() {
+                reads += 1;
+                return Buffer.alloc(0);
+            },
+            async realpath(hostPath) {
+                return hostPath;
+            },
+        }),
+        /runtime files must be on the same Windows volume as the simulation cwd/i,
+    );
+    assert.equal(reads, 0);
 });
 
 test('normalizes Windows drives and separators into valid POSIX virtual paths', async () => {

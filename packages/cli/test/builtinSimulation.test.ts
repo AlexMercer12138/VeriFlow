@@ -134,9 +134,11 @@ test('builtin CLI stages simulation_files for readmemh relative to the run cwd',
     const caseRoot = mkdtempSync(path.join(os.tmpdir(), 'veriflow-cli-readmemh-'));
     const cwd = path.join(caseRoot, 'workspace');
     const rootDir = path.join(cwd, 'rtl');
-    const vectorsDir = path.join(rootDir, 'vectors');
+    const vectorsDir = path.join(cwd, 'vectors');
+    const wavesDir = path.join(rootDir, 'waves');
     const homeDir = path.join(caseRoot, 'home');
     mkdirSync(vectorsDir, { recursive: true });
+    mkdirSync(wavesDir, { recursive: true });
     mkdirSync(homeDir, { recursive: true });
 
     writeFileSync(path.join(vectorsDir, 'input.hex'), '2a\n', 'utf8');
@@ -144,7 +146,9 @@ test('builtin CLI stages simulation_files for readmemh relative to the run cwd',
 module top;
     reg [7:0] memory [0:0];
     initial begin
-        $readmemh("vectors/input.hex", memory);
+        $readmemh("../vectors/input.hex", memory);
+        $dumpfile("waves/top.vcd");
+        $dumpvars(0, top);
         #1;
         if (memory[0] === 8'h2a) $display("PASS");
         else $display("FAIL %h", memory[0]);
@@ -152,20 +156,19 @@ module top;
     end
 endmodule
 `, 'utf8');
-    writeFileSync(path.join(rootDir, 'project.json'), JSON.stringify({
+    writeFileSync(path.join(cwd, 'project.json'), JSON.stringify({
         project_name: 'builtin-readmemh',
-        project_root: '.',
+        project_root: 'rtl',
         top_module: 'top',
         simulator: 'builtin',
         simulation_files: ['vectors/input.hex'],
+        wave_file_template: 'waves/top.vcd',
     }, null, 2), 'utf8');
 
     let stdout = '';
     let stderr = '';
     try {
-        const exitCode = await runCli([
-            'sim', '--project', 'rtl/project.json',
-        ], {
+        const exitCode = await runCli(['sim', '--project', 'project.json'], {
             cwd,
             homeDir,
             stdout: text => { stdout += text; },
@@ -181,6 +184,7 @@ endmodule
         assert.match(stdout, /PASS/);
         assert.doesNotMatch(stdout, /Unable to open|FAIL/);
         assert.equal(stderr, '');
+        assert.equal(existsSync(path.join(wavesDir, 'top.vcd')), true);
     } finally {
         rmSync(caseRoot, { recursive: true, force: true });
     }
