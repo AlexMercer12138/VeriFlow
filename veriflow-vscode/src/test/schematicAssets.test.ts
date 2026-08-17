@@ -18,6 +18,7 @@ type PackageNotice = {
 type RuntimePackage = {
     packageRoot: string;
     mode: number;
+    directories: Array<{ relativePath: string; mode: number }>;
     files: Array<{ relativePath: string; source: string; mode: number }>;
     notice: PackageNotice;
 };
@@ -48,7 +49,13 @@ type BuildSupport = {
     copyRuntimePackage(
         runtimePackage: RuntimePackage,
         destination: string,
-        fileSystem?: { rename(source: string, destination: string): Promise<void> }
+        fileSystem?: {
+            rename?(source: string, destination: string): Promise<void>;
+            remove?(
+                target: string,
+                options: { recursive: boolean; force: boolean }
+            ): Promise<void>;
+        }
     ): Promise<void>;
 };
 
@@ -107,6 +114,21 @@ function typeScriptFiles(root: string): string[] {
         if (entry.isDirectory()) return typeScriptFiles(entryPath);
         return entry.isFile() && entry.name.endsWith('.ts') ? [entryPath] : [];
     });
+}
+
+function makeTreeWritableForCleanup(root: string): void {
+    let details: fs.Stats;
+    try {
+        details = fs.lstatSync(root);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+    }
+    if (details.isSymbolicLink() || !details.isDirectory()) return;
+    fs.chmodSync(root, details.mode | 0o700);
+    for (const entry of fs.readdirSync(root)) {
+        makeTreeWritableForCleanup(path.join(root, entry));
+    }
 }
 
 function sourceSection(
@@ -492,6 +514,64 @@ async function testRuntimePackageRootMode(support: BuildSupport): Promise<void> 
     }
 }
 
+async function testRuntimePackageDirectoryModes(support: BuildSupport): Promise<void> {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-dirs-'));
+    const packageRoot = path.join(fixtureRoot, 'package');
+    const destination = path.join(fixtureRoot, 'published');
+    try {
+        fs.mkdirSync(path.join(packageRoot, 'dist', 'runtime'), { recursive: true });
+        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+            name: 'fixture-runtime', version: '1.0.0', license: 'MIT',
+            engines: { node: '>=18.15.0' },
+            exports: { '.': { import: './dist/index.js' } },
+            files: ['dist', 'LICENSE'],
+        }));
+        fs.writeFileSync(path.join(packageRoot, 'LICENSE'), 'fixture license\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'SOURCE.md'), 'fixture source\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'index.js'), 'export {};\n');
+        fs.writeFileSync(path.join(packageRoot, 'dist', 'runtime', 'worker.js'), 'export {};\n');
+        fs.chmodSync(packageRoot, 0o755);
+        fs.chmodSync(path.join(packageRoot, 'dist'), 0o755);
+        fs.chmodSync(path.join(packageRoot, 'dist', 'runtime'), 0o711);
+
+        const previousUmask = process.umask(0o077);
+        let runtimePackage: RuntimePackage;
+        try {
+            runtimePackage = await support.collectRuntimePackage(packageRoot, {
+                name: 'fixture-runtime', version: '1.0.0', license: 'MIT',
+                nodeEngine: '>=18.15.0', entry: 'dist/index.js',
+                declaredFiles: ['dist', 'LICENSE'],
+                requiredFiles: [
+                    'package.json',
+                    'LICENSE',
+                    'dist/SOURCE.md',
+                    'dist/index.js',
+                    'dist/runtime/worker.js',
+                ],
+                nonemptyFiles: ['LICENSE', 'dist/SOURCE.md'],
+                provenanceFile: 'dist/SOURCE.md',
+            });
+            await support.copyRuntimePackage(runtimePackage, destination);
+        } finally {
+            process.umask(previousUmask);
+        }
+
+        assert.deepStrictEqual(runtimePackage.directories, [
+            { relativePath: 'dist', mode: 0o755 },
+            { relativePath: 'dist/runtime', mode: 0o711 },
+        ]);
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o755);
+        assert.strictEqual(fs.statSync(path.join(destination, 'dist')).mode & 0o777, 0o755);
+        assert.strictEqual(
+            fs.statSync(path.join(destination, 'dist', 'runtime')).mode & 0o777,
+            0o711
+        );
+    } finally {
+        makeTreeWritableForCleanup(fixtureRoot);
+        fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+}
+
 async function testRuntimePackageReplacement(support: BuildSupport): Promise<void> {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'veriflow-runtime-replace-'));
     const packageRoot = path.join(fixtureRoot, 'package');
@@ -529,11 +609,35 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
         assert.deepStrictEqual(ownedEntries(), []);
 
+        await support.copyRuntimePackage(runtimePackage, destination);
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
+        assert.strictEqual(fs.readFileSync(
+            path.join(destination, 'dist', 'index.js'),
+            'utf8'
+        ), 'export {};\n');
+        assert.deepStrictEqual(ownedEntries(), []);
+
         fs.chmodSync(destination, 0o755);
+        makeTreeWritableForCleanup(destination);
         fs.rmSync(destination, { recursive: true, force: true });
         fs.mkdirSync(destination);
-        fs.chmodSync(destination, 0o750);
         fs.writeFileSync(path.join(destination, 'old.txt'), 'trusted old content\n');
+        fs.chmodSync(destination, 0o555);
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async rename() {
+                    throw new Error('injected backup rename failure');
+                },
+            }),
+            /injected backup rename failure/
+        );
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
+        assert.strictEqual(
+            fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'),
+            'trusted old content\n'
+        );
+        assert.deepStrictEqual(ownedEntries(), []);
+
         let renameCalls = 0;
         await assert.rejects(
             support.copyRuntimePackage(runtimePackage, destination, {
@@ -546,7 +650,7 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
             /injected publish rename failure/
         );
         assert.strictEqual(renameCalls, 3, 'failed publish must restore the backup');
-        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o750);
+        assert.strictEqual(fs.statSync(destination).mode & 0o777, 0o555);
         assert.strictEqual(
             fs.readFileSync(path.join(destination, 'old.txt'), 'utf8'),
             'trusted old content\n'
@@ -554,7 +658,46 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         assert.deepStrictEqual(fs.readdirSync(destination), ['old.txt']);
         assert.deepStrictEqual(ownedEntries(), []);
 
+        makeTreeWritableForCleanup(destination);
         fs.rmSync(destination, { recursive: true, force: true });
+        fs.mkdirSync(destination);
+        fs.writeFileSync(path.join(destination, 'old.txt'), 'cleanup retained content\n');
+        fs.chmodSync(destination, 0o555);
+        let cleanupRemoveCalls = 0;
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async remove(target, options) {
+                    cleanupRemoveCalls += 1;
+                    if (target.includes('.runtime-package-backup-')) {
+                        throw new Error('injected old backup cleanup failure');
+                    }
+                    await fs.promises.rm(target, options);
+                },
+            }),
+            error => {
+                const failure = error as Error & { errors: Error[] };
+                assert.strictEqual(failure.name, 'AggregateError');
+                assert.match(
+                    failure.errors[0].message,
+                    /runtime package backup.*injected old backup cleanup failure/i
+                );
+                return true;
+            }
+        );
+        assert.strictEqual(cleanupRemoveCalls, 2);
+        const retainedBackup = ownedEntries().find(entry =>
+            entry.startsWith('.runtime-package-backup-')
+        );
+        assert.ok(retainedBackup);
+        assert.strictEqual(
+            fs.statSync(path.join(fixtureRoot, retainedBackup, 'previous')).mode & 0o777,
+            0o555
+        );
+        makeTreeWritableForCleanup(path.join(fixtureRoot, retainedBackup));
+        fs.rmSync(path.join(fixtureRoot, retainedBackup), { recursive: true, force: true });
+        makeTreeWritableForCleanup(destination);
+        fs.rmSync(destination, { recursive: true, force: true });
+
         let absentRenameCalls = 0;
         await assert.rejects(
             support.copyRuntimePackage(runtimePackage, destination, {
@@ -569,14 +712,47 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         assert.strictEqual(fs.existsSync(destination), false);
         assert.deepStrictEqual(ownedEntries(), []);
 
+        const cleanupPublishError = new Error('injected cleanup-case publish failure');
+        await assert.rejects(
+            support.copyRuntimePackage(runtimePackage, destination, {
+                async rename() {
+                    throw cleanupPublishError;
+                },
+                async remove() {
+                    throw new Error('injected staging cleanup failure');
+                },
+            }),
+            error => {
+                const failure = error as Error & { cause?: unknown; errors: unknown[] };
+                assert.strictEqual(failure.name, 'AggregateError');
+                assert.strictEqual(failure.cause, cleanupPublishError);
+                assert.strictEqual(failure.errors[0], cleanupPublishError);
+                assert.match(
+                    (failure.errors[1] as Error).message,
+                    /staging runtime package.*injected staging cleanup failure/i
+                );
+                return true;
+            }
+        );
+        assert.strictEqual(ownedEntries().length, 1);
+        makeTreeWritableForCleanup(path.join(fixtureRoot, ownedEntries()[0]));
+        fs.rmSync(path.join(fixtureRoot, ownedEntries()[0]), {
+            recursive: true,
+            force: true,
+        });
+
         fs.mkdirSync(destination);
         fs.writeFileSync(path.join(destination, 'old.txt'), 'only recoverable copy\n');
+        fs.chmodSync(destination, 0o555);
         let restoreRenameCalls = 0;
         await assert.rejects(
             support.copyRuntimePackage(runtimePackage, destination, {
                 async rename(source, target) {
                     restoreRenameCalls += 1;
                     if (restoreRenameCalls > 1) {
+                        if (restoreRenameCalls === 2) {
+                            fs.chmodSync(path.join(source, 'dist'), 0o555);
+                        }
                         throw new Error(
                             restoreRenameCalls === 2
                                 ? 'injected publish failure'
@@ -602,19 +778,14 @@ async function testRuntimePackageReplacement(support: BuildSupport): Promise<voi
         assert.strictEqual(recoveryEntries.length, 1);
         assert.match(recoveryEntries[0], /^\.runtime-package-backup-/);
         const recoverable = path.join(fixtureRoot, recoveryEntries[0], 'previous');
+        assert.strictEqual(fs.statSync(recoverable).mode & 0o777, 0o555);
         assert.strictEqual(
             fs.readFileSync(path.join(recoverable, 'old.txt'), 'utf8'),
             'only recoverable copy\n'
         );
         assert.deepStrictEqual(fs.readdirSync(recoverable), ['old.txt']);
     } finally {
-        if (fs.existsSync(packageRoot)) fs.chmodSync(packageRoot, 0o755);
-        if (fs.existsSync(destination)) fs.chmodSync(destination, 0o755);
-        for (const entry of fs.readdirSync(fixtureRoot)) {
-            if (entry.startsWith('.runtime-package-')) {
-                fs.chmodSync(path.join(fixtureRoot, entry), 0o755);
-            }
-        }
+        makeTreeWritableForCleanup(fixtureRoot);
         fs.rmSync(fixtureRoot, { recursive: true, force: true });
     }
 }
@@ -628,6 +799,7 @@ async function testSchematicAssets(): Promise<void> {
     await testRuntimePackageCollection(support);
     await testRuntimePackageSafety(support);
     await testRuntimePackageRootMode(support);
+    await testRuntimePackageDirectoryModes(support);
     await testRuntimePackageReplacement(support);
 
     for (const relative of [

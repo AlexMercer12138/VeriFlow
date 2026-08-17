@@ -183,7 +183,14 @@ function assertExpectedManifest(manifest, manifestPath, expectations) {
     }
 }
 
-async function collectDeclaredEntry(packageRoot, relativePath, files, seen) {
+async function collectDeclaredEntry(
+    packageRoot,
+    relativePath,
+    directories,
+    files,
+    seenDirectories,
+    seenFiles
+) {
     const normalized = normalizedPackagePath(relativePath, 'Declared package file');
     const source = path.join(packageRoot, ...normalized.split('/'));
     const details = await lstat(source);
@@ -191,19 +198,31 @@ async function collectDeclaredEntry(packageRoot, relativePath, files, seen) {
         throw new Error(`Declared package entry is a symbolic link: ${normalized}`);
     }
     if (details.isDirectory()) {
+        if (seenDirectories.has(normalized)) {
+            throw new Error(`Duplicate or colliding declared package directory: ${normalized}`);
+        }
+        seenDirectories.add(normalized);
+        directories.push({ relativePath: normalized, mode: details.mode & 0o777 });
         const children = (await readdir(source)).sort(compareText);
         for (const child of children) {
-            await collectDeclaredEntry(packageRoot, `${normalized}/${child}`, files, seen);
+            await collectDeclaredEntry(
+                packageRoot,
+                `${normalized}/${child}`,
+                directories,
+                files,
+                seenDirectories,
+                seenFiles
+            );
         }
         return;
     }
     if (!details.isFile()) {
         throw new Error(`Declared package entry is not a regular file: ${normalized}`);
     }
-    if (seen.has(normalized)) {
+    if (seenFiles.has(normalized)) {
         throw new Error(`Duplicate or colliding declared package file: ${normalized}`);
     }
-    seen.add(normalized);
+    seenFiles.add(normalized);
     files.push({ relativePath: normalized, source, mode: details.mode & 0o777 });
 }
 
@@ -258,10 +277,20 @@ export async function collectRuntimePackage(packageRoot, expectations) {
         source: manifestPath,
         mode: manifestDetails.mode & 0o777,
     }];
-    const seen = new Set(['package.json']);
+    const directories = [];
+    const seenDirectories = new Set();
+    const seenFiles = new Set(['package.json']);
     for (const declaration of declarations) {
-        await collectDeclaredEntry(packageRoot, declaration, files, seen);
+        await collectDeclaredEntry(
+            packageRoot,
+            declaration,
+            directories,
+            files,
+            seenDirectories,
+            seenFiles
+        );
     }
+    directories.sort((left, right) => compareText(left.relativePath, right.relativePath));
     files.sort((left, right) => compareText(left.relativePath, right.relativePath));
 
     const filesByPath = new Map(files.map(file => [file.relativePath, file]));
@@ -291,6 +320,7 @@ export async function collectRuntimePackage(packageRoot, expectations) {
     return {
         packageRoot,
         mode: packageDetails.mode & 0o777,
+        directories,
         files,
         notice: {
             name: manifest.name,
@@ -302,15 +332,77 @@ export async function collectRuntimePackage(packageRoot, expectations) {
     };
 }
 
+async function makeOwnedDirectoryTreeWritable(root) {
+    let details;
+    try {
+        details = await lstat(root);
+    } catch (error) {
+        if (error?.code === 'ENOENT') return;
+        throw error;
+    }
+    if (details.isSymbolicLink() || !details.isDirectory()) return;
+    const writableMode = (details.mode & 0o777) | 0o700;
+    if ((details.mode & 0o777) !== writableMode) {
+        await chmod(root, writableMode);
+    }
+    for (const entry of await readdir(root)) {
+        await makeOwnedDirectoryTreeWritable(path.join(root, entry));
+    }
+}
+
+async function cleanupOwnedTree(root, removePath) {
+    await makeOwnedDirectoryTreeWritable(root);
+    await removePath(root, { recursive: true, force: true });
+}
+
+function mergeRuntimePackageErrors(operationError, cleanupError, destination) {
+    const operationErrors = operationError instanceof AggregateError
+        ? operationError.errors
+        : [operationError];
+    const cleanupErrors = cleanupError instanceof AggregateError
+        ? cleanupError.errors
+        : [contextualError('cleanup', cleanupError)];
+    return new AggregateError(
+        [...operationErrors, ...cleanupErrors],
+        `Runtime package operation and cleanup failed for ${destination}`,
+        { cause: operationError }
+    );
+}
+
+function appendRuntimePackageCleanupError(cleanupError, label, error, destination) {
+    const cleanupErrors = cleanupError instanceof AggregateError
+        ? cleanupError.errors
+        : [contextualError('cleanup', cleanupError)];
+    return new AggregateError(
+        [...cleanupErrors, contextualError(label, error)],
+        `Failed to clean runtime package temporary paths for ${destination}`,
+        { cause: cleanupError }
+    );
+}
+
 export async function copyRuntimePackage(runtimePackage, destination, fileSystem = {}) {
     const parent = path.dirname(destination);
     const renamePath = fileSystem.rename ?? rename;
+    const removePath = fileSystem.remove ?? rm;
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(path.join(parent, '.runtime-package-'));
     let backupRoot;
     let backupPath;
     let preserveBackup = false;
+    let previousMode;
+    let previousModeElevated = false;
+    let operationError;
     try {
+        for (const directory of runtimePackage.directories) {
+            const relativePath = normalizedPackagePath(
+                directory.relativePath,
+                'Runtime package directory'
+            );
+            await mkdir(path.join(staging, ...relativePath.split('/')), {
+                recursive: true,
+                mode: directory.mode | 0o700,
+            });
+        }
         for (const file of runtimePackage.files) {
             const relativePath = normalizedPackagePath(file.relativePath, 'Runtime package file');
             await copyFilePreservingMode(
@@ -318,18 +410,55 @@ export async function copyRuntimePackage(runtimePackage, destination, fileSystem
                 path.join(staging, ...relativePath.split('/'))
             );
         }
+        const deepestDirectoriesFirst = [...runtimePackage.directories].sort((left, right) =>
+            right.relativePath.split('/').length - left.relativePath.split('/').length
+            || compareText(right.relativePath, left.relativePath)
+        );
+        for (const directory of deepestDirectoriesFirst) {
+            const relativePath = normalizedPackagePath(
+                directory.relativePath,
+                'Runtime package directory'
+            );
+            await chmod(
+                path.join(staging, ...relativePath.split('/')),
+                directory.mode
+            );
+        }
         await chmod(staging, runtimePackage.mode);
-        let destinationExists = false;
+        let destinationDetails;
         try {
-            await lstat(destination);
-            destinationExists = true;
+            destinationDetails = await lstat(destination);
         } catch (error) {
             if (error?.code !== 'ENOENT') throw error;
         }
-        if (destinationExists) {
+        if (destinationDetails) {
+            if (!destinationDetails.isSymbolicLink() && destinationDetails.isDirectory()) {
+                previousMode = destinationDetails.mode & 0o777;
+                const writableMode = previousMode | 0o700;
+                if (writableMode !== previousMode) {
+                    await chmod(destination, writableMode);
+                    previousModeElevated = true;
+                }
+            }
             backupRoot = await mkdtemp(path.join(parent, '.runtime-package-backup-'));
             backupPath = path.join(backupRoot, 'previous');
-            await renamePath(destination, backupPath);
+            try {
+                await renamePath(destination, backupPath);
+            } catch (moveError) {
+                if (previousModeElevated) {
+                    try {
+                        await chmod(destination, previousMode);
+                        previousModeElevated = false;
+                    } catch (modeError) {
+                        throw new AggregateError(
+                            [moveError, modeError],
+                            `Failed to move runtime package ${destination} to its backup; `
+                                + 'restoring its directory mode also failed'
+                        );
+                    }
+                }
+                throw moveError;
+            }
         }
         try {
             await renamePath(staging, destination);
@@ -340,24 +469,77 @@ export async function copyRuntimePackage(runtimePackage, destination, fileSystem
                     backupPath = undefined;
                 } catch (restoreError) {
                     preserveBackup = true;
+                    const errors = [publishError, restoreError];
+                    if (previousModeElevated) {
+                        try {
+                            await chmod(backupPath, previousMode);
+                            previousModeElevated = false;
+                        } catch (modeError) {
+                            errors.push(modeError);
+                        }
+                    }
                     throw new AggregateError(
-                        [publishError, restoreError],
+                        errors,
                         `Failed to publish runtime package ${destination}; `
                             + `restore failed and previous package remains at ${backupPath}`
                     );
                 }
+                if (previousModeElevated) {
+                    try {
+                        await chmod(destination, previousMode);
+                        previousModeElevated = false;
+                    } catch (modeError) {
+                        throw new AggregateError(
+                            [publishError, modeError],
+                            `Failed to publish runtime package ${destination}; `
+                                + 'previous package was restored but restoring its mode failed'
+                        );
+                    }
+                }
             }
             throw publishError;
         }
-    } finally {
-        await chmod(staging, runtimePackage.mode | 0o700).catch(error => {
-            if (error?.code !== 'ENOENT') throw error;
-        });
-        await rm(staging, { recursive: true, force: true });
-        if (backupRoot && !preserveBackup) {
-            await rm(backupRoot, { recursive: true, force: true });
+    } catch (error) {
+        operationError = error;
+    }
+
+    let cleanupError;
+    try {
+        await runCleanupActions([
+            {
+                label: `staging runtime package ${staging}`,
+                run: () => cleanupOwnedTree(staging, removePath),
+            },
+            ...backupRoot && !preserveBackup ? [{
+                label: `runtime package backup ${backupRoot}`,
+                run: () => cleanupOwnedTree(backupRoot, removePath),
+            }] : [],
+        ], `Failed to clean runtime package temporary paths for ${destination}`);
+    } catch (error) {
+        cleanupError = error;
+        if (previousModeElevated && backupPath) {
+            try {
+                await chmod(backupPath, previousMode);
+                previousModeElevated = false;
+            } catch (modeError) {
+                if (modeError?.code === 'ENOENT') {
+                    previousModeElevated = false;
+                } else {
+                    cleanupError = appendRuntimePackageCleanupError(
+                        cleanupError,
+                        `restore mode for retained runtime package backup ${backupPath}`,
+                        modeError,
+                        destination
+                    );
+                }
+            }
         }
     }
+    if (operationError && cleanupError) {
+        throw mergeRuntimePackageErrors(operationError, cleanupError, destination);
+    }
+    if (operationError) throw operationError;
+    if (cleanupError) throw cleanupError;
 }
 
 async function verifyParserAssets(assets) {
