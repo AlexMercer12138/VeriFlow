@@ -342,3 +342,33 @@ passes the mapped `project_root` as `runCwd`.
 **Tags:** #architecture #simulation #wasm #api #lesson-learned
 
 ---
+
+## 2026-08-26: Benchmark simulator engines through dedicated adapters
+
+**Context:** Native Icarus and Icarus WASM expose different execution
+boundaries. Comparing native compile-plus-run with WASM run-only would produce
+misleading performance ratios, while the product simulation contract does not
+need to expose reusable compiled programs.
+
+**Decision:** Keep benchmark-only adapters outside the product backend
+contract. Compile each engine once, compare native `vvp` with WASM `run()`, and
+report source-to-result end-to-end latency separately. Record compile time,
+median and p95 run time, peak RSS, trace bytes, exact backend versions, and
+repository provenance without adding timing thresholds until variance is
+calibrated.
+
+**Why not:**
+- Reuse `compileAndRun()` for every sample: it mixes compile and execution and
+  cannot measure the scheduler/runtime boundary independently.
+- Extend the shared product backend contract with compiled-program handles:
+  benchmark lifecycle needs would become a public host API without a product
+  consumer.
+- Compare native compile-plus-run with WASM `run()`: the resulting ratio would
+  measure different work and could not guide TypeScript scheduler decisions.
+
+**Affects:** `scripts/simulation/benchmark.mjs`,
+`benchmarks/verilog-simulator/`, `docs/plans/2026-08-16-icarus-wasm-backend-implementation.md`
+
+**Tags:** #architecture #simulation #performance #tooling
+
+---
