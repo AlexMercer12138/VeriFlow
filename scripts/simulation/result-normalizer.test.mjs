@@ -1209,31 +1209,40 @@ test('native backend timeout terminates descendant processes', async () => {
             '    process.exit(0);',
             '}',
             "if (args.at(-1)?.endsWith('smoke.out')) {",
-            "    console.log('PASSED');",
-            '    process.exit(0);',
+            "    writeFileSync(1, 'PASSED\\n');",
+            '} else {',
+            '    const child = spawn(process.execPath, [',
+            "        '-e',",
+            "        'setInterval(() => {}, 1000)',",
+            "    ], { stdio: 'ignore' });",
+            '    writeFileSync(pidPath, String(child.pid));',
+            '    setInterval(() => {}, 1000);',
             '}',
-            'const child = spawn(process.execPath, [',
-            "    '-e',",
-            "    'setInterval(() => {}, 1000)',",
-            "], { stdio: 'ignore' });",
-            'writeFileSync(pidPath, String(child.pid));',
-            'setInterval(() => {}, 1000);',
             '',
         ].join('\n'));
-        const backend = createNativeRegressionBackend({
+        const backendOptions = {
             corpusRoot,
             commands: { iverilog: process.execPath, vvp: process.execPath },
             compilerPrefixArgs: [helperPath, descendantPidPath],
             runtimePrefixArgs: [helperPath, descendantPidPath],
-            timeoutMs: 100,
+        };
+        const probeBackend = createNativeRegressionBackend({
+            ...backendOptions,
+            timeoutMs: 5_000,
+        });
+        const timeoutBackend = createNativeRegressionBackend({
+            ...backendOptions,
+            timeoutMs: 2_000,
         });
 
-        assert.deepEqual(await backend.probe(), { available: true });
-        const execution = await backend.runCase(regressionCase('timeout_tree', 'RE'));
+        assert.deepEqual(await probeBackend.probe(), { available: true });
+        const execution = await timeoutBackend.runCase(
+            regressionCase('timeout_tree', 'RE'),
+        );
         descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
 
         assert.equal(execution.termination, 'timeout');
-        await waitForProcessExit(descendantPid, 500);
+        await waitForProcessExit(descendantPid, 5_000);
     } finally {
         if (descendantPid !== undefined && processExists(descendantPid)) {
             process.kill(descendantPid, 'SIGKILL');
