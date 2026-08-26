@@ -179,6 +179,9 @@ export class IverilogWasmBackend implements SimulatorBackend {
             exitCode: result.exitCode,
             stdout: mappedOutput.stdout,
             stderr: mappedOutput.stderr,
+            ...(mappedOutput.combinedOutput === undefined
+                ? {}
+                : { combinedOutput: mappedOutput.combinedOutput }),
             logEntries: mappedOutput.logEntries,
             waveFile,
             elapsedTime: sumTimings(timings),
@@ -317,11 +320,13 @@ function pathsConflict(left: string, right: string): boolean {
 interface MappedOutput {
     stdout: string;
     stderr: string;
+    combinedOutput?: string;
     logEntries: LogEntry[];
 }
 
 function mapResultOutput(
-    result: Pick<RunResult, 'stdout' | 'stderr'>,
+    result: Pick<RunResult, 'stdout' | 'stderr'>
+        & Partial<Pick<RunResult, 'combinedOutput'>>,
     workspace: VirtualWorkspace,
 ): MappedOutput {
     const parser = new LogParser();
@@ -330,6 +335,12 @@ function mapResultOutput(
     return {
         stdout: mapDiagnosticPaths(result.stdout, workspace.hostPathByVirtualPath),
         stderr: mapDiagnosticPaths(result.stderr, workspace.hostPathByVirtualPath),
+        ...(result.combinedOutput === undefined ? {} : {
+            combinedOutput: mapDiagnosticPaths(
+                result.combinedOutput,
+                workspace.hostPathByVirtualPath,
+            ),
+        }),
         logEntries,
     };
 }
@@ -418,6 +429,9 @@ function infrastructureFailure(
         exitCode: -1,
         stdout: output.stdout,
         stderr: errorMessages.reduce(appendLine, output.stderr),
+        ...(output.combinedOutput === undefined
+            ? {}
+            : { combinedOutput: output.combinedOutput }),
         logEntries: [
             ...output.logEntries,
             ...errorMessages.map(message => ({

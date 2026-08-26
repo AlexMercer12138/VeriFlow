@@ -386,6 +386,35 @@ test('native execution forwards the request signal and records separate stage ti
     assert.equal(result.elapsedTime, 0.375);
 });
 
+test('native results expose combined output only when each process preserves ordering', async () => {
+    const outputs = [
+        { stdout: 'compile stdout\n', stderr: 'compile stderr\n', combinedOutput: 'compile stderr\ncompile stdout\n' },
+        { stdout: 'run stdout\n', stderr: 'run stderr\n', combinedOutput: 'run stdout\nrun stderr\n' },
+    ];
+    const executor: CommandExecutor = {
+        async execute() {
+            const output = outputs.shift();
+            if (output === undefined) throw new Error('Unexpected executor call');
+            return {
+                exitCode: 0,
+                ...output,
+                elapsedTime: 0,
+            };
+        },
+    };
+
+    const result = await new NativeSimulatorBackend(
+        'native:ordered',
+        { name: 'ordered', compileCmd: 'compile', runCmd: 'run' },
+        executor
+    ).compileAndRun(normalizedRequest('/workspace'));
+
+    assert.equal(
+        result.combinedOutput,
+        'compile stderr\ncompile stdout\nrun stdout\nrun stderr\n'
+    );
+});
+
 test('configured native backends remain compatible with registry providers', async () => {
     const registry = new SimulatorBackendRegistry();
     registry.register('native:fake', () => new NativeSimulatorBackend(

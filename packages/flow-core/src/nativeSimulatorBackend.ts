@@ -422,6 +422,9 @@ async function executeNativeSimulation(
         exitCode: compile.exitCode,
         stdout: compile.stdout,
         stderr: compile.stderr,
+        ...(compile.combinedOutput === undefined
+            ? {}
+            : { combinedOutput: compile.combinedOutput }),
         logEntries: compileEntries,
         waveFile: null,
         elapsedTime: compile.elapsedTime,
@@ -447,11 +450,16 @@ async function executeNativeSimulation(
     const artifactTiming = request.artifacts.length === 0
         ? {}
         : { artifact: inspected.elapsedTime };
+    const combinedOutput = compile.combinedOutput === undefined
+        || run.combinedOutput === undefined
+        ? undefined
+        : compile.combinedOutput + run.combinedOutput;
     const runResult: SimulationExecution = {
         success: run.termination === undefined && run.exitCode === 0,
         exitCode: run.exitCode,
         stdout: run.stdout,
         stderr: run.stderr,
+        ...(combinedOutput === undefined ? {} : { combinedOutput }),
         logEntries: [
             ...compileEntries,
             ...logParser.parse(`${run.stdout}\n${run.stderr}`),

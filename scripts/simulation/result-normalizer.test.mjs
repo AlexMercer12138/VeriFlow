@@ -27,6 +27,7 @@ test('normalizes only line endings, configured roots, and declared timing text',
         exitClass: 'success',
         stdout: 'first C:\\checkout\\ivtest\\top.v\r\nran in 42.1 ms\rsecond\n',
         stderr: '/repo/ivtest/top.v:3: warning: exact diagnostic\r\n',
+        combinedOutput: '/repo/ivtest/top.v:3: warning\r\nran in 42.1 ms\r',
         diagnostics: ['C:\\checkout\\ivtest\\top.v:3: warning: exact diagnostic\r\n'],
         unexpectedFiles: ['/repo/ivtest/generated.out'],
     }, {
@@ -44,6 +45,7 @@ test('normalizes only line endings, configured roots, and declared timing text',
         exitClass: 'success',
         stdout: 'first <CORPUS>\\top.v\nran in <TIME> ms\nsecond\n',
         stderr: '<CORPUS>/top.v:3: warning: exact diagnostic\n',
+        combinedOutput: '<CORPUS>/top.v:3: warning\nran in <TIME> ms\n',
         diagnostics: ['<CORPUS>\\top.v:3: warning: exact diagnostic\n'],
         unexpectedFiles: ['<CORPUS>/generated.out'],
     });
@@ -181,6 +183,24 @@ test('keeps a native and WASM output difference visible as a mismatch', () => {
     assert.deepEqual(comparison.fields, ['stdout']);
 });
 
+test('keeps stdout and stderr interleaving differences visible as a mismatch', () => {
+    const shared = {
+        exitClass: 'success',
+        stdout: 'stdout first\nstdout second\n',
+        stderr: 'stderr first\n',
+        diagnostics: [],
+        unexpectedFiles: [],
+    };
+
+    assert.deepEqual(compareNormalizedResults(
+        { ...shared, combinedOutput: 'stdout first\nstderr first\nstdout second\n' },
+        { ...shared, combinedOutput: 'stderr first\nstdout first\nstdout second\n' },
+    ), {
+        match: false,
+        fields: ['combinedOutput'],
+    });
+});
+
 test('keeps a backend expectation-status difference visible as a mismatch', () => {
     const sharedResult = {
         exitClass: 'runtime-error',
@@ -284,6 +304,35 @@ test('runner records backend output mismatches without changing pass status', as
         leftBackend: 'native-iverilog',
         rightBackend: 'builtin',
         fields: ['stdout'],
+    }]);
+});
+
+test('runner records a mismatch when only combined output order differs', async () => {
+    const shared = {
+        ...successfulExecution('PASSED\nstdout\n'),
+        stderr: 'stderr\n',
+    };
+    const report = await runRegressionSuite({
+        manifest: manifestWithCases(['ordered']),
+        backendIds: ['native-iverilog', 'builtin'],
+        backends: {
+            'native-iverilog': availableBackend(async () => ({
+                ...shared,
+                combinedOutput: 'PASSED\nstdout\nstderr\n',
+            })),
+            builtin: availableBackend(async () => ({
+                ...shared,
+                combinedOutput: 'stderr\nPASSED\nstdout\n',
+            })),
+        },
+    });
+
+    assert.deepEqual(report.mismatches, [{
+        caseId: 'ordered',
+        caseName: 'ordered',
+        leftBackend: 'native-iverilog',
+        rightBackend: 'builtin',
+        fields: ['combinedOutput'],
     }]);
 });
 
@@ -803,7 +852,11 @@ test('native backend probes compile/run and preserves case arguments and files',
             runtimePrefixArgs: ['-M', '/fake/runtime'],
             processRunner: async (executable, args, options) => {
                 calls.push({ executable, args, cwd: options.cwd });
-                if (args.includes('-V')) return processResult('version\n');
+                if (args.includes('-V')) {
+                    return processResult(executable.endsWith('iverilog')
+                        ? 'Icarus Verilog version 13.0\nmore compiler details\n'
+                        : 'Icarus Verilog runtime version 13.0\nmore runtime details\n');
+                }
                 if (executable.endsWith('iverilog')) {
                     await writeFile(path.join(options.cwd, 'vsim'), 'compiled');
                     return processResult('');
@@ -814,6 +867,11 @@ test('native backend probes compile/run and preserves case arguments and files',
         });
 
         assert.deepEqual(await backend.probe(), { available: true });
+        assert.deepEqual(await backend.metadata(), {
+            available: true,
+            iverilogVersion: 'Icarus Verilog version 13.0',
+            vvpVersion: 'Icarus Verilog runtime version 13.0',
+        });
         const testCase = {
             ...regressionCase('sample', 'normal'),
             compilerOptions: ['-Ttyp'],
@@ -822,7 +880,7 @@ test('native backend probes compile/run and preserves case arguments and files',
         };
         const execution = await backend.runCase(testCase);
 
-        const caseCalls = calls.slice(3);
+        const caseCalls = calls.slice(4);
         assert.equal(caseCalls.length, 2);
         assert.equal(caseCalls[0].executable, '/fake/iverilog');
         assert.deepEqual(caseCalls[0].args.slice(0, 7), [
@@ -850,6 +908,66 @@ test('native backend probes compile/run and preserves case arguments and files',
     }
 });
 
+test('native metadata records an unavailable probe and any observed version', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-metadata-'));
+    try {
+        const backend = createNativeRegressionBackend({
+            corpusRoot,
+            commands: { iverilog: '/fake/iverilog', vvp: '/fake/vvp' },
+            processRunner: async executable => (
+                executable.endsWith('iverilog')
+                    ? processResult('Icarus Verilog version 13.0\n')
+                    : processResult('', {
+                        exitCode: 1,
+                        stderr: 'vvp version failed\n',
+                        combinedOutput: 'vvp version failed\n',
+                    })
+            ),
+        });
+
+        const capability = await backend.probe();
+        assert.equal(capability.available, false);
+        assert.match(capability.reason, /runtime version probe/);
+        assert.deepEqual(await backend.metadata(), {
+            available: false,
+            reason: capability.reason,
+            iverilogVersion: 'Icarus Verilog version 13.0',
+        });
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
+test('repository metadata distinguishes clean and dirty revisions', async () => {
+    const repository = await mkdtemp(path.join(os.tmpdir(), 'veriflow-metadata-git-'));
+    try {
+        execFileSync('git', ['init', '-q'], { cwd: repository });
+        execFileSync('git', ['config', 'user.name', 'Regression Test'], { cwd: repository });
+        execFileSync('git', ['config', 'user.email', 'regression@example.invalid'], {
+            cwd: repository,
+        });
+        await writeFile(path.join(repository, 'tracked.txt'), 'clean\n');
+        execFileSync('git', ['add', 'tracked.txt'], { cwd: repository });
+        execFileSync('git', ['commit', '-qm', 'metadata fixture'], { cwd: repository });
+        const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
+            cwd: repository,
+            encoding: 'utf8',
+        }).trim();
+
+        assert.deepEqual(
+            await regressionRunner.readRepositoryMetadata(repository),
+            { veriflowRevision: revision, veriflowDirty: false },
+        );
+        await writeFile(path.join(repository, 'untracked.txt'), 'dirty\n');
+        assert.deepEqual(
+            await regressionRunner.readRepositoryMetadata(repository),
+            { veriflowRevision: revision, veriflowDirty: true },
+        );
+    } finally {
+        await rm(repository, { recursive: true, force: true });
+    }
+});
+
 test('prepares a flat native toolchain from a built Icarus tree', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-tree-'));
     try {
@@ -872,6 +990,7 @@ test('prepares a flat native toolchain from a built Icarus tree', async () => {
         }));
         await Promise.all([
             writeFile(path.join(root, 'tgt-vvp', 'vvp.conf'), 'fake'),
+            writeFile(path.join(root, 'tgt-vvp', 'vvp-s.conf'), 'fake'),
             writeFile(path.join(root, 'tgt-vvp', 'vvp.tgt'), 'fake'),
             writeFile(path.join(root, 'vpi', 'system.vpi'), 'fake'),
             writeFile(path.join(root, 'vpi', 'v2005_math.vpi'), 'fake'),
@@ -893,6 +1012,7 @@ test('prepares a flat native toolchain from a built Icarus tree', async () => {
                 toolchain.runtimePrefixArgs[1],
             );
             await readFile(path.join(toolchain.compilerPrefixArgs[1], 'vvp.conf'));
+            await readFile(path.join(toolchain.compilerPrefixArgs[1], 'vvp-s.conf'));
         } finally {
             await toolchain.cleanup();
         }
@@ -1195,7 +1315,24 @@ test('builtin-only regression command skips native preparation and writes JSON',
                 throw new Error('native tree must not be touched');
             },
             createBuiltinBackend() {
-                return availableBackend(async () => successfulExecution('PASSED\n'));
+                return {
+                    ...availableBackend(async () => successfulExecution('PASSED\n')),
+                    async metadata() {
+                        return {
+                            packageName: '@veriflow/iverilog-wasm',
+                            packageVersion: '0.1.3',
+                            sourceRevision: 'abcdef1234567890abcdef1234567890abcdef12',
+                        };
+                    },
+                };
+            },
+            async runtimeMetadata() {
+                return {
+                    nodeVersion: 'v24.19.0',
+                    platform: 'linux',
+                    arch: 'x64',
+                    veriflowRevision: SAMPLE_REVISION,
+                };
             },
         });
 
@@ -1203,6 +1340,20 @@ test('builtin-only regression command skips native preparation and writes JSON',
         assert.equal(finalized.exitCode, 0);
         assert.equal(nativePreparationCalls, 0);
         assert.deepEqual(report.summary.builtin, { pass: 1, fail: 0, skip: 0 });
+        assert.deepEqual(report.metadata, {
+            nodeVersion: 'v24.19.0',
+            platform: 'linux',
+            arch: 'x64',
+            veriflowRevision: SAMPLE_REVISION,
+            backends: {
+                builtin: {
+                    packageName: '@veriflow/iverilog-wasm',
+                    packageVersion: '0.1.3',
+                    sourceRevision: 'abcdef1234567890abcdef1234567890abcdef12',
+                },
+            },
+        });
+        assert.equal(Object.hasOwn(report.results[0], 'metadata'), false);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -1213,6 +1364,12 @@ test('validates regression baseline revision, shape, and duplicate identities', 
     assert.deepEqual(
         validateRegressionBaseline(baseline, SAMPLE_REVISION),
         baseline,
+    );
+    const combinedOutputBaseline = structuredClone(baseline);
+    combinedOutputBaseline.mismatches[0].fields = ['combinedOutput'];
+    assert.deepEqual(
+        validateRegressionBaseline(combinedOutputBaseline, SAMPLE_REVISION),
+        combinedOutputBaseline,
     );
     assert.throws(
         () => validateRegressionBaseline({ ...baseline, corpusRevision: '0'.repeat(40) }, SAMPLE_REVISION),
@@ -1284,6 +1441,7 @@ test('result digest is canonical, ignores derived timing, and covers semantic fi
         exitClass: 'runtime-error',
         stdout: 'same\r\n',
         stderr: '',
+        combinedOutput: 'stderr\r\nsame\r\n',
         diagnostics: [{ message: 'error', level: 'ERROR' }],
         unexpectedFiles: [],
         cause: { message: 'cause', code: 'RUNTIME' },
@@ -1298,6 +1456,7 @@ test('result digest is canonical, ignores derived timing, and covers semantic fi
         diagnostics: [{ level: 'ERROR', message: 'error' }],
         stderr: '',
         stdout: 'same\n',
+        combinedOutput: 'stderr\nsame\n',
         exitClass: 'runtime-error',
         status: 'fail',
         backendId: 'builtin',
@@ -1310,6 +1469,10 @@ test('result digest is canonical, ignores derived timing, and covers semantic fi
     assert.notEqual(
         regressionResultDigest(left),
         regressionResultDigest({ ...reordered, stdout: 'changed\n' }),
+    );
+    assert.notEqual(
+        regressionResultDigest(left),
+        regressionResultDigest({ ...reordered, combinedOutput: 'same\nstderr\n' }),
     );
     assert.match(regressionResultDigest(left), /^[0-9a-f]{64}$/);
 });
@@ -1333,6 +1496,33 @@ test('known baseline keeps raw failures visible, marks approvals, writes JSON, a
         assert.match(written.mismatches[0].leftResultDigest, /^[0-9a-f]{64}$/);
         assert.match(written.mismatches[0].rightResultDigest, /^[0-9a-f]{64}$/);
         assert.deepEqual(written.baseline.staleApprovals, []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('sharded reports ignore approvals outside their selected result identities', async () => {
+    const fullReport = sampleRegressionReport();
+    const shardReport = {
+        ...fullReport,
+        selectedCases: 1,
+        shard: { index: 0, total: 2 },
+        results: fullReport.results.filter(result => (
+            result.caseId === 'known-mismatch'
+        )),
+    };
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-shard-'));
+    const jsonPath = path.join(root, 'report.json');
+    try {
+        const finalized = await finalizeRegressionReport({
+            report: shardReport,
+            baseline: sampleBaseline(fullReport),
+            jsonPath,
+        });
+
+        assert.equal(finalized.exitCode, 0);
+        assert.equal(finalized.report.mismatches[0].approved, true);
+        assert.deepEqual(finalized.report.baseline.staleApprovals, []);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -1435,6 +1625,7 @@ test('baseline approval matching is independent of JSON object key order', async
 test('failure approval is invalidated by any stable result-content change after JSON write', async () => {
     const mutations = [
         ['stdout', result => { result.stdout = 'changed output\n'; }],
+        ['combinedOutput', result => { result.combinedOutput = 'changed\nruntime failed\n'; }],
         ['diagnostics', result => { result.diagnostics = ['changed diagnostic']; }],
         ['unexpectedFiles', result => { result.unexpectedFiles = ['new.file']; }],
         ['cause', result => { result.cause = { code: 'CRASH', message: 'changed cause' }; }],
@@ -1668,7 +1859,7 @@ function sampleRegressionReport({
     includeExtraFailure = false,
     includeExtraMismatch = false,
 } = {}) {
-    const failures = includeFailure ? [{
+    const knownFailure = {
         caseId: 'known-failure',
         caseName: 'known-failure',
         caseType: 'RE',
@@ -1680,6 +1871,7 @@ function sampleRegressionReport({
         exitCode: 3,
         stdout: 'runtime failed\n',
         stderr: '',
+        combinedOutput: 'runtime failed\n',
         diagnostics: [],
         unexpectedFiles: [],
         comparison: {
@@ -1688,7 +1880,22 @@ function sampleRegressionReport({
             match: false,
             reason: 'output differs from gold/known.gold',
         },
-    }] : [];
+    };
+    const failures = includeFailure ? [knownFailure] : [{
+        caseId: 'known-failure',
+        caseName: 'known-failure',
+        caseType: 'RE',
+        backendId: 'builtin',
+        status: 'pass',
+        exitClass: 'success',
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'PASSED\n',
+        stderr: '',
+        combinedOutput: 'PASSED\n',
+        diagnostics: [],
+        unexpectedFiles: [],
+    }];
     if (includeExtraFailure) {
         failures.push({
             ...failures[0],
@@ -1709,6 +1916,7 @@ function sampleRegressionReport({
             exitCode: 0,
             stdout: 'native\n',
             stderr: '',
+            combinedOutput: 'native\n',
             diagnostics: [],
             unexpectedFiles: [],
         },
@@ -1723,6 +1931,7 @@ function sampleRegressionReport({
             exitCode: 0,
             stdout: 'builtin\n',
             stderr: '',
+            combinedOutput: 'builtin\n',
             diagnostics: [],
             unexpectedFiles: [],
         },

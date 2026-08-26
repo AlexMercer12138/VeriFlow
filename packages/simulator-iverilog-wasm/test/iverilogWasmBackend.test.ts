@@ -31,8 +31,12 @@ import type {
 const packageRoot = path.resolve(__dirname, '../..');
 const fixtureRoot = path.join(packageRoot, 'test', 'fixtures');
 
+type TestRunResult = Omit<RunResult, 'combinedOutput'> & {
+    combinedOutput?: string;
+};
+
 function apiReturning(
-    result: RunResult,
+    result: TestRunResult,
     requests: SimulateRequest[] = [],
 ): IverilogApi {
     return {
@@ -44,7 +48,11 @@ function apiReturning(
         },
         async simulate(request): Promise<RunResult> {
             requests.push(request);
-            return result;
+            return {
+                ...result,
+                combinedOutput: result.combinedOutput
+                    ?? `${result.stdout}${result.stderr}`,
+            };
         },
     };
 }
@@ -374,6 +382,7 @@ test('rejects unsafe or conflicting artifact paths before calling the API', asyn
                 exitCode: 0,
                 stdout: '',
                 stderr: '',
+                combinedOutput: '',
                 timings: {},
                 artifacts: new Map(),
             };
@@ -435,6 +444,7 @@ test('preflights duplicate and protected artifact destinations before simulation
                 exitCode: 0,
                 stdout: '',
                 stderr: '',
+                combinedOutput: '',
                 timings: {},
                 artifacts: new Map(),
             };
@@ -497,6 +507,7 @@ test('preflights artifact destinations through symlink parents before simulation
                 exitCode: 0,
                 stdout: '',
                 stderr: '',
+                combinedOutput: '',
                 timings: {},
                 artifacts: new Map([['workspace/wave.vcd', Buffer.from('wave')]]),
             };
@@ -728,6 +739,7 @@ test('keeps compile and run stage timings separate and maps diagnostics to host 
         exitCode: 2,
         stdout: '',
         stderr: 'workspace/top.v:1: syntax error\n',
+        combinedOutput: 'before\nworkspace/top.v:1: syntax error\nafter\n',
         timings: { preprocess: 7, compile: 11 },
         artifacts: new Map(),
     });
@@ -751,6 +763,10 @@ test('keeps compile and run stage timings separate and maps diagnostics to host 
         assert.deepEqual(result.timings, { preprocess: 0.007, compile: 0.011 });
         assert.equal(result.elapsedTime, 0.018);
         assert.match(result.stderr, new RegExp(`${escapeRegExp(source)}:1:`));
+        assert.equal(
+            result.combinedOutput,
+            `before\n${source}:1: syntax error\nafter\n`,
+        );
         assert.deepEqual(result.logEntries.filter(
             (entry: { level: string }) => entry.level === 'ERROR',
         ), [{
@@ -759,6 +775,48 @@ test('keeps compile and run stage timings separate and maps diagnostics to host 
             fileRef: source,
             lineNo: 1,
         }]);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('omits combined output when an injected runtime does not preserve ordering', async () => {
+    const { root, source } = await createSourceRoot('veriflow-wasm-unordered-output-');
+    const api = apiReturning({
+        success: true,
+        stage: 'run',
+        exitCode: 0,
+        stdout: 'stdout\n',
+        stderr: 'stderr\n',
+        timings: { run: 1 },
+        artifacts: new Map(),
+    });
+    const simulate = api.simulate.bind(api);
+    api.simulate = async request => {
+        const { combinedOutput: _combinedOutput, ...legacyResult } = await simulate(request);
+        return legacyResult as RunResult;
+    };
+
+    try {
+        const result = await new IverilogWasmBackend(providerFor(api)).compileAndRun({
+            files: [source],
+            runtimeFiles: [],
+            includeDirs: [],
+            defines: {},
+            plusargs: [],
+            artifacts: [],
+            output: path.join(root, 'top.out'),
+            cwd: root,
+            timeoutMs: 1_000,
+        });
+
+        assert.equal(result.success, true);
+        assert.equal(result.stdout, 'stdout\n');
+        assert.equal(result.stderr, 'stderr\n');
+        assert.equal(
+            Object.prototype.hasOwnProperty.call(result, 'combinedOutput'),
+            false,
+        );
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -963,6 +1021,7 @@ test('required artifact absence overrides an HDL run failure without losing diag
         exitCode: 1,
         stdout: 'output before failure\n',
         stderr: 'workspace/top.v:1: error: runtime failed\n',
+        combinedOutput: 'output before failure\nworkspace/top.v:1: error: runtime failed\n',
         timings: { preprocess: 4, compile: 5, run: 6 },
         artifacts: new Map(),
     });
@@ -995,6 +1054,10 @@ test('required artifact absence overrides an HDL run failure without losing diag
             message: missingMessage,
         });
         assert.equal(result.stdout, 'output before failure\n');
+        assert.equal(
+            result.combinedOutput,
+            `output before failure\n${source}:1: error: runtime failed\n`,
+        );
         assert.equal(
             result.stderr,
             `${source}:1: error: runtime failed\n${missingMessage}\n`,
@@ -1091,6 +1154,7 @@ test('maps abort after simulation settle and before artifact commit as aborted i
                 exitCode: 0,
                 stdout: '',
                 stderr: '',
+                combinedOutput: '',
                 timings: { preprocess: 1, compile: 2, run: 3 },
                 artifacts: new Map([[
                     'workspace/aborted.vcd',

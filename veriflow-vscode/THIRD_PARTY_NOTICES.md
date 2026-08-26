@@ -52,7 +52,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## @veriflow/iverilog-wasm 0.1.2
+## @veriflow/iverilog-wasm 0.1.3
 
 Declared license: GPL-2.0-or-later
 
@@ -401,7 +401,7 @@ Public License instead of this License.
 This package was built from:
 
 - Repository: https://github.com/AlexMercer12138/iverilog
-- Git revision: `19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1`
+- Git revision: `b3be566ab9d96e0449319b922fe66b9008ff4083`
 - Emscripten image: `emscripten/emsdk:6.0.6`
 
 Obtain the complete corresponding source and reproduce the release artifacts
@@ -410,7 +410,7 @@ with:
 ```sh
 git clone https://github.com/AlexMercer12138/iverilog
 cd iverilog
-git checkout --detach 19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1
+git checkout --detach b3be566ab9d96e0449319b922fe66b9008ff4083
 make -C wasm clean build package
 ```
 

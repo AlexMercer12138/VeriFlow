@@ -37,7 +37,7 @@ const schematicSourceRoot = path.join(
 
 const iverilogExpectations = {
     name: '@veriflow/iverilog-wasm',
-    version: '0.1.2',
+    version: '0.1.3',
     license: 'GPL-2.0-or-later',
     nodeEngine: '>=18.15.0',
     entry: 'dist/index.js',

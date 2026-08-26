@@ -13,6 +13,7 @@ export interface SimulationResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+    combinedOutput?: string;
     logEntries: LogEntry[];
     /** @deprecated Prefer artifact results on SimulationExecution. */
     waveFile: string | null;

@@ -7,10 +7,12 @@ SystemVerilog is outside this suite.
 ## Pinned Corpus
 
 `tools/simulation/iverilog-revision.json` pins the repository and exact commit
-used to build the published WASM package. The runner verifies that the object
-is a commit and exports `ivtest` from that object with `git archive`. The
-external checkout's `HEAD` is not used, and generated manifests contain source
-paths and options but no copied HDL source.
+used for the regression corpus. The runner verifies that the object is a commit
+and exports `ivtest` from that object with `git archive`. The external
+checkout's `HEAD` is not used, and generated manifests contain source paths and
+options but no copied HDL source. The WASM runtime's independently evolving
+source revision is read from its packaged `dist/SOURCE.md` and recorded in the
+report metadata; it is not assumed to equal the corpus revision.
 
 The pinned list has 1,766 active cases and 1,758 Verilog-2005-eligible cases.
 Eight entries are excluded because they explicitly select another generation:
@@ -85,6 +87,19 @@ to pass. Each raw failure and mismatch is marked `approved: true` or
 `approved: false` in the report. Capability skips remain visible and do not
 require approval.
 
+The report's root-level `metadata` records Node, platform, architecture, the
+VeriFlow Git revision when available, an explicit `veriflowDirty` worktree
+flag, and metadata for every selected backend.
+Built-in metadata contains the exact `@veriflow/iverilog-wasm` package version
+and source revision. Native metadata contains the first non-empty lines from
+separate `iverilog -V` and `vvp -V` invocations when available. A failed native
+probe still records `available: false`, its reason, and any version observed
+before the failure. Metadata is intentionally not copied into case records and
+therefore does not enter per-case result digests.
+CI installs the distribution's current `iverilog` package rather than claiming
+an unavailable immutable apt pin; the recorded native version lines are the
+evidence for the version that actually ran.
+
 Update baseline digests only from a fresh pinned-corpus JSON report after
 manually reviewing the actual stdout, stderr, diagnostics, files, cause,
 comparison, and both sides of every mismatch. Replacing a digest without that
@@ -93,6 +108,7 @@ review defeats the regression gate.
 Each case/backend record retains its `caseId` and readable `caseName`; pass,
 fail, or skip status; exit class; stage and exit code; termination, signal, and
 cause details; stdout and stderr order within each stream; diagnostic text;
+the ordered combined stdout/stderr stream when the backend can preserve it;
 unexpected generated files; and comparison details. Cross-backend differences
 are listed in `mismatches` and keyed by `caseId`.
 
@@ -102,8 +118,10 @@ are listed in `mismatches` and keyed by `caseId`.
   comparison or a line containing only `PASSED` (case-insensitive).
 - `CE` requires a compile error, `RE` requires a runtime error, and `CO`
   requires compile success without running the native program.
-- `gold=` and `diff=` comparisons retain line order and final-newline
-  differences. `unordered=` sorts whole lines only.
+- `gold=` comparisons prefer the ordered combined stdout/stderr stream and fall
+  back to stdout followed by stderr only for a backend that cannot preserve
+  interleaving. `diff=` comparisons read the declared artifact. Both retain
+  line order and final-newline differences. `unordered=` sorts whole lines only.
 - Normalization is limited to CRLF/CR line endings, explicitly configured root
   prefixes, and explicitly declared nondeterministic timing patterns. It does
   not sort stdout, rewrite diagnostics, suppress generated files, or hide
@@ -111,13 +129,14 @@ are listed in `mismatches` and keyed by `caseId`.
 
 ## Explicit Capability Skips
 
-The native backend runs a version check, a real Verilog-2005 compile, and a
-real VVP smoke before any corpus case. An executable file alone is insufficient.
+The native backend runs separate `iverilog -V` and `vvp -V` checks, a real
+Verilog-2005 compile, and a real VVP smoke before any corpus case. An executable
+file alone is insufficient.
 The runner prefers an installed `iverilog` and `vvp` pair. If neither is
 available, it can construct a temporary flat runtime from a complete Icarus
 build tree, including `ivlpp`, `ivl`, `vvp.conf`, `vvp.tgt`, and built VPI
-modules. An incomplete build tree is reported as unavailable; the runner does
-not fall back to WASM.
+modules. Strict warning mode additionally requires `vvp-s.conf`. An incomplete
+build tree is reported as unavailable; the runner does not fall back to WASM.
 
 The built-in backend also performs a real adapter compile/run smoke. Individual
 cases are explicitly skipped when the common adapter contract cannot represent
@@ -129,20 +148,39 @@ calls are staged recursively when they exist. Deliberately missing inputs and
 write-only outputs are not synthesized. These rules are capability handling,
 not output filters.
 
-In the local `0/20` qualification run on 2026-08-26, the build-tree runtime ran
-all 88 native cases successfully. Built-in Icarus reported 83 pass, one exact
-gold mismatch (`sys_func_task_error`), and four capability skips:
+The registry `0.1.3` `0/20` qualification run on 2026-08-26 selected 88 cases.
+The build-tree runtime passed all 88 native cases. Built-in Icarus reported 83
+passes, no failures, and five capability skips:
 
-- `br_gh356b` and `pr2829776b`: unsupported `-gspecify` option;
-- `br_gh788`: unsupported `-gno-io-range-error` option; and
-- `pr1867332`: the common adapter has no compile-only entry.
+- `br_gh356b` and `sdf2`: unsupported `-gspecify` option; and
+- `br_gh788`, `pr1723367`, and `pr2001162`: unsupported
+  `-gno-io-range-error` option.
 
-Two cross-backend differences remain intentionally visible. `pr1065` creates
-`work/BBCDBBCD` under native VVP, while the isolated built-in workspace does
-not expose unrequested generated files. `sys_func_task_error` names the native
-program `vsim` and the built-in virtual program `/.iverilog/program.vvp`, so
-the latter does not match the upstream gold file exactly. No filter suppresses
-either difference.
+The shard's one reviewed cross-backend mismatch remains intentionally visible:
+`pr1065` creates `work/BBCDBBCD` under native VVP, while the isolated built-in
+workspace does not expose unrequested generated files. A full baseline can be
+used for a shard; approvals outside the selected case/backend identities are
+out of scope rather than stale, while an approval for a selected result that
+changes remains stale.
+
+The complete registry `0.1.3` `0/1` qualification on 2026-08-26 recorded 1,755
+native passes with three failures, plus 1,631 built-in passes, 41 failures, and
+86 explicit skips. The 44 failure approvals include three cases that fail
+identically on both engines, built-in filesystem and artifact limitations,
+diagnostic/gold differences, and two deterministic WASM traps. The report
+contains 60 reviewed cross-backend mismatches, including diagnostic wording,
+stdout scheduling, virtual paths, and unrequested generated files. All 3,516
+case/backend digests matched the preceding local-tarball qualification, and the
+tracked baseline was mechanically identical to one generated from the registry
+report. A second registry full run with that baseline exited zero with no
+unapproved or stale entries. These approvals preserve the raw failures and
+differences and do not add output filters or convert them into passes.
+
+`sys_func_task_error` confirms that both backends preserve the diagnostic lines
+before the final program message in `combinedOutput`. Native matches the gold
+file. Built-in retains one reviewed failure and mismatch because its virtual
+program is named `/.iverilog/program.vvp` instead of native `vsim`; no ordering
+filter or path substitution hides that semantic output difference.
 
 Pinned one-case qualification also runs `fread` and `pr2029336` successfully
 on both backends. The latter covers a read-mode `$fopen` input and a required

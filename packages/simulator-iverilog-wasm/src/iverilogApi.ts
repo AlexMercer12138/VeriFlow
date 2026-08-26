@@ -46,6 +46,7 @@ export interface StageResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+    combinedOutput: string;
     timings: Partial<Record<SimulationStage, number>>;
 }
 

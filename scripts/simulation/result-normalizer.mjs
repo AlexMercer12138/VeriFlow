@@ -7,6 +7,7 @@ const OBSERVABLE_FIELDS = [
     'signalCode',
     'stdout',
     'stderr',
+    'combinedOutput',
     'diagnostics',
     'unexpectedFiles',
     'cause',
@@ -18,6 +19,9 @@ export function normalizeRegressionResult(result, options = {}) {
         ...result,
         ...(typeof result.stdout === 'string' ? { stdout: normalize(result.stdout) } : {}),
         ...(typeof result.stderr === 'string' ? { stderr: normalize(result.stderr) } : {}),
+        ...(typeof result.combinedOutput === 'string'
+            ? { combinedOutput: normalize(result.combinedOutput) }
+            : {}),
         ...(Array.isArray(result.diagnostics) ? {
             diagnostics: result.diagnostics.map(diagnostic => (
                 normalizeStructuredText(diagnostic, normalize)

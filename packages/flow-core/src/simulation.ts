@@ -7,6 +7,7 @@ export interface ProcessExecution {
     exitCode: number;
     stdout: string;
     stderr: string;
+    combinedOutput?: string;
     elapsedTime: number;
     termination?: 'abort' | 'timeout' | 'infrastructure';
     cause?: SimulationFailureCause;

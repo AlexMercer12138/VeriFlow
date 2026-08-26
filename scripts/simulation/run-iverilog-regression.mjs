@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import nativeSimulatorBackend from '@veriflow/flow-core/nativeSimulatorBackend';
 
+import { readIverilogSource } from '../lib/iverilog-source.mjs';
 import {
     compareNormalizedResults,
     normalizeRegressionResult,
@@ -39,6 +40,7 @@ export function createNativeRegressionBackend({
     timeoutMs = 30_000,
 }) {
     let capability;
+    let backendMetadata;
     return {
         async probe() {
             if (capability !== undefined) return capability;
@@ -61,6 +63,26 @@ export function createNativeRegressionBackend({
                     capability = unavailableNativeCapability('version probe', version);
                     return capability;
                 }
+                backendMetadata = {
+                    iverilogVersion: versionSummary(version),
+                };
+                const runtimeVersion = await processRunner(
+                    commands.vvp,
+                    [...runtimePrefixArgs, '-V'],
+                    { cwd: root, timeoutMs },
+                );
+                if (runtimeVersion.exitCode !== 0
+                    || runtimeVersion.termination !== undefined) {
+                    capability = unavailableNativeCapability(
+                        'runtime version probe',
+                        runtimeVersion,
+                    );
+                    return capability;
+                }
+                backendMetadata = {
+                    ...backendMetadata,
+                    vvpVersion: versionSummary(runtimeVersion),
+                };
                 const compiled = await processRunner(
                     commands.iverilog,
                     [...compilerPrefixArgs, '-g2005', '-o', output, source],
@@ -86,6 +108,11 @@ export function createNativeRegressionBackend({
             } finally {
                 await rm(root, { recursive: true, force: true });
             }
+        },
+        async metadata() {
+            return capability === undefined
+                ? backendMetadata
+                : { ...capability, ...backendMetadata };
         },
         async runCase(testCase) {
             const root = await createNativeCaseRoot(corpusRoot);
@@ -175,6 +202,7 @@ export async function prepareNativeToolchain({
         ivlpp: path.join(iverilogRoot, 'ivlpp', 'ivlpp'),
         ivl: path.join(iverilogRoot, 'ivl'),
         config: path.join(iverilogRoot, 'tgt-vvp', 'vvp.conf'),
+        strictConfig: path.join(iverilogRoot, 'tgt-vvp', 'vvp-s.conf'),
         target: path.join(iverilogRoot, 'tgt-vvp', 'vvp.tgt'),
         vpiRoot: path.join(iverilogRoot, 'vpi'),
         systemVpi: path.join(iverilogRoot, 'vpi', 'system.vpi'),
@@ -186,6 +214,7 @@ export async function prepareNativeToolchain({
         [buildFiles.ivlpp, fsConstants.X_OK],
         [buildFiles.ivl, fsConstants.X_OK],
         [buildFiles.config, fsConstants.R_OK],
+        [buildFiles.strictConfig, fsConstants.R_OK],
         [buildFiles.target, fsConstants.R_OK],
         [buildFiles.vpiRoot, fsConstants.R_OK],
         [buildFiles.systemVpi, fsConstants.R_OK],
@@ -214,6 +243,7 @@ export async function prepareNativeToolchain({
             symlink(buildFiles.ivlpp, path.join(runtimeRoot, 'ivlpp'), 'file'),
             symlink(buildFiles.ivl, path.join(runtimeRoot, 'ivl'), 'file'),
             symlink(buildFiles.config, path.join(runtimeRoot, 'vvp.conf'), 'file'),
+            symlink(buildFiles.strictConfig, path.join(runtimeRoot, 'vvp-s.conf'), 'file'),
             symlink(buildFiles.target, path.join(runtimeRoot, 'vvp.tgt'), 'file'),
         ]);
         for (const entry of await readdir(buildFiles.vpiRoot, { withFileTypes: true })) {
@@ -260,6 +290,14 @@ function unavailableNativeCapability(stage, execution) {
         available: false,
         reason: `native-iverilog unavailable: ${stage} failed: ${detail}`,
     };
+}
+
+function versionSummary(execution) {
+    const output = execution.combinedOutput
+        ?? `${execution.stdout ?? ''}\n${execution.stderr ?? ''}`;
+    return output.replace(/\r\n?/g, '\n').split('\n')
+        .map(line => line.trim())
+        .find(Boolean) ?? 'unknown';
 }
 
 async function createNativeCaseRoot(corpusRoot) {
@@ -464,6 +502,7 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
 export function createBuiltinRegressionBackend({
     corpusRoot,
     backendFactory = defaultBuiltinBackendFactory,
+    metadataProvider = defaultBuiltinRuntimeMetadata,
     timeoutMs = 30_000,
 }) {
     let backend;
@@ -580,12 +619,32 @@ export function createBuiltinRegressionBackend({
                 }
             }
         },
+        metadata: metadataProvider,
     };
 }
 
 async function defaultBuiltinBackendFactory() {
     const adapter = await import('@veriflow/simulator-iverilog-wasm');
     return new adapter.IverilogWasmBackend();
+}
+
+async function defaultBuiltinRuntimeMetadata() {
+    const entry = fileURLToPath(import.meta.resolve('@veriflow/iverilog-wasm'));
+    const packageRoot = path.dirname(path.dirname(entry));
+    const manifest = JSON.parse(await readFile(
+        path.join(packageRoot, 'package.json'),
+        'utf8',
+    ));
+    const provenance = readIverilogSource({
+        packageRoot,
+        expectedName: '@veriflow/iverilog-wasm',
+        expectedVersion: manifest.version,
+    });
+    return {
+        packageName: provenance.packageName,
+        packageVersion: provenance.packageVersion,
+        sourceRevision: provenance.revision,
+    };
 }
 
 function unsupportedBuiltinOption(options) {
@@ -771,6 +830,9 @@ async function runBackendCase(backendId, backend, testCase) {
             exitCode: execution.exitCode,
             stdout: execution.stdout ?? '',
             stderr: execution.stderr ?? '',
+            ...(execution.combinedOutput === undefined
+                ? {}
+                : { combinedOutput: execution.combinedOutput }),
             diagnostics: execution.diagnostics ?? [],
             unexpectedFiles: execution.unexpectedFiles ?? [],
             ...(execution.timings === undefined ? {} : { timings: execution.timings }),
@@ -970,6 +1032,7 @@ const MISMATCH_FIELDS = new Set([
     'signalCode',
     'stdout',
     'stderr',
+    'combinedOutput',
     'diagnostics',
     'unexpectedFiles',
     'cause',
@@ -1213,10 +1276,23 @@ function annotateRegressionReport(report, baseline) {
     });
     const staleApprovals = [
         ...(baseline?.failures ?? [])
-            .filter(approval => !usedFailureApprovals.has(approvalKey(approval)))
+            .filter(approval => (
+                resultDigests.has(resultIdentity(approval.caseId, approval.backendId))
+                && !usedFailureApprovals.has(approvalKey(approval))
+            ))
             .map(approval => ({ kind: 'failure', ...approval })),
         ...(baseline?.mismatches ?? [])
-            .filter(approval => !usedMismatchApprovals.has(approvalKey(approval)))
+            .filter(approval => (
+                resultDigests.has(resultIdentity(
+                    approval.caseId,
+                    approval.leftBackend,
+                ))
+                && resultDigests.has(resultIdentity(
+                    approval.caseId,
+                    approval.rightBackend,
+                ))
+                && !usedMismatchApprovals.has(approvalKey(approval))
+            ))
             .map(approval => ({ kind: 'mismatch', ...approval })),
     ];
     const clean = unapprovedFailureCount === 0
@@ -1333,6 +1409,7 @@ export async function runRegressionCommand(options, {
     prepareNative = prepareNativeToolchain,
     createNativeBackend = createNativeRegressionBackend,
     createBuiltinBackend = createBuiltinRegressionBackend,
+    runtimeMetadata = defaultRuntimeMetadata,
 } = {}) {
     const revisionFile = fileURLToPath(new URL(
         '../../tools/simulation/iverilog-revision.json',
@@ -1404,6 +1481,10 @@ export async function runRegressionCommand(options, {
             revision: revision.revision,
             list: revision.list,
         };
+        report.metadata = {
+            ...await runtimeMetadata(),
+            backends: await collectBackendMetadata(options.backendIds, backends),
+        };
         let baseline;
         let baselineError;
         if (options.baseline !== undefined) {
@@ -1425,6 +1506,55 @@ export async function runRegressionCommand(options, {
         await nativeToolchain?.cleanup();
         await corpus.cleanup();
     }
+}
+
+async function defaultRuntimeMetadata() {
+    const metadata = {
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch,
+    };
+    try {
+        const repositoryRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+        Object.assign(metadata, await readRepositoryMetadata(repositoryRoot));
+    } catch {
+    }
+    return metadata;
+}
+
+export async function readRepositoryMetadata(repositoryRoot) {
+    const [revisionResult, statusResult] = await Promise.all([
+        executeFile('git', ['rev-parse', 'HEAD'], {
+            cwd: repositoryRoot,
+            encoding: 'utf8',
+        }),
+        executeFile('git', ['status', '--porcelain=v1'], {
+            cwd: repositoryRoot,
+            encoding: 'utf8',
+        }),
+    ]);
+    const revision = revisionResult.stdout.trim();
+    if (!/^[0-9a-f]{40}$/.test(revision)) {
+        throw new Error(`Invalid VeriFlow Git revision: ${revision}`);
+    }
+    return {
+        veriflowRevision: revision,
+        veriflowDirty: statusResult.stdout !== '',
+    };
+}
+
+async function collectBackendMetadata(backendIds, backends) {
+    const entries = await Promise.all(backendIds.map(async backendId => {
+        const provider = backends[backendId]?.metadata;
+        if (typeof provider !== 'function') return undefined;
+        try {
+            const metadata = await provider();
+            return metadata === undefined ? undefined : [backendId, metadata];
+        } catch (error) {
+            return [backendId, { error: errorMessage(error) }];
+        }
+    }));
+    return Object.fromEntries(entries.filter(entry => entry !== undefined));
 }
 
 async function main() {

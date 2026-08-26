@@ -59,7 +59,7 @@ jobs:
         run: npm ci
 
       - name: Validate installed Icarus source provenance
-        run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.2
+        run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.3
 
       - name: Verify release tag
         run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
@@ -80,7 +80,7 @@ jobs:
           cp veriflow-vscode/*.vsix release-assets/
 
       - name: Create Icarus corresponding-source archive
-        run: node scripts/lib/iverilog-source.mjs archive --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.2 --destination release-assets
+        run: node scripts/lib/iverilog-source.mjs archive --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.3 --destination release-assets
 
       - name: Verify Icarus corresponding-source archive
         run: test -s release-assets/iverilog-wasm-source-*.tar.gz
