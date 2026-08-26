@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 const OBSERVABLE_FIELDS = [
     'status',
     'exitClass',
@@ -69,9 +71,5 @@ export function compareNormalizedResults(left, right) {
 }
 
 function sameValue(left, right) {
-    if ((left !== null && typeof left === 'object')
-        || (right !== null && typeof right === 'object')) {
-        return JSON.stringify(left) === JSON.stringify(right);
-    }
-    return left === right;
+    return isDeepStrictEqual(left, right);
 }

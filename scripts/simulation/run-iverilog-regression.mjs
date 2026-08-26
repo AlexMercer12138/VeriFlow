@@ -18,6 +18,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+import nativeSimulatorBackend from '@veriflow/flow-core/nativeSimulatorBackend';
+
 import {
     compareNormalizedResults,
     normalizeRegressionResult,
@@ -26,6 +28,7 @@ import {
 import { parseRegressionList } from './read-iverilog-regress.mjs';
 
 const executeFile = promisify(execFile);
+const processTreeTerminator = new nativeSimulatorBackend.NodeProcessTreeTerminator();
 
 export function createNativeRegressionBackend({
     corpusRoot,
@@ -173,6 +176,9 @@ export async function prepareNativeToolchain({
         ivl: path.join(iverilogRoot, 'ivl'),
         config: path.join(iverilogRoot, 'tgt-vvp', 'vvp.conf'),
         target: path.join(iverilogRoot, 'tgt-vvp', 'vvp.tgt'),
+        vpiRoot: path.join(iverilogRoot, 'vpi'),
+        systemVpi: path.join(iverilogRoot, 'vpi', 'system.vpi'),
+        v2005MathVpi: path.join(iverilogRoot, 'vpi', 'v2005_math.vpi'),
     };
     const required = [
         [buildFiles.iverilog, fsConstants.X_OK],
@@ -181,6 +187,9 @@ export async function prepareNativeToolchain({
         [buildFiles.ivl, fsConstants.X_OK],
         [buildFiles.config, fsConstants.R_OK],
         [buildFiles.target, fsConstants.R_OK],
+        [buildFiles.vpiRoot, fsConstants.R_OK],
+        [buildFiles.systemVpi, fsConstants.R_OK],
+        [buildFiles.v2005MathVpi, fsConstants.R_OK],
     ];
     const complete = (await Promise.all(required.map(async ([filepath, mode]) => {
         try {
@@ -207,11 +216,10 @@ export async function prepareNativeToolchain({
             symlink(buildFiles.config, path.join(runtimeRoot, 'vvp.conf'), 'file'),
             symlink(buildFiles.target, path.join(runtimeRoot, 'vvp.tgt'), 'file'),
         ]);
-        const vpiRoot = path.join(iverilogRoot, 'vpi');
-        for (const entry of await readdir(vpiRoot, { withFileTypes: true })) {
+        for (const entry of await readdir(buildFiles.vpiRoot, { withFileTypes: true })) {
             if (!entry.isFile() || !entry.name.endsWith('.vpi')) continue;
             await symlink(
-                path.join(vpiRoot, entry.name),
+                path.join(buildFiles.vpiRoot, entry.name),
                 path.join(runtimeRoot, entry.name),
                 'file',
             );
@@ -394,6 +402,7 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
         const stderr = [];
         const combined = [];
         let termination;
+        let terminationPromise;
         let cause;
         let settled = false;
         const child = spawn(executable, args, {
@@ -401,9 +410,19 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
         });
+        const terminate = () => {
+            terminationPromise ??= Promise.resolve(
+                processTreeTerminator.terminate(child.pid),
+            )
+                .catch(() => {})
+                .then(() => {
+                    child.kill('SIGKILL');
+                });
+            return terminationPromise;
+        };
         const timeout = setTimeout(() => {
             termination = 'timeout';
-            child.kill('SIGKILL');
+            void terminate();
         }, timeoutMs);
         child.stdout.on('data', chunk => {
             const value = chunk.toString();
@@ -418,10 +437,11 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
         child.on('error', error => {
             cause = { message: error.message, code: error.code };
         });
-        child.on('close', (exitCode, signal) => {
+        child.on('close', async (exitCode, signal) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
+            await terminationPromise;
             if (cause !== undefined && termination === undefined) {
                 termination = 'infrastructure';
             } else if (signal !== null && termination === undefined) {
@@ -1307,112 +1327,124 @@ export function parseRegressionArguments(argv) {
     };
 }
 
-async function main() {
-    const options = parseRegressionArguments(process.argv.slice(2));
+export async function runRegressionCommand(options, {
+    revision: suppliedRevision,
+    materializeCorpus = materializePinnedCorpus,
+    prepareNative = prepareNativeToolchain,
+    createNativeBackend = createNativeRegressionBackend,
+    createBuiltinBackend = createBuiltinRegressionBackend,
+} = {}) {
     const revisionFile = fileURLToPath(new URL(
         '../../tools/simulation/iverilog-revision.json',
         import.meta.url,
     ));
-    const revision = JSON.parse(await readFile(revisionFile, 'utf8'));
-    const corpus = await materializePinnedCorpus({
+    const revision = suppliedRevision
+        ?? JSON.parse(await readFile(revisionFile, 'utf8'));
+    const corpus = await materializeCorpus({
         iverilogRoot: options.iverilogRoot,
         revision: revision.revision,
     });
+    let nativeToolchain;
     try {
-        const nativeToolchain = await prepareNativeToolchain({
-            iverilogRoot: options.iverilogRoot,
-        });
-        try {
-            const listText = await readFile(
-                path.join(corpus.root, 'regress-vlg.list'),
-                'utf8',
+        const listText = await readFile(
+            path.join(corpus.root, 'regress-vlg.list'),
+            'utf8',
+        );
+        const manifest = {
+            ...parseRegressionList(listText),
+            repository: revision.repository,
+            revision: revision.revision,
+            list: revision.list,
+        };
+        if (manifest.activeCount !== revision.activeCases
+            || manifest.eligibleCount !== revision.eligibleCases) {
+            throw new Error(
+                `Pinned corpus count mismatch: expected active=${revision.activeCases} eligible=${revision.eligibleCases}, received active=${manifest.activeCount} eligible=${manifest.eligibleCount}`,
             );
-            const manifest = {
-                ...parseRegressionList(listText),
-                repository: revision.repository,
-                revision: revision.revision,
-                list: revision.list,
-            };
-            if (manifest.activeCount !== revision.activeCases
-                || manifest.eligibleCount !== revision.eligibleCases) {
-                throw new Error(
-                    `Pinned corpus count mismatch: expected active=${revision.activeCases} eligible=${revision.eligibleCases}, received active=${manifest.activeCount} eligible=${manifest.eligibleCount}`,
-                );
-            }
-            const backends = {
-                'native-iverilog': createNativeRegressionBackend({
-                    corpusRoot: corpus.root,
-                    commands: nativeToolchain.commands,
-                    compilerPrefixArgs: nativeToolchain.compilerPrefixArgs,
-                    runtimePrefixArgs: nativeToolchain.runtimePrefixArgs,
-                    timeoutMs: options.timeoutMs,
-                }),
-                builtin: createBuiltinRegressionBackend({
-                    corpusRoot: corpus.root,
-                    timeoutMs: options.timeoutMs,
-                }),
-            };
-            const report = await runRegressionSuite({
-                manifest,
-                backendIds: options.backendIds,
-                backends,
-                shard: options.shard,
-                normalizerOptions: {
-                    rootPrefixes: [
-                        {
-                            path: corpus.root,
-                            replacement: '<IVERILOG>/ivtest',
-                        },
-                        {
-                            path: './ivltests',
-                            replacement: '<IVERILOG>/ivtest/ivltests',
-                        },
-                    ],
-                },
-            });
-            report.corpus = {
-                repository: revision.repository,
-                revision: revision.revision,
-                list: revision.list,
-            };
-            let baseline;
-            let baselineError;
-            if (options.baseline !== undefined) {
-                try {
-                    baseline = JSON.parse(await readFile(options.baseline, 'utf8'));
-                } catch (error) {
-                    baselineError = new Error(
-                        `Unable to load regression baseline ${options.baseline}: ${errorMessage(error)}`,
-                    );
-                }
-            }
-            const finalized = await finalizeRegressionReport({
-                report,
-                baseline,
-                baselineError,
-                jsonPath: options.json,
-            });
-            const finalReport = finalized.report;
-            console.log(
-                `active=${finalReport.activeCases} eligible=${finalReport.eligibleCases} selected=${finalReport.selectedCases}`,
-            );
-            for (const backendId of options.backendIds) {
-                const counts = finalReport.summary[backendId];
-                console.log(
-                    `${backendId}: pass=${counts.pass} fail=${counts.fail} skip=${counts.skip}`,
-                );
-            }
-            console.log(`mismatch=${finalReport.mismatches.length} json=${options.json}`);
-            console.log(
-                `baseline=${finalReport.baseline.clean ? 'clean' : 'dirty'} approved=${finalReport.baseline.provided}`,
-            );
-            return finalized.exitCode;
-        } finally {
-            await nativeToolchain.cleanup();
         }
+        const backends = {};
+        if (options.backendIds.includes('native-iverilog')) {
+            nativeToolchain = await prepareNative({
+                iverilogRoot: options.iverilogRoot,
+            });
+            backends['native-iverilog'] = createNativeBackend({
+                corpusRoot: corpus.root,
+                commands: nativeToolchain.commands,
+                compilerPrefixArgs: nativeToolchain.compilerPrefixArgs,
+                runtimePrefixArgs: nativeToolchain.runtimePrefixArgs,
+                timeoutMs: options.timeoutMs,
+            });
+        }
+        if (options.backendIds.includes('builtin')) {
+            backends.builtin = createBuiltinBackend({
+                corpusRoot: corpus.root,
+                timeoutMs: options.timeoutMs,
+            });
+        }
+        const report = await runRegressionSuite({
+            manifest,
+            backendIds: options.backendIds,
+            backends,
+            shard: options.shard,
+            normalizerOptions: {
+                rootPrefixes: [
+                    {
+                        path: corpus.root,
+                        replacement: '<IVERILOG>/ivtest',
+                    },
+                    {
+                        path: './ivltests',
+                        replacement: '<IVERILOG>/ivtest/ivltests',
+                    },
+                ],
+            },
+        });
+        report.corpus = {
+            repository: revision.repository,
+            revision: revision.revision,
+            list: revision.list,
+        };
+        let baseline;
+        let baselineError;
+        if (options.baseline !== undefined) {
+            try {
+                baseline = JSON.parse(await readFile(options.baseline, 'utf8'));
+            } catch (error) {
+                baselineError = new Error(
+                    `Unable to load regression baseline ${options.baseline}: ${errorMessage(error)}`,
+                );
+            }
+        }
+        return finalizeRegressionReport({
+            report,
+            baseline,
+            baselineError,
+            jsonPath: options.json,
+        });
     } finally {
+        await nativeToolchain?.cleanup();
         await corpus.cleanup();
     }
+}
+
+async function main() {
+    const options = parseRegressionArguments(process.argv.slice(2));
+    const finalized = await runRegressionCommand(options);
+    const finalReport = finalized.report;
+    console.log(
+        `active=${finalReport.activeCases} eligible=${finalReport.eligibleCases} selected=${finalReport.selectedCases}`,
+    );
+    for (const backendId of options.backendIds) {
+        const counts = finalReport.summary[backendId];
+        console.log(
+            `${backendId}: pass=${counts.pass} fail=${counts.fail} skip=${counts.skip}`,
+        );
+    }
+    console.log(`mismatch=${finalReport.mismatches.length} json=${options.json}`);
+    console.log(
+        `baseline=${finalReport.baseline.clean ? 'clean' : 'dirty'} approved=${finalReport.baseline.provided}`,
+    );
+    return finalized.exitCode;
 }
 
 function errorMessage(error) {

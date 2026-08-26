@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 
+import * as regressionRunner from './run-iverilog-regression.mjs';
 import {
     compareNormalizedResults,
     normalizeRegressionResult,
@@ -92,6 +93,54 @@ test('normalizes failure causes and compares termination details', () => {
     assert.deepEqual(compareNormalizedResults(left, right), {
         match: false,
         fields: ['signalCode', 'cause'],
+    });
+});
+
+test('compares failure causes independently of object key order', () => {
+    const left = {
+        cause: {
+            code: 'CRASH',
+            message: 'compiler crashed',
+            location: { file: 'top.v', line: 7 },
+        },
+    };
+    const right = {
+        cause: {
+            location: { line: 7, file: 'top.v' },
+            message: 'compiler crashed',
+            code: 'CRASH',
+        },
+    };
+
+    assert.deepEqual(compareNormalizedResults(left, right), {
+        match: true,
+        fields: [],
+    });
+});
+
+test('compares nested diagnostic objects deeply while preserving array order', () => {
+    const left = {
+        diagnostics: [
+            { message: 'first', location: { file: 'top.v', line: 1 } },
+            { message: 'second', location: { file: 'top.v', line: 2 } },
+        ],
+    };
+    const reorderedKeys = {
+        diagnostics: [
+            { location: { line: 1, file: 'top.v' }, message: 'first' },
+            { location: { line: 2, file: 'top.v' }, message: 'second' },
+        ],
+    };
+
+    assert.deepEqual(compareNormalizedResults(left, reorderedKeys), {
+        match: true,
+        fields: [],
+    });
+    assert.deepEqual(compareNormalizedResults(left, {
+        diagnostics: [...reorderedKeys.diagnostics].reverse(),
+    }), {
+        match: false,
+        fields: ['diagnostics'],
     });
 });
 
@@ -852,6 +901,47 @@ test('prepares a flat native toolchain from a built Icarus tree', async () => {
     }
 });
 
+test('treats a built Icarus tree without VPI runtime modules as unavailable', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-no-vpi-'));
+    try {
+        await Promise.all([
+            mkdir(path.join(root, 'driver')),
+            mkdir(path.join(root, 'vvp')),
+            mkdir(path.join(root, 'ivlpp')),
+            mkdir(path.join(root, 'tgt-vvp')),
+        ]);
+        const executables = [
+            path.join(root, 'driver', 'iverilog'),
+            path.join(root, 'vvp', 'vvp'),
+            path.join(root, 'ivlpp', 'ivlpp'),
+            path.join(root, 'ivl'),
+        ];
+        await Promise.all(executables.map(async filepath => {
+            await writeFile(filepath, 'fake');
+            await chmod(filepath, 0o755);
+        }));
+        await Promise.all([
+            writeFile(path.join(root, 'tgt-vvp', 'vvp.conf'), 'fake'),
+            writeFile(path.join(root, 'tgt-vvp', 'vvp.tgt'), 'fake'),
+        ]);
+
+        const toolchain = await prepareNativeToolchain({
+            iverilogRoot: root,
+            environment: { PATH: '' },
+        });
+
+        assert.deepEqual(toolchain.commands, {
+            iverilog: 'iverilog',
+            vvp: 'vvp',
+        });
+        assert.deepEqual(toolchain.compilerPrefixArgs, []);
+        assert.deepEqual(toolchain.runtimePrefixArgs, []);
+        await toolchain.cleanup();
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('native backend compile-only cases never invoke vvp', async () => {
     const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-co-'));
     const sourceRoot = path.join(corpusRoot, 'ivltests');
@@ -973,6 +1063,65 @@ test('native backend classifies compile signals, spawn failures, and run timeout
     }
 });
 
+test('native backend timeout terminates descendant processes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-regression-timeout-'));
+    const corpusRoot = path.join(root, 'corpus');
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const helperPath = path.join(root, 'fake-iverilog.mjs');
+    const descendantPidPath = path.join(root, 'descendant.pid');
+    let descendantPid;
+    try {
+        await mkdir(sourceRoot, { recursive: true });
+        await writeFile(
+            path.join(sourceRoot, 'timeout_tree.v'),
+            'module timeout_tree; endmodule\n',
+        );
+        await writeFile(helperPath, [
+            "import { spawn } from 'node:child_process';",
+            "import { writeFileSync } from 'node:fs';",
+            "import path from 'node:path';",
+            '',
+            'const [pidPath, ...args] = process.argv.slice(2);',
+            "if (args.includes('-V')) process.exit(0);",
+            "const outputIndex = args.indexOf('-o');",
+            'if (outputIndex >= 0) {',
+            "    writeFileSync(path.resolve(args[outputIndex + 1]), 'compiled');",
+            '    process.exit(0);',
+            '}',
+            "if (args.at(-1)?.endsWith('smoke.out')) {",
+            "    console.log('PASSED');",
+            '    process.exit(0);',
+            '}',
+            'const child = spawn(process.execPath, [',
+            "    '-e',",
+            "    'setInterval(() => {}, 1000)',",
+            "], { stdio: 'ignore' });",
+            'writeFileSync(pidPath, String(child.pid));',
+            'setInterval(() => {}, 1000);',
+            '',
+        ].join('\n'));
+        const backend = createNativeRegressionBackend({
+            corpusRoot,
+            commands: { iverilog: process.execPath, vvp: process.execPath },
+            compilerPrefixArgs: [helperPath, descendantPidPath],
+            runtimePrefixArgs: [helperPath, descendantPidPath],
+            timeoutMs: 100,
+        });
+
+        assert.deepEqual(await backend.probe(), { available: true });
+        const execution = await backend.runCase(regressionCase('timeout_tree', 'RE'));
+        descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
+
+        assert.equal(execution.termination, 'timeout');
+        await waitForProcessExit(descendantPid, 500);
+    } finally {
+        if (descendantPid !== undefined && processExists(descendantPid)) {
+            process.kill(descendantPid, 'SIGKILL');
+        }
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
 test('regression CLI parses strict backend, shard, root, and JSON options', () => {
     assert.deepEqual(parseRegressionArguments([
         '--iverilog-root', '/src/iverilog',
@@ -1005,6 +1154,58 @@ test('regression CLI parses strict backend, shard, root, and JSON options', () =
         '--json', '/tmp/results.json',
         '--baseline', '/src/baseline.json',
     ]).baseline, '/src/baseline.json');
+});
+
+test('builtin-only regression command skips native preparation and writes JSON', async () => {
+    assert.equal(
+        typeof regressionRunner.runRegressionCommand,
+        'function',
+        'runRegressionCommand must expose the command workflow for verification',
+    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-command-'));
+    const corpusRoot = path.join(root, 'corpus');
+    const jsonPath = path.join(root, 'report.json');
+    let nativePreparationCalls = 0;
+    try {
+        await mkdir(corpusRoot);
+        await writeFile(
+            path.join(corpusRoot, 'regress-vlg.list'),
+            'builtin_only normal ivltests\n',
+        );
+
+        const finalized = await regressionRunner.runRegressionCommand({
+            iverilogRoot: path.join(root, 'missing-native-tree'),
+            backendIds: ['builtin'],
+            shard: { index: 0, total: 1 },
+            json: jsonPath,
+            timeoutMs: 1_000,
+        }, {
+            revision: {
+                repository: 'https://example.invalid/iverilog.git',
+                revision: SAMPLE_REVISION,
+                list: 'ivtest/regress-vlg.list',
+                activeCases: 1,
+                eligibleCases: 1,
+            },
+            async materializeCorpus() {
+                return { root: corpusRoot, cleanup: async () => {} };
+            },
+            async prepareNative() {
+                nativePreparationCalls += 1;
+                throw new Error('native tree must not be touched');
+            },
+            createBuiltinBackend() {
+                return availableBackend(async () => successfulExecution('PASSED\n'));
+            },
+        });
+
+        const report = JSON.parse(await readFile(jsonPath, 'utf8'));
+        assert.equal(finalized.exitCode, 0);
+        assert.equal(nativePreparationCalls, 0);
+        assert.deepEqual(report.summary.builtin, { pass: 1, fail: 0, skip: 0 });
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });
 
 test('validates regression baseline revision, shape, and duplicate identities', () => {
@@ -1572,6 +1773,25 @@ function processResult(stdout, overrides = {}) {
         combinedOutput: stdout,
         ...overrides,
     };
+}
+
+function processExists(processId) {
+    try {
+        process.kill(processId, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForProcessExit(processId, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (processExists(processId)) {
+        if (Date.now() >= deadline) {
+            assert.fail(`Process ${processId} remained alive after ${timeoutMs} ms`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
 }
 
 function manifestWithCases(names) {
