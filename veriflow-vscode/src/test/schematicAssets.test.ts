@@ -348,7 +348,7 @@ async function testRuntimePackageCollection(support: BuildSupport): Promise<void
     );
     const runtimePackage = await support.collectRuntimePackage(packageRoot, {
         name: '@veriflow/iverilog-wasm',
-        version: '0.1.3',
+        version: '0.1.4',
         license: 'GPL-2.0-or-later',
         nodeEngine: '>=18.15.0',
         entry: 'dist/index.js',
@@ -393,7 +393,7 @@ async function testRuntimePackageCollection(support: BuildSupport): Promise<void
         expectedFiles
     );
     assert.strictEqual(runtimePackage.notice.name, '@veriflow/iverilog-wasm');
-    assert.strictEqual(runtimePackage.notice.version, '0.1.3');
+    assert.strictEqual(runtimePackage.notice.version, '0.1.4');
     assert.strictEqual(runtimePackage.notice.license, 'GPL-2.0-or-later');
     assert.match(runtimePackage.notice.licenseText, /GNU GENERAL PUBLIC LICENSE/);
     assert.match(runtimePackage.notice.provenanceText ?? '', /Corresponding Source/);
@@ -1297,7 +1297,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.ok(notices.includes('@antv/x6 3.1.7'));
     assert.ok(!notices.includes('@dagrejs/dagre'));
     assert.ok(notices.includes('lucide 1.28.0'));
-    assert.ok(notices.includes('## @veriflow/iverilog-wasm 0.1.3'));
+    assert.ok(notices.includes('## @veriflow/iverilog-wasm 0.1.4'));
     assert.ok(notices.includes('Declared license: GPL-2.0-or-later'));
     assert.ok(notices.includes('# Corresponding Source'));
     for (const relative of ['LICENSE', 'dist/SOURCE.md']) {

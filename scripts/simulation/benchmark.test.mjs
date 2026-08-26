@@ -219,7 +219,7 @@ test('records timeout and compile failures without dropping later cases', async 
 test('emits the stable benchmark JSON schema and backend metadata', async () => {
     const backend = immediateBackend();
     const report = await runBenchmarkSuite({
-        cases: [benchmarkCase('schema')],
+        cases: [{ ...benchmarkCase('schema'), specify: true }],
         backendIds: ['fake'],
         backends: { fake: backend },
         samples: 1,
@@ -246,6 +246,7 @@ test('emits the stable benchmark JSON schema and backend metadata', async () => 
             id: 'schema',
             top: 'schema_bench',
             sourceCount: 1,
+            specify: true,
             expectedEvents: 42,
         }],
         results: [{
@@ -320,6 +321,7 @@ test('loads benchmark case metadata and source bytes from safe relative paths', 
             expectedOutput: 'PASS alpha',
             expectedEvents: 12,
             artifactPath: 'waves/alpha.vcd',
+            specify: true,
         }));
 
         const cases = await loadBenchmarkCases(root);
@@ -335,7 +337,20 @@ test('loads benchmark case metadata and source bytes from safe relative paths', 
             expectedOutput: 'PASS alpha',
             expectedEvents: 12,
             artifactPath: 'waves/alpha.vcd',
+            specify: true,
         }]);
+
+        await writeFile(path.join(caseRoot, 'case.json'), JSON.stringify({
+            id: 'alpha',
+            top: 'alpha_bench',
+            sources: ['rtl/alpha.v'],
+            expectedOutput: 'PASS alpha',
+            specify: 'yes',
+        }));
+        await assert.rejects(
+            loadBenchmarkCases(root),
+            /Invalid benchmark specify option: alpha/,
+        );
 
         await writeFile(path.join(caseRoot, 'case.json'), JSON.stringify({
             id: 'alpha',
@@ -449,11 +464,43 @@ test('native adapter compiles with g2005 and measures vvp separately', async () 
         assert.equal(compileCalls[0].measureRss, false);
         assert.equal(compileCalls[1].measureRss, true);
         assert.equal(runCalls[0].measureRss, true);
+        assert.equal(compileCalls[0].args.includes('-gspecify'), false);
+        assert.equal(compileCalls[1].args.includes('-gspecify'), false);
         await assert.rejects(access(runCalls[1].cwd));
     } finally {
         await backend.cleanup(prepared);
     }
     await assert.rejects(access(preparedRoot));
+});
+
+test('native adapter enables specify timing only for marked cases', async () => {
+    const compileArguments = [];
+    const backend = createNativeBenchmarkBackend({
+        toolchain: {
+            commands: { iverilog: 'iverilog-test', vvp: 'vvp-test' },
+            compilerPrefixArgs: [],
+            runtimePrefixArgs: [],
+        },
+        async processRunner(_executable, args) {
+            compileArguments.push(args);
+            return processExecution();
+        },
+    });
+    const prepared = await backend.prepare({
+        ...benchmarkCase('specify'),
+        specify: true,
+    });
+    try {
+        const compiled = await backend.compile(prepared, { timeoutMs: 100 });
+        assert.equal(compiled.success, true);
+        assert.deepEqual(compileArguments[0].slice(0, 3), [
+            '-g2005',
+            '-gspecify',
+            '-s',
+        ]);
+    } finally {
+        await backend.cleanup(prepared);
+    }
 });
 
 test('native RSS sampling degrades to unavailable when proc status cannot be read', async () => {
@@ -556,14 +603,58 @@ test('builtin adapter uses compile/run for engine timing and simulate end to end
         'simulate',
     ]);
     assert.equal(calls[0].request.generation, '2005');
+    assert.equal(calls[0].request.specify, false);
     assert.equal(calls[0].request.timeoutMs, 111);
     assert.deepEqual(calls[0].request.sources, ['alpha.v']);
     assert.deepEqual(calls[1].request.program, new Uint8Array([1, 2, 3]));
     assert.deepEqual(calls[1].request.artifacts, ['waves/alpha.vcd']);
     assert.equal(calls[1].request.timeoutMs, 222);
     assert.equal(calls[2].request.generation, '2005');
+    assert.equal(calls[2].request.specify, false);
     assert.deepEqual(calls[2].request.artifacts, ['waves/alpha.vcd']);
     assert.equal(calls[2].request.timeoutMs, 333);
+});
+
+test('builtin adapter enables specify timing only for marked cases', async () => {
+    const requests = [];
+    const api = {
+        async compile(request) {
+            requests.push(request);
+            return {
+                success: true,
+                program: new Uint8Array([1]),
+                stdout: '',
+                stderr: '',
+            };
+        },
+        async simulate(request) {
+            requests.push(request);
+            return {
+                success: true,
+                stdout: 'PASS specify\n',
+                stderr: '',
+                artifacts: new Map(),
+            };
+        },
+    };
+    const backend = createBuiltinBenchmarkBackend({
+        api,
+        metadata: {
+            packageVersion: '0.1.test',
+            sourceRevision: '0123456789012345678901234567890123456789',
+        },
+        measureOperation: async operation => ({
+            value: await operation(),
+            peakRssBytes: 1,
+        }),
+    });
+    const benchmark = { ...benchmarkCase('specify'), specify: true };
+    const prepared = await backend.prepare(benchmark);
+
+    await backend.compile(prepared, { timeoutMs: 100 });
+    await backend.endToEnd(benchmark, { timeoutMs: 100 });
+
+    assert.deepEqual(requests.map(request => request.specify), [true, true]);
 });
 
 test('builtin-only benchmark command skips native setup and writes JSON', async () => {
@@ -695,6 +786,11 @@ test('project benchmark corpus covers every planned bounded Verilog-2005 case', 
             .map(benchmarkCase => benchmarkCase.id),
         ['vcd-heavy'],
     );
+    assert.deepEqual(
+        cases.filter(benchmarkCase => benchmarkCase.specify)
+            .map(benchmarkCase => benchmarkCase.id),
+        ['specify'],
+    );
     for (const benchmarkCase of cases) {
         const source = benchmarkCase.files.map(file => file.data).join('\n');
         assert.match(source, new RegExp(`PASS ${benchmarkCase.id}`));
@@ -705,6 +801,11 @@ test('project benchmark corpus covers every planned bounded Verilog-2005 case', 
             assert.doesNotMatch(source, /\$(?:dumpfile|dumpvars|fopen|fwrite)/u);
         }
     }
+
+    const specify = cases.find(benchmarkCase => benchmarkCase.id === 'specify');
+    const specifySource = specify.files.map(file => file.data).join('\n');
+    assert.match(specifySource, /#1;\s*if \(destination !== previous\)/u);
+    assert.match(specifySource, /#5;\s*if \(destination !== source\)/u);
 });
 
 test('clocked counter releases reset away from the active sampling edge', async () => {
@@ -741,10 +842,10 @@ test('benchmark CLI runs every case with builtin and no native tools in PATH', a
         assert.equal(report.results.every(result => result.success), true);
         assert.equal(report.provenance.unavailable, true);
         assert.match(report.provenance.reason, /spawn git ENOENT/u);
-        assert.equal(report.backends.builtin.packageVersion, '0.1.3');
+        assert.equal(report.backends.builtin.packageVersion, '0.1.4');
         assert.equal(
             report.backends.builtin.sourceRevision,
-            'b3be566ab9d96e0449319b922fe66b9008ff4083',
+            '75c777c993c2bbc6ffe7f9138f25a76e14db5325',
         );
         assert.equal(report.results.every(result => result.run.samplesMs.length === 1), true);
         assert.equal(

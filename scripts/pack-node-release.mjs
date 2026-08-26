@@ -37,7 +37,7 @@ mkdirSync(destination, { recursive: true });
 readIverilogSource({
     packageRoot: upstreamPackageRoot,
     expectedName: '@veriflow/iverilog-wasm',
-    expectedVersion: '0.1.3',
+    expectedVersion: '0.1.4',
 });
 npm(['run', 'build:cli']);
 for (const workspace of workspaces) {

@@ -238,7 +238,7 @@ try {
         'installed CLI must depend on the published adapter version'
     );
     const upstreamVersion = installedAdapterManifest.dependencies?.['@veriflow/iverilog-wasm'];
-    assert.equal(upstreamVersion, '0.1.3', 'supported upstream Icarus package version');
+    assert.equal(upstreamVersion, '0.1.4', 'supported upstream Icarus package version');
     const installedUpstream = realpathSync(path.join(
         installRoot,
         'node_modules',

@@ -3,5 +3,6 @@
   "top": "specify_bench",
   "sources": ["specify.v"],
   "expectedOutput": "PASS specify",
-  "expectedEvents": 20000
+  "expectedEvents": 20000,
+  "specify": true
 }

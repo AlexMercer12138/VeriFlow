@@ -25,8 +25,8 @@ import {
 } from './iverilog-source.mjs';
 
 const PACKAGE_NAME = '@veriflow/iverilog-wasm';
-const PACKAGE_VERSION = '0.1.3';
-const REVISION = '19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1';
+const PACKAGE_VERSION = '0.1.4';
+const REVISION = '75c777c993c2bbc6ffe7f9138f25a76e14db5325';
 const REPOSITORY = 'https://github.com/AlexMercer12138/iverilog';
 const repositoryRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),

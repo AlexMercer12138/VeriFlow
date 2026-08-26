@@ -13,10 +13,11 @@ The benchmark protocol prepares source files before timing. It then:
 4. records a separate set of end-to-end samples, including source staging,
    compilation, execution, artifact collection, and cleanup.
 
-Native Icarus always compiles with `-g2005`. Its run-only metric launches only
-`vvp`. The built-in backend calls `compile()` once and measures `run()` only;
-its end-to-end metric calls `simulate()`. Native compile+run is never compared
-against WASM run-only.
+Native Icarus always compiles with `-g2005`; the `specify` case additionally
+uses `-gspecify`. Its run-only metric launches only `vvp`. The built-in backend
+calls `compile()` once and measures `run()` only; its end-to-end metric calls
+`simulate()`, with `specify: true` only for the matching case. Native
+compile+run is never compared against WASM run-only.
 
 `expectedEvents` is a documented workload count defined by each testbench. It
 is not an engine-internal scheduler counter. Peak RSS is sampled from the

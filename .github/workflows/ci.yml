@@ -108,7 +108,7 @@ jobs:
         run: node --test scripts/lib/iverilog-source.test.mjs
 
       - name: Validate installed Icarus source provenance
-        run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.3
+        run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.4
 
       - name: Install Electron system dependencies
         run: sudo npx playwright install-deps chromium

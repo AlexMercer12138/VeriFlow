@@ -60,6 +60,7 @@ export async function loadBenchmarkCases(root = fileURLToPath(new URL(
             ...(descriptor.artifactPath === undefined
                 ? {}
                 : { artifactPath: descriptor.artifactPath }),
+            ...(descriptor.specify === true ? { specify: true } : {}),
         });
     }
     if (cases.length === 0) throw new Error(`No benchmark cases found in ${root}`);
@@ -118,6 +119,9 @@ export function createNativeBenchmarkBackend({
                 [
                     ...toolchain.compilerPrefixArgs,
                     '-g2005',
+                    ...(prepared.benchmarkCase.specify === true
+                        ? ['-gspecify']
+                        : []),
                     '-s',
                     prepared.benchmarkCase.top,
                     '-o',
@@ -352,6 +356,10 @@ function validateCaseDescriptor(descriptor, directoryName) {
     if (descriptor.artifactPath !== undefined) {
         validateSafeBenchmarkPath(descriptor.artifactPath, 'artifact');
     }
+    if (descriptor.specify !== undefined
+        && typeof descriptor.specify !== 'boolean') {
+        throw new Error(`Invalid benchmark specify option: ${directoryName}`);
+    }
 }
 
 function validateSafeBenchmarkPath(value, kind) {
@@ -376,6 +384,7 @@ function builtinCompileRequest(benchmarkCase, timeoutMs) {
         sources: [...benchmarkCase.sources],
         top: benchmarkCase.top,
         generation: '2005',
+        specify: benchmarkCase.specify === true,
         timeoutMs,
     };
 }
@@ -657,6 +666,7 @@ export async function runBenchmarkSuite({
             id: benchmarkCase.id,
             top: benchmarkCase.top,
             sourceCount: benchmarkCase.sources.length,
+            ...(benchmarkCase.specify === true ? { specify: true } : {}),
             ...(benchmarkCase.artifactPath === undefined
                 ? {}
                 : { artifactPath: benchmarkCase.artifactPath }),
