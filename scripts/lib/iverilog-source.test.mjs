@@ -1,23 +1,27 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
+    chmodSync,
     existsSync,
     mkdtempSync,
     mkdirSync,
     readFileSync,
     readdirSync,
+    rmSync,
     symlinkSync,
     writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
     createIverilogSourceArchive,
     parseIverilogSource,
     readIverilogSource,
+    runIverilogSourceCli,
 } from './iverilog-source.mjs';
 
 const PACKAGE_NAME = '@veriflow/iverilog-wasm';
@@ -29,6 +33,19 @@ const repositoryRoot = path.resolve(
     '..',
     '..',
 );
+const temporaryRoots = new Set();
+
+function temporaryRoot(prefix) {
+    const root = mkdtempSync(path.join(os.tmpdir(), prefix));
+    temporaryRoots.add(root);
+    return root;
+}
+
+after(() => {
+    for (const root of temporaryRoots) {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 function sourceText({ repository = REPOSITORY, revision = REVISION } = {}) {
     return [
@@ -41,7 +58,7 @@ function sourceText({ repository = REPOSITORY, revision = REVISION } = {}) {
 }
 
 function createPackageFixture(options = {}) {
-    const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'iverilog-source-test-'));
+    const fixtureRoot = temporaryRoot('iverilog-source-test-');
     const packageRoot = path.join(fixtureRoot, 'package');
     mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
     writeFileSync(path.join(packageRoot, 'package.json'), `${JSON.stringify({
@@ -164,7 +181,7 @@ test('rejects symlinked package roots and provenance files', () => {
 });
 
 test('rejects a symlinked provenance directory', () => {
-    const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'iverilog-source-link-test-'));
+    const fixtureRoot = temporaryRoot('iverilog-source-link-test-');
     const packageRoot = path.join(fixtureRoot, 'package');
     const externalDist = path.join(fixtureRoot, 'external-dist');
     mkdirSync(packageRoot);
@@ -193,6 +210,28 @@ test('rejects non-normalized package-root traversal', () => {
     }), /traversal/i);
 });
 
+test('CLI rejects unknown, duplicate, and command-inapplicable options', () => {
+    const { packageRoot } = createPackageFixture();
+    const required = [
+        '--package-root', packageRoot,
+        '--expected-version', PACKAGE_VERSION,
+    ];
+    assert.throws(
+        () => runIverilogSourceCli(['validate', ...required, '--unknown', 'value']),
+        /unknown option/i,
+    );
+    assert.throws(
+        () => runIverilogSourceCli([
+            'validate', ...required, '--expected-version', PACKAGE_VERSION,
+        ]),
+        /duplicate option/i,
+    );
+    assert.throws(
+        () => runIverilogSourceCli(['validate', ...required, '--destination', 'release-assets']),
+        /not valid.*validate/i,
+    );
+});
+
 function git(args, cwd, environment = process.env) {
     return execFileSync('git', args, {
         cwd,
@@ -209,8 +248,38 @@ function initializeRepository(repository) {
     git(['config', 'user.email', 'release-test@example.invalid'], repository);
 }
 
+function createArchiveFixture(prefix) {
+    const fixtureRoot = temporaryRoot(prefix);
+    const upstreamRoot = path.join(fixtureRoot, 'upstream');
+    initializeRepository(upstreamRoot);
+    mkdirSync(path.join(upstreamRoot, 'wasm'));
+    writeFileSync(path.join(upstreamRoot, 'README.md'), 'source\n');
+    writeFileSync(path.join(upstreamRoot, 'wasm', 'build.sh'), '#!/bin/sh\nmake wasm\n');
+    git(['add', '.'], upstreamRoot);
+    git(['commit', '-m', 'source commit'], upstreamRoot);
+    const revision = git(['rev-parse', 'HEAD'], upstreamRoot);
+    const repository = `https://source.test/${path.basename(fixtureRoot)}`;
+    const { packageRoot } = createPackageFixture({
+        source: sourceText({ repository, revision }),
+        manifestRepository: `${repository}.git`,
+    });
+    const destination = path.join(fixtureRoot, 'release-assets');
+    mkdirSync(destination);
+    const environment = {
+        ...process.env,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: `url.file://${upstreamRoot}/.insteadOf`,
+        GIT_CONFIG_VALUE_0: repository,
+    };
+    return { destination, environment, fixtureRoot, packageRoot, revision };
+}
+
+function sha256(filepath) {
+    return createHash('sha256').update(readFileSync(filepath)).digest('hex');
+}
+
 test('archives the exact revision and recorded submodule source without Git metadata', () => {
-    const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'iverilog-archive-test-'));
+    const fixtureRoot = temporaryRoot('iverilog-archive-test-');
     const submoduleRoot = path.join(fixtureRoot, 'submodule');
     initializeRepository(submoduleRoot);
     writeFileSync(path.join(submoduleRoot, 'submodule-source.c'), 'int submodule_value = 1;\n');
@@ -277,6 +346,102 @@ test('archives the exact revision and recorded submodule source without Git meta
     assert.equal(existsSync(path.join(extractedRoot, archiveDirectory, '.git')), false);
 });
 
+test('rejects an annotated tag object instead of silently archiving its peeled commit', () => {
+    const fixtureRoot = temporaryRoot('iverilog-tag-object-test-');
+    const upstreamRoot = path.join(fixtureRoot, 'upstream');
+    initializeRepository(upstreamRoot);
+    mkdirSync(path.join(upstreamRoot, 'wasm'));
+    writeFileSync(path.join(upstreamRoot, 'wasm', 'build.sh'), '#!/bin/sh\nmake wasm\n');
+    git(['add', '.'], upstreamRoot);
+    git(['commit', '-m', 'source commit'], upstreamRoot);
+    git(['tag', '-a', 'release-object', '-m', 'annotated release'], upstreamRoot);
+    const tagObjectRevision = git(['rev-parse', 'release-object'], upstreamRoot);
+    assert.equal(git(['cat-file', '-t', tagObjectRevision], upstreamRoot), 'tag');
+
+    const repository = 'https://source.test/annotated-iverilog';
+    const { packageRoot } = createPackageFixture({
+        source: sourceText({ repository, revision: tagObjectRevision }),
+        manifestRepository: `${repository}.git`,
+    });
+    const destination = path.join(fixtureRoot, 'release-assets');
+    const environment = {
+        ...process.env,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: `url.file://${upstreamRoot}/.insteadOf`,
+        GIT_CONFIG_VALUE_0: repository,
+    };
+
+    assert.throws(() => createIverilogSourceArchive({
+        packageRoot,
+        expectedName: PACKAGE_NAME,
+        expectedVersion: PACKAGE_VERSION,
+        destination,
+        environment,
+    }), /revision.*commit|commit.*revision|object type/i);
+});
+
+test('creates byte-reproducible source archives for the same commit', () => {
+    const fixture = createArchiveFixture('iverilog-reproducible-test-');
+    const options = {
+        packageRoot: fixture.packageRoot,
+        expectedName: PACKAGE_NAME,
+        expectedVersion: PACKAGE_VERSION,
+        destination: fixture.destination,
+        environment: fixture.environment,
+    };
+    const firstArchive = createIverilogSourceArchive(options);
+    const firstDigest = sha256(firstArchive);
+    execFileSync('sleep', ['1.1']);
+    const secondArchive = createIverilogSourceArchive(options);
+    assert.equal(sha256(secondArchive), firstDigest);
+});
+
+test('preserves an existing archive when replacement creation fails', () => {
+    const fixture = createArchiveFixture('iverilog-atomic-test-');
+    const options = {
+        packageRoot: fixture.packageRoot,
+        expectedName: PACKAGE_NAME,
+        expectedVersion: PACKAGE_VERSION,
+        destination: fixture.destination,
+        environment: fixture.environment,
+    };
+    const archive = createIverilogSourceArchive(options);
+    const originalDigest = sha256(archive);
+    const commandRoot = path.join(fixture.fixtureRoot, 'commands');
+    mkdirSync(commandRoot);
+    symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(commandRoot, 'git'));
+    const failingTar = path.join(commandRoot, 'tar');
+    writeFileSync(failingTar, '#!/bin/sh\nexit 23\n');
+    chmodSync(failingTar, 0o755);
+
+    assert.throws(() => createIverilogSourceArchive({
+        ...options,
+        environment: {
+            ...fixture.environment,
+            PATH: `${commandRoot}${path.delimiter}${process.env.PATH}`,
+        },
+    }), /tar failed/i);
+    assert.equal(sha256(archive), originalDigest);
+    assert.deepEqual(
+        readdirSync(fixture.destination).filter(name => name.startsWith('.iverilog-source-publish-')),
+        [],
+    );
+});
+
+function workflowBlock(source, heading, indent = 2) {
+    const prefix = ' '.repeat(indent);
+    const lines = source.split('\n');
+    const start = lines.findIndex(line => line === `${prefix}${heading}:`);
+    assert.notEqual(start, -1, `workflow block ${heading} must exist`);
+    let end = start + 1;
+    while (end < lines.length) {
+        const line = lines[end];
+        if (line !== '' && !line.startsWith(' '.repeat(indent + 1))) break;
+        end += 1;
+    }
+    return lines.slice(start, end).join('\n');
+}
+
 test('CI and tagged release keep provenance validation and source delivery wired', () => {
     const ci = readFileSync(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
     assert.match(ci, /node --test scripts\/lib\/iverilog-source\.test\.mjs/);
@@ -287,11 +452,32 @@ test('CI and tagged release keep provenance validation and source delivery wired
         path.join(repositoryRoot, '.github/workflows/release.yml'),
         'utf8',
     );
-    assert.match(release, /environment:\s*\n\s+name: gpl-release-review/);
-    assert.match(release, /iverilog-source\.mjs archive/);
-    assert.match(release, /release-assets/);
-    assert.match(release, /iverilog-wasm-source-/);
-    assert.match(release, /SHA256SUMS\.txt/);
+    const workflowPermissions = workflowBlock(release, 'permissions', 0);
+    assert.match(workflowPermissions, /^  contents: read$/m);
+    assert.match(workflowPermissions, /^  actions: read$/m);
+    assert.doesNotMatch(workflowPermissions, /contents: write/);
+
+    const buildJob = workflowBlock(release, 'node-artifacts');
+    assert.match(buildJob, /^    needs: verify-main-ci$/m);
+    assert.doesNotMatch(buildJob, /^    environment:/m);
+    assert.match(buildJob, /iverilog-source\.mjs archive/);
+    assert.match(buildJob, /name: veriflow-node-release/);
+    assert.doesNotMatch(buildJob, /SHA256SUMS\.txt/);
+
+    const finalizeJob = workflowBlock(release, 'finalize-release-assets');
+    assert.match(finalizeJob, /^    needs: node-artifacts$/m);
+    assert.match(finalizeJob, /name: veriflow-node-release/);
+    assert.match(finalizeJob, /SHA256SUMS\.txt/);
+    assert.match(finalizeJob, /name: veriflow-final-release/);
+    assert.doesNotMatch(finalizeJob, /gpl-release-review|gh release create/);
+
+    const publishJob = workflowBlock(release, 'github-release');
+    assert.match(publishJob, /^    needs: finalize-release-assets$/m);
+    assert.match(publishJob, /^    environment:\s*\n      name: gpl-release-review$/m);
+    assert.match(publishJob, /^    permissions:\s*\n      contents: write$/m);
+    assert.match(publishJob, /name: veriflow-final-release/);
+    assert.match(publishJob, /gh release create/);
+    assert.doesNotMatch(publishJob, /sha256sum|SHA256SUMS\.txt/);
 });
 
 test('release documentation records pinned GPL corresponding-source delivery', () => {

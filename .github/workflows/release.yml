@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
@@ -43,8 +43,6 @@ jobs:
     name: Node CLI and VS Code artifacts
     needs: verify-main-ci
     runs-on: ubuntu-latest
-    environment:
-      name: gpl-release-review
 
     steps:
       - name: Checkout
@@ -94,17 +92,17 @@ jobs:
           if-no-files-found: error
           path: release-assets/*
 
-  github-release:
-    name: Publish GitHub Release
+  finalize-release-assets:
+    name: Finalize release artifacts
     needs: node-artifacts
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download release artifacts
+      - name: Download built release artifacts
         uses: actions/download-artifact@v4
         with:
+          name: veriflow-node-release
           path: release-assets
-          merge-multiple: true
 
       - name: Generate checksums
         run: |
@@ -113,6 +111,29 @@ jobs:
             | xargs -0 sha256sum \
             | sed 's#  release-assets/#  #' > release-assets/SHA256SUMS.txt
           cat release-assets/SHA256SUMS.txt
+
+      - name: Upload final release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: veriflow-final-release
+          if-no-files-found: error
+          path: release-assets/*
+
+  github-release:
+    name: Publish GitHub Release
+    needs: finalize-release-assets
+    runs-on: ubuntu-latest
+    environment:
+      name: gpl-release-review
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download final release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: veriflow-final-release
+          path: release-assets
 
       - name: Create GitHub Release
         env:

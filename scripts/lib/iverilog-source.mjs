@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     readdirSync,
+    renameSync,
     rmSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -167,6 +168,8 @@ export function createIverilogSourceArchive({
     const archiveName = `iverilog-wasm-source-${provenance.revision}`;
     const checkoutRoot = path.join(temporaryRoot, archiveName);
     const archivePath = path.join(destinationRoot, `${archiveName}.tar.gz`);
+    const publicationRoot = mkdtempSync(path.join(destinationRoot, '.iverilog-source-publish-'));
+    const stagedArchivePath = path.join(publicationRoot, path.basename(archivePath));
     try {
         run('git', [
             '-c', 'remote.origin.tagOpt=--no-tags',
@@ -177,30 +180,69 @@ export function createIverilogSourceArchive({
             '-c', 'remote.origin.tagOpt=--no-tags',
             'fetch', '--no-tags', 'origin', provenance.revision,
         ], { cwd: checkoutRoot, environment });
+        const objectType = run('git', ['cat-file', '-t', provenance.revision], {
+            cwd: checkoutRoot,
+            environment,
+        }).trim();
+        if (objectType !== 'commit') {
+            throw new Error(`Icarus source revision object type must be commit, received ${objectType}`);
+        }
         run('git', ['checkout', '--detach', provenance.revision], {
             cwd: checkoutRoot,
             environment,
         });
+        const checkedOutRevision = run('git', ['rev-parse', 'HEAD'], {
+            cwd: checkoutRoot,
+            environment,
+        }).trim();
+        if (checkedOutRevision !== provenance.revision) {
+            throw new Error(`Icarus source checkout revision mismatch: expected ${provenance.revision}, received ${checkedOutRevision}`);
+        }
         run('git', [
             'submodule', 'update', '--init', '--recursive', '--no-recommend-shallow',
         ], { cwd: checkoutRoot, environment });
         removeGitMetadata(checkoutRoot);
-        rmSync(archivePath, { force: true });
-        run('tar', ['-czf', archivePath, '-C', temporaryRoot, archiveName], {
+        run('tar', [
+            '--sort=name',
+            '--mtime=@0',
+            '--owner=0',
+            '--group=0',
+            '--numeric-owner',
+            '-czf', stagedArchivePath,
+            '-C', temporaryRoot,
+            archiveName,
+        ], {
             environment,
         });
+        renameSync(stagedArchivePath, archivePath);
         return archivePath;
     } finally {
         rmSync(temporaryRoot, { recursive: true, force: true });
+        rmSync(publicationRoot, { recursive: true, force: true });
     }
 }
 
-function optionValue(args, name) {
-    const index = args.indexOf(name);
-    if (index === -1 || index === args.length - 1 || args[index + 1].startsWith('--')) {
-        throw new Error(`Missing required option: ${name}`);
+function parseOptions(args, command) {
+    const known = new Set(['--package-root', '--expected-version', '--destination']);
+    const allowed = command === 'archive'
+        ? known
+        : new Set(['--package-root', '--expected-version']);
+    const options = new Map();
+    for (let index = 1; index < args.length; index += 2) {
+        const name = args[index];
+        if (!known.has(name)) throw new Error(`Unknown option: ${name}`);
+        if (!allowed.has(name)) throw new Error(`Option ${name} is not valid for ${command}`);
+        if (options.has(name)) throw new Error(`Duplicate option: ${name}`);
+        const value = args[index + 1];
+        if (value === undefined || value.startsWith('--')) {
+            throw new Error(`Missing value for option: ${name}`);
+        }
+        options.set(name, value);
     }
-    return args[index + 1];
+    for (const name of allowed) {
+        if (!options.has(name)) throw new Error(`Missing required option: ${name}`);
+    }
+    return options;
 }
 
 export function runIverilogSourceCli(args) {
@@ -208,8 +250,9 @@ export function runIverilogSourceCli(args) {
     if (command !== 'validate' && command !== 'archive') {
         throw new Error('Usage: iverilog-source.mjs <validate|archive> --package-root PATH --expected-version VERSION [--destination PATH]');
     }
-    const packageRoot = path.resolve(optionValue(args, '--package-root'));
-    const expectedVersion = optionValue(args, '--expected-version');
+    const options = parseOptions(args, command);
+    const packageRoot = path.resolve(options.get('--package-root'));
+    const expectedVersion = options.get('--expected-version');
     if (command === 'validate') {
         return readIverilogSource({
             packageRoot,
@@ -221,7 +264,7 @@ export function runIverilogSourceCli(args) {
         packageRoot,
         expectedName: '@veriflow/iverilog-wasm',
         expectedVersion,
-        destination: optionValue(args, '--destination'),
+        destination: options.get('--destination'),
     });
 }
 
