@@ -909,7 +909,7 @@ git add scripts packages/cli veriflow-vscode docs/licenses .github/workflows
 git commit -m "build(sim): enforce wasm licensing and clean installs"
 ```
 
-## Task 13: Add The 1,760-Case Regression Bridge
+## Task 13: Add The 1,758-Case Regression Bridge
 
 **Files:**
 - Create: `tools/simulation/iverilog-revision.json`
@@ -946,7 +946,7 @@ node scripts/simulation/read-iverilog-regress.mjs \
   --output /tmp/veriflow-regress-manifest.json
 ```
 
-Expected: summary reports 1,766 active and 1,760 eligible entries. The six excluded entries must name their explicit non-2005 generation reason.
+Expected: summary reports 1,766 active and 1,758 eligible entries. The eight excluded entries must name their explicit non-2005 generation reason.
 
 **Step 4: Add result normalization and runner tests**
 
@@ -968,7 +968,7 @@ Expected: runner completes and reports pass/fail/skip per backend. Investigate m
 
 **Step 6: Add CI and commit**
 
-Add the deterministic shard to pull-request CI and a full 1,760-case scheduled job. Archive result JSON.
+Add the deterministic shard to pull-request CI and a full 1,758-case scheduled job. Archive result JSON.
 
 ```bash
 git add tools/simulation scripts/simulation docs/simulation package.json .github/workflows/ci.yml
@@ -1181,7 +1181,7 @@ Phase 1 and the immediate foundation are complete only when all of the following
 - The CommonJS/ESM boundary passes both direct and esbuild-bundled tests.
 - The extracted VSIX passes a real runtime smoke from its final packaged paths.
 - npm and VSIX artifacts contain license/source metadata required for the Icarus binary payload.
-- The pinned corpus reports 1,760 eligible Verilog-2005 cases.
+- The pinned corpus reports 1,758 eligible Verilog-2005 cases.
 - Native `vvp` performance baselines exist before TypeScript scheduler optimization starts.
 - The TypeScript workspace has tested four-state storage and remains private/experimental.
 

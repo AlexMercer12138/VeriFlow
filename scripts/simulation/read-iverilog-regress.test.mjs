@@ -68,9 +68,11 @@ sv normal,-g2005-sv ivltests
 legacy normal,-g2001 ivltests
 old CE,-g1995 ivltests
 noconfig normal,-g2001-noconfig ivltests
+short_1995 normal,-g1 ivltests
+short_2001 normal,-g2 ivltests
 `);
 
-    assert.equal(manifest.activeCount, 6);
+    assert.equal(manifest.activeCount, 8);
     assert.equal(manifest.eligibleCount, 2);
     assert.deepEqual(
         manifest.exclusions.map(({ name, reason }) => ({ name, reason })),
@@ -81,6 +83,14 @@ noconfig normal,-g2001-noconfig ivltests
             {
                 name: 'noconfig',
                 reason: 'explicit non-Verilog-2005 generation: -g2001-noconfig',
+            },
+            {
+                name: 'short_1995',
+                reason: 'explicit non-Verilog-2005 generation: -g1',
+            },
+            {
+                name: 'short_2001',
+                reason: 'explicit non-Verilog-2005 generation: -g2',
             },
         ],
     );
@@ -136,7 +146,25 @@ test('pinned corpus retains both occurrences of each duplicate case name', {
     const manifest = parseRegressionList(sourceText);
 
     assert.equal(manifest.activeCount, 1766);
-    assert.equal(manifest.eligibleCount, 1760);
+    assert.equal(manifest.eligibleCount, 1758);
+    assert.equal(manifest.exclusions.length, 8);
+    assert.deepEqual(
+        manifest.exclusions
+            .filter(exclusion => ['scope2b', 'pr1077'].includes(exclusion.name))
+            .map(({ name, generation, reason }) => ({ name, generation, reason })),
+        [
+            {
+                name: 'pr1077',
+                generation: '-g2',
+                reason: 'explicit non-Verilog-2005 generation: -g2',
+            },
+            {
+                name: 'scope2b',
+                generation: '-g1',
+                reason: 'explicit non-Verilog-2005 generation: -g1',
+            },
+        ],
+    );
     assert.equal(new Set(manifest.cases.map(testCase => testCase.caseId)).size, 1766);
     assert.deepEqual(
         manifest.cases

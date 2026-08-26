@@ -31,7 +31,7 @@
 | Compatibility corpus | `ivtest/regress-vlg.list` at a pinned Icarus revision |
 | Active corpus entries | 1,766 |
 | Explicit non-2005 exclusions | 6 |
-| Initial Verilog-2005 gate | 1,760 |
+| Initial Verilog-2005 gate | 1,758 |
 | Performance reference | Native `vvp`, measured separately from compilation |
 | Default-change eligibility | >=95% corpus, median <=2x native `vvp`, ordinary RTL worst case <=5x unless accepted |
 
@@ -70,7 +70,7 @@ The ranges below are engineering estimates for one experienced engineer with rev
 | Phase | Deliverable | Estimate | Exit gate |
 | --- | --- | --- | --- |
 | 1 | Productize Icarus WASM | 4-6 weeks | Built-in simulation works in CLI and VS Code on clean Linux, macOS, and Windows installs |
-| 2 | Regression and performance bridge | 3-5 weeks | 1,760-case manifest is reproducible; native/WASM baseline and benchmark JSON are archived |
+| 2 | Regression and performance bridge | 3-5 weeks | 1,758-case manifest is reproducible; native/WASM baseline and benchmark JSON are archived |
 | 3A | TS front end and elaboration | 3-5 engineer-months | Preprocessor, semantic AST, hierarchy, parameters, and generate pass their capability gates |
 | 3B | TS common RTL runtime | 4-7 engineer-months | Four-state expressions, processes, NBA, delays, memories, VCD, and core system tasks run useful RTL |
 | 4 | Full Verilog-2005 compatibility | 8-14 engineer-months | UDP, strength, tran, force/release, specify, timing checks, and SDF gaps are classified and closed |
@@ -129,7 +129,7 @@ Expected: all commands exit 0. Clean-install smoke tests must run the same Veril
 3. Run `node --test scripts/simulation/read-iverilog-regress.test.mjs`; expect parser and count assertions to fail.
 4. Implement normalized manifest parsing without copying test source files.
 5. Run the parser against `/home/mercer/prj/iverilog/ivtest/regress-vlg.list`.
-6. Assert 1,766 active entries and 1,760 eligible Verilog-2005 entries at the pinned revision.
+6. Assert 1,766 active entries and 1,758 eligible Verilog-2005 entries at the pinned revision.
 7. Commit with `test(sim): pin Icarus Verilog-2005 corpus`.
 
 ### Task 2: Establish Native/WASM Differential Results
@@ -150,7 +150,7 @@ Expected: all commands exit 0. Clean-install smoke tests must run the same Veril
 4. Fix normalization only for documented nondeterminism. Do not mask semantic output differences.
 5. Add `npm run test:sim-regression -- --backend native-iverilog,builtin --shard 0/20` to CI.
 6. Archive JSON results containing Icarus revision, package version, backend, platform, pass/fail/skip counts, and per-case duration.
-7. Expand scheduled CI to the full 1,760-case set after three consecutive deterministic shard runs.
+7. Expand scheduled CI to the full 1,758-case set after three consecutive deterministic shard runs.
 8. Commit with `test(sim): add native and wasm regression bridge`.
 
 ### Task 3: Create The Performance Baseline
@@ -201,7 +201,7 @@ Implement in this order:
 
 - Every supported construct has direct four-state and scheduling tests.
 - Zero-delay oscillation terminates with a structured diagnostic naming active processes and signals.
-- At least 70% of the 1,760-case corpus passes; every remaining case has a capability label.
+- At least 70% of the 1,758-case corpus passes; every remaining case has a capability label.
 - The common RTL benchmark subset is measured against native `vvp`; regressions over 10x require investigation before adding more language surface.
 - CLI and VS Code expose `experimental-ts` only with an experimental label and no fallback.
 
@@ -221,7 +221,7 @@ Do not force rare features into the common RTL representation. Use slower genera
 
 ### Full Compatibility Gate
 
-- >=95% of the 1,760 eligible cases pass.
+- >=95% of the 1,758 eligible cases pass.
 - No release-blocking divergence remains in ordinary RTL.
 - Every skip is tied to an issue, capability, and standard clause.
 - Native, WASM, and TS result reports retain raw output for disputed cases.

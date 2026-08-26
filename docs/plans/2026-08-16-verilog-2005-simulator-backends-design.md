@@ -196,9 +196,9 @@ processes and signals involved in the suspected zero-delay oscillation.
 
 The baseline is the Icarus `ivtest/regress-vlg.list` file, which declares that
 its cases target standard Verilog 1364-2005. The current list contains 1,766
-active entries. Six entries explicitly select `-g1995`, `-g2001`,
-`-g2001-noconfig`, or `-g2005-sv`; they are outside a Verilog-2005-only engine,
-leaving 1,760 initial compatibility cases.
+active entries. Eight entries explicitly select `-g1`, `-g2`, `-g1995`,
+`-g2001`, `-g2001-noconfig`, or `-g2005-sv`; they are outside a
+Verilog-2005-only engine, leaving 1,758 initial compatibility cases.
 
 The harness records the source revision and parses each case into a normalized
 manifest containing test type, files, options, expected output, and required
@@ -229,7 +229,7 @@ bytes, and artifact time for native Icarus, Icarus WASM, and TypeScript.
 
 Before the TypeScript backend can replace `builtin`:
 
-- it passes at least 95 percent of the 1,760-case Verilog-2005 corpus;
+- it passes at least 95 percent of the 1,758-case Verilog-2005 corpus;
 - every skipped case has an explicit capability classification;
 - no release-blocking correctness divergence remains in ordinary RTL;
 - median simulation time without VCD is no more than 2x native `vvp`;

@@ -12,8 +12,8 @@ is a commit and exports `ivtest` from that object with `git archive`. The
 external checkout's `HEAD` is not used, and generated manifests contain source
 paths and options but no copied HDL source.
 
-The pinned list has 1,766 active cases and 1,760 Verilog-2005-eligible cases.
-Six entries are excluded because they explicitly select another generation:
+The pinned list has 1,766 active cases and 1,758 Verilog-2005-eligible cases.
+Eight entries are excluded because they explicitly select another generation:
 
 | Case | Generation |
 | --- | --- |
@@ -22,7 +22,9 @@ Six entries are excluded because they explicitly select another generation:
 | `check_constant_3` | `-g1995` |
 | `generate_specify` | `-g2005-sv` |
 | `generate_specparam` | `-g2005-sv` |
+| `pr1077` | `-g2` (deprecated alias for Verilog-2001) |
 | `pr1758122` | `-g2001-noconfig` |
+| `scope2b` | `-g1` (deprecated alias for Verilog-1995) |
 
 The upstream list contains two entries named `pr2792897` and two named
 `pr2849783`. The manifest assigns duplicate occurrences stable list-order IDs
@@ -64,7 +66,7 @@ npm run test:sim-regression -- \
   --baseline tools/simulation/iverilog-regression-baseline.json
 ```
 
-Use `--shard 0/1` for all 1,760 eligible cases. Selection is stable list-order
+Use `--shard 0/1` for all 1,758 eligible cases. Selection is stable list-order
 index modulo the shard count, so introducing `caseId` does not reshuffle the
 existing shards. The runner rejects missing or duplicate manifest IDs before
 selecting a shard. `--timeout-ms` defaults to 30,000 per case.
@@ -149,5 +151,5 @@ open at simulation end, expose a real native/WASM artifact-flush difference;
 they are failures rather than capability skips.
 
 Pull requests run shard `0/20`. The Monday scheduled job runs the complete
-1,760-case suite. Both use the same exact baseline, fail on any new or stale
+1,758-case suite. Both use the same exact baseline, fail on any new or stale
 entry, and archive `veriflow-regress-results.json` even on failure.

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const SUPPORTED_TYPES = new Set(['normal', 'CE', 'RE', 'CO']);
 const NON_VERILOG_2005_GENERATIONS = new Set([
+    '-g1',
+    '-g2',
     '-g1995',
     '-g2001',
     '-g2001-noconfig',
