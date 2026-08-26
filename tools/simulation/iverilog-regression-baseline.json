@@ -7,7 +7,8 @@
       "backendId": "builtin",
       "status": "fail",
       "exitClass": "runtime-error",
-      "reason": "output differs from gold/sys_func_task_error.gold"
+      "reason": "output differs from gold/sys_func_task_error.gold",
+      "resultDigest": "1562ab32e30c04a858029cdf979e57502e7d2a8928598a5a8e38c6744bc2ea38"
     }
   ],
   "mismatches": [
@@ -17,7 +18,9 @@
       "rightBackend": "builtin",
       "fields": [
         "unexpectedFiles"
-      ]
+      ],
+      "leftResultDigest": "ff554f0509048e2b92a93e3f4031c958b1423fcea3b27a17b897dc4033b3cc5f",
+      "rightResultDigest": "6e3268315de4f421bd04ee48f5a79da1c838389349b56ac886de970ca6205b89"
     },
     {
       "caseName": "sys_func_task_error",
@@ -26,7 +29,9 @@
       "fields": [
         "status",
         "stdout"
-      ]
+      ],
+      "leftResultDigest": "bce515e184c6476f98b98842c51d02a94dbcf47408baa6919041f31fee85f1cf",
+      "rightResultDigest": "1562ab32e30c04a858029cdf979e57502e7d2a8928598a5a8e38c6744bc2ea38"
     }
   ]
 }

@@ -12,6 +12,7 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -903,12 +904,15 @@ const BASELINE_FAILURE_KEYS = [
     'status',
     'exitClass',
     'reason',
+    'resultDigest',
 ];
 const BASELINE_MISMATCH_KEYS = [
     'caseName',
     'leftBackend',
     'rightBackend',
     'fields',
+    'leftResultDigest',
+    'rightResultDigest',
 ];
 const EXIT_CLASSES = new Set([
     'success',
@@ -927,6 +931,36 @@ const MISMATCH_FIELDS = new Set([
     'unexpectedFiles',
     'cause',
 ]);
+const RESULT_DIGEST_EXCLUDED_KEYS = new Set([
+    'timings',
+    'approved',
+    'resultDigest',
+    'leftResultDigest',
+    'rightResultDigest',
+]);
+
+export function regressionResultDigest(result) {
+    assertPlainObject(result, 'Regression result');
+    const normalized = normalizeRegressionResult(result);
+    const projection = Object.fromEntries(Object.entries(normalized).filter(
+        ([key]) => !RESULT_DIGEST_EXCLUDED_KEYS.has(key),
+    ));
+    return createHash('sha256')
+        .update(canonicalJson(projection))
+        .digest('hex');
+}
+
+function canonicalJson(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) {
+        return `[${value.map(item => canonicalJson(item) ?? 'null').join(',')}]`;
+    }
+    const entries = Object.keys(value)
+        .filter(key => value[key] !== undefined)
+        .sort()
+        .map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+    return `{${entries.join(',')}}`;
+}
 
 export function validateRegressionBaseline(baseline, expectedRevision) {
     assertPlainObject(baseline, 'Regression baseline');
@@ -960,6 +994,7 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
             throw new Error(`${label}.exitClass is invalid: ${failure.exitClass}`);
         }
         assertNonemptyString(failure.reason, `${label}.reason`);
+        assertSha256(failure.resultDigest, `${label}.resultDigest`);
         const identity = `${failure.caseName}\0${failure.backendId}`;
         if (failureIdentities.has(identity)) {
             throw new Error(
@@ -994,6 +1029,8 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
             }
             fields.add(field);
         }
+        assertSha256(mismatch.leftResultDigest, `${label}.leftResultDigest`);
+        assertSha256(mismatch.rightResultDigest, `${label}.rightResultDigest`);
         const identity = [
             mismatch.caseName,
             mismatch.leftBackend,
@@ -1038,27 +1075,46 @@ function assertNonemptyString(value, label) {
     }
 }
 
-function failureApproval(result) {
+function assertSha256(value, label) {
+    if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+        throw new Error(`${label} must be 64 lowercase hex characters`);
+    }
+}
+
+function failureApproval(result, resultDigest) {
     return {
         caseName: result.caseName,
         backendId: result.backendId,
         status: result.status,
         exitClass: result.exitClass,
         reason: result.reason,
+        resultDigest,
     };
 }
 
-function mismatchApproval(mismatch) {
+function resultIdentity(caseName, backendId) {
+    return `${caseName}\0${backendId}`;
+}
+
+function mismatchApproval(mismatch, resultDigests) {
     return {
         caseName: mismatch.caseName,
         leftBackend: mismatch.leftBackend,
         rightBackend: mismatch.rightBackend,
         fields: mismatch.fields,
+        leftResultDigest: resultDigests.get(resultIdentity(
+            mismatch.caseName,
+            mismatch.leftBackend,
+        )) ?? null,
+        rightResultDigest: resultDigests.get(resultIdentity(
+            mismatch.caseName,
+            mismatch.rightBackend,
+        )) ?? null,
     };
 }
 
 function approvalKey(value) {
-    return JSON.stringify(value);
+    return canonicalJson(value);
 }
 
 function annotateRegressionReport(report, baseline) {
@@ -1070,22 +1126,36 @@ function annotateRegressionReport(report, baseline) {
     )));
     const usedFailureApprovals = new Set();
     const usedMismatchApprovals = new Set();
+    const resultDigests = new Map(report.results.map(result => [
+        resultIdentity(result.caseName, result.backendId),
+        regressionResultDigest(result),
+    ]));
     let unapprovedFailureCount = 0;
     const results = report.results.map(result => {
         if (result.status !== 'fail') return result;
-        const key = approvalKey(failureApproval(result));
+        const resultDigest = resultDigests.get(resultIdentity(
+            result.caseName,
+            result.backendId,
+        ));
+        const key = approvalKey(failureApproval(result, resultDigest));
         const approved = failureApprovals.has(key);
         if (approved) usedFailureApprovals.add(key);
         else unapprovedFailureCount += 1;
-        return { ...result, approved };
+        return { ...result, resultDigest, approved };
     });
     let unapprovedMismatchCount = 0;
     const mismatches = report.mismatches.map(mismatch => {
-        const key = approvalKey(mismatchApproval(mismatch));
+        const approval = mismatchApproval(mismatch, resultDigests);
+        const key = approvalKey(approval);
         const approved = mismatchApprovals.has(key);
         if (approved) usedMismatchApprovals.add(key);
         else unapprovedMismatchCount += 1;
-        return { ...mismatch, approved };
+        return {
+            ...mismatch,
+            leftResultDigest: approval.leftResultDigest,
+            rightResultDigest: approval.rightResultDigest,
+            approved,
+        };
     });
     const staleApprovals = [
         ...(baseline?.failures ?? [])

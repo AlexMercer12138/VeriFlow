@@ -16,6 +16,7 @@ import {
     materializePinnedCorpus,
     parseRegressionArguments,
     prepareNativeToolchain,
+    regressionResultDigest,
     runRegressionSuite,
     validateRegressionBaseline,
 } from './run-iverilog-regression.mjs';
@@ -980,6 +981,44 @@ test('validates regression baseline revision, shape, and duplicate identities', 
     );
 });
 
+test('result digest is canonical, ignores derived timing, and covers semantic fields', () => {
+    const left = {
+        caseName: 'digest-case',
+        caseType: 'RE',
+        backendId: 'builtin',
+        status: 'fail',
+        exitClass: 'runtime-error',
+        stdout: 'same\r\n',
+        stderr: '',
+        diagnostics: [{ message: 'error', level: 'ERROR' }],
+        unexpectedFiles: [],
+        cause: { message: 'cause', code: 'RUNTIME' },
+        timings: { run: 1 },
+        approved: false,
+    };
+    const reordered = {
+        approved: true,
+        timings: { run: 999 },
+        cause: { code: 'RUNTIME', message: 'cause' },
+        unexpectedFiles: [],
+        diagnostics: [{ level: 'ERROR', message: 'error' }],
+        stderr: '',
+        stdout: 'same\n',
+        exitClass: 'runtime-error',
+        status: 'fail',
+        backendId: 'builtin',
+        caseType: 'RE',
+        caseName: 'digest-case',
+    };
+
+    assert.equal(regressionResultDigest(left), regressionResultDigest(reordered));
+    assert.notEqual(
+        regressionResultDigest(left),
+        regressionResultDigest({ ...reordered, stdout: 'changed\n' }),
+    );
+    assert.match(regressionResultDigest(left), /^[0-9a-f]{64}$/);
+});
+
 test('known baseline keeps raw failures visible, marks approvals, writes JSON, and exits zero', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-known-'));
     const jsonPath = path.join(root, 'report.json');
@@ -994,8 +1033,140 @@ test('known baseline keeps raw failures visible, marks approvals, writes JSON, a
         assert.equal(finalized.exitCode, 0);
         assert.equal(written.results[0].status, 'fail');
         assert.equal(written.results[0].approved, true);
+        assert.match(written.results[0].resultDigest, /^[0-9a-f]{64}$/);
         assert.equal(written.mismatches[0].approved, true);
+        assert.match(written.mismatches[0].leftResultDigest, /^[0-9a-f]{64}$/);
+        assert.match(written.mismatches[0].rightResultDigest, /^[0-9a-f]{64}$/);
         assert.deepEqual(written.baseline.staleApprovals, []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('baseline approval matching is independent of JSON object key order', async () => {
+    const baseline = sampleBaseline();
+    baseline.failures[0] = Object.fromEntries(
+        Object.entries(baseline.failures[0]).reverse(),
+    );
+    baseline.mismatches[0] = Object.fromEntries(
+        Object.entries(baseline.mismatches[0]).reverse(),
+    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-key-order-'));
+    const jsonPath = path.join(root, 'report.json');
+    try {
+        const finalized = await finalizeRegressionReport({
+            report: sampleRegressionReport(),
+            baseline,
+            jsonPath,
+        });
+
+        assert.equal(finalized.exitCode, 0);
+        assert.equal(finalized.report.results[0].approved, true);
+        assert.equal(finalized.report.mismatches[0].approved, true);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('failure approval is invalidated by any stable result-content change after JSON write', async () => {
+    const mutations = [
+        ['stdout', result => { result.stdout = 'changed output\n'; }],
+        ['diagnostics', result => { result.diagnostics = ['changed diagnostic']; }],
+        ['unexpectedFiles', result => { result.unexpectedFiles = ['new.file']; }],
+        ['cause', result => { result.cause = { code: 'CRASH', message: 'changed cause' }; }],
+        ['exitCode', result => { result.exitCode = 99; }],
+    ];
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-result-change-'));
+    try {
+        for (const [name, mutate] of mutations) {
+            const original = sampleRegressionReport();
+            const baseline = sampleBaseline(original);
+            const changed = structuredClone(original);
+            mutate(changed.results.find(result => result.caseName === 'known-failure'));
+            const jsonPath = path.join(root, `${name}.json`);
+
+            const finalized = await finalizeRegressionReport({
+                report: changed,
+                baseline,
+                jsonPath,
+            });
+            const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+            const failure = written.results.find(result => (
+                result.caseName === 'known-failure'
+            ));
+
+            assert.equal(finalized.exitCode, 1, name);
+            assert.equal(failure.status, 'fail', name);
+            assert.equal(failure.reason, 'output differs from gold/known.gold', name);
+            assert.equal(failure.approved, false, name);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('mismatch approval is invalidated when either backend result changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-side-change-'));
+    try {
+        for (const backendId of ['native-iverilog', 'builtin']) {
+            const original = sampleRegressionReport();
+            const baseline = sampleBaseline(original);
+            const changed = structuredClone(original);
+            changed.results.find(result => (
+                result.caseName === 'known-mismatch'
+                && result.backendId === backendId
+            )).stdout += 'changed\n';
+            const jsonPath = path.join(root, `${backendId}.json`);
+
+            const finalized = await finalizeRegressionReport({
+                report: changed,
+                baseline,
+                jsonPath,
+            });
+            const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+            assert.equal(finalized.exitCode, 1, backendId);
+            assert.deepEqual(written.mismatches[0].fields, ['stdout']);
+            assert.equal(written.mismatches[0].approved, false, backendId);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('baseline rejects missing or malformed digests and does not approve forged digests', async () => {
+    const report = sampleRegressionReport();
+    const baseline = sampleBaseline(report);
+    const missing = structuredClone(baseline);
+    delete missing.failures[0].resultDigest;
+    assert.throws(
+        () => validateRegressionBaseline(missing, SAMPLE_REVISION),
+        /missing key: resultDigest/i,
+    );
+    const malformed = structuredClone(baseline);
+    malformed.mismatches[0].leftResultDigest = 'ABC123';
+    assert.throws(
+        () => validateRegressionBaseline(malformed, SAMPLE_REVISION),
+        /leftResultDigest.*64 lowercase hex/i,
+    );
+
+    const forged = structuredClone(baseline);
+    forged.failures[0].resultDigest = '0'.repeat(64);
+    forged.mismatches[0].leftResultDigest = '0'.repeat(64);
+    forged.mismatches[0].rightResultDigest = '0'.repeat(64);
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-forged-'));
+    const jsonPath = path.join(root, 'report.json');
+    try {
+        const finalized = await finalizeRegressionReport({
+            report,
+            baseline: forged,
+            jsonPath,
+        });
+        const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+        assert.equal(finalized.exitCode, 1);
+        assert.equal(written.results[0].approved, false);
+        assert.equal(written.mismatches[0].approved, false);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -1093,7 +1264,17 @@ test('tracked regression baseline validates against the pinned corpus revision',
 
 const SAMPLE_REVISION = '1234567890abcdef1234567890abcdef12345678';
 
-function sampleBaseline() {
+function sampleBaseline(report = sampleRegressionReport()) {
+    const failure = report.results.find(result => result.caseName === 'known-failure');
+    const mismatch = report.mismatches.find(entry => entry.caseName === 'known-mismatch');
+    const left = report.results.find(result => (
+        result.caseName === mismatch.caseName
+        && result.backendId === mismatch.leftBackend
+    ));
+    const right = report.results.find(result => (
+        result.caseName === mismatch.caseName
+        && result.backendId === mismatch.rightBackend
+    ));
     return {
         schemaVersion: 1,
         corpusRevision: SAMPLE_REVISION,
@@ -1103,12 +1284,15 @@ function sampleBaseline() {
             status: 'fail',
             exitClass: 'runtime-error',
             reason: 'output differs from gold/known.gold',
+            resultDigest: regressionResultDigest(failure),
         }],
         mismatches: [{
             caseName: 'known-mismatch',
             leftBackend: 'native-iverilog',
             rightBackend: 'builtin',
             fields: ['stdout'],
+            leftResultDigest: regressionResultDigest(left),
+            rightResultDigest: regressionResultDigest(right),
         }],
     };
 }
@@ -1125,10 +1309,18 @@ function sampleRegressionReport({
         status: 'fail',
         reason: 'output differs from gold/known.gold',
         exitClass: 'runtime-error',
+        stage: 'run',
+        exitCode: 3,
         stdout: 'runtime failed\n',
         stderr: '',
         diagnostics: [],
         unexpectedFiles: [],
+        comparison: {
+            kind: 'gold',
+            path: 'gold/known.gold',
+            match: false,
+            reason: 'output differs from gold/known.gold',
+        },
     }] : [];
     if (includeExtraFailure) {
         failures.push({
@@ -1137,6 +1329,34 @@ function sampleRegressionReport({
             reason: 'new failure',
         });
     }
+    const mismatchResults = [
+        {
+            caseName: 'known-mismatch',
+            caseType: 'normal',
+            backendId: 'native-iverilog',
+            status: 'pass',
+            exitClass: 'success',
+            stage: 'run',
+            exitCode: 0,
+            stdout: 'native\n',
+            stderr: '',
+            diagnostics: [],
+            unexpectedFiles: [],
+        },
+        {
+            caseName: 'known-mismatch',
+            caseType: 'normal',
+            backendId: 'builtin',
+            status: 'pass',
+            exitClass: 'success',
+            stage: 'run',
+            exitCode: 0,
+            stdout: 'builtin\n',
+            stderr: '',
+            diagnostics: [],
+            unexpectedFiles: [],
+        },
+    ];
     const mismatches = [{
         caseName: 'known-mismatch',
         leftBackend: 'native-iverilog',
@@ -1144,6 +1364,18 @@ function sampleRegressionReport({
         fields: ['stdout'],
     }];
     if (includeExtraMismatch) {
+        mismatchResults.push(
+            {
+                ...mismatchResults[0],
+                caseName: 'new-mismatch',
+                stderr: 'native stderr\n',
+            },
+            {
+                ...mismatchResults[1],
+                caseName: 'new-mismatch',
+                stderr: 'builtin stderr\n',
+            },
+        );
         mismatches.push({
             caseName: 'new-mismatch',
             leftBackend: 'native-iverilog',
@@ -1154,7 +1386,7 @@ function sampleRegressionReport({
     return {
         schemaVersion: 1,
         corpus: { revision: SAMPLE_REVISION },
-        results: failures,
+        results: [...failures, ...mismatchResults],
         mismatches,
     };
 }
