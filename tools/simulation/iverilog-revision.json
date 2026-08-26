@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/AlexMercer12138/iverilog.git",
+  "revision": "19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1",
+  "list": "ivtest/regress-vlg.list",
+  "activeCases": 1766,
+  "eligibleCases": 1760
+}

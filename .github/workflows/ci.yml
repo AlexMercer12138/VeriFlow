@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "23 3 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -140,3 +142,95 @@ jobs:
           path: |
             dist/npm/*.tgz
             veriflow-vscode/*.vsix
+
+  simulation-regression-shard:
+    name: Verilog-2005 regression shard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build simulation packages
+        run: npm run build:shared
+
+      - name: Install native Icarus
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Fetch pinned Icarus corpus
+        shell: bash
+        run: |
+          revision="$(node -p "require('./tools/simulation/iverilog-revision.json').revision")"
+          corpus_repository="$(node -p "require('./tools/simulation/iverilog-revision.json').repository")"
+          git init "$RUNNER_TEMP/iverilog"
+          git -C "$RUNNER_TEMP/iverilog" remote add origin "$corpus_repository"
+          git -C "$RUNNER_TEMP/iverilog" fetch --depth=1 origin "$revision"
+
+      - name: Run deterministic regression shard
+        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/20 --json "$RUNNER_TEMP/veriflow-regress-results.json"
+
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veriflow-regression-shard
+          if-no-files-found: error
+          path: ${{ runner.temp }}/veriflow-regress-results.json
+
+  simulation-regression-full:
+    name: Verilog-2005 full regression
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build simulation packages
+        run: npm run build:shared
+
+      - name: Install native Icarus
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Fetch pinned Icarus corpus
+        shell: bash
+        run: |
+          revision="$(node -p "require('./tools/simulation/iverilog-revision.json').revision")"
+          corpus_repository="$(node -p "require('./tools/simulation/iverilog-revision.json').repository")"
+          git init "$RUNNER_TEMP/iverilog"
+          git -C "$RUNNER_TEMP/iverilog" remote add origin "$corpus_repository"
+          git -C "$RUNNER_TEMP/iverilog" fetch --depth=1 origin "$revision"
+
+      - name: Run complete pinned regression
+        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/1 --json "$RUNNER_TEMP/veriflow-regress-results.json"
+
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veriflow-regression-full
+          if-no-files-found: error
+          path: ${{ runner.temp }}/veriflow-regress-results.json
