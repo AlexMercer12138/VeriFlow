@@ -1,0 +1,7 @@
+{
+  "id": "udp",
+  "top": "udp_bench",
+  "sources": ["udp.v"],
+  "expectedOutput": "PASS udp",
+  "expectedEvents": 20000
+}

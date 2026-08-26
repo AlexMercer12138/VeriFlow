@@ -1,0 +1,7 @@
+{
+  "id": "fifo",
+  "top": "fifo_bench",
+  "sources": ["fifo.v"],
+  "expectedOutput": "PASS fifo",
+  "expectedEvents": 10000
+}

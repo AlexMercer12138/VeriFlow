@@ -1,0 +1,7 @@
+{
+  "id": "arithmetic",
+  "top": "arithmetic_bench",
+  "sources": ["arithmetic.v"],
+  "expectedOutput": "PASS arithmetic",
+  "expectedEvents": 100000
+}

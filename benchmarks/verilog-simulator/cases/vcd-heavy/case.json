@@ -1,0 +1,8 @@
+{
+  "id": "vcd-heavy",
+  "top": "vcd_heavy_bench",
+  "sources": ["vcd-heavy.v"],
+  "expectedOutput": "PASS vcd-heavy",
+  "expectedEvents": 10000,
+  "artifactPath": "wave.vcd"
+}

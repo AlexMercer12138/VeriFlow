@@ -1,0 +1,7 @@
+{
+  "id": "memory",
+  "top": "memory_bench",
+  "sources": ["memory.v"],
+  "expectedOutput": "PASS memory",
+  "expectedEvents": 8192
+}

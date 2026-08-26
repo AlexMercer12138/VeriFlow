@@ -1,0 +1,7 @@
+{
+  "id": "generate",
+  "top": "generate_bench",
+  "sources": ["generate.v"],
+  "expectedOutput": "PASS generate",
+  "expectedEvents": 320000
+}

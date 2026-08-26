@@ -1,0 +1,7 @@
+{
+  "id": "multi-driver",
+  "top": "multi_driver_bench",
+  "sources": ["multi-driver.v"],
+  "expectedOutput": "PASS multi-driver",
+  "expectedEvents": 20000
+}

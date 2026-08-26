@@ -1,0 +1,7 @@
+{
+  "id": "specify",
+  "top": "specify_bench",
+  "sources": ["specify.v"],
+  "expectedOutput": "PASS specify",
+  "expectedEvents": 20000
+}

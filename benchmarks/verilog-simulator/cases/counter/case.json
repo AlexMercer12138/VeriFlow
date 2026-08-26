@@ -1,0 +1,7 @@
+{
+  "id": "counter",
+  "top": "counter_bench",
+  "sources": ["counter.v"],
+  "expectedOutput": "PASS counter",
+  "expectedEvents": 200004
+}

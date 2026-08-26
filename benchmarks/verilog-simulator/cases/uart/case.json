@@ -1,0 +1,7 @@
+{
+  "id": "uart",
+  "top": "uart_bench",
+  "sources": ["uart.v"],
+  "expectedOutput": "PASS uart",
+  "expectedEvents": 20480
+}

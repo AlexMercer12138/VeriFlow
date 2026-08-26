@@ -1,0 +1,7 @@
+{
+  "id": "wide-vector",
+  "top": "wide_vector_bench",
+  "sources": ["wide-vector.v"],
+  "expectedOutput": "PASS wide-vector",
+  "expectedEvents": 5000
+}
