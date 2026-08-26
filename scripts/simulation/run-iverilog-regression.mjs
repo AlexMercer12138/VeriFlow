@@ -109,13 +109,19 @@ export function createNativeRegressionBackend({
                 );
                 if (compiled.exitCode !== 0 || compiled.termination !== undefined) {
                     const result = processExecution('compile', compiled, {
-                        unexpectedFiles: await unexpectedFiles(root),
+                        unexpectedFiles: await unexpectedFiles(
+                            root,
+                            declaredArtifactPaths(testCase),
+                        ),
                     });
                     return attachOutputComparison(testCase, result, corpusRoot, root);
                 }
                 if (testCase.type === 'CO') {
                     return processExecution('compile', compiled, {
-                        unexpectedFiles: await unexpectedFiles(root),
+                        unexpectedFiles: await unexpectedFiles(
+                            root,
+                            declaredArtifactPaths(testCase),
+                        ),
                     });
                 }
                 const ran = await processRunner(
@@ -127,7 +133,10 @@ export function createNativeRegressionBackend({
                     stdout: compiled.stdout + ran.stdout,
                     stderr: compiled.stderr + ran.stderr,
                     combinedOutput: compiled.combinedOutput + ran.combinedOutput,
-                    unexpectedFiles: await unexpectedFiles(root),
+                    unexpectedFiles: await unexpectedFiles(
+                        root,
+                        declaredArtifactPaths(testCase),
+                    ),
                     timings: {
                         compile: compiled.elapsedTime ?? 0,
                         run: ran.elapsedTime ?? 0,
@@ -264,7 +273,14 @@ async function createNativeCaseRoot(corpusRoot) {
     return root;
 }
 
-async function unexpectedFiles(root) {
+function declaredArtifactPaths(testCase) {
+    return testCase.comparison?.kind === 'diff'
+        ? [path.posix.normalize(testCase.comparison.actual).replace(/^\.\//, '')]
+        : [];
+}
+
+async function unexpectedFiles(root, excludedFiles = []) {
+    const excluded = new Set(excludedFiles);
     const files = [];
     const visit = async (directory, relativeRoot = '') => {
         for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -272,7 +288,7 @@ async function unexpectedFiles(root) {
             const filepath = path.join(directory, entry.name);
             if (entry.isSymbolicLink()) continue;
             if (entry.isDirectory()) await visit(filepath, relative);
-            else if (relative !== 'vsim') files.push(relative);
+            else if (relative !== 'vsim' && !excluded.has(relative)) files.push(relative);
         }
     };
     await visit(root);
@@ -280,7 +296,12 @@ async function unexpectedFiles(root) {
 }
 
 function processExecution(stage, execution, overrides = {}) {
-    const infrastructure = execution.termination !== undefined;
+    const signalCode = execution.signalCode ?? execution.signal;
+    const termination = execution.termination
+        ?? (signalCode === undefined
+            ? (execution.cause === undefined ? undefined : 'infrastructure')
+            : 'signal');
+    const infrastructure = termination !== undefined;
     const stderr = overrides.stderr ?? execution.stderr;
     return {
         success: !infrastructure && execution.exitCode === 0,
@@ -295,6 +316,8 @@ function processExecution(stage, execution, overrides = {}) {
             ? { timings: { [stage]: execution.elapsedTime ?? 0 } }
             : { timings: overrides.timings }),
         ...(execution.cause === undefined ? {} : { cause: execution.cause }),
+        ...(termination === undefined ? {} : { termination }),
+        ...(signalCode === undefined ? {} : { signalCode }),
     };
 }
 
@@ -304,16 +327,25 @@ function diagnosticLines(stderr) {
         .filter(line => line !== '');
 }
 
-async function attachOutputComparison(testCase, execution, corpusRoot, caseRoot) {
+async function attachOutputComparison(
+    testCase,
+    execution,
+    corpusRoot,
+    caseRoot,
+    comparisonActualPath,
+) {
     const comparison = testCase.comparison;
     if (comparison === undefined) return execution;
     let actual = execution.combinedOutput
         ?? `${execution.stdout ?? ''}${execution.stderr ?? ''}`;
     if (comparison.kind === 'diff') {
-        if (caseRoot === undefined) {
+        if (comparisonActualPath !== undefined) {
+            actual = await readFile(comparisonActualPath, 'utf8');
+        } else if (caseRoot === undefined) {
             throw new Error(`Comparison artifact is unavailable: ${comparison.actual}`);
+        } else {
+            actual = await readFile(path.join(caseRoot, comparison.actual), 'utf8');
         }
-        actual = await readFile(path.join(caseRoot, comparison.actual), 'utf8');
     }
     actual = normalizeText(actual, {
         rootPrefixes: [
@@ -346,9 +378,7 @@ function compareDeclaredOutput(actual, expected, comparison) {
 }
 
 function normalizedLines(value) {
-    const lines = value.replace(/\r\n?/g, '\n').split('\n');
-    if (lines.at(-1) === '') lines.pop();
-    return lines;
+    return value.replace(/\r\n?/g, '\n').split('\n');
 }
 
 function hasPassedOutput(stdout, stderr) {
@@ -393,6 +423,8 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
             clearTimeout(timeout);
             if (cause !== undefined && termination === undefined) {
                 termination = 'infrastructure';
+            } else if (signal !== null && termination === undefined) {
+                termination = 'signal';
             }
             resolve({
                 exitCode: exitCode ?? -1,
@@ -402,7 +434,7 @@ async function runProcess(executable, args, { cwd, timeoutMs }) {
                 elapsedTime: (performance.now() - started) / 1_000,
                 ...(termination === undefined ? {} : { termination }),
                 ...(cause === undefined ? {} : { cause }),
-                ...(signal === null ? {} : { signal }),
+                ...(signal === null ? {} : { signalCode: signal }),
             });
         });
     });
@@ -467,43 +499,65 @@ export function createBuiltinRegressionBackend({
             if (testCase.type === 'CO') {
                 return { skipReason: 'builtin adapter has no compile-only entry' };
             }
-            if (testCase.comparison?.kind === 'diff') {
-                return {
-                    skipReason: `builtin cannot retrieve comparison artifact: ${testCase.comparison.actual}`,
-                };
-            }
             const unsupported = unsupportedBuiltinOption(testCase.compilerOptions);
             if (unsupported !== undefined) {
                 return {
                     skipReason: `builtin cannot represent compiler option: ${unsupported}`,
                 };
             }
-            const source = path.join(corpusRoot, testCase.source);
-            const cwd = corpusRoot;
-            const runtimeFiles = await collectRuntimeDependencies(source, corpusRoot);
-            const execution = await (await loadBackend()).compileAndRun({
-                files: [source],
-                runtimeFiles,
-                includeDirs: [cwd],
-                defines: {
-                    __ICARUS_UNSIZED__: true,
-                    ...compilerDefines(testCase.compilerOptions),
-                },
-                plusargs: testCase.plusargs,
-                artifacts: [],
-                output: path.join(cwd, '.veriflow-regression.out'),
-                cwd,
-                ...(testCase.topModule === undefined
-                    ? {}
-                    : { topModule: testCase.topModule }),
-                timeoutMs,
-            });
-            const result = {
-                ...execution,
-                diagnostics: diagnosticLines(execution.stderr ?? ''),
-                unexpectedFiles: [],
-            };
-            return attachOutputComparison(testCase, result, corpusRoot);
+            const artifactRoot = testCase.comparison?.kind === 'diff'
+                ? await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-diff-'))
+                : undefined;
+            try {
+                const source = path.join(corpusRoot, testCase.source);
+                const cwd = corpusRoot;
+                const runtimeFiles = await collectRuntimeDependencies(source, corpusRoot);
+                const artifactDestination = artifactRoot === undefined
+                    ? undefined
+                    : path.join(artifactRoot, 'declared-artifact');
+                const artifacts = artifactDestination === undefined
+                    ? []
+                    : [{
+                        kind: 'file',
+                        path: testCase.comparison.actual,
+                        destination: artifactDestination,
+                        required: true,
+                    }];
+                const execution = await (await loadBackend()).compileAndRun({
+                    files: [source],
+                    runtimeFiles,
+                    includeDirs: [cwd],
+                    defines: {
+                        __ICARUS_UNSIZED__: true,
+                        ...compilerDefines(testCase.compilerOptions),
+                    },
+                    plusargs: testCase.plusargs,
+                    artifacts,
+                    output: path.join(cwd, '.veriflow-regression.out'),
+                    cwd,
+                    ...(testCase.topModule === undefined
+                        ? {}
+                        : { topModule: testCase.topModule }),
+                    timeoutMs,
+                });
+                const result = {
+                    ...execution,
+                    diagnostics: diagnosticLines(execution.stderr ?? ''),
+                    unexpectedFiles: [],
+                };
+                if (execution.stage === 'infrastructure') return result;
+                return attachOutputComparison(
+                    testCase,
+                    result,
+                    corpusRoot,
+                    undefined,
+                    artifactDestination,
+                );
+            } finally {
+                if (artifactRoot !== undefined) {
+                    await rm(artifactRoot, { recursive: true, force: true });
+                }
+            }
         },
     };
 }
@@ -551,6 +605,19 @@ async function collectRuntimeDependencies(source, corpusRoot) {
         for (const match of sourceText.matchAll(
             /\$(?:readmem[hb]|sdf_annotate)\s*\(\s*"([^"]+)"/g,
         )) {
+            try {
+                const dependency = await firstExistingPath([
+                    path.resolve(corpusRoot, match[1]),
+                    path.resolve(directory, match[1]),
+                ]);
+                dependencies.add(dependency);
+            } catch {
+            }
+        }
+        for (const match of sourceText.matchAll(
+            /\$fopen\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"/g,
+        )) {
+            if (!match[2].toLowerCase().startsWith('r')) continue;
             try {
                 const dependency = await firstExistingPath([
                     path.resolve(corpusRoot, match[1]),
@@ -685,6 +752,12 @@ async function runBackendCase(backendId, backend, testCase) {
             unexpectedFiles: execution.unexpectedFiles ?? [],
             ...(execution.timings === undefined ? {} : { timings: execution.timings }),
             ...(execution.cause === undefined ? {} : { cause: execution.cause }),
+            ...(execution.termination === undefined
+                ? {}
+                : { termination: execution.termination }),
+            ...(execution.signalCode === undefined
+                ? {}
+                : { signalCode: execution.signalCode }),
             ...(execution.comparison === undefined
                 ? {}
                 : { comparison: execution.comparison }),
@@ -818,6 +891,262 @@ function validateShard(shard) {
     }
 }
 
+const BASELINE_ROOT_KEYS = [
+    'schemaVersion',
+    'corpusRevision',
+    'failures',
+    'mismatches',
+];
+const BASELINE_FAILURE_KEYS = [
+    'caseName',
+    'backendId',
+    'status',
+    'exitClass',
+    'reason',
+];
+const BASELINE_MISMATCH_KEYS = [
+    'caseName',
+    'leftBackend',
+    'rightBackend',
+    'fields',
+];
+const EXIT_CLASSES = new Set([
+    'success',
+    'compile-error',
+    'runtime-error',
+    'infrastructure-error',
+]);
+const MISMATCH_FIELDS = new Set([
+    'status',
+    'exitClass',
+    'termination',
+    'signalCode',
+    'stdout',
+    'stderr',
+    'diagnostics',
+    'unexpectedFiles',
+    'cause',
+]);
+
+export function validateRegressionBaseline(baseline, expectedRevision) {
+    assertPlainObject(baseline, 'Regression baseline');
+    assertExactKeys(baseline, BASELINE_ROOT_KEYS, 'regression baseline');
+    if (baseline.schemaVersion !== 1) {
+        throw new Error(`Unsupported regression baseline schema: ${baseline.schemaVersion}`);
+    }
+    if (!/^[0-9a-f]{40}$/.test(baseline.corpusRevision)) {
+        throw new Error('Regression baseline corpusRevision must be 40 lowercase hex characters');
+    }
+    if (baseline.corpusRevision !== expectedRevision) {
+        throw new Error(
+            `Regression baseline revision mismatch: expected ${expectedRevision}, received ${baseline.corpusRevision}`,
+        );
+    }
+    if (!Array.isArray(baseline.failures) || !Array.isArray(baseline.mismatches)) {
+        throw new Error('Regression baseline failures and mismatches must be arrays');
+    }
+
+    const failureIdentities = new Set();
+    const failures = baseline.failures.map((failure, index) => {
+        const label = `regression baseline failure ${index}`;
+        assertPlainObject(failure, label);
+        assertExactKeys(failure, BASELINE_FAILURE_KEYS, label);
+        assertNonemptyString(failure.caseName, `${label}.caseName`);
+        assertNonemptyString(failure.backendId, `${label}.backendId`);
+        if (failure.status !== 'fail') {
+            throw new Error(`${label}.status must be fail`);
+        }
+        if (!EXIT_CLASSES.has(failure.exitClass)) {
+            throw new Error(`${label}.exitClass is invalid: ${failure.exitClass}`);
+        }
+        assertNonemptyString(failure.reason, `${label}.reason`);
+        const identity = `${failure.caseName}\0${failure.backendId}`;
+        if (failureIdentities.has(identity)) {
+            throw new Error(
+                `Duplicate failure approval: ${failure.caseName}/${failure.backendId}`,
+            );
+        }
+        failureIdentities.add(identity);
+        return { ...failure };
+    });
+
+    const mismatchIdentities = new Set();
+    const mismatches = baseline.mismatches.map((mismatch, index) => {
+        const label = `regression baseline mismatch ${index}`;
+        assertPlainObject(mismatch, label);
+        assertExactKeys(mismatch, BASELINE_MISMATCH_KEYS, label);
+        assertNonemptyString(mismatch.caseName, `${label}.caseName`);
+        assertNonemptyString(mismatch.leftBackend, `${label}.leftBackend`);
+        assertNonemptyString(mismatch.rightBackend, `${label}.rightBackend`);
+        if (mismatch.leftBackend === mismatch.rightBackend) {
+            throw new Error(`${label} must name two different backends`);
+        }
+        if (!Array.isArray(mismatch.fields) || mismatch.fields.length === 0) {
+            throw new Error(`${label}.fields must be a nonempty array`);
+        }
+        const fields = new Set();
+        for (const field of mismatch.fields) {
+            if (!MISMATCH_FIELDS.has(field)) {
+                throw new Error(`${label}.fields contains unknown field: ${field}`);
+            }
+            if (fields.has(field)) {
+                throw new Error(`${label}.fields contains duplicate field: ${field}`);
+            }
+            fields.add(field);
+        }
+        const identity = [
+            mismatch.caseName,
+            mismatch.leftBackend,
+            mismatch.rightBackend,
+        ].join('\0');
+        if (mismatchIdentities.has(identity)) {
+            throw new Error(
+                `Duplicate mismatch approval: ${mismatch.caseName}/${mismatch.leftBackend}/${mismatch.rightBackend}`,
+            );
+        }
+        mismatchIdentities.add(identity);
+        return { ...mismatch, fields: [...mismatch.fields] };
+    });
+
+    return {
+        schemaVersion: 1,
+        corpusRevision: baseline.corpusRevision,
+        failures,
+        mismatches,
+    };
+}
+
+function assertPlainObject(value, label) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+    }
+}
+
+function assertExactKeys(value, expectedKeys, label) {
+    const expected = new Set(expectedKeys);
+    for (const key of Object.keys(value)) {
+        if (!expected.has(key)) throw new Error(`${label} has unexpected key: ${key}`);
+    }
+    for (const key of expectedKeys) {
+        if (!(key in value)) throw new Error(`${label} is missing key: ${key}`);
+    }
+}
+
+function assertNonemptyString(value, label) {
+    if (typeof value !== 'string' || value.length === 0) {
+        throw new Error(`${label} must be a nonempty string`);
+    }
+}
+
+function failureApproval(result) {
+    return {
+        caseName: result.caseName,
+        backendId: result.backendId,
+        status: result.status,
+        exitClass: result.exitClass,
+        reason: result.reason,
+    };
+}
+
+function mismatchApproval(mismatch) {
+    return {
+        caseName: mismatch.caseName,
+        leftBackend: mismatch.leftBackend,
+        rightBackend: mismatch.rightBackend,
+        fields: mismatch.fields,
+    };
+}
+
+function approvalKey(value) {
+    return JSON.stringify(value);
+}
+
+function annotateRegressionReport(report, baseline) {
+    const failureApprovals = new Map((baseline?.failures ?? []).map(approval => (
+        [approvalKey(approval), approval]
+    )));
+    const mismatchApprovals = new Map((baseline?.mismatches ?? []).map(approval => (
+        [approvalKey(approval), approval]
+    )));
+    const usedFailureApprovals = new Set();
+    const usedMismatchApprovals = new Set();
+    let unapprovedFailureCount = 0;
+    const results = report.results.map(result => {
+        if (result.status !== 'fail') return result;
+        const key = approvalKey(failureApproval(result));
+        const approved = failureApprovals.has(key);
+        if (approved) usedFailureApprovals.add(key);
+        else unapprovedFailureCount += 1;
+        return { ...result, approved };
+    });
+    let unapprovedMismatchCount = 0;
+    const mismatches = report.mismatches.map(mismatch => {
+        const key = approvalKey(mismatchApproval(mismatch));
+        const approved = mismatchApprovals.has(key);
+        if (approved) usedMismatchApprovals.add(key);
+        else unapprovedMismatchCount += 1;
+        return { ...mismatch, approved };
+    });
+    const staleApprovals = [
+        ...(baseline?.failures ?? [])
+            .filter(approval => !usedFailureApprovals.has(approvalKey(approval)))
+            .map(approval => ({ kind: 'failure', ...approval })),
+        ...(baseline?.mismatches ?? [])
+            .filter(approval => !usedMismatchApprovals.has(approvalKey(approval)))
+            .map(approval => ({ kind: 'mismatch', ...approval })),
+    ];
+    const clean = unapprovedFailureCount === 0
+        && unapprovedMismatchCount === 0
+        && staleApprovals.length === 0;
+    return {
+        ...report,
+        results,
+        mismatches,
+        baseline: {
+            provided: baseline !== undefined,
+            valid: true,
+            clean,
+            ...(baseline === undefined
+                ? {}
+                : { corpusRevision: baseline.corpusRevision }),
+            unapprovedFailureCount,
+            unapprovedMismatchCount,
+            staleApprovals,
+        },
+    };
+}
+
+export async function finalizeRegressionReport({
+    report,
+    baseline,
+    baselineError,
+    jsonPath,
+}) {
+    let finalized;
+    try {
+        if (baselineError !== undefined) throw baselineError;
+        const validated = baseline === undefined
+            ? undefined
+            : validateRegressionBaseline(baseline, report.corpus.revision);
+        finalized = annotateRegressionReport(report, validated);
+    } catch (error) {
+        finalized = annotateRegressionReport(report);
+        finalized.baseline = {
+            ...finalized.baseline,
+            provided: true,
+            valid: false,
+            clean: false,
+            error: errorMessage(error),
+        };
+    }
+    await mkdir(path.dirname(path.resolve(jsonPath)), { recursive: true });
+    await writeFile(jsonPath, `${JSON.stringify(finalized, null, 2)}\n`, 'utf8');
+    return {
+        report: finalized,
+        exitCode: finalized.baseline.clean ? 0 : 1,
+    };
+}
+
 export function parseRegressionArguments(argv) {
     const values = {};
     const optionNames = new Map([
@@ -826,6 +1155,7 @@ export function parseRegressionArguments(argv) {
         ['--shard', 'shard'],
         ['--json', 'json'],
         ['--timeout-ms', 'timeoutMs'],
+        ['--baseline', 'baseline'],
     ]);
     for (let index = 0; index < argv.length; index += 1) {
         const argument = argv[index];
@@ -869,6 +1199,7 @@ export function parseRegressionArguments(argv) {
         shard,
         json: values.json,
         timeoutMs,
+        ...(values.baseline === undefined ? {} : { baseline: values.baseline }),
     };
 }
 
@@ -940,18 +1271,38 @@ async function main() {
                 revision: revision.revision,
                 list: revision.list,
             };
-            await mkdir(path.dirname(path.resolve(options.json)), { recursive: true });
-            await writeFile(options.json, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+            let baseline;
+            let baselineError;
+            if (options.baseline !== undefined) {
+                try {
+                    baseline = JSON.parse(await readFile(options.baseline, 'utf8'));
+                } catch (error) {
+                    baselineError = new Error(
+                        `Unable to load regression baseline ${options.baseline}: ${errorMessage(error)}`,
+                    );
+                }
+            }
+            const finalized = await finalizeRegressionReport({
+                report,
+                baseline,
+                baselineError,
+                jsonPath: options.json,
+            });
+            const finalReport = finalized.report;
             console.log(
-                `active=${report.activeCases} eligible=${report.eligibleCases} selected=${report.selectedCases}`,
+                `active=${finalReport.activeCases} eligible=${finalReport.eligibleCases} selected=${finalReport.selectedCases}`,
             );
             for (const backendId of options.backendIds) {
-                const counts = report.summary[backendId];
+                const counts = finalReport.summary[backendId];
                 console.log(
                     `${backendId}: pass=${counts.pass} fail=${counts.fail} skip=${counts.skip}`,
                 );
             }
-            console.log(`mismatch=${report.mismatches.length} json=${options.json}`);
+            console.log(`mismatch=${finalReport.mismatches.length} json=${options.json}`);
+            console.log(
+                `baseline=${finalReport.baseline.clean ? 'clean' : 'dirty'} approved=${finalReport.baseline.provided}`,
+            );
+            return finalized.exitCode;
         } finally {
             await nativeToolchain.cleanup();
         }
@@ -967,8 +1318,12 @@ function errorMessage(error) {
 const isMain = process.argv[1] !== undefined
     && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-    main().catch(error => {
-        console.error(errorMessage(error));
-        process.exitCode = 1;
-    });
+    main()
+        .then(exitCode => {
+            process.exitCode = exitCode;
+        })
+        .catch(error => {
+            console.error(errorMessage(error));
+            process.exitCode = 1;
+        });
 }

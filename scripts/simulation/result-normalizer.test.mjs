@@ -12,10 +12,12 @@ import {
 import {
     createBuiltinRegressionBackend,
     createNativeRegressionBackend,
+    finalizeRegressionReport,
     materializePinnedCorpus,
     parseRegressionArguments,
     prepareNativeToolchain,
     runRegressionSuite,
+    validateRegressionBaseline,
 } from './run-iverilog-regression.mjs';
 
 test('normalizes only line endings, configured roots, and declared timing text', () => {
@@ -63,6 +65,33 @@ test('normalizes configured roots inside structured diagnostics without changing
         fileRef: '<CORPUS>/top.v',
         lineNo: 7,
     }]);
+});
+
+test('normalizes failure causes and compares termination details', () => {
+    const left = normalizeRegressionResult({
+        status: 'fail',
+        exitClass: 'infrastructure-error',
+        stdout: '',
+        stderr: '',
+        diagnostics: [],
+        unexpectedFiles: [],
+        termination: 'signal',
+        signalCode: 'SIGSEGV',
+        cause: { code: 'CRASH', message: '/repo/ivtest/compiler crashed' },
+    }, {
+        rootPrefixes: [{ path: '/repo/ivtest', replacement: '<CORPUS>' }],
+    });
+    const right = {
+        ...left,
+        signalCode: 'SIGKILL',
+        cause: { code: 'CRASH', message: '<CORPUS>/different crash' },
+    };
+
+    assert.equal(left.cause.message, '<CORPUS>/compiler crashed');
+    assert.deepEqual(compareNormalizedResults(left, right), {
+        match: false,
+        fields: ['signalCode', 'cause'],
+    });
 });
 
 test('preserves stdout order, diagnostics, exit class, files, and undeclared timing', () => {
@@ -313,6 +342,53 @@ test('builtin backend stages recursive includes and literal readmem inputs', asy
     }
 });
 
+test('builtin backend stages existing literal fopen inputs from recursive includes', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-fopen-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const requests = [];
+    try {
+        await mkdir(sourceRoot);
+        await Promise.all([
+            writeFile(path.join(sourceRoot, 'sample.v'), [
+                '`include "reader.vh"',
+                'module sample; initial begin open_inputs; $display("PASSED"); end endmodule',
+                '',
+            ].join('\n')),
+            writeFile(path.join(sourceRoot, 'reader.vh'), [
+                'task open_inputs;',
+                '  integer input_fd, missing_fd, output_fd;',
+                '  begin',
+                '    input_fd = $fopen("ivltests/input.txt", "r");',
+                '    missing_fd = $fopen("ThisFileDoesNotExist.txt", "r");',
+                '    output_fd = $fopen("work/output.txt", "w");',
+                '  end',
+                'endtask',
+                '',
+            ].join('\n')),
+            writeFile(path.join(sourceRoot, 'input.txt'), 'fixture input\n'),
+        ]);
+        const backend = createBuiltinRegressionBackend({
+            corpusRoot,
+            backendFactory: () => ({
+                async compileAndRun(request) {
+                    requests.push(request);
+                    return successfulExecution('PASSED\n');
+                },
+            }),
+        });
+
+        await backend.probe();
+        await backend.runCase(regressionCase('sample', 'normal'));
+
+        assert.deepEqual(requests[1].runtimeFiles.sort(), [
+            path.join(sourceRoot, 'input.txt'),
+            path.join(sourceRoot, 'reader.vh'),
+        ].sort());
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
 test('builtin gold comparison maps only the configured corpus root prefix', async () => {
     const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-gold-'));
     const sourceRoot = path.join(corpusRoot, 'ivltests');
@@ -340,6 +416,33 @@ test('builtin gold comparison maps only the configured corpus root prefix', asyn
         });
 
         assert.equal(execution.comparison.match, true);
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
+test('exact gold comparison preserves the final newline difference', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-gold-eof-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const goldRoot = path.join(corpusRoot, 'gold');
+    try {
+        await Promise.all([mkdir(sourceRoot), mkdir(goldRoot)]);
+        await writeFile(path.join(sourceRoot, 'sample.v'), 'module sample; endmodule\n');
+        await writeFile(path.join(goldRoot, 'sample.gold'), 'exact\n');
+        const backend = createBuiltinRegressionBackend({
+            corpusRoot,
+            backendFactory: () => ({
+                async compileAndRun() {
+                    return successfulExecution('exact');
+                },
+            }),
+        });
+        const execution = await backend.runCase({
+            ...regressionCase('sample', 'normal'),
+            comparison: { kind: 'gold', path: 'gold/sample.gold' },
+        });
+
+        assert.equal(execution.comparison.match, false);
     } finally {
         await rm(corpusRoot, { recursive: true, force: true });
     }
@@ -395,6 +498,146 @@ test('builtin backend explicitly skips unsupported compiler options', async () =
     assert.deepEqual(await backend.runCase(testCase), {
         skipReason: 'builtin cannot represent compiler option: -gspecify',
     });
+});
+
+test('builtin backend retrieves declared diff artifacts and cleans its destination', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-diff-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const goldRoot = path.join(corpusRoot, 'gold');
+    let artifactRequest;
+    try {
+        await Promise.all([mkdir(sourceRoot), mkdir(goldRoot)]);
+        await writeFile(path.join(sourceRoot, 'sample.v'), 'module sample; endmodule\n');
+        await writeFile(path.join(goldRoot, 'sample.gold'), 'generated output\n');
+        const backend = createBuiltinRegressionBackend({
+            corpusRoot,
+            backendFactory: () => ({
+                async compileAndRun(request) {
+                    [artifactRequest] = request.artifacts;
+                    await writeFile(artifactRequest.destination, 'generated output\n');
+                    return {
+                        ...successfulExecution('PASSED\n'),
+                        artifacts: [{ ...artifactRequest, written: true, size: 17 }],
+                    };
+                },
+            }),
+        });
+
+        const execution = await backend.runCase({
+            ...regressionCase('sample', 'normal'),
+            comparison: {
+                kind: 'diff',
+                actual: 'work/sample.out',
+                path: 'gold/sample.gold',
+                offset: 0,
+            },
+        });
+
+        assert.deepEqual({
+            kind: artifactRequest.kind,
+            path: artifactRequest.path,
+            required: artifactRequest.required,
+        }, {
+            kind: 'file',
+            path: 'work/sample.out',
+            required: true,
+        });
+        assert.equal(execution.comparison.match, true);
+        await assert.rejects(readFile(artifactRequest.destination), { code: 'ENOENT' });
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
+test('builtin backend preserves a missing required diff artifact as infrastructure failure', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-builtin-diff-missing-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const goldRoot = path.join(corpusRoot, 'gold');
+    try {
+        await Promise.all([mkdir(sourceRoot), mkdir(goldRoot)]);
+        await writeFile(path.join(sourceRoot, 'sample.v'), 'module sample; endmodule\n');
+        await writeFile(path.join(goldRoot, 'sample.gold'), 'expected\n');
+        const backend = createBuiltinRegressionBackend({
+            corpusRoot,
+            backendFactory: () => ({
+                async compileAndRun(request) {
+                    return {
+                        ...failedExecution('infrastructure', -1),
+                        artifacts: request.artifacts.map(artifact => ({
+                            ...artifact,
+                            written: false,
+                            size: 0,
+                        })),
+                        cause: {
+                            code: 'ARTIFACT_MISSING',
+                            message: 'Required artifacts were not produced: work/sample.out',
+                        },
+                    };
+                },
+            }),
+        });
+
+        const execution = await backend.runCase({
+            ...regressionCase('sample', 'normal'),
+            comparison: {
+                kind: 'diff',
+                actual: 'work/sample.out',
+                path: 'gold/sample.gold',
+                offset: 0,
+            },
+        });
+
+        assert.equal(execution.stage, 'infrastructure');
+        assert.equal(execution.comparison, undefined);
+        assert.equal(execution.cause.code, 'ARTIFACT_MISSING');
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
+test('native backend excludes only the declared diff artifact from unexpected files', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-diff-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    const goldRoot = path.join(corpusRoot, 'gold');
+    try {
+        await Promise.all([mkdir(sourceRoot), mkdir(goldRoot)]);
+        await writeFile(path.join(sourceRoot, 'sample.v'), 'module sample; endmodule\n');
+        await writeFile(path.join(goldRoot, 'sample.gold'), 'generated output\n');
+        const backend = createNativeRegressionBackend({
+            corpusRoot,
+            commands: { iverilog: 'iverilog', vvp: 'vvp' },
+            processRunner: async (executable, args, options) => {
+                if (args.includes('-V')) return processResult('version\n');
+                if (executable === 'iverilog') {
+                    await writeFile(path.join(options.cwd, 'vsim'), 'compiled');
+                } else if (args.some(argument => String(argument).endsWith('smoke.out'))) {
+                    return processResult('PASSED\n');
+                } else {
+                    await Promise.all([
+                        writeFile(path.join(options.cwd, 'work', 'sample.out'), 'generated output\n'),
+                        writeFile(path.join(options.cwd, 'trace.log'), 'undeclared'),
+                    ]);
+                }
+                return processResult(executable === 'vvp' ? 'PASSED\n' : '');
+            },
+        });
+
+        await backend.probe();
+        const execution = await backend.runCase({
+            ...regressionCase('sample', 'normal'),
+            comparison: {
+                kind: 'diff',
+                actual: 'work/sample.out',
+                path: 'gold/sample.gold',
+                offset: 0,
+            },
+        });
+
+        assert.equal(execution.comparison.match, true);
+        assert.deepEqual(execution.unexpectedFiles, ['trace.log']);
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
 });
 
 test('materializes the pinned corpus commit instead of checkout HEAD', async () => {
@@ -583,6 +826,96 @@ test('native backend compile-only cases never invoke vvp', async () => {
     }
 });
 
+test('native backend classifies compile signals, spawn failures, and run timeouts as infrastructure', async () => {
+    const corpusRoot = await mkdtemp(path.join(os.tmpdir(), 'veriflow-native-crash-'));
+    const sourceRoot = path.join(corpusRoot, 'ivltests');
+    let currentCase;
+    try {
+        await mkdir(sourceRoot);
+        await Promise.all([
+            writeFile(path.join(sourceRoot, 'compile_signal.v'), 'module compile_signal; endmodule\n'),
+            writeFile(path.join(sourceRoot, 'compile_spawn.v'), 'module compile_spawn; endmodule\n'),
+            writeFile(path.join(sourceRoot, 'runtime_timeout.v'), 'module runtime_timeout; endmodule\n'),
+        ]);
+        const backend = createNativeRegressionBackend({
+            corpusRoot,
+            commands: { iverilog: 'iverilog', vvp: 'vvp' },
+            processRunner: async (executable, args) => {
+                if (args.includes('-V')) return processResult('version\n');
+                if (executable === 'iverilog') {
+                    const source = String(args.at(-1));
+                    if (source.endsWith('top.v')) return processResult('');
+                    currentCase = path.basename(source, '.v');
+                    if (currentCase === 'compile_signal') {
+                        return processResult('', {
+                            exitCode: -1,
+                            signalCode: 'SIGSEGV',
+                        });
+                    }
+                    if (currentCase === 'compile_spawn') {
+                        return processResult('', {
+                            exitCode: -1,
+                            cause: { code: 'ENOENT', message: 'spawn iverilog ENOENT' },
+                        });
+                    }
+                    return processResult('');
+                }
+                if (currentCase === undefined) return processResult('PASSED\n');
+                return processResult('', {
+                    exitCode: -1,
+                    termination: 'timeout',
+                    signalCode: 'SIGKILL',
+                });
+            },
+        });
+        const report = await runRegressionSuite({
+            manifest: { cases: [
+                regressionCase('compile_signal', 'CE'),
+                regressionCase('compile_spawn', 'CE'),
+                regressionCase('runtime_timeout', 'RE'),
+            ] },
+            backendIds: ['native-iverilog'],
+            backends: { 'native-iverilog': backend },
+        });
+
+        assert.deepEqual(report.results.map(result => ({
+            caseName: result.caseName,
+            status: result.status,
+            exitClass: result.exitClass,
+            termination: result.termination,
+            signalCode: result.signalCode,
+            cause: result.cause,
+        })), [
+            {
+                caseName: 'compile_signal',
+                status: 'fail',
+                exitClass: 'infrastructure-error',
+                termination: 'signal',
+                signalCode: 'SIGSEGV',
+                cause: undefined,
+            },
+            {
+                caseName: 'compile_spawn',
+                status: 'fail',
+                exitClass: 'infrastructure-error',
+                termination: 'infrastructure',
+                signalCode: undefined,
+                cause: { code: 'ENOENT', message: 'spawn iverilog ENOENT' },
+            },
+            {
+                caseName: 'runtime_timeout',
+                status: 'fail',
+                exitClass: 'infrastructure-error',
+                termination: 'timeout',
+                signalCode: 'SIGKILL',
+                cause: undefined,
+            },
+        ]);
+    } finally {
+        await rm(corpusRoot, { recursive: true, force: true });
+    }
+});
+
 test('regression CLI parses strict backend, shard, root, and JSON options', () => {
     assert.deepEqual(parseRegressionArguments([
         '--iverilog-root', '/src/iverilog',
@@ -609,7 +942,222 @@ test('regression CLI parses strict backend, shard, root, and JSON options', () =
         ]),
         /Invalid shard 20\/20/,
     );
+    assert.equal(parseRegressionArguments([
+        '--iverilog-root', '/src/iverilog',
+        '--backend', 'builtin',
+        '--json', '/tmp/results.json',
+        '--baseline', '/src/baseline.json',
+    ]).baseline, '/src/baseline.json');
 });
+
+test('validates regression baseline revision, shape, and duplicate identities', () => {
+    const baseline = sampleBaseline();
+    assert.deepEqual(
+        validateRegressionBaseline(baseline, SAMPLE_REVISION),
+        baseline,
+    );
+    assert.throws(
+        () => validateRegressionBaseline({ ...baseline, corpusRevision: '0'.repeat(40) }, SAMPLE_REVISION),
+        /revision/i,
+    );
+    assert.throws(
+        () => validateRegressionBaseline({ ...baseline, unexpected: true }, SAMPLE_REVISION),
+        /unexpected key/i,
+    );
+    assert.throws(
+        () => validateRegressionBaseline({
+            ...baseline,
+            failures: [...baseline.failures, baseline.failures[0]],
+        }, SAMPLE_REVISION),
+        /duplicate failure approval/i,
+    );
+    assert.throws(
+        () => validateRegressionBaseline({
+            ...baseline,
+            mismatches: [...baseline.mismatches, baseline.mismatches[0]],
+        }, SAMPLE_REVISION),
+        /duplicate mismatch approval/i,
+    );
+});
+
+test('known baseline keeps raw failures visible, marks approvals, writes JSON, and exits zero', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-known-'));
+    const jsonPath = path.join(root, 'report.json');
+    try {
+        const finalized = await finalizeRegressionReport({
+            report: sampleRegressionReport(),
+            baseline: sampleBaseline(),
+            jsonPath,
+        });
+        const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+        assert.equal(finalized.exitCode, 0);
+        assert.equal(written.results[0].status, 'fail');
+        assert.equal(written.results[0].approved, true);
+        assert.equal(written.mismatches[0].approved, true);
+        assert.deepEqual(written.baseline.staleApprovals, []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('new failures, new mismatches, and stale approvals exit nonzero after writing JSON', async () => {
+    const scenarios = [
+        {
+            name: 'new-failure',
+            report: sampleRegressionReport({ includeExtraFailure: true }),
+            baseline: sampleBaseline(),
+        },
+        {
+            name: 'new-mismatch',
+            report: sampleRegressionReport({ includeExtraMismatch: true }),
+            baseline: sampleBaseline(),
+        },
+        {
+            name: 'stale-approval',
+            report: sampleRegressionReport({ includeFailure: false }),
+            baseline: sampleBaseline(),
+        },
+    ];
+
+    for (const scenario of scenarios) {
+        const root = await mkdtemp(path.join(os.tmpdir(), `veriflow-baseline-${scenario.name}-`));
+        const jsonPath = path.join(root, 'report.json');
+        try {
+            const finalized = await finalizeRegressionReport({
+                report: scenario.report,
+                baseline: scenario.baseline,
+                jsonPath,
+            });
+            const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+            assert.equal(finalized.exitCode, 1, scenario.name);
+            assert.equal(written.baseline.clean, false, scenario.name);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    }
+});
+
+test('invalid or absent baseline leaves failures unapproved and still writes JSON', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-invalid-'));
+    try {
+        for (const [name, options] of [
+            ['absent', {}],
+            ['invalid', { baseline: { ...sampleBaseline(), schemaVersion: 2 } }],
+        ]) {
+            const jsonPath = path.join(root, `${name}.json`);
+            const finalized = await finalizeRegressionReport({
+                report: sampleRegressionReport(),
+                jsonPath,
+                ...options,
+            });
+            const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+            assert.equal(finalized.exitCode, 1, name);
+            assert.equal(written.results[0].approved, false, name);
+            assert.equal(written.mismatches[0].approved, false, name);
+            assert.equal(written.baseline.clean, false, name);
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('CI passes the pinned baseline and always uploads both regression reports', async () => {
+    const workflow = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    const baselineUses = workflow.match(
+        /--baseline tools\/simulation\/iverilog-regression-baseline\.json/g,
+    ) ?? [];
+    const alwaysUploads = workflow.match(/if: always\(\)/g) ?? [];
+
+    assert.equal(baselineUses.length, 2);
+    assert.ok(alwaysUploads.length >= 2);
+});
+
+test('tracked regression baseline validates against the pinned corpus revision', async () => {
+    const revision = JSON.parse(await readFile(
+        new URL('../../tools/simulation/iverilog-revision.json', import.meta.url),
+        'utf8',
+    ));
+    const baseline = JSON.parse(await readFile(
+        new URL('../../tools/simulation/iverilog-regression-baseline.json', import.meta.url),
+        'utf8',
+    ));
+
+    assert.deepEqual(
+        validateRegressionBaseline(baseline, revision.revision),
+        baseline,
+    );
+});
+
+const SAMPLE_REVISION = '1234567890abcdef1234567890abcdef12345678';
+
+function sampleBaseline() {
+    return {
+        schemaVersion: 1,
+        corpusRevision: SAMPLE_REVISION,
+        failures: [{
+            caseName: 'known-failure',
+            backendId: 'builtin',
+            status: 'fail',
+            exitClass: 'runtime-error',
+            reason: 'output differs from gold/known.gold',
+        }],
+        mismatches: [{
+            caseName: 'known-mismatch',
+            leftBackend: 'native-iverilog',
+            rightBackend: 'builtin',
+            fields: ['stdout'],
+        }],
+    };
+}
+
+function sampleRegressionReport({
+    includeFailure = true,
+    includeExtraFailure = false,
+    includeExtraMismatch = false,
+} = {}) {
+    const failures = includeFailure ? [{
+        caseName: 'known-failure',
+        caseType: 'RE',
+        backendId: 'builtin',
+        status: 'fail',
+        reason: 'output differs from gold/known.gold',
+        exitClass: 'runtime-error',
+        stdout: 'runtime failed\n',
+        stderr: '',
+        diagnostics: [],
+        unexpectedFiles: [],
+    }] : [];
+    if (includeExtraFailure) {
+        failures.push({
+            ...failures[0],
+            caseName: 'new-failure',
+            reason: 'new failure',
+        });
+    }
+    const mismatches = [{
+        caseName: 'known-mismatch',
+        leftBackend: 'native-iverilog',
+        rightBackend: 'builtin',
+        fields: ['stdout'],
+    }];
+    if (includeExtraMismatch) {
+        mismatches.push({
+            caseName: 'new-mismatch',
+            leftBackend: 'native-iverilog',
+            rightBackend: 'builtin',
+            fields: ['stderr'],
+        });
+    }
+    return {
+        schemaVersion: 1,
+        corpus: { revision: SAMPLE_REVISION },
+        results: failures,
+        mismatches,
+    };
+}
 
 function processResult(stdout, overrides = {}) {
     return {

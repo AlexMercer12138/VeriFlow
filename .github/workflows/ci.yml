@@ -179,7 +179,7 @@ jobs:
           git -C "$RUNNER_TEMP/iverilog" fetch --depth=1 origin "$revision"
 
       - name: Run deterministic regression shard
-        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/20 --json "$RUNNER_TEMP/veriflow-regress-results.json"
+        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/20 --json "$RUNNER_TEMP/veriflow-regress-results.json" --baseline tools/simulation/iverilog-regression-baseline.json
 
       - name: Upload regression results
         if: always()
@@ -225,7 +225,7 @@ jobs:
           git -C "$RUNNER_TEMP/iverilog" fetch --depth=1 origin "$revision"
 
       - name: Run complete pinned regression
-        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/1 --json "$RUNNER_TEMP/veriflow-regress-results.json"
+        run: npm run test:sim-regression -- --iverilog-root "$RUNNER_TEMP/iverilog" --backend native-iverilog,builtin --shard 0/1 --json "$RUNNER_TEMP/veriflow-regress-results.json" --baseline tools/simulation/iverilog-regression-baseline.json
 
       - name: Upload regression results
         if: always()

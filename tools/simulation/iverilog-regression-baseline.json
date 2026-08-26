@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "corpusRevision": "19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1",
+  "failures": [
+    {
+      "caseName": "sys_func_task_error",
+      "backendId": "builtin",
+      "status": "fail",
+      "exitClass": "runtime-error",
+      "reason": "output differs from gold/sys_func_task_error.gold"
+    }
+  ],
+  "mismatches": [
+    {
+      "caseName": "pr1065",
+      "leftBackend": "native-iverilog",
+      "rightBackend": "builtin",
+      "fields": [
+        "unexpectedFiles"
+      ]
+    },
+    {
+      "caseName": "sys_func_task_error",
+      "leftBackend": "native-iverilog",
+      "rightBackend": "builtin",
+      "fields": [
+        "status",
+        "stdout"
+      ]
+    }
+  ]
+}

@@ -1,10 +1,13 @@
 const OBSERVABLE_FIELDS = [
     'status',
     'exitClass',
+    'termination',
+    'signalCode',
     'stdout',
     'stderr',
     'diagnostics',
     'unexpectedFiles',
+    'cause',
 ];
 
 export function normalizeRegressionResult(result, options = {}) {
@@ -23,6 +26,9 @@ export function normalizeRegressionResult(result, options = {}) {
                 typeof file === 'string' ? normalize(file) : file
             )),
         } : {}),
+        ...(result.cause === undefined ? {} : {
+            cause: normalizeStructuredText(result.cause, normalize),
+        }),
     };
 }
 
@@ -63,7 +69,8 @@ export function compareNormalizedResults(left, right) {
 }
 
 function sameValue(left, right) {
-    if (Array.isArray(left) || Array.isArray(right)) {
+    if ((left !== null && typeof left === 'object')
+        || (right !== null && typeof right === 'object')) {
         return JSON.stringify(left) === JSON.stringify(right);
     }
     return left === right;
