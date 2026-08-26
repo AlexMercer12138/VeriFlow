@@ -1,28 +1,31 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "corpusRevision": "19fe69b3ca34f597aaf4c188f4d75a2d6ee6e3d1",
   "failures": [
     {
+      "caseId": "sys_func_task_error",
       "caseName": "sys_func_task_error",
       "backendId": "builtin",
       "status": "fail",
       "exitClass": "runtime-error",
       "reason": "output differs from gold/sys_func_task_error.gold",
-      "resultDigest": "1562ab32e30c04a858029cdf979e57502e7d2a8928598a5a8e38c6744bc2ea38"
+      "resultDigest": "fde4626c8edce00b1c984c34b22e7f90987021d8f1400da92c97055f1561df9a"
     }
   ],
   "mismatches": [
     {
+      "caseId": "pr1065",
       "caseName": "pr1065",
       "leftBackend": "native-iverilog",
       "rightBackend": "builtin",
       "fields": [
         "unexpectedFiles"
       ],
-      "leftResultDigest": "ff554f0509048e2b92a93e3f4031c958b1423fcea3b27a17b897dc4033b3cc5f",
-      "rightResultDigest": "6e3268315de4f421bd04ee48f5a79da1c838389349b56ac886de970ca6205b89"
+      "leftResultDigest": "ef8d96afdbd8d69dd142e6c84be2f23018bc99964050d527fab7ef749a824fca",
+      "rightResultDigest": "58fa67114e9800f4b49d1f7f7f5b5c587081f5ac76f848992c9585fb4b11667b"
     },
     {
+      "caseId": "sys_func_task_error",
       "caseName": "sys_func_task_error",
       "leftBackend": "native-iverilog",
       "rightBackend": "builtin",
@@ -30,8 +33,8 @@
         "status",
         "stdout"
       ],
-      "leftResultDigest": "bce515e184c6476f98b98842c51d02a94dbcf47408baa6919041f31fee85f1cf",
-      "rightResultDigest": "1562ab32e30c04a858029cdf979e57502e7d2a8928598a5a8e38c6744bc2ea38"
+      "leftResultDigest": "85fc78c951e34f3dd44d6ec64e356601f376e560cfe639069398a404be97357e",
+      "rightResultDigest": "fde4626c8edce00b1c984c34b22e7f90987021d8f1400da92c97055f1561df9a"
     }
   ]
 }

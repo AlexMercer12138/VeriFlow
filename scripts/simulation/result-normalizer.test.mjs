@@ -230,11 +230,67 @@ test('runner records backend output mismatches without changing pass status', as
 
     assert.deepEqual(report.results.map(result => result.status), ['pass', 'pass']);
     assert.deepEqual(report.mismatches, [{
+        caseId: 'different',
         caseName: 'different',
         leftBackend: 'native-iverilog',
         rightBackend: 'builtin',
         fields: ['stdout'],
     }]);
+});
+
+test('runner keeps same-name cases independent by case ID', async () => {
+    const cases = [
+        { ...regressionCase('duplicate', 'normal'), caseId: 'duplicate#1' },
+        { ...regressionCase('duplicate', 'normal'), caseId: 'duplicate#2' },
+    ];
+    const report = await runRegressionSuite({
+        manifest: { cases },
+        backendIds: ['native-iverilog', 'builtin'],
+        backends: {
+            'native-iverilog': availableBackend(async testCase => ({
+                ...successfulExecution(testCase.caseId === 'duplicate#1'
+                    ? 'PASSED\nnative first\n'
+                    : 'PASSED\nsame second\n'),
+                stderr: testCase.caseId === 'duplicate#2' ? 'native second\n' : '',
+            })),
+            builtin: availableBackend(async testCase => ({
+                ...successfulExecution(testCase.caseId === 'duplicate#1'
+                    ? 'PASSED\nbuiltin first\n'
+                    : 'PASSED\nsame second\n'),
+                stderr: testCase.caseId === 'duplicate#2' ? 'builtin second\n' : '',
+            })),
+        },
+    });
+
+    assert.deepEqual(
+        report.results.map(result => ({
+            caseId: result.caseId,
+            caseName: result.caseName,
+            backendId: result.backendId,
+        })),
+        [
+            { caseId: 'duplicate#1', caseName: 'duplicate', backendId: 'native-iverilog' },
+            { caseId: 'duplicate#2', caseName: 'duplicate', backendId: 'native-iverilog' },
+            { caseId: 'duplicate#1', caseName: 'duplicate', backendId: 'builtin' },
+            { caseId: 'duplicate#2', caseName: 'duplicate', backendId: 'builtin' },
+        ],
+    );
+    assert.deepEqual(report.mismatches, [
+        {
+            caseId: 'duplicate#1',
+            caseName: 'duplicate',
+            leftBackend: 'native-iverilog',
+            rightBackend: 'builtin',
+            fields: ['stdout'],
+        },
+        {
+            caseId: 'duplicate#2',
+            caseName: 'duplicate',
+            leftBackend: 'native-iverilog',
+            rightBackend: 'builtin',
+            fields: ['stderr'],
+        },
+    ]);
 });
 
 test('runner preserves diagnostics and unexpected files on expectation failure', async () => {
@@ -981,8 +1037,45 @@ test('validates regression baseline revision, shape, and duplicate identities', 
     );
 });
 
+test('runner rejects missing and duplicate case IDs without falling back to names', async () => {
+    const missingId = regressionCase('missing-id', 'normal');
+    delete missingId.caseId;
+    await assert.rejects(
+        runRegressionSuite({
+            manifest: { cases: [missingId] },
+            backendIds: ['fake'],
+            backends: { fake: availableBackend(async () => successfulExecution('PASSED\n')) },
+        }),
+        /caseId.*nonempty string/i,
+    );
+    await assert.rejects(
+        runRegressionSuite({
+            manifest: {
+                cases: [
+                    { ...regressionCase('first-name', 'normal'), caseId: 'duplicate-id' },
+                    { ...regressionCase('second-name', 'normal'), caseId: 'duplicate-id' },
+                ],
+            },
+            backendIds: ['fake'],
+            backends: { fake: availableBackend(async () => successfulExecution('PASSED\n')) },
+        }),
+        /duplicate caseId.*duplicate-id/i,
+    );
+});
+
+test('baseline requires case IDs instead of falling back to case names', () => {
+    const baseline = sampleBaseline();
+    delete baseline.failures[0].caseId;
+
+    assert.throws(
+        () => validateRegressionBaseline(baseline, SAMPLE_REVISION),
+        /missing key: caseId/i,
+    );
+});
+
 test('result digest is canonical, ignores derived timing, and covers semantic fields', () => {
     const left = {
+        caseId: 'digest-case',
         caseName: 'digest-case',
         caseType: 'RE',
         backendId: 'builtin',
@@ -1008,6 +1101,7 @@ test('result digest is canonical, ignores derived timing, and covers semantic fi
         status: 'fail',
         backendId: 'builtin',
         caseType: 'RE',
+        caseId: 'digest-case',
         caseName: 'digest-case',
     };
 
@@ -1038,6 +1132,75 @@ test('known baseline keeps raw failures visible, marks approvals, writes JSON, a
         assert.match(written.mismatches[0].leftResultDigest, /^[0-9a-f]{64}$/);
         assert.match(written.mismatches[0].rightResultDigest, /^[0-9a-f]{64}$/);
         assert.deepEqual(written.baseline.staleApprovals, []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('baseline approval applies only to the matching case ID for duplicate names', async () => {
+    const sharedFailure = {
+        caseName: 'duplicate',
+        caseType: 'normal',
+        backendId: 'builtin',
+        status: 'fail',
+        reason: 'expected output containing PASSED',
+        exitClass: 'success',
+        stage: 'run',
+        exitCode: 0,
+        stderr: '',
+        diagnostics: [],
+        unexpectedFiles: [],
+    };
+    const results = [
+        { ...sharedFailure, caseId: 'duplicate#1', stdout: 'first failure\n' },
+        { ...sharedFailure, caseId: 'duplicate#2', stdout: 'second failure\n' },
+    ];
+    const report = {
+        schemaVersion: 1,
+        corpus: { revision: SAMPLE_REVISION },
+        results,
+        mismatches: [],
+    };
+    const baseline = {
+        schemaVersion: 2,
+        corpusRevision: SAMPLE_REVISION,
+        failures: [{
+            caseId: 'duplicate#1',
+            caseName: 'duplicate',
+            backendId: 'builtin',
+            status: 'fail',
+            exitClass: 'success',
+            reason: 'expected output containing PASSED',
+            resultDigest: regressionResultDigest(results[0]),
+        }],
+        mismatches: [],
+    };
+    const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-baseline-case-id-'));
+    const jsonPath = path.join(root, 'report.json');
+    try {
+        const finalized = await finalizeRegressionReport({ report, baseline, jsonPath });
+        const written = JSON.parse(await readFile(jsonPath, 'utf8'));
+
+        assert.equal(finalized.exitCode, 1);
+        assert.deepEqual(
+            written.results.map(result => ({
+                caseId: result.caseId,
+                approved: result.approved,
+                resultDigest: result.resultDigest,
+            })),
+            [
+                {
+                    caseId: 'duplicate#1',
+                    approved: true,
+                    resultDigest: regressionResultDigest(results[0]),
+                },
+                {
+                    caseId: 'duplicate#2',
+                    approved: false,
+                    resultDigest: regressionResultDigest(results[1]),
+                },
+            ],
+        );
     } finally {
         await rm(root, { recursive: true, force: true });
     }
@@ -1082,7 +1245,7 @@ test('failure approval is invalidated by any stable result-content change after 
             const original = sampleRegressionReport();
             const baseline = sampleBaseline(original);
             const changed = structuredClone(original);
-            mutate(changed.results.find(result => result.caseName === 'known-failure'));
+            mutate(changed.results.find(result => result.caseId === 'known-failure'));
             const jsonPath = path.join(root, `${name}.json`);
 
             const finalized = await finalizeRegressionReport({
@@ -1092,7 +1255,7 @@ test('failure approval is invalidated by any stable result-content change after 
             });
             const written = JSON.parse(await readFile(jsonPath, 'utf8'));
             const failure = written.results.find(result => (
-                result.caseName === 'known-failure'
+                result.caseId === 'known-failure'
             ));
 
             assert.equal(finalized.exitCode, 1, name);
@@ -1113,7 +1276,7 @@ test('mismatch approval is invalidated when either backend result changes', asyn
             const baseline = sampleBaseline(original);
             const changed = structuredClone(original);
             changed.results.find(result => (
-                result.caseName === 'known-mismatch'
+                result.caseId === 'known-mismatch'
                 && result.backendId === backendId
             )).stdout += 'changed\n';
             const jsonPath = path.join(root, `${backendId}.json`);
@@ -1215,7 +1378,7 @@ test('invalid or absent baseline leaves failures unapproved and still writes JSO
     try {
         for (const [name, options] of [
             ['absent', {}],
-            ['invalid', { baseline: { ...sampleBaseline(), schemaVersion: 2 } }],
+            ['invalid', { baseline: { ...sampleBaseline(), schemaVersion: 3 } }],
         ]) {
             const jsonPath = path.join(root, `${name}.json`);
             const finalized = await finalizeRegressionReport({
@@ -1265,20 +1428,21 @@ test('tracked regression baseline validates against the pinned corpus revision',
 const SAMPLE_REVISION = '1234567890abcdef1234567890abcdef12345678';
 
 function sampleBaseline(report = sampleRegressionReport()) {
-    const failure = report.results.find(result => result.caseName === 'known-failure');
-    const mismatch = report.mismatches.find(entry => entry.caseName === 'known-mismatch');
+    const failure = report.results.find(result => result.caseId === 'known-failure');
+    const mismatch = report.mismatches.find(entry => entry.caseId === 'known-mismatch');
     const left = report.results.find(result => (
-        result.caseName === mismatch.caseName
+        result.caseId === mismatch.caseId
         && result.backendId === mismatch.leftBackend
     ));
     const right = report.results.find(result => (
-        result.caseName === mismatch.caseName
+        result.caseId === mismatch.caseId
         && result.backendId === mismatch.rightBackend
     ));
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         corpusRevision: SAMPLE_REVISION,
         failures: [{
+            caseId: 'known-failure',
             caseName: 'known-failure',
             backendId: 'builtin',
             status: 'fail',
@@ -1287,6 +1451,7 @@ function sampleBaseline(report = sampleRegressionReport()) {
             resultDigest: regressionResultDigest(failure),
         }],
         mismatches: [{
+            caseId: 'known-mismatch',
             caseName: 'known-mismatch',
             leftBackend: 'native-iverilog',
             rightBackend: 'builtin',
@@ -1303,6 +1468,7 @@ function sampleRegressionReport({
     includeExtraMismatch = false,
 } = {}) {
     const failures = includeFailure ? [{
+        caseId: 'known-failure',
         caseName: 'known-failure',
         caseType: 'RE',
         backendId: 'builtin',
@@ -1325,12 +1491,14 @@ function sampleRegressionReport({
     if (includeExtraFailure) {
         failures.push({
             ...failures[0],
+            caseId: 'new-failure',
             caseName: 'new-failure',
             reason: 'new failure',
         });
     }
     const mismatchResults = [
         {
+            caseId: 'known-mismatch',
             caseName: 'known-mismatch',
             caseType: 'normal',
             backendId: 'native-iverilog',
@@ -1344,6 +1512,7 @@ function sampleRegressionReport({
             unexpectedFiles: [],
         },
         {
+            caseId: 'known-mismatch',
             caseName: 'known-mismatch',
             caseType: 'normal',
             backendId: 'builtin',
@@ -1358,6 +1527,7 @@ function sampleRegressionReport({
         },
     ];
     const mismatches = [{
+        caseId: 'known-mismatch',
         caseName: 'known-mismatch',
         leftBackend: 'native-iverilog',
         rightBackend: 'builtin',
@@ -1367,16 +1537,19 @@ function sampleRegressionReport({
         mismatchResults.push(
             {
                 ...mismatchResults[0],
+                caseId: 'new-mismatch',
                 caseName: 'new-mismatch',
                 stderr: 'native stderr\n',
             },
             {
                 ...mismatchResults[1],
+                caseId: 'new-mismatch',
                 caseName: 'new-mismatch',
                 stderr: 'builtin stderr\n',
             },
         );
         mismatches.push({
+            caseId: 'new-mismatch',
             caseName: 'new-mismatch',
             leftBackend: 'native-iverilog',
             rightBackend: 'builtin',
@@ -1407,6 +1580,7 @@ function manifestWithCases(names) {
 
 function regressionCase(name, type) {
     return {
+        caseId: name,
         name,
         type,
         sourceDirectory: 'ivltests',

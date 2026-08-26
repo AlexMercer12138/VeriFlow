@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { parseRegressionList } from './read-iverilog-regress.mjs';
@@ -90,4 +92,61 @@ test('manifest contains source references but never copied HDL source', () => {
     assert.equal(manifest.cases[0].source, 'ivltests/sample.v');
     assert.equal('sourceText' in manifest.cases[0], false);
     assert.equal(JSON.stringify(manifest).includes('module sample'), false);
+});
+
+test('assigns deterministic case IDs after detecting duplicate names', () => {
+    const manifest = parseRegressionList(`
+unique normal ivltests
+duplicate normal ivltests
+duplicate normal,-g2005-sv ivltests
+`);
+
+    assert.equal(manifest.activeCount, 3);
+    assert.equal(manifest.eligibleCount, 2);
+    assert.deepEqual(
+        manifest.cases.map(({ name, caseId }) => ({ name, caseId })),
+        [
+            { name: 'unique', caseId: 'unique' },
+            { name: 'duplicate', caseId: 'duplicate#1' },
+            { name: 'duplicate', caseId: 'duplicate#2' },
+        ],
+    );
+    assert.deepEqual(manifest.exclusions, [{
+        name: 'duplicate',
+        caseId: 'duplicate#2',
+        reason: 'explicit non-Verilog-2005 generation: -g2005-sv',
+        generation: '-g2005-sv',
+    }]);
+});
+
+test('pinned corpus retains both occurrences of each duplicate case name', {
+    skip: process.env.IVERILOG_ROOT === undefined
+        ? 'set IVERILOG_ROOT to a checkout containing the pinned commit'
+        : false,
+}, async () => {
+    const revision = JSON.parse(await readFile(
+        new URL('../../tools/simulation/iverilog-revision.json', import.meta.url),
+        'utf8',
+    ));
+    const sourceText = execFileSync(
+        'git',
+        ['show', `${revision.revision}:ivtest/regress-vlg.list`],
+        { cwd: process.env.IVERILOG_ROOT, encoding: 'utf8' },
+    );
+    const manifest = parseRegressionList(sourceText);
+
+    assert.equal(manifest.activeCount, 1766);
+    assert.equal(manifest.eligibleCount, 1760);
+    assert.equal(new Set(manifest.cases.map(testCase => testCase.caseId)).size, 1766);
+    assert.deepEqual(
+        manifest.cases
+            .filter(testCase => ['pr2792897', 'pr2849783'].includes(testCase.name))
+            .map(({ name, caseId }) => ({ name, caseId })),
+        [
+            { name: 'pr2792897', caseId: 'pr2792897#1' },
+            { name: 'pr2792897', caseId: 'pr2792897#2' },
+            { name: 'pr2849783', caseId: 'pr2849783#1' },
+            { name: 'pr2849783', caseId: 'pr2849783#2' },
+        ],
+    );
 });

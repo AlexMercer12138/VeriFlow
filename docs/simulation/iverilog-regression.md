@@ -24,6 +24,13 @@ Six entries are excluded because they explicitly select another generation:
 | `generate_specparam` | `-g2005-sv` |
 | `pr1758122` | `-g2001-noconfig` |
 
+The upstream list contains two entries named `pr2792897` and two named
+`pr2849783`. The manifest assigns duplicate occurrences stable list-order IDs
+(`pr2792897#1`, `pr2792897#2`, `pr2849783#1`, and `pr2849783#2`). A unique
+name uses the name itself as its ID. `caseId` is the machine identity throughout
+sharding, results, mismatches, digests, and approvals; `caseName` is retained
+only for readable output.
+
 Regenerate an inspectable manifest with:
 
 ```bash
@@ -58,30 +65,34 @@ npm run test:sim-regression -- \
 ```
 
 Use `--shard 0/1` for all 1,760 eligible cases. Selection is stable list-order
-index modulo the shard count. `--timeout-ms` defaults to 30,000 per case.
+index modulo the shard count, so introducing `caseId` does not reshuffle the
+existing shards. The runner rejects missing or duplicate manifest IDs before
+selecting a shard. `--timeout-ms` defaults to 30,000 per case.
 
 The command exits nonzero for bridge/setup errors, unapproved backend failures,
 unapproved mismatches, an invalid baseline, or stale approvals. It writes JSON
 before applying the result exit status, so CI's `if: always()` upload retains
-the evidence. The baseline pins the corpus revision and matches exact failure
-and mismatch fields plus SHA-256 digests of the complete stable results. A
-failure stores one result digest; a mismatch stores the normalized left and
-right result digests. Canonical JSON key ordering makes object insertion order
-irrelevant. Timings, approval flags, and digest fields are excluded as derived
-or nondeterministic; other present and future result fields are included by
-default. The baseline never changes a result from fail to pass. Each raw
-failure and mismatch is marked `approved: true` or `approved: false` in the
-report. Capability skips remain visible and do not require approval.
+the evidence. Baseline schema v2 pins the corpus revision and matches `caseId`,
+the readable name, exact failure or mismatch fields, and SHA-256 digests of the
+complete stable results. A failure stores one result digest; a mismatch stores
+the normalized left and right result digests. Canonical JSON key ordering makes
+object insertion order irrelevant. Timings, approval flags, and digest fields
+are excluded as derived or nondeterministic; other present and future result
+fields are included by default. The baseline never changes a result from fail
+to pass. Each raw failure and mismatch is marked `approved: true` or
+`approved: false` in the report. Capability skips remain visible and do not
+require approval.
 
 Update baseline digests only from a fresh pinned-corpus JSON report after
 manually reviewing the actual stdout, stderr, diagnostics, files, cause,
 comparison, and both sides of every mismatch. Replacing a digest without that
 review defeats the regression gate.
 
-Each case/backend record retains pass, fail, or skip status; exit class; stage
-and exit code; termination, signal, and cause details; stdout and stderr order
-within each stream; diagnostic text; unexpected generated files; and
-comparison details. Cross-backend differences are listed in `mismatches`.
+Each case/backend record retains its `caseId` and readable `caseName`; pass,
+fail, or skip status; exit class; stage and exit code; termination, signal, and
+cause details; stdout and stderr order within each stream; diagnostic text;
+unexpected generated files; and comparison details. Cross-backend differences
+are listed in `mismatches` and keyed by `caseId`.
 
 ## Result Semantics
 

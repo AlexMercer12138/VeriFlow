@@ -58,17 +58,45 @@ export function parseRegressionList(sourceText) {
         if (generation !== undefined) {
             const reason = `explicit non-Verilog-2005 generation: ${generation}`;
             entry.exclusionReason = reason;
-            exclusions.push({ name, reason, generation });
+            exclusions.push({ entry, reason, generation });
         }
     }
+
+    assignCaseIds(cases);
 
     return {
         schemaVersion: 1,
         activeCount: cases.length,
         eligibleCount: cases.length - exclusions.length,
         cases,
-        exclusions,
+        exclusions: exclusions.map(({ entry, reason, generation }) => ({
+            caseId: entry.caseId,
+            name: entry.name,
+            reason,
+            generation,
+        })),
     };
+}
+
+function assignCaseIds(cases) {
+    const nameCounts = new Map();
+    for (const testCase of cases) {
+        nameCounts.set(testCase.name, (nameCounts.get(testCase.name) ?? 0) + 1);
+    }
+
+    const occurrences = new Map();
+    const caseIds = new Set();
+    for (const testCase of cases) {
+        const occurrence = (occurrences.get(testCase.name) ?? 0) + 1;
+        occurrences.set(testCase.name, occurrence);
+        testCase.caseId = nameCounts.get(testCase.name) === 1
+            ? testCase.name
+            : `${testCase.name}#${occurrence}`;
+        if (caseIds.has(testCase.caseId)) {
+            throw new Error(`Generated duplicate caseId: ${testCase.caseId}`);
+        }
+        caseIds.add(testCase.caseId);
+    }
 }
 
 function logicalLines(sourceText) {

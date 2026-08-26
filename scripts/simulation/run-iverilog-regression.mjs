@@ -686,6 +686,7 @@ export async function runRegressionSuite({
     normalizerOptions = {},
 }) {
     validateShard(shard);
+    validateCaseIdentities(manifest.cases);
     const eligibleCases = manifest.cases.filter(testCase => (
         testCase.exclusionReason === undefined
     ));
@@ -739,6 +740,7 @@ async function runBackendCase(backendId, backend, testCase) {
         const exitClass = classifyExit(execution);
         const expectation = evaluateExpectation(testCase, execution, exitClass);
         return {
+            caseId: testCase.caseId,
             caseName: testCase.name,
             caseType: testCase.type,
             backendId,
@@ -766,6 +768,7 @@ async function runBackendCase(backendId, backend, testCase) {
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
+            caseId: testCase.caseId,
             caseName: testCase.name,
             caseType: testCase.type,
             backendId,
@@ -833,6 +836,7 @@ function evaluateExpectation(testCase, execution, exitClass) {
 
 function skippedResult(backendId, testCase, reason) {
     return {
+        caseId: testCase.caseId,
         caseName: testCase.name,
         caseType: testCase.type,
         backendId,
@@ -851,18 +855,21 @@ function collectMismatches(results, backendIds, normalizerOptions) {
     const byCase = new Map();
     for (const result of results) {
         if (result.status === 'skip') continue;
-        const caseResults = byCase.get(result.caseName) ?? new Map();
-        caseResults.set(result.backendId, result);
-        byCase.set(result.caseName, caseResults);
+        const entry = byCase.get(result.caseId) ?? {
+            caseName: result.caseName,
+            results: new Map(),
+        };
+        entry.results.set(result.backendId, result);
+        byCase.set(result.caseId, entry);
     }
     const mismatches = [];
-    for (const [caseName, caseResults] of byCase) {
+    for (const [caseId, entry] of byCase) {
         for (let leftIndex = 0; leftIndex < backendIds.length; leftIndex += 1) {
             for (let rightIndex = leftIndex + 1; rightIndex < backendIds.length; rightIndex += 1) {
                 const leftBackend = backendIds[leftIndex];
                 const rightBackend = backendIds[rightIndex];
-                const left = caseResults.get(leftBackend);
-                const right = caseResults.get(rightBackend);
+                const left = entry.results.get(leftBackend);
+                const right = entry.results.get(rightBackend);
                 if (left === undefined || right === undefined) continue;
                 const comparison = compareNormalizedResults(
                     normalizeRegressionResult(left, normalizerOptions),
@@ -870,7 +877,8 @@ function collectMismatches(results, backendIds, normalizerOptions) {
                 );
                 if (!comparison.match) {
                     mismatches.push({
-                        caseName,
+                        caseId,
+                        caseName: entry.caseName,
                         leftBackend,
                         rightBackend,
                         fields: comparison.fields,
@@ -880,6 +888,19 @@ function collectMismatches(results, backendIds, normalizerOptions) {
         }
     }
     return mismatches;
+}
+
+function validateCaseIdentities(cases) {
+    if (!Array.isArray(cases)) throw new Error('Regression manifest cases must be an array');
+    const caseIds = new Set();
+    for (const [index, testCase] of cases.entries()) {
+        assertPlainObject(testCase, `Regression manifest case ${index}`);
+        assertNonemptyString(testCase.caseId, `Regression manifest case ${index}.caseId`);
+        if (caseIds.has(testCase.caseId)) {
+            throw new Error(`Duplicate caseId in regression manifest: ${testCase.caseId}`);
+        }
+        caseIds.add(testCase.caseId);
+    }
 }
 
 function validateShard(shard) {
@@ -899,6 +920,7 @@ const BASELINE_ROOT_KEYS = [
     'mismatches',
 ];
 const BASELINE_FAILURE_KEYS = [
+    'caseId',
     'caseName',
     'backendId',
     'status',
@@ -907,6 +929,7 @@ const BASELINE_FAILURE_KEYS = [
     'resultDigest',
 ];
 const BASELINE_MISMATCH_KEYS = [
+    'caseId',
     'caseName',
     'leftBackend',
     'rightBackend',
@@ -941,6 +964,7 @@ const RESULT_DIGEST_EXCLUDED_KEYS = new Set([
 
 export function regressionResultDigest(result) {
     assertPlainObject(result, 'Regression result');
+    assertNonemptyString(result.caseId, 'Regression result.caseId');
     const normalized = normalizeRegressionResult(result);
     const projection = Object.fromEntries(Object.entries(normalized).filter(
         ([key]) => !RESULT_DIGEST_EXCLUDED_KEYS.has(key),
@@ -965,7 +989,7 @@ function canonicalJson(value) {
 export function validateRegressionBaseline(baseline, expectedRevision) {
     assertPlainObject(baseline, 'Regression baseline');
     assertExactKeys(baseline, BASELINE_ROOT_KEYS, 'regression baseline');
-    if (baseline.schemaVersion !== 1) {
+    if (baseline.schemaVersion !== 2) {
         throw new Error(`Unsupported regression baseline schema: ${baseline.schemaVersion}`);
     }
     if (!/^[0-9a-f]{40}$/.test(baseline.corpusRevision)) {
@@ -985,6 +1009,7 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
         const label = `regression baseline failure ${index}`;
         assertPlainObject(failure, label);
         assertExactKeys(failure, BASELINE_FAILURE_KEYS, label);
+        assertNonemptyString(failure.caseId, `${label}.caseId`);
         assertNonemptyString(failure.caseName, `${label}.caseName`);
         assertNonemptyString(failure.backendId, `${label}.backendId`);
         if (failure.status !== 'fail') {
@@ -995,10 +1020,10 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
         }
         assertNonemptyString(failure.reason, `${label}.reason`);
         assertSha256(failure.resultDigest, `${label}.resultDigest`);
-        const identity = `${failure.caseName}\0${failure.backendId}`;
+        const identity = `${failure.caseId}\0${failure.backendId}`;
         if (failureIdentities.has(identity)) {
             throw new Error(
-                `Duplicate failure approval: ${failure.caseName}/${failure.backendId}`,
+                `Duplicate failure approval: ${failure.caseId}/${failure.backendId}`,
             );
         }
         failureIdentities.add(identity);
@@ -1010,6 +1035,7 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
         const label = `regression baseline mismatch ${index}`;
         assertPlainObject(mismatch, label);
         assertExactKeys(mismatch, BASELINE_MISMATCH_KEYS, label);
+        assertNonemptyString(mismatch.caseId, `${label}.caseId`);
         assertNonemptyString(mismatch.caseName, `${label}.caseName`);
         assertNonemptyString(mismatch.leftBackend, `${label}.leftBackend`);
         assertNonemptyString(mismatch.rightBackend, `${label}.rightBackend`);
@@ -1032,13 +1058,13 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
         assertSha256(mismatch.leftResultDigest, `${label}.leftResultDigest`);
         assertSha256(mismatch.rightResultDigest, `${label}.rightResultDigest`);
         const identity = [
-            mismatch.caseName,
+            mismatch.caseId,
             mismatch.leftBackend,
             mismatch.rightBackend,
         ].join('\0');
         if (mismatchIdentities.has(identity)) {
             throw new Error(
-                `Duplicate mismatch approval: ${mismatch.caseName}/${mismatch.leftBackend}/${mismatch.rightBackend}`,
+                `Duplicate mismatch approval: ${mismatch.caseId}/${mismatch.leftBackend}/${mismatch.rightBackend}`,
             );
         }
         mismatchIdentities.add(identity);
@@ -1046,7 +1072,7 @@ export function validateRegressionBaseline(baseline, expectedRevision) {
     });
 
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         corpusRevision: baseline.corpusRevision,
         failures,
         mismatches,
@@ -1083,6 +1109,7 @@ function assertSha256(value, label) {
 
 function failureApproval(result, resultDigest) {
     return {
+        caseId: result.caseId,
         caseName: result.caseName,
         backendId: result.backendId,
         status: result.status,
@@ -1092,22 +1119,25 @@ function failureApproval(result, resultDigest) {
     };
 }
 
-function resultIdentity(caseName, backendId) {
-    return `${caseName}\0${backendId}`;
+function resultIdentity(caseId, backendId) {
+    assertNonemptyString(caseId, 'Regression result.caseId');
+    assertNonemptyString(backendId, 'Regression result.backendId');
+    return `${caseId}\0${backendId}`;
 }
 
 function mismatchApproval(mismatch, resultDigests) {
     return {
+        caseId: mismatch.caseId,
         caseName: mismatch.caseName,
         leftBackend: mismatch.leftBackend,
         rightBackend: mismatch.rightBackend,
         fields: mismatch.fields,
         leftResultDigest: resultDigests.get(resultIdentity(
-            mismatch.caseName,
+            mismatch.caseId,
             mismatch.leftBackend,
         )) ?? null,
         rightResultDigest: resultDigests.get(resultIdentity(
-            mismatch.caseName,
+            mismatch.caseId,
             mismatch.rightBackend,
         )) ?? null,
     };
@@ -1126,15 +1156,19 @@ function annotateRegressionReport(report, baseline) {
     )));
     const usedFailureApprovals = new Set();
     const usedMismatchApprovals = new Set();
-    const resultDigests = new Map(report.results.map(result => [
-        resultIdentity(result.caseName, result.backendId),
-        regressionResultDigest(result),
-    ]));
+    const resultDigests = new Map();
+    for (const result of report.results) {
+        const identity = resultIdentity(result.caseId, result.backendId);
+        if (resultDigests.has(identity)) {
+            throw new Error(`Duplicate regression result: ${result.caseId}/${result.backendId}`);
+        }
+        resultDigests.set(identity, regressionResultDigest(result));
+    }
     let unapprovedFailureCount = 0;
     const results = report.results.map(result => {
         if (result.status !== 'fail') return result;
         const resultDigest = resultDigests.get(resultIdentity(
-            result.caseName,
+            result.caseId,
             result.backendId,
         ));
         const key = approvalKey(failureApproval(result, resultDigest));
