@@ -279,25 +279,17 @@ test('project new persists builtin simulation defaults', async () => {
         assert.equal(stdout, 'Project created: builtin-demo.json\n');
         assert.equal(stderr, '');
         assert.equal(project.simulator, 'builtin');
+        assert.equal(project.wave_viewer, 'builtin');
         assert.deepEqual(project.defines, {});
         assert.deepEqual(project.simulation_files, []);
-        assert.deepEqual(project.simulators.iverilog, {
-            compile_cmd: 'iverilog -o "{output}" {files}',
-            run_cmd: 'vvp "{output}"',
-        });
-        assert.deepEqual(project.simulators['native-iverilog'], {
-            compile_cmd: (
-                'iverilog -g2005 -o "{output}" '
-                + '{defines} {include_dirs} {files}'
-            ),
-            run_cmd: 'vvp "{output}"',
-        });
+        assert.deepEqual(Object.keys(project.simulators), ['custom']);
+        assert.deepEqual(Object.keys(project.wave_viewers), ['builtin', 'custom']);
     } finally {
         rmSync(caseRoot, { recursive: true, force: true });
     }
 });
 
-test('simulation help lists builtin, native, experimental, and legacy backend IDs', async () => {
+test('simulation help exposes builtin and custom with external tool examples', async () => {
     let stdout = '';
     const exitCode = await runCli(['sim', '--help'], {
         cwd: process.cwd(),
@@ -307,10 +299,15 @@ test('simulation help lists builtin, native, experimental, and legacy backend ID
     });
 
     assert.equal(exitCode, 0);
-    assert.match(
-        stdout,
-        /builtin\/native-iverilog\/experimental-ts\/iverilog\/vcs\/xsim\/custom/
-    );
+    assert.match(stdout, /simulator \(builtin\/custom; auto-saved\)/);
+    assert.match(stdout, /wave viewer \(builtin\/custom; auto-saved\)/);
+    assert.doesNotMatch(stdout, /default: builtin/);
+    assert.match(stdout, /Icarus: .*iverilog -g2005.*vvp/);
+    assert.match(stdout, /VCS: .*vcs -full64/);
+    assert.match(stdout, /XSim: .*xvlog.*xelab.*xsim/);
+    assert.match(stdout, /Surfer: surfer/);
+    assert.match(stdout, /GTKWave: gtkwave/);
+    assert.doesNotMatch(stdout, /experimental-ts|native-iverilog/);
 });
 
 test('builtin simulation receives the complete normalized request without command logging', async () => {

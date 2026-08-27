@@ -447,6 +447,16 @@ test('CI and tagged release keep provenance validation and source delivery wired
     assert.match(ci, /node --test scripts\/lib\/iverilog-source\.test\.mjs/);
     assert.match(ci, /iverilog-source\.mjs validate/);
     assert.match(ci, /npm run test:release/);
+    const platformSmokeJob = workflowBlock(ci, 'node-install-smoke');
+    assert.match(platformSmokeJob, /os: \[ubuntu-latest, windows-latest, macos-latest\]/);
+    assert.match(
+        platformSmokeJob,
+        /npm run test:vsix --workspace veriflow-vscode/,
+    );
+    const baselineJob = workflowBlock(ci, 'vscode-runtime-baseline');
+    assert.match(baselineJob, /node-version: "18\.15\.0"/);
+    assert.match(baselineJob, /builtinSimulatorAssets\.test\.js/);
+    assert.match(baselineJob, /VERIFLOW_BUILTIN_ASSETS_ROOT/);
 
     const release = readFileSync(
         path.join(repositoryRoot, '.github/workflows/release.yml'),
@@ -462,6 +472,15 @@ test('CI and tagged release keep provenance validation and source delivery wired
     assert.doesNotMatch(buildJob, /^    environment:/m);
     assert.match(buildJob, /iverilog-source\.mjs archive/);
     assert.match(buildJob, /name: veriflow-node-release/);
+    for (const packagedFile of [
+        'dist/vendor/iverilog-wasm/LICENSE',
+        'dist/vendor/iverilog-wasm/dist/SOURCE.md',
+        'dist/vendor/iverilog-wasm/dist/worker.js',
+        'dist/vendor/iverilog-wasm/dist/runtime/ivl.wasm',
+        'dist/vendor/iverilog-wasm/dist/runtime/vvp.wasm',
+    ]) {
+        assert.ok(buildJob.includes(packagedFile), `release payload check missing ${packagedFile}`);
+    }
     assert.doesNotMatch(buildJob, /SHA256SUMS\.txt/);
 
     const finalizeJob = workflowBlock(release, 'finalize-release-assets');

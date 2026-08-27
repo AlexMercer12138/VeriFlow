@@ -201,8 +201,13 @@ export class ProjectStore {
             fileOrder: [],
             defines: {},
             simulationFiles: [],
-            simulators: withDefaults({}, DEFAULT_SIMULATORS),
-            waveViewers: withDefaults({}, DEFAULT_WAVE_VIEWERS),
+            simulators: withDefaults({}, {
+                custom: DEFAULT_SIMULATORS.custom,
+            }),
+            waveViewers: withDefaults({}, {
+                builtin: DEFAULT_WAVE_VIEWERS.builtin,
+                custom: DEFAULT_WAVE_VIEWERS.custom,
+            }),
             interfaceProtocolFiles: [],
             schematicExtra: {},
             analyzeStatus: 'idle',

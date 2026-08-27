@@ -129,9 +129,16 @@ options:
   -r, --root ROOT      project root directory
   -t, --top TOP        top module name
   -L, --lib LIB        lib dirs (comma separated)
-  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)
-  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)
+  -s, --sim SIM        simulator (builtin/custom; default: builtin)
+  -w, --wave WAVE      wave viewer (builtin/custom; default: builtin)
   --output, -o OUTPUT  output JSON file path
+
+Custom command examples:
+  Icarus: iverilog -g2005 -o "{output}" {files}; vvp "{output}"
+  VCS: vcs -full64 -o "{output}" {files}; ./"{output}"
+  XSim: xvlog {files} && xelab {top_module} -snapshot "{output}"; xsim "{output}" --runall
+  Surfer: surfer "{wave_file}"
+  GTKWave: gtkwave "{wave_file}"
 `;
 
 const PROJECT_OPEN_HELP = `usage: veriflow project open [-h] --project PROJECT
@@ -186,8 +193,8 @@ options:
   -t, --top TOP         top module name (auto-saved)
   -r, --root ROOT       project root (use with --top)
   -L, --lib LIB         lib dirs (comma separated, auto-saved)
-  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)
-  -w, --wave WAVE       wave viewer (auto-saved)
+  -s, --sim SIM         simulator (builtin/custom; auto-saved)
+  -w, --wave WAVE       wave viewer (builtin/custom; auto-saved)
 `;
 
 const SIM_HELP = `usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]
@@ -199,8 +206,15 @@ options:
                         project JSON file
   --top, -t TOP         top module name (auto-saved)
   --lib, -L LIB         lib dirs (comma separated, auto-saved)
-  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)
-  --wave, -w WAVE       wave viewer (auto-saved)
+  --sim, -s SIM         simulator (builtin/custom; auto-saved)
+  --wave, -w WAVE       wave viewer (builtin/custom; auto-saved)
+
+Custom command examples:
+  Icarus: iverilog -g2005 -o "{output}" {files}; vvp "{output}"
+  VCS: vcs -full64 -o "{output}" {files}; ./"{output}"
+  XSim: xvlog {files} && xelab {top_module} -snapshot "{output}"; xsim "{output}" --runall
+  Surfer: surfer "{wave_file}"
+  GTKWave: gtkwave "{wave_file}"
 `;
 
 const WAVE_HELP = `usage: veriflow wave [-h] -p PROJECT

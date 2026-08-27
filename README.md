@@ -5,8 +5,8 @@ Vik-VeriFlow 是面向 Verilog/SystemVerilog 工程的一键分析、仿真、�
 ## 功能
 
 - 扫描 HDL 模块、分析依赖并生成稳定的编译顺序
-- 使用 Icarus Verilog、VCS、XSim 或自定义命令完成仿真
-- 使用内置窗口查看 VCD，也可调用 Surfer、GTKWave 或自定义查看器
+- 默认使用内置 WASM 版 Icarus Verilog（Verilog-2005）完成仿真，也可选择 Custom 配置外部命令
+- 默认使用内置 VCD 查看器，也可选择 Custom 配置外部波形工具
 - 浏览带列布局、正交布线和搜索功能的 HDL 原理图
 - 可视化编辑 `.ad` 架构设计并导出 Verilog/SystemVerilog 顶层
 - 自动识别 AXI4、AXI-Stream、APB、AHB-Lite 及项目自定义接口
@@ -21,7 +21,7 @@ npm install --global @veriflow/cli
 veriflow --help
 ```
 
-CLI 包含 Electron 波形窗口，因此安装包体积较大。执行仿真还需安装至少一种 HDL 仿真器，推荐 Icarus Verilog。
+CLI 包含 Electron 波形窗口，因此安装包体积较大。默认仿真器和波形查看器均已内置，无需另外安装 Icarus Verilog 或波形工具。
 
 VS Code 扩展可在扩展商店搜索 **Verilog Design Flow**，也可从 [GitHub 发布页](https://github.com/AlexMercer12138/Vik-VeriFlow/releases) 下载 `.vsix`。扩展要求 VS Code `1.82.0` 或更高版本。
 
@@ -40,6 +40,22 @@ veriflow ad export design/soc.ad --language systemverilog -o generated/soc.sv
 ```
 
 每个命令都支持 `--help`。`.ad` 是 Vik-VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。默认导出同目录、同名的 `.v`；选择 SystemVerilog 时输出 `.sv`。导出只覆盖带 Vik-VeriFlow 生成标记的文件，不覆盖手写 RTL。
+
+## 仿真与波形配置
+
+新项目默认使用 `builtin` 仿真器和 `builtin` 波形查看器。内置仿真器包含 WASM 版 Icarus Verilog，目标语言为 Verilog-2005；生成的 VCD 由内置查看器打开。
+
+需要调用本机工具时，将对应选项改为 `custom`，并填写命令模板。可参考以下命令：
+
+```text
+Icarus Verilog: iverilog -g2005 -o "{output}" {files}; vvp "{output}"
+VCS:             vcs -full64 -o "{output}" {files}; ./"{output}"
+XSim:            xvlog {files} && xelab {top_module} -snapshot "{output}"; xsim "{output}" --runall
+Surfer:          surfer "{wave_file}"
+GTKWave:         gtkwave "{wave_file}"
+```
+
+Custom 模板中的 `{files}`、`{output}`、`{top_module}` 和 `{wave_file}` 会由项目配置替换。
 
 ## VS Code
 
@@ -72,4 +88,6 @@ npm run build
 npm test
 ```
 
-项目采用 [MIT 许可证](LICENSE)。
+VeriFlow 主体代码采用 [MIT 许可证](LICENSE)。内置 Icarus Verilog WASM
+运行时采用 `GPL-2.0-or-later`，许可证与对应源码获取方式见
+[Icarus Verilog WASM 说明](docs/licenses/iverilog-wasm.md)。

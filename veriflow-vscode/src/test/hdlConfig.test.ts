@@ -391,18 +391,52 @@ async function main(): Promise<void> {
         manifest.contributes.configuration.properties['veriflow.simulator'],
         {
             type: 'string',
-            enum: [
-                'builtin',
-                'native-iverilog',
-                'experimental-ts',
-                'iverilog',
-                'vcs',
-                'xsim',
-                'custom',
-            ],
+            enum: ['builtin', 'custom'],
             default: 'builtin',
-            description: 'Simulation backend to use. experimental-ts is incomplete and requires explicit opt-in.',
+            description: (
+                "Simulation backend. 'builtin' uses the bundled Icarus Verilog WebAssembly "
+                + "runtime for Verilog-2005; choose 'custom' for an external simulator."
+            ),
         }
+    );
+    assert.deepStrictEqual(
+        manifest.contributes.configuration.properties['veriflow.waveViewer'],
+        {
+            type: 'string',
+            enum: ['builtin', 'custom'],
+            default: 'builtin',
+            description: (
+                "Waveform viewer. 'builtin' opens VCD files in VeriFlow; choose 'custom' "
+                + 'to launch an external viewer.'
+            ),
+        }
+    );
+    const simulatorCompileDescription = (
+        manifest.contributes.configuration.properties['veriflow.simulatorCompileCmd'] as {
+            description?: unknown;
+        }
+    ).description;
+    assert.match(
+        String(simulatorCompileDescription),
+        /Icarus Verilog:.*iverilog -g2005.*VCS:.*vcs -full64.*XSim:.*xvlog/
+    );
+    const simulatorRunDescription = (
+        manifest.contributes.configuration.properties['veriflow.simulatorRunCmd'] as {
+            description?: unknown;
+        }
+    ).description;
+    assert.match(
+        String(simulatorRunDescription),
+        /Icarus Verilog:.*vvp.*VCS:.*output.*XSim:.*xsim/
+    );
+    const waveViewerDescription = (
+        manifest.contributes.configuration.properties['veriflow.waveViewerCmd'] as {
+            description?: unknown;
+        }
+    ).description;
+    assert.match(
+        String(waveViewerDescription),
+        /Surfer:.*surfer.*GTKWave:.*gtkwave/
     );
     const manifestWithDependencies = manifest as typeof manifest & {
         dependencies: Record<string, string>;

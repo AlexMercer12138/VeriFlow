@@ -35,7 +35,7 @@ function temporaryDirectory(prefix: string): string {
     return mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-test('new projects use builtin simulation with Verilog-2005 native defaults', () => {
+test('new projects expose only builtin and custom simulation choices', () => {
     const root = temporaryDirectory('veriflow-project-defaults-');
     try {
         const project = new ProjectStore().create('demo', root);
@@ -43,19 +43,8 @@ test('new projects use builtin simulation with Verilog-2005 native defaults', ()
         assert.equal(project.simulator, 'builtin');
         assert.deepEqual(project.defines, {});
         assert.deepEqual(project.simulationFiles, []);
-        assert.deepEqual(project.simulators.iverilog, {
-            name: 'iverilog',
-            compileCmd: 'iverilog -o "{output}" {files}',
-            runCmd: 'vvp "{output}"',
-        });
-        assert.deepEqual(project.simulators['native-iverilog'], {
-            name: 'native-iverilog',
-            compileCmd: (
-                'iverilog -g2005 -o "{output}" '
-                + '{defines} {include_dirs} {files}'
-            ),
-            runCmd: 'vvp "{output}"',
-        });
+        assert.deepEqual(Object.keys(project.simulators), ['custom']);
+        assert.deepEqual(Object.keys(project.waveViewers), ['builtin', 'custom']);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

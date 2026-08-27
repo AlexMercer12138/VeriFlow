@@ -9,8 +9,11 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 ## 环境要求
 
 - VS Code `1.82.0` 或更高版本
-- 执行仿真时需要 Icarus Verilog、VCS、XSim 或自定义仿真命令
-- 使用内置 VCD 查看器时无需安装外部波形工具
+- 无需安装外部仿真器，默认使用内置 WASM 版 Icarus Verilog
+- 无需安装外部波形工具，默认使用内置 VCD 查看器
+
+内置仿真器目标为 Verilog-2005。需要调用本机工具时，在设置中选择
+`custom` 并填写命令模板。
 
 ## HDL 工作流
 
@@ -59,13 +62,26 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 |---|---|
 | `veriflow.libDirs` | HDL 库目录 |
 | `veriflow.defines` | SystemVerilog 预处理宏 |
-| `veriflow.simulator` | `iverilog`、`vcs`、`xsim` 或 `custom` |
-| `veriflow.waveViewer` | `builtin`、`surfer`、`gtkwave` 或 `custom` |
+| `veriflow.simulator` | `builtin`（内置 Icarus Verilog WASM）或 `custom` |
+| `veriflow.waveViewer` | `builtin`（内置 VeriFlow VCD 查看器）或 `custom` |
 | `veriflow.waveFileTemplate` | 波形文件路径模板 |
 | `veriflow.testbenchOutputDir` | 工作区相对 Testbench 输出目录 |
 
-自定义仿真器和波形查看器命令可在 VS Code 设置中配置。
+自定义命令可在 VS Code 设置中配置，以下是常见工具的模板示例：
+
+```text
+Icarus Verilog 编译：iverilog -g2005 -o "{output}" {files}
+Icarus Verilog 运行：vvp "{output}"
+VCS 编译：          vcs -full64 -o "{output}" {files}
+VCS 运行：          ./"{output}"
+XSim 编译：         xvlog {files} && xelab {top_module} -snapshot "{output}"
+XSim 运行：         xsim "{output}" --runall
+Surfer：            surfer "{wave_file}"
+GTKWave：           gtkwave "{wave_file}"
+```
 
 ## 许可证
 
-MIT
+VeriFlow 扩展主体代码采用 MIT 许可证。内置 Icarus Verilog WASM 运行时采用
+`GPL-2.0-or-later`，许可证与对应源码获取方式见
+[Icarus Verilog WASM 说明](https://github.com/AlexMercer12138/Vik-VeriFlow/blob/main/docs/licenses/iverilog-wasm.md)。

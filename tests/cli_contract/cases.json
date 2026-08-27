@@ -69,7 +69,7 @@
         "-s",
         "custom",
         "-w",
-        "gtkwave",
+        "custom",
         "-o",
         "configs/demo.json"
       ],
@@ -101,26 +101,10 @@
             ],
             "top_module": "top",
             "simulator": "custom",
-            "wave_viewer": "gtkwave",
+            "wave_viewer": "custom",
             "wave_file_template": "{top_module}.vcd",
             "testbench_output_dir": ".",
             "simulators": {
-              "iverilog": {
-                "compile_cmd": "iverilog -o \"{output}\" {files}",
-                "run_cmd": "vvp \"{output}\""
-              },
-              "native-iverilog": {
-                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
-                "run_cmd": "vvp \"{output}\""
-              },
-              "vcs": {
-                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
-                "run_cmd": "./\"{output}\""
-              },
-              "xsim": {
-                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
-                "run_cmd": "xsim \"{output}\" --runall"
-              },
               "custom": {
                 "compile_cmd": "",
                 "run_cmd": ""
@@ -128,8 +112,6 @@
             },
             "wave_viewers": {
               "builtin": "",
-              "surfer": "surfer \"{wave_file}\"",
-              "gtkwave": "gtkwave \"{wave_file}\"",
               "custom": ""
             },
             "file_order": [],
@@ -140,7 +122,7 @@
           }
         },
         "observed_text": {
-          "workspace/configs/demo.json": "{\n  \"project_name\": \"demo\",\n  \"project_root\": \"../rtl\",\n  \"lib_dirs\": [\n    \"../rtl\",\n    \"../libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"gtkwave\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/configs/demo.json": "{\n  \"project_name\": \"demo\",\n  \"project_root\": \"../rtl\",\n  \"lib_dirs\": [\n    \"../rtl\",\n    \"../libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -1101,7 +1083,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/custom; default: builtin)\n  -w, --wave WAVE      wave viewer (builtin/custom; default: builtin)\n  --output, -o OUTPUT  output JSON file path\n\nCustom command examples:\n  Icarus: iverilog -g2005 -o \"{output}\" {files}; vvp \"{output}\"\n  VCS: vcs -full64 -o \"{output}\" {files}; ./\"{output}\"\n  XSim: xvlog {files} && xelab {top_module} -snapshot \"{output}\"; xsim \"{output}\" --runall\n  Surfer: surfer \"{wave_file}\"\n  GTKWave: gtkwave \"{wave_file}\"\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1260,7 +1242,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (builtin/custom; auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1279,7 +1261,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (builtin/custom; auto-saved)\n\nCustom command examples:\n  Icarus: iverilog -g2005 -o \"{output}\" {files}; vvp \"{output}\"\n  VCS: vcs -full64 -o \"{output}\" {files}; ./\"{output}\"\n  XSim: xvlog {files} && xelab {top_module} -snapshot \"{output}\"; xsim \"{output}\" --runall\n  Surfer: surfer \"{wave_file}\"\n  GTKWave: gtkwave \"{wave_file}\"\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1322,7 +1304,7 @@
         "--sim",
         "custom",
         "--wave",
-        "surfer",
+        "custom",
         "--output",
         "long-demo.json"
       ],
@@ -1354,26 +1336,10 @@
             ],
             "top_module": "top",
             "simulator": "custom",
-            "wave_viewer": "surfer",
+            "wave_viewer": "custom",
             "wave_file_template": "{top_module}.vcd",
             "testbench_output_dir": ".",
             "simulators": {
-              "iverilog": {
-                "compile_cmd": "iverilog -o \"{output}\" {files}",
-                "run_cmd": "vvp \"{output}\""
-              },
-              "native-iverilog": {
-                "compile_cmd": "iverilog -g2005 -o \"{output}\" {defines} {include_dirs} {files}",
-                "run_cmd": "vvp \"{output}\""
-              },
-              "vcs": {
-                "compile_cmd": "vcs -full64 -o \"{output}\" {files}",
-                "run_cmd": "./\"{output}\""
-              },
-              "xsim": {
-                "compile_cmd": "xvlog {files} && xelab {top_module} -snapshot \"{output}\"",
-                "run_cmd": "xsim \"{output}\" --runall"
-              },
               "custom": {
                 "compile_cmd": "",
                 "run_cmd": ""
@@ -1381,8 +1347,6 @@
             },
             "wave_viewers": {
               "builtin": "",
-              "surfer": "surfer \"{wave_file}\"",
-              "gtkwave": "gtkwave \"{wave_file}\"",
               "custom": ""
             },
             "file_order": [],
@@ -1393,7 +1357,7 @@
           }
         },
         "observed_text": {
-          "workspace/long-demo.json": "{\n  \"project_name\": \"long_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"rtl\",\n    \"libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"surfer\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"iverilog\": {\n      \"compile_cmd\": \"iverilog -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"native-iverilog\": {\n      \"compile_cmd\": \"iverilog -g2005 -o \\\"{output}\\\" {defines} {include_dirs} {files}\",\n      \"run_cmd\": \"vvp \\\"{output}\\\"\"\n    },\n    \"vcs\": {\n      \"compile_cmd\": \"vcs -full64 -o \\\"{output}\\\" {files}\",\n      \"run_cmd\": \"./\\\"{output}\\\"\"\n    },\n    \"xsim\": {\n      \"compile_cmd\": \"xvlog {files} && xelab {top_module} -snapshot \\\"{output}\\\"\",\n      \"run_cmd\": \"xsim \\\"{output}\\\" --runall\"\n    },\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"surfer\": \"surfer \\\"{wave_file}\\\"\",\n    \"gtkwave\": \"gtkwave \\\"{wave_file}\\\"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
+          "workspace/long-demo.json": "{\n  \"project_name\": \"long_demo\",\n  \"project_root\": \"rtl\",\n  \"lib_dirs\": [\n    \"rtl\",\n    \"libs\"\n  ],\n  \"top_module\": \"top\",\n  \"simulator\": \"custom\",\n  \"wave_viewer\": \"custom\",\n  \"wave_file_template\": \"{top_module}.vcd\",\n  \"testbench_output_dir\": \".\",\n  \"simulators\": {\n    \"custom\": {\n      \"compile_cmd\": \"\",\n      \"run_cmd\": \"\"\n    }\n  },\n  \"wave_viewers\": {\n    \"builtin\": \"\",\n    \"custom\": \"\"\n  },\n  \"file_order\": [],\n  \"defines\": {},\n  \"simulation_files\": [],\n  \"analyze_status\": \"idle\",\n  \"simulate_status\": \"idle\"\n}"
         },
         "process_calls": [],
         "popen_calls": []
@@ -2154,7 +2118,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom)\n  -w, --wave WAVE      wave viewer (builtin/surfer/gtkwave/custom)\n  --output, -o OUTPUT  output JSON file path\n",
+        "stdout": "usage: veriflow project new [-h] -n NAME [-r ROOT] [-t TOP] [-L LIB] [-s SIM]\n                            [-w WAVE] [--output OUTPUT]\n\noptions:\n  -h, --help           show this help message and exit\n  -n, --name NAME      project name\n  -r, --root ROOT      project root directory\n  -t, --top TOP        top module name\n  -L, --lib LIB        lib dirs (comma separated)\n  -s, --sim SIM        simulator (builtin/custom; default: builtin)\n  -w, --wave WAVE      wave viewer (builtin/custom; default: builtin)\n  --output, -o OUTPUT  output JSON file path\n\nCustom command examples:\n  Icarus: iverilog -g2005 -o \"{output}\" {files}; vvp \"{output}\"\n  VCS: vcs -full64 -o \"{output}\" {files}; ./\"{output}\"\n  XSim: xvlog {files} && xelab {top_module} -snapshot \"{output}\"; xsim \"{output}\" --runall\n  Surfer: surfer \"{wave_file}\"\n  GTKWave: gtkwave \"{wave_file}\"\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -2313,7 +2277,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow analyze [-h] [-p PROJECT] [-t TOP] [-r ROOT] [-L LIB] [-s SIM]\n                        [-w WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  -p, --project PROJECT\n                        project JSON file\n  -t, --top TOP         top module name (auto-saved)\n  -r, --root ROOT       project root (use with --top)\n  -L, --lib LIB         lib dirs (comma separated, auto-saved)\n  -s, --sim SIM         simulator (builtin/custom; auto-saved)\n  -w, --wave WAVE       wave viewer (builtin/custom; auto-saved)\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -2332,7 +2296,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/native-iverilog/experimental-ts/iverilog/vcs/xsim/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (auto-saved)\n",
+        "stdout": "usage: veriflow sim [-h] --project PROJECT [--top TOP] [--lib LIB] [--sim SIM]\n                    [--wave WAVE]\n\noptions:\n  -h, --help            show this help message and exit\n  --project, -p PROJECT\n                        project JSON file\n  --top, -t TOP         top module name (auto-saved)\n  --lib, -L LIB         lib dirs (comma separated, auto-saved)\n  --sim, -s SIM         simulator (builtin/custom; auto-saved)\n  --wave, -w WAVE       wave viewer (builtin/custom; auto-saved)\n\nCustom command examples:\n  Icarus: iverilog -g2005 -o \"{output}\" {files}; vvp \"{output}\"\n  VCS: vcs -full64 -o \"{output}\" {files}; ./\"{output}\"\n  XSim: xvlog {files} && xelab {top_module} -snapshot \"{output}\"; xsim \"{output}\" --runall\n  Surfer: surfer \"{wave_file}\"\n  GTKWave: gtkwave \"{wave_file}\"\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},

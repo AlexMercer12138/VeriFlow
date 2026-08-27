@@ -70,8 +70,32 @@ jobs:
       - name: Pack Node release artifacts
         run: npm run pack:node
 
+      - name: Verify simulator package pin
+        run: test "$(node -p "require('./packages/simulator-iverilog-wasm/package.json').dependencies['@veriflow/iverilog-wasm']")" = "0.1.4"
+
       - name: Pack VS Code extension
         run: npm run package --workspace veriflow-vscode
+
+      - name: Verify packaged VSIX Icarus payload
+        shell: bash
+        run: |
+          vsix_path="$(find veriflow-vscode -maxdepth 1 -type f -name '*.vsix' -print -quit)"
+          test -n "$vsix_path"
+          unzip -Z1 "$vsix_path" > "$RUNNER_TEMP/vsix-files.txt"
+          for packaged_file in \
+            extension/dist/vendor/iverilog-wasm/LICENSE \
+            extension/dist/vendor/iverilog-wasm/dist/SOURCE.md \
+            extension/dist/vendor/iverilog-wasm/dist/index.js \
+            extension/dist/vendor/iverilog-wasm/dist/worker.js \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/ivl.mjs \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/ivl.wasm \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/ivlpp.mjs \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/ivlpp.wasm \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/vvp.mjs \
+            extension/dist/vendor/iverilog-wasm/dist/runtime/vvp.wasm
+          do
+            grep -Fx "$packaged_file" "$RUNNER_TEMP/vsix-files.txt"
+          done
 
       - name: Stage release artifacts
         run: |

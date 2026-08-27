@@ -318,41 +318,34 @@
           "type": "string",
           "enum": [
             "builtin",
-            "native-iverilog",
-            "experimental-ts",
-            "iverilog",
-            "vcs",
-            "xsim",
             "custom"
           ],
           "default": "builtin",
-          "description": "Simulation backend to use. experimental-ts is incomplete and requires explicit opt-in."
+          "description": "Simulation backend. 'builtin' uses the bundled Icarus Verilog WebAssembly runtime for Verilog-2005; choose 'custom' for an external simulator."
         },
         "veriflow.simulatorCompileCmd": {
           "type": "string",
           "default": "",
-          "description": "Custom compile command template. Use {files}, {output}, {top_module} as placeholders. Overrides built-in when simulator is 'custom'."
+          "description": "Custom compile command template. Use {files}, {output}, and {top_module}. Examples: Icarus Verilog: iverilog -g2005 -o \"{output}\" {files}; VCS: vcs -full64 -o \"{output}\" {files}; XSim: xvlog {files} && xelab {top_module} -snapshot \"{output}\"."
         },
         "veriflow.simulatorRunCmd": {
           "type": "string",
           "default": "",
-          "description": "Custom run command template. Use {output} as placeholder. Overrides built-in when simulator is 'custom'."
+          "description": "Custom run command template. Use {output}. Examples: Icarus Verilog: vvp \"{output}\"; VCS: ./\"{output}\"; XSim: xsim \"{output}\" --runall."
         },
         "veriflow.waveViewer": {
           "type": "string",
           "enum": [
             "builtin",
-            "surfer",
-            "gtkwave",
             "custom"
           ],
           "default": "builtin",
-          "description": "Waveform viewer to use. Use 'builtin' to open VCD files in the VeriFlow waveform editor."
+          "description": "Waveform viewer. 'builtin' opens VCD files in VeriFlow; choose 'custom' to launch an external viewer."
         },
         "veriflow.waveViewerCmd": {
           "type": "string",
           "default": "",
-          "description": "Custom wave viewer command template. Use {wave_file} as placeholder. Overrides built-in when waveViewer is 'custom'."
+          "description": "Custom wave viewer command template. Use {wave_file}. Examples: Surfer: surfer \"{wave_file}\"; GTKWave: gtkwave \"{wave_file}\"."
         },
         "veriflow.waveFileTemplate": {
           "type": "string",
@@ -373,6 +366,7 @@
     "bundle": "node ./scripts/build.mjs",
     "compile": "npm run compile:ts && npm run bundle",
     "test": "npm run vscode:prepublish && node ./scripts/run-tests.mjs",
+    "test:vsix": "npm run vscode:prepublish && node ./out/test/vsixPackaging.test.js",
     "test:schematic-integration": "npm run compile && node out/test/schematicIntegration.test.js",
     "test:task6": "npm run compile:ts && node out/test/core.test.js && node out/test/hdlFeatureMigration.test.js && node out/test/testbenchPanel.test.js",
     "watch": "node ../scripts/watch-vscode.mjs",

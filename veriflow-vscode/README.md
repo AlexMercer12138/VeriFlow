@@ -9,8 +9,11 @@ Verilog Design Flow brings module discovery, dependency analysis, simulation, wa
 ## Requirements
 
 - VS Code 1.82 or newer
-- Icarus Verilog, VCS, XSim, or custom simulator commands for simulation
-- No external waveform tool is required when using the built-in VCD viewer
+- No external simulator is required: the default is the bundled Icarus Verilog WebAssembly runtime
+- No external waveform tool is required: the default is the built-in VCD viewer
+
+The bundled simulator targets Verilog-2005. Choose `custom` in the settings when
+the project should invoke a local simulator or waveform application.
 
 ## HDL Workflow
 
@@ -59,13 +62,26 @@ Project-defined protocol JSON files use the same recognition and export path as 
 |---|---|
 | `veriflow.libDirs` | HDL library directories |
 | `veriflow.defines` | SystemVerilog preprocessor definitions |
-| `veriflow.simulator` | `iverilog`, `vcs`, `xsim`, or `custom` |
-| `veriflow.waveViewer` | `builtin`, `surfer`, `gtkwave`, or `custom` |
+| `veriflow.simulator` | `builtin` (bundled Icarus Verilog WASM) or `custom` |
+| `veriflow.waveViewer` | `builtin` (VeriFlow VCD viewer) or `custom` |
 | `veriflow.waveFileTemplate` | Generated waveform path template |
 | `veriflow.testbenchOutputDir` | Workspace-relative Testbench output directory |
 
-Custom simulator and waveform viewer commands are available in VS Code settings.
+Custom command templates are available in VS Code settings. Examples:
+
+```text
+Icarus Verilog compile: iverilog -g2005 -o "{output}" {files}
+Icarus Verilog run:     vvp "{output}"
+VCS compile:            vcs -full64 -o "{output}" {files}
+VCS run:                ./"{output}"
+XSim compile:           xvlog {files} && xelab {top_module} -snapshot "{output}"
+XSim run:               xsim "{output}" --runall
+Surfer:                 surfer "{wave_file}"
+GTKWave:                gtkwave "{wave_file}"
+```
 
 ## License
 
-MIT
+The VeriFlow extension code is licensed under MIT. The bundled Icarus Verilog
+WebAssembly runtime is distributed under `GPL-2.0-or-later`; see the
+[license and corresponding-source details](https://github.com/AlexMercer12138/Vik-VeriFlow/blob/main/docs/licenses/iverilog-wasm.md).
