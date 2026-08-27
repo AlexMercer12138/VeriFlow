@@ -10,7 +10,7 @@ module arithmetic_bench;
       sum = sum + i;
       mix = (mix + (i * 17)) ^ (mix >> 3);
     end
-    if (sum !== 64'd4999950000 || (^mix) === 1'bx)
+    if (sum !== 64'd4999950000 || mix !== 32'hf90e39ee)
       $display("FAIL arithmetic");
     else
       $display("PASS arithmetic");

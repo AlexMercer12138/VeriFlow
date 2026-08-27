@@ -17,7 +17,10 @@ module wide_vector_bench;
         $finish;
       end
     end
-    $display("PASS wide-vector");
+    if (value !== {32{32'h23456701}})
+      $display("FAIL wide-vector");
+    else
+      $display("PASS wide-vector");
     $finish;
   end
 endmodule

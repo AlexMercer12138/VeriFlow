@@ -21,8 +21,10 @@ compile+run is never compared against WASM run-only.
 
 `expectedEvents` is a documented workload count defined by each testbench. It
 is not an engine-internal scheduler counter. Peak RSS is sampled from the
-native child on Linux and from the Node process for WASM. Unsupported native
-platforms report `null` RSS rather than substituting a different metric.
+native child on Linux. Built-in RSS reports `null` because the shared Node
+host includes the harness and memory retained by earlier cases; it is not a
+valid per-case engine measurement. Unsupported measurements report `null`
+rather than substituting a different metric.
 Reports record the VeriFlow revision and dirty state when Git is available,
 or an explicit provenance-unavailable reason when it is not.
 

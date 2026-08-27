@@ -4,6 +4,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
     createBuiltinBenchmarkBackend,
@@ -560,10 +561,6 @@ test('builtin adapter uses compile/run for engine timing and simulate end to end
             packageVersion: '0.1.test',
             sourceRevision: '0123456789012345678901234567890123456789',
         },
-        measureOperation: async operation => ({
-            value: await operation(),
-            peakRssBytes: 8_192,
-        }),
     });
     const testCase = {
         ...benchmarkCase('alpha'),
@@ -581,20 +578,20 @@ test('builtin adapter uses compile/run for engine timing and simulate end to end
     assert.deepEqual(await backend.metadata(), {
         packageVersion: '0.1.test',
         sourceRevision: '0123456789012345678901234567890123456789',
-        memoryMeasurement: 'node-process-rss',
+        memoryMeasurement: 'unavailable-shared-node-process',
     });
     assert.deepEqual(execution, {
         success: true,
         stdout: 'PASS alpha\n',
         stderr: '',
-        peakRssBytes: 8_192,
+        peakRssBytes: null,
         vcdBytes: 4,
     });
     assert.deepEqual(endToEnd, {
         success: true,
         stdout: 'PASS alpha\n',
         stderr: '',
-        peakRssBytes: 8_192,
+        peakRssBytes: null,
         vcdBytes: 5,
     });
     assert.deepEqual(calls.map(call => call.method), [
@@ -643,10 +640,6 @@ test('builtin adapter enables specify timing only for marked cases', async () =>
             packageVersion: '0.1.test',
             sourceRevision: '0123456789012345678901234567890123456789',
         },
-        measureOperation: async operation => ({
-            value: await operation(),
-            peakRssBytes: 1,
-        }),
     });
     const benchmark = { ...benchmarkCase('specify'), specify: true };
     const prepared = await backend.prepare(benchmark);
@@ -806,6 +799,21 @@ test('project benchmark corpus covers every planned bounded Verilog-2005 case', 
     const specifySource = specify.files.map(file => file.data).join('\n');
     assert.match(specifySource, /#1;\s*if \(destination !== previous\)/u);
     assert.match(specifySource, /#5;\s*if \(destination !== source\)/u);
+
+    const arithmetic = cases.find(benchmarkCase => benchmarkCase.id === 'arithmetic');
+    const arithmeticSource = arithmetic.files.map(file => file.data).join('\n');
+    assert.match(arithmeticSource, /mix !== 32'hf90e39ee/u);
+
+    const wideVector = cases.find(benchmarkCase => benchmarkCase.id === 'wide-vector');
+    const wideVectorSource = wideVector.files.map(file => file.data).join('\n');
+    assert.match(wideVectorSource, /value !== \{32\{32'h23456701\}\}/u);
+
+    const vcdHeavy = cases.find(benchmarkCase => benchmarkCase.id === 'vcd-heavy');
+    const vcdHeavySource = vcdHeavy.files.map(file => file.data).join('\n');
+    assert.match(
+        vcdHeavySource,
+        /bus !== 128'h9434b9913f1a14c8_f6e6608ec37ecf4e/u,
+    );
 });
 
 test('clocked counter releases reset away from the active sampling edge', async () => {
@@ -819,19 +827,25 @@ test('clocked counter releases reset away from the active sampling edge', async 
     );
 });
 
+test('benchmark CLI integration converts file URLs to native paths', async () => {
+    const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+
+    assert.doesNotMatch(source, /new URL\([^;\n]+\)\.pathname/u);
+});
+
 test('benchmark CLI runs every case with builtin and no native tools in PATH', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'veriflow-benchmark-cli-'));
     const json = path.join(root, 'report.json');
     try {
         execFileSync(process.execPath, [
-            new URL('./benchmark.mjs', import.meta.url).pathname,
+            fileURLToPath(new URL('./benchmark.mjs', import.meta.url)),
             '--backend', 'builtin',
             '--samples', '1',
             '--warmups', '0',
             '--timeout-ms', '30000',
             '--json', json,
         ], {
-            cwd: new URL('../..', import.meta.url).pathname,
+            cwd: fileURLToPath(new URL('../..', import.meta.url)),
             env: { ...process.env, PATH: '' },
             encoding: 'utf8',
             timeout: 120_000,

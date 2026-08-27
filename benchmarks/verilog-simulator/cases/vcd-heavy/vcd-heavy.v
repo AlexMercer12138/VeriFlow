@@ -13,7 +13,7 @@ module vcd_heavy_bench;
       clock = ~clock;
       bus = {bus[126:0], bus[127] ^ bus[125] ^ bus[100] ^ bus[98]};
     end
-    if ((^bus) === 1'bx)
+    if (bus !== 128'h9434b9913f1a14c8_f6e6608ec37ecf4e)
       $display("FAIL vcd-heavy");
     else
       $display("PASS vcd-heavy");

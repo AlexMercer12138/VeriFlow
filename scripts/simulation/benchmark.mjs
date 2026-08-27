@@ -200,14 +200,13 @@ export function createNativeBenchmarkBackend({
 export function createBuiltinBenchmarkBackend({
     api = defaultIverilogApi,
     metadata,
-    measureOperation = measureNodeOperation,
 } = {}) {
     let resolvedMetadata;
     const backend = {
         async metadata() {
             resolvedMetadata ??= {
                 ...(metadata ?? await readBuiltinMetadata()),
-                memoryMeasurement: 'node-process-rss',
+                memoryMeasurement: 'unavailable-shared-node-process',
             };
             return resolvedMetadata;
         },
@@ -216,8 +215,7 @@ export function createBuiltinBenchmarkBackend({
         },
         async compile(prepared, { timeoutMs }) {
             const request = builtinCompileRequest(prepared.benchmarkCase, timeoutMs);
-            const measurement = await measureOperation(() => api.compile(request));
-            const execution = measurement.value;
+            const execution = await api.compile(request);
             const success = execution.success && execution.program !== undefined;
             return {
                 success,
@@ -228,26 +226,26 @@ export function createBuiltinBenchmarkBackend({
         },
         async run(prepared, executable, { timeoutMs }) {
             const artifactPath = prepared.benchmarkCase.artifactPath;
-            const measurement = await measureOperation(() => api.run({
+            const execution = await api.run({
                 program: executable,
                 artifacts: artifactPath === undefined ? [] : [artifactPath],
                 timeoutMs,
-            }));
+            });
             return builtinRunResult(
-                measurement.value,
-                measurement.peakRssBytes,
+                execution,
+                null,
                 artifactPath,
             );
         },
         async endToEnd(benchmarkCase, { timeoutMs }) {
             const artifactPath = benchmarkCase.artifactPath;
-            const measurement = await measureOperation(() => api.simulate({
+            const execution = await api.simulate({
                 ...builtinCompileRequest(benchmarkCase, timeoutMs),
                 artifacts: artifactPath === undefined ? [] : [artifactPath],
-            }));
+            });
             return builtinRunResult(
-                measurement.value,
-                measurement.peakRssBytes,
+                execution,
+                null,
                 artifactPath,
             );
         },
@@ -433,22 +431,6 @@ async function readBuiltinMetadata() {
         packageVersion: packageMetadata.version,
         sourceRevision: revision,
     };
-}
-
-async function measureNodeOperation(operation) {
-    let peakRssBytes = process.memoryUsage().rss;
-    const sample = () => {
-        peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
-    };
-    const interval = setInterval(sample, 2);
-    interval.unref();
-    try {
-        const value = await operation();
-        sample();
-        return { value, peakRssBytes };
-    } finally {
-        clearInterval(interval);
-    }
 }
 
 async function nativeRunResult(execution, root, artifactPath) {
