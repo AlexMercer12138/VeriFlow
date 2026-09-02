@@ -1314,6 +1314,67 @@ function archDesignInteractionFixture(moduleName = 'interaction_top') {
                 width: { kind: 'known', bits: 1 },
             }],
         }],
+        moduleChoices: [{
+            label: 'source',
+            description: 'source.sv',
+            moduleName: 'source',
+            definitionKey: 'module:file:///source.sv:0',
+        }, {
+            label: 'sink',
+            description: 'sink.sv',
+            moduleName: 'sink',
+            definitionKey: 'module:file:///sink.sv:0',
+        }],
+    };
+}
+
+function sourceAwareInstanceFixture() {
+    const fixture = archDesignInteractionFixture();
+    const aluRtlKey = 'module:file:///workspace/rtl/alu.v:0';
+    const aluVendorKey = 'module:file:///workspace/vendor/alu.v:0';
+    const uartKey = 'module:file:///workspace/rtl/uart.v:0';
+    return {
+        ...fixture,
+        design: {
+            ...fixture.design,
+            instances: [
+                ...fixture.design.instances,
+                { name: 'u_alu_0', module: 'alu', definitionKey: aluRtlKey },
+                { name: 'u_uart_0', module: 'uart', definitionKey: uartKey },
+            ],
+        },
+        catalog: [{
+            key: aluRtlKey,
+            name: 'alu',
+            parameters: [],
+            ports: [],
+        }, {
+            key: aluVendorKey,
+            name: 'alu',
+            parameters: [],
+            ports: [],
+        }, {
+            key: uartKey,
+            name: 'uart',
+            parameters: [],
+            ports: [],
+        }, ...fixture.catalog],
+        moduleChoices: [{
+            label: 'alu',
+            description: 'rtl/alu.v',
+            moduleName: 'alu',
+            definitionKey: aluRtlKey,
+        }, {
+            label: 'alu',
+            description: 'vendor/alu.v',
+            moduleName: 'alu',
+            definitionKey: aluVendorKey,
+        }, {
+            label: 'uart',
+            description: 'rtl/uart.v',
+            moduleName: 'uart',
+            definitionKey: uartKey,
+        }],
     };
 }
 
@@ -1343,6 +1404,7 @@ async function publishArchDesignFixture(
             revision,
             design: fixture.design,
             catalog: fixture.catalog,
+            moduleChoices: fixture.moduleChoices,
             validation: { valid: true, diagnostics: [], warnings: [], effectiveDefaults: [] },
         }]) {
             window.dispatchEvent(new MessageEvent('message', { data }));
@@ -4059,6 +4121,88 @@ test('schematic selection boxes persist single and rubberband batch moves once',
         await page.waitForTimeout(400);
         assert.equal((await capturedSaves(page)).length, 0);
         assert.deepEqual(await verticalNodeOrder(page, nodeIds), [...nodeIds]);
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design generates source-aware instance names', {
+    timeout: 30_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowMessages: unknown[] };
+            state.__veriflowMessages = [];
+            window.addEventListener('veriflow:webview-message', event => {
+                state.__veriflowMessages.push((event as CustomEvent).detail);
+            });
+        });
+
+        await publishArchDesignFixture(
+            page,
+            'fixture:source-aware-instance:1',
+            sourceAwareInstanceFixture()
+        );
+
+        const moduleSelect = page.locator('#instance-module-select');
+        assert.deepEqual(await moduleSelect.locator('option').allTextContents(), [
+            'alu (rtl/alu.v)',
+            'alu (vendor/alu.v)',
+            'uart (rtl/uart.v)',
+        ]);
+
+        await page.locator('#add-instance-button').click();
+        await page.locator('#add-instance-dialog').waitFor({ state: 'visible' });
+        assert.equal(
+            await page.evaluate(() => document.activeElement?.id),
+            'instance-module-select'
+        );
+        const nameInput = page.locator('#instance-name-input');
+        assert.equal(await nameInput.inputValue(), 'u_alu_1');
+
+        await moduleSelect.selectOption('module:file:///workspace/rtl/uart.v:0');
+        assert.equal(await nameInput.inputValue(), 'u_uart_1');
+        await moduleSelect.selectOption('module:file:///workspace/vendor/alu.v:0');
+        assert.equal(await nameInput.inputValue(), 'u_alu_1');
+
+        await nameInput.fill('custom_name');
+        await moduleSelect.selectOption('module:file:///workspace/rtl/uart.v:0');
+        assert.equal(await nameInput.inputValue(), 'custom_name');
+        await moduleSelect.selectOption('module:file:///workspace/vendor/alu.v:0');
+        await page.locator('#add-instance-form button[type="submit"]').click();
+
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.some(message => message.type === 'editArchDesign')
+        ));
+        const edit = await page.evaluate(() => (
+            (window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                edit?: unknown;
+            }> }).__veriflowMessages.find(message => message.type === 'editArchDesign')?.edit
+        ));
+        assert.deepEqual(edit, {
+            type: 'addInstance',
+            instance: {
+                name: 'custom_name',
+                module: 'alu',
+                definitionKey: 'module:file:///workspace/vendor/alu.v:0',
+            },
+        });
         assert.deepEqual(rendererErrors, []);
     } finally {
         await electronApp.close();

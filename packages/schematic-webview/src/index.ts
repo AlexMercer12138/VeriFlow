@@ -827,6 +827,7 @@ let archDesignEditable = false;
 let authoringPending = false;
 let currentArchDesignState: EditableArchDesignState | undefined;
 let currentArchDesignInspector: ArchDesignInspectorModel | undefined;
+let instanceNameAutomatic = true;
 const autoFittedModules = new Set<string>();
 let archDesignLayoutSaveInFlight = false;
 let queuedArchDesignLayoutSave: Readonly<{
@@ -1322,8 +1323,7 @@ function renderInspector(model: SchematicInspectorModel): void {
 function setAuthoringControls(): void {
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
-    dom.addInstanceButton.disabled = disabled
-        || (currentArchDesignState?.catalog.length ?? 0) === 0;
+    dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
     dom.exportButton.disabled = disabled;
@@ -2005,12 +2005,21 @@ function updateArchDesignState(
         currentArchDesignState = event;
         archDesignEditable = true;
         dom.instanceModuleSelect.replaceChildren();
-        const moduleNames = [...new Set(event.catalog.map(module => module.name))];
-        for (const moduleName of moduleNames) {
-            const option = document.createElement('option');
-            option.value = moduleName;
-            option.textContent = moduleName;
-            dom.instanceModuleSelect.append(option);
+        if (event.moduleChoices) {
+            for (const choice of event.moduleChoices) {
+                const option = document.createElement('option');
+                option.value = choice.definitionKey;
+                option.textContent = `${choice.moduleName} (${choice.description})`;
+                dom.instanceModuleSelect.append(option);
+            }
+        } else {
+            const moduleNames = [...new Set(event.catalog.map(module => module.name))];
+            for (const moduleName of moduleNames) {
+                const option = document.createElement('option');
+                option.value = moduleName;
+                option.textContent = moduleName;
+                dom.instanceModuleSelect.append(option);
+            }
         }
         updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
@@ -2278,9 +2287,61 @@ function parsedPortWidth(value: string): number | { expression: string } | undef
     return { expression: trimmed };
 }
 
+function selectedInstanceModule(): Readonly<{
+    moduleName: string;
+    definitionKey?: string;
+}> | undefined {
+    const selectedValue = dom.instanceModuleSelect.value;
+    if (!selectedValue || !currentArchDesignState) return undefined;
+    const choice = currentArchDesignState.moduleChoices?.find(
+        candidate => candidate.definitionKey === selectedValue
+    );
+    if (choice) {
+        return {
+            moduleName: choice.moduleName,
+            definitionKey: choice.definitionKey,
+        };
+    }
+    return currentArchDesignState.catalog.some(module => module.name === selectedValue)
+        ? { moduleName: selectedValue }
+        : undefined;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function generatedInstanceName(moduleName: string): string {
+    const pattern = new RegExp(`^u_${escapeRegExp(moduleName)}_([0-9]+)$`);
+    const usedSuffixes = new Set<number>();
+    for (const instance of currentArchDesignState?.design.instances ?? []) {
+        const match = pattern.exec(instance.name);
+        if (match) usedSuffixes.add(Number(match[1]));
+    }
+    let suffix = 0;
+    while (usedSuffixes.has(suffix)) suffix += 1;
+    return `u_${moduleName}_${suffix}`;
+}
+
+function updateAutomaticInstanceName(): void {
+    const selected = selectedInstanceModule();
+    dom.instanceNameInput.value = selected
+        ? generatedInstanceName(selected.moduleName)
+        : '';
+}
+
 dom.addInstanceButton.addEventListener('click', () => {
-    dom.instanceNameInput.value = '';
-    showDialog(dom.addInstanceDialog, dom.instanceNameInput);
+    instanceNameAutomatic = true;
+    updateAutomaticInstanceName();
+    showDialog(dom.addInstanceDialog, dom.instanceModuleSelect);
+});
+
+dom.instanceModuleSelect.addEventListener('change', () => {
+    if (instanceNameAutomatic) updateAutomaticInstanceName();
+});
+
+dom.instanceNameInput.addEventListener('input', () => {
+    instanceNameAutomatic = false;
 });
 
 dom.addPortButton.addEventListener('click', () => {
@@ -2315,10 +2376,19 @@ dom.deleteButton.addEventListener('click', () => {
 dom.addInstanceForm.addEventListener('submit', event => {
     event.preventDefault();
     const name = dom.instanceNameInput.value.trim();
-    const module = dom.instanceModuleSelect.value;
-    if (!name || !module) return;
+    const selected = selectedInstanceModule();
+    if (!name || !selected) return;
     dom.addInstanceDialog.close();
-    postArchDesignEdit({ type: 'addInstance', instance: { name, module } });
+    postArchDesignEdit({
+        type: 'addInstance',
+        instance: {
+            name,
+            module: selected.moduleName,
+            ...(selected.definitionKey === undefined
+                ? {}
+                : { definitionKey: selected.definitionKey }),
+        },
+    });
 });
 
 dom.addPortForm.addEventListener('submit', event => {

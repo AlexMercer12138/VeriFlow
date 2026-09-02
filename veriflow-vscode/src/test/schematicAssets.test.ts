@@ -956,6 +956,11 @@ async function testSchematicAssets(): Promise<void> {
         assert.ok(html.includes(expected), `HTML is missing ${expected}`);
     }
     assert.match(html, /id="authoring-actions"[^>]*\shidden(?:\s|>)/);
+    assert.ok(
+        html.indexOf('for="instance-module-select"')
+            < html.indexOf('for="instance-name-input"'),
+        'the Add instance dialog must select a module before naming the instance'
+    );
     assert.doesNotMatch(html, /<svg\b/i);
 
     const css = fs.readFileSync(path.join(webDistRoot, 'index.css'), 'utf8');
