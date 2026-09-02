@@ -404,3 +404,37 @@ top-level outputs as validation errors.
 **Tags:** #architecture #schematic #arch-design #defaults #code-generation
 
 ---
+
+## 2026-09-03: Keep Arch Design defaults implicit and add Logic Utilities
+
+**Context:** Projecting every undriven input default as a constant node made
+ordinary module composition produce many non-authorable boxes and obscured the
+intentional top-level logic. Authors still need visible constants and common
+glue logic when they explicitly choose to add it.
+
+**Decision:** Keep effective defaults in resolution, validation, the Inspector,
+and RTL export, but do not project any derived default as a graph node. Add
+schema-v2 first-class Logic Utility nodes for explicit constants, common gates,
+muxes, bus composition, extension, and reductions, and emit them as continuous
+assignments.
+
+**Why not:**
+- Hide only implicit-zero nodes: explicit and protocol defaults are the same
+  defaulting concept and would still clutter the canvas.
+- Model utilities as synthetic HDL instances: they would depend on catalog
+  discovery, create reserved-name conflicts, and generate unnecessary module
+  declarations.
+- Emit helper functions: continuous assignments express these stateless
+  operations more directly and remain compatible with Verilog-2001.
+
+**Affects:** `packages/schematic-core/src/archDesign/`,
+`packages/schematic-webview/`, `veriflow-vscode/src/schematic/`
+
+**Related:** `docs/plans/2026-09-03-arch-design-logic-utilities-design.md`
+
+**Supersedes:** The graph-projection portion of
+`2026-09-02: Default undriven Arch Design instance inputs to zero`
+
+**Tags:** #architecture #schematic #arch-design #defaults #code-generation
+
+---
