@@ -499,11 +499,11 @@ test('CI and tagged release keep provenance validation and source delivery wired
     assert.doesNotMatch(publishJob, /sha256sum|SHA256SUMS\.txt/);
 });
 
-test('local release checks include Icarus source provenance tests', () => {
+test('cross-platform release checks keep Linux-only source archive tests isolated', () => {
     const manifest = JSON.parse(
         readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
     );
-    assert.match(manifest.scripts['test:release'], /scripts\/lib\/iverilog-source\.test\.mjs/);
+    assert.doesNotMatch(manifest.scripts['test:release'], /scripts\/lib\/iverilog-source\.test\.mjs/);
 });
 
 test('release documentation records pinned GPL corresponding-source delivery', () => {

@@ -9,6 +9,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
     ReleaseError,
     ensureChangelogHasVersion,
@@ -20,6 +21,8 @@ import {
     runRelease,
     updateVersionFiles,
 } from './release.mjs';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function writeJson(filepath, value) {
     mkdirSync(path.dirname(filepath), { recursive: true });
@@ -94,6 +97,14 @@ test('version and changelog checks cover every workspace manifest', () => {
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('release documentation does not hardcode a VeriFlow product version', () => {
+    const documentation = readFileSync(
+        path.join(repositoryRoot, 'docs/licenses/iverilog-wasm.md'),
+        'utf8',
+    );
+    assert.doesNotMatch(documentation, /VeriFlow \d+\.\d+\.\d+ includes/);
 });
 
 test('version update synchronizes manifests, internal dependencies, and CLI contract', () => {
