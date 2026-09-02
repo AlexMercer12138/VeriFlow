@@ -236,6 +236,14 @@ The collapsed state is persisted per interface.
 
 ## Defaults and Adaptation
 
+An undriven instance input has an implicit unsized `0` default. Explicit
+connection and design endpoint defaults take precedence over that value. The
+Inspector exposes the endpoint default when an instance input pin is selected;
+clearing the field restores the implicit zero. The same rule supplies a real
+constant source for a driverless scalar connection. It does not apply to an
+undriven top-level output, which remains a validation error because it is part
+of the generated module's public contract.
+
 Every protocol member may define behavior for an existing receiver input that
 has no driver. Effective defaults use this precedence:
 
@@ -359,8 +367,9 @@ changes do not trigger export.
 Validation reports schema errors, unresolved or ambiguous module definitions,
 unknown ports, invalid parameter values, width mismatches, multiple input
 drivers, invalid inout `_t` widths, unsafe default expressions, and required
-undriven inputs without a default. Incomplete recognized interfaces alone are
-not an error or warning.
+undriven top-level outputs. Undriven instance inputs instead use their explicit
+default or implicit zero. Incomplete recognized interfaces alone are not an
+error or warning.
 
 Invalid intermediate edits remain visible in the `.ad` editor with localized
 diagnostics. Export is blocked until semantic errors are resolved. A failed

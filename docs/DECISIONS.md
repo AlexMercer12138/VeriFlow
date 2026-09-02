@@ -372,3 +372,35 @@ calibrated.
 **Tags:** #architecture #simulation #performance #tooling
 
 ---
+
+## 2026-09-02: Default undriven Arch Design instance inputs to zero
+
+**Context:** Arch Design previously treated an undriven instance input as a
+validation error even though module composition needs a deterministic and
+editable tie-off for intentionally unused inputs. Omitting the named port
+mapping would also make behavior depend on HDL declaration details instead of
+the visual design.
+
+**Decision:** Resolve every undriven instance input to an unsized Verilog `0`
+unless an explicit connection or endpoint default overrides it. Show the
+endpoint default in the Inspector when the input pin is selected, and restore
+the implicit zero when the field is cleared. Project the effective value as a
+real constant node and emit it explicitly in generated RTL. Keep undriven
+top-level outputs as validation errors.
+
+**Why not:**
+- Reject every undriven instance input: intentionally unused inputs would
+  require repetitive manual tie-offs and contradict the editor workflow.
+- Leave the named port mapping empty: simulation and synthesis behavior would
+  be implicit and the canvas could not accurately show the generated design.
+- Apply zero to undriven top-level outputs: that would hide an incomplete public
+  output contract rather than default an internal instance input.
+
+**Affects:** `packages/schematic-core/src/archDesign/`,
+`packages/schematic-webview/`, `veriflow-vscode/src/schematic/`
+
+**Related:** `docs/plans/2026-09-02-arch-design-authoring-ux-design.md`
+
+**Tags:** #architecture #schematic #arch-design #defaults #code-generation
+
+---
