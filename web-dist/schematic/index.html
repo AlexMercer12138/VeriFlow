@@ -14,24 +14,24 @@
                 <option>Loading</option>
             </select>
             <div class="toolbar-actions">
-                <button id="fit-button" class="icon-button" type="button" title="Fit schematic" aria-label="Fit schematic" disabled><span data-icon-slot></span></button>
-                <button id="zoom-reset-button" class="icon-button" type="button" title="Reset zoom to 100%" aria-label="Reset zoom to 100%" disabled><span data-icon-slot></span></button>
-                <button id="relayout-button" class="icon-button" type="button" title="Relayout schematic" aria-label="Relayout schematic" disabled><span data-icon-slot></span></button>
-                <button id="search-button" class="icon-button" type="button" title="Search schematic" aria-label="Search schematic" aria-expanded="false" aria-controls="search-controls"><span data-icon-slot></span></button>
+                <button id="fit-button" class="icon-button" type="button" title="Fit schematic" aria-label="Fit schematic" aria-keyshortcuts="F" disabled><span data-icon-slot></span></button>
+                <button id="zoom-reset-button" class="icon-button" type="button" title="Reset zoom to 100%" aria-label="Reset zoom to 100%" aria-keyshortcuts="0" disabled><span data-icon-slot></span></button>
+                <button id="relayout-button" class="icon-button" type="button" title="Relayout schematic" aria-label="Relayout schematic" aria-keyshortcuts="R" disabled><span data-icon-slot></span></button>
+                <button id="search-button" class="icon-button" type="button" title="Search schematic" aria-label="Search schematic" aria-keyshortcuts="Control+F Meta+F" aria-expanded="false" aria-controls="search-controls"><span data-icon-slot></span></button>
                 <div id="search-controls" class="search-controls" hidden>
                     <input id="search-input" type="search" aria-label="Search query" autocomplete="off" spellcheck="false">
-                    <button id="search-previous-button" class="icon-button" type="button" title="Previous result" aria-label="Previous search result" disabled><span data-icon-slot></span></button>
-                    <button id="search-next-button" class="icon-button" type="button" title="Next result" aria-label="Next search result" disabled><span data-icon-slot></span></button>
+                    <button id="search-previous-button" class="icon-button" type="button" title="Previous result" aria-label="Previous search result" aria-keyshortcuts="Shift+Enter" disabled><span data-icon-slot></span></button>
+                    <button id="search-next-button" class="icon-button" type="button" title="Next result" aria-label="Next search result" aria-keyshortcuts="Enter" disabled><span data-icon-slot></span></button>
                 </div>
-                <button id="minimap-button" class="icon-button" type="button" title="Toggle minimap" aria-label="Toggle minimap" aria-pressed="false" disabled><span data-icon-slot></span></button>
-                <button id="inspector-toggle-button" class="icon-button" type="button" title="Hide properties" aria-label="Hide properties" aria-controls="inspector" aria-expanded="true"><span data-icon-slot></span></button>
+                <button id="minimap-button" class="icon-button" type="button" title="Toggle minimap" aria-label="Toggle minimap" aria-keyshortcuts="M" aria-pressed="false" disabled><span data-icon-slot></span></button>
+                <button id="inspector-toggle-button" class="icon-button" type="button" title="Hide properties" aria-label="Hide properties" aria-keyshortcuts="I" aria-controls="inspector" aria-expanded="true"><span data-icon-slot></span></button>
             </div>
             <div id="authoring-actions" class="toolbar-actions authoring-actions" hidden>
-                <button id="add-instance-button" class="icon-button" type="button" title="Add instance" aria-label="Add instance" disabled><span data-icon-slot></span></button>
-                <button id="add-port-button" class="icon-button" type="button" title="Add port" aria-label="Add port" disabled><span data-icon-slot></span></button>
-                <button id="connect-button" class="icon-button" type="button" title="Connect pins" aria-label="Connect pins" aria-pressed="false" disabled><span data-icon-slot></span></button>
-                <button id="export-button" class="icon-button" type="button" title="Export RTL" aria-label="Export RTL" disabled><span data-icon-slot></span></button>
-                <button id="delete-button" class="icon-button" type="button" title="Delete selection" aria-label="Delete selection" disabled><span data-icon-slot></span></button>
+                <button id="add-instance-button" class="icon-button" type="button" title="Add instance" aria-label="Add instance" aria-keyshortcuts="A" disabled><span data-icon-slot></span></button>
+                <button id="add-port-button" class="icon-button" type="button" title="Add port" aria-label="Add port" aria-keyshortcuts="P" disabled><span data-icon-slot></span></button>
+                <button id="connect-button" class="icon-button" type="button" title="Connect pins" aria-label="Connect pins" aria-keyshortcuts="C" aria-pressed="false" disabled><span data-icon-slot></span></button>
+                <button id="export-button" class="icon-button" type="button" title="Export RTL" aria-label="Export RTL" aria-keyshortcuts="E" disabled><span data-icon-slot></span></button>
+                <button id="delete-button" class="icon-button" type="button" title="Delete selection" aria-label="Delete selection" aria-keyshortcuts="Delete Backspace" disabled><span data-icon-slot></span></button>
             </div>
             <div class="diagnostic-counts" aria-label="Validation counts">
                 <span id="error-count">E 0</span>
@@ -63,10 +63,10 @@
     <dialog id="add-instance-dialog" aria-labelledby="add-instance-title">
         <form id="add-instance-form" method="dialog" class="authoring-dialog-form">
             <h2 id="add-instance-title">Add instance</h2>
-            <label for="instance-name-input">Instance name</label>
-            <input id="instance-name-input" name="name" required autocomplete="off" spellcheck="false">
             <label for="instance-module-select">Module</label>
             <select id="instance-module-select" name="module" required></select>
+            <label for="instance-name-input">Instance name</label>
+            <input id="instance-name-input" name="name" required autocomplete="off" spellcheck="false">
             <div class="dialog-actions">
                 <button type="button" data-dialog-cancel>Cancel</button>
                 <button type="submit">Add</button>

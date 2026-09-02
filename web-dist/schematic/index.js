@@ -45375,7 +45375,12 @@
     if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
     return `${endpoint.port}.${endpoint.signal ?? "value"}`;
   }
-  function matchingDefinition(catalog, module2) {
+  function matchingDefinition(catalog, module2, definitionKey) {
+    if (definitionKey !== void 0) {
+      return catalog.find(
+        (candidate) => candidate.key === definitionKey && candidate.name === module2
+      );
+    }
     const matches = catalog.filter((candidate) => candidate.name === module2);
     return matches.length === 1 ? matches[0] : void 0;
   }
@@ -45415,7 +45420,11 @@
   function projectInstanceInspector(snapshot, name) {
     const instance = snapshot.design.instances.find((candidate) => candidate.name === name);
     if (!instance) return void 0;
-    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definition = matchingDefinition(
+      snapshot.catalog,
+      instance.module,
+      instance.definitionKey
+    );
     const fields = [
       textField("instance-name", "Name", instance.name, (value) => value.trim().length > 0 ? { type: "renameInstance", name: instance.name, nextName: value.trim() } : void 0),
       readonlyField("instance-module", "Module", instance.module)
@@ -45569,7 +45578,11 @@
     }
     const instance = snapshot.design.instances.find((candidate) => candidate.name === node.label);
     if (!instance) return void 0;
-    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definition = matchingDefinition(
+      snapshot.catalog,
+      instance.module,
+      instance.definitionKey
+    );
     const definitionPort = definition?.ports.find((candidate) => candidate.name === pin2.name);
     const interfaceItem = pin2.interface === void 0 ? void 0 : snapshot.inspector?.interfaces.find((item) => item.identity === pin2.interface?.id);
     const occupancy = scalarConnectionForPin(snapshot, node, pin2) ?? interfaceItem?.members.find((member) => member.port === pin2.name)?.occupancy;
@@ -45580,23 +45593,49 @@
       direction,
       ...width2 === void 0 ? {} : { width: width2 }
     };
+    const fields = [
+      readonlyField("pin-instance", "Instance", instance.name),
+      readonlyField("pin-name", "Port", pin2.name),
+      readonlyField("pin-direction", "Direction", direction),
+      readonlyField("pin-width", "Width", formatWidth(pin2.width)),
+      readonlyField(
+        "pin-interface",
+        "Interface",
+        interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
+          interfaceItem.endpoint
+        )}` : "None"
+      ),
+      readonlyField("pin-occupancy", "Occupancy", occupancy ?? "Unconnected")
+    ];
+    if (direction === "input") {
+      const defaultKey = endpointDefaultKey({
+        kind: "instance",
+        instance: instance.name,
+        port: pin2.name
+      });
+      const explicit = Object.prototype.hasOwnProperty.call(
+        snapshot.design.defaults,
+        defaultKey
+      ) ? snapshot.design.defaults[defaultKey] : "";
+      fields.push(textField(
+        "pin-default",
+        "Default",
+        explicit,
+        (value) => {
+          const expression = value.trim();
+          return {
+            type: "setDefault",
+            endpoint: defaultKey,
+            ...expression.length === 0 ? {} : { expression }
+          };
+        },
+        "Implicit default: 0"
+      ));
+    }
     return {
       kind: "pin",
       title: `${instance.name}.${pin2.name}`,
-      fields: [
-        readonlyField("pin-instance", "Instance", instance.name),
-        readonlyField("pin-name", "Port", pin2.name),
-        readonlyField("pin-direction", "Direction", direction),
-        readonlyField("pin-width", "Width", formatWidth(pin2.width)),
-        readonlyField(
-          "pin-interface",
-          "Interface",
-          interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
-            interfaceItem.endpoint
-          )}` : "None"
-        ),
-        readonlyField("pin-occupancy", "Occupancy", occupancy ?? "Unconnected")
-      ],
+      fields,
       actions: [{
         id: "expose-port",
         label: "Expose as top-level port",
@@ -46418,7 +46457,7 @@
           tabindex: 0,
           role: "link",
           "aria-label": `${model.kind}: ${model.label}`,
-          "aria-keyshortcuts": model.definitionKey ? "Enter Shift+Enter" : "Enter"
+          "aria-keyshortcuts": archDesignDocument && model.definitionKey ? "Enter" : model.definitionKey ? "Enter Shift+Enter" : "Enter"
         },
         body: {
           strokeDasharray: model.readOnly ? "4 2" : void 0,
@@ -46632,6 +46671,7 @@
   var authoringPending = false;
   var currentArchDesignState;
   var currentArchDesignInspector;
+  var instanceNameAutomatic = true;
   var autoFittedModules = /* @__PURE__ */ new Set();
   var archDesignLayoutSaveInFlight = false;
   var queuedArchDesignLayoutSave;
@@ -47040,7 +47080,7 @@
   function setAuthoringControls() {
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
-    dom.addInstanceButton.disabled = disabled || (currentArchDesignState?.catalog.length ?? 0) === 0;
+    dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
     dom.exportButton.disabled = disabled;
@@ -47632,12 +47672,21 @@
       currentArchDesignState = event;
       archDesignEditable = true;
       dom.instanceModuleSelect.replaceChildren();
-      const moduleNames = [...new Set(event.catalog.map((module2) => module2.name))];
-      for (const moduleName of moduleNames) {
-        const option = document.createElement("option");
-        option.value = moduleName;
-        option.textContent = moduleName;
-        dom.instanceModuleSelect.append(option);
+      if (event.moduleChoices) {
+        for (const choice of event.moduleChoices) {
+          const option = document.createElement("option");
+          option.value = choice.definitionKey;
+          option.textContent = `${choice.moduleName} (${choice.description})`;
+          dom.instanceModuleSelect.append(option);
+        }
+      } else {
+        const moduleNames = [...new Set(event.catalog.map((module2) => module2.name))];
+        for (const moduleName of moduleNames) {
+          const option = document.createElement("option");
+          option.value = moduleName;
+          option.textContent = moduleName;
+          dom.instanceModuleSelect.append(option);
+        }
       }
       updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
@@ -47790,16 +47839,21 @@
     setCanvasState("Loading schematic");
     post({ type: "selectModule", moduleKey: selectedModuleKey });
   });
-  dom.fitButton.addEventListener("click", () => {
+  function fitSchematic() {
+    if (dom.fitButton.disabled) return false;
     graph.zoomToFit({ padding: 24, maxScale: 1 });
     updateViewportFromGraph();
     updateMinimapAvailability();
-  });
-  dom.zoomResetButton.addEventListener("click", () => {
+    return true;
+  }
+  function resetSchematicZoom() {
+    if (dom.zoomResetButton.disabled) return false;
     graph.zoomTo(1);
     updateViewportFromGraph();
-  });
-  dom.relayoutButton.addEventListener("click", () => {
+    return true;
+  }
+  function relayoutSchematic() {
+    if (dom.relayoutButton.disabled) return false;
     if (currentGraph && currentLayout && archDesignDocument) {
       currentLayout.placement = (0, import_schematic_core.createPlacement)(
         currentGraph,
@@ -47815,9 +47869,9 @@
         revision: currentRevision
       });
     }
-  });
-  dom.searchButton.addEventListener("click", () => {
-    const opening = dom.searchControls.hidden;
+    return currentGraph !== void 0;
+  }
+  function setSearchOpen(opening) {
     dom.searchControls.hidden = !opening;
     dom.searchButton.setAttribute("aria-expanded", String(opening));
     if (opening) {
@@ -47827,7 +47881,27 @@
       dom.searchInput.value = "";
       runSearch("", true);
     }
-  });
+  }
+  function toggleSearch() {
+    if (dom.searchButton.disabled) return false;
+    setSearchOpen(dom.searchControls.hidden);
+    return true;
+  }
+  function focusSearch() {
+    if (dom.searchButton.disabled) return false;
+    setSearchOpen(true);
+    return true;
+  }
+  function closeSearch() {
+    if (dom.searchControls.hidden) return false;
+    setSearchOpen(false);
+    dom.searchButton.focus();
+    return true;
+  }
+  dom.fitButton.addEventListener("click", fitSchematic);
+  dom.zoomResetButton.addEventListener("click", resetSchematicZoom);
+  dom.relayoutButton.addEventListener("click", relayoutSchematic);
+  dom.searchButton.addEventListener("click", toggleSearch);
   dom.searchInput.addEventListener("input", () => {
     runSearch(dom.searchInput.value, true);
   });
@@ -47836,11 +47910,8 @@
       event.preventDefault();
       showSearchMatch(event.shiftKey ? searchIndex - 1 : searchIndex + 1);
     } else if (event.key === "Escape") {
-      dom.searchControls.hidden = true;
-      dom.searchButton.setAttribute("aria-expanded", "false");
-      dom.searchInput.value = "";
-      runSearch("", true);
-      dom.searchButton.focus();
+      event.preventDefault();
+      closeSearch();
     }
   });
   dom.searchPreviousButton.addEventListener("click", () => {
@@ -47849,63 +47920,127 @@
   dom.searchNextButton.addEventListener("click", () => {
     showSearchMatch(searchIndex + 1);
   });
-  dom.minimapButton.addEventListener("click", () => {
-    if (!currentLayout || !minimapAvailable) return;
+  function toggleMinimap() {
+    if (dom.minimapButton.disabled || !currentLayout || !minimapAvailable) return false;
     currentLayout.minimap = !currentLayout.minimap;
     setMinimapVisibility();
     scheduleLayoutSave();
-  });
-  dom.inspectorToggleButton.addEventListener("click", () => {
+    return true;
+  }
+  function toggleInspector() {
     inspectorExpanded = !inspectorExpanded;
     updateInspectorToggle();
-  });
+    return true;
+  }
+  dom.minimapButton.addEventListener("click", toggleMinimap);
+  dom.inspectorToggleButton.addEventListener("click", toggleInspector);
   function showDialog(dialog, firstControl) {
     if (!archDesignEditable || authoringPending) return;
     dialog.showModal();
     firstControl.focus();
   }
+  dom.addInstanceDialog.addEventListener("close", () => dom.addInstanceButton.focus());
+  dom.addPortDialog.addEventListener("close", () => dom.addPortButton.focus());
   function parsedPortWidth(value) {
     const trimmed = value.trim();
     if (trimmed.length === 0 || trimmed === "1") return void 0;
     if (/^[1-9][0-9]*$/.test(trimmed)) return Number(trimmed);
     return { expression: trimmed };
   }
-  dom.addInstanceButton.addEventListener("click", () => {
-    dom.instanceNameInput.value = "";
-    showDialog(dom.addInstanceDialog, dom.instanceNameInput);
+  function selectedInstanceModule() {
+    const selectedValue = dom.instanceModuleSelect.value;
+    if (!selectedValue || !currentArchDesignState) return void 0;
+    const choice = currentArchDesignState.moduleChoices?.find(
+      (candidate) => candidate.definitionKey === selectedValue
+    );
+    if (choice) {
+      return {
+        moduleName: choice.moduleName,
+        definitionKey: choice.definitionKey
+      };
+    }
+    return currentArchDesignState.catalog.some((module2) => module2.name === selectedValue) ? { moduleName: selectedValue } : void 0;
+  }
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function generatedInstanceName(moduleName) {
+    const pattern = new RegExp(`^u_${escapeRegExp(moduleName)}_([0-9]+)$`);
+    const usedSuffixes = /* @__PURE__ */ new Set();
+    for (const instance of currentArchDesignState?.design.instances ?? []) {
+      const match = pattern.exec(instance.name);
+      if (match) usedSuffixes.add(Number(match[1]));
+    }
+    let suffix = 0;
+    while (usedSuffixes.has(suffix)) suffix += 1;
+    return `u_${moduleName}_${suffix}`;
+  }
+  function updateAutomaticInstanceName() {
+    const selected = selectedInstanceModule();
+    dom.instanceNameInput.value = selected ? generatedInstanceName(selected.moduleName) : "";
+  }
+  function showAddInstanceDialog() {
+    if (dom.addInstanceButton.disabled) return false;
+    instanceNameAutomatic = true;
+    updateAutomaticInstanceName();
+    showDialog(dom.addInstanceDialog, dom.instanceModuleSelect);
+    return dom.addInstanceDialog.open;
+  }
+  dom.addInstanceButton.addEventListener("click", showAddInstanceDialog);
+  dom.instanceModuleSelect.addEventListener("change", () => {
+    if (instanceNameAutomatic) updateAutomaticInstanceName();
   });
-  dom.addPortButton.addEventListener("click", () => {
+  dom.instanceNameInput.addEventListener("input", () => {
+    instanceNameAutomatic = false;
+  });
+  function showAddPortDialog() {
+    if (dom.addPortButton.disabled) return false;
     dom.portNameInput.value = "";
     dom.portDirectionSelect.value = "input";
     dom.portWidthInput.value = "1";
     showDialog(dom.addPortDialog, dom.portNameInput);
-  });
-  dom.connectButton.addEventListener("click", () => {
+    return dom.addPortDialog.open;
+  }
+  function toggleConnectionMode() {
+    if (dom.connectButton.disabled) return false;
     const active = dom.connectButton.getAttribute("aria-pressed") !== "true";
     dom.connectButton.setAttribute("aria-pressed", String(active));
     if (!active) cancelPendingConnection();
     refreshConnectionMagnets();
-  });
-  dom.exportButton.addEventListener("click", () => {
-    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    return true;
+  }
+  function exportRtl() {
+    if (dom.exportButton.disabled || !currentArchDesignState || !archDesignEditable || authoringPending) return false;
     authoringPending = true;
     queuedArchDesignCommand = { type: "export" };
     setAuthoringControls();
     if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
     drainArchDesignWrites();
-  });
-  dom.deleteButton.addEventListener("click", () => {
-    if (currentArchDesignInspector?.deleteEdit) {
-      postArchDesignEdit(currentArchDesignInspector.deleteEdit);
-    }
-  });
+    return true;
+  }
+  function deleteSelection() {
+    if (dom.deleteButton.disabled || !currentArchDesignInspector?.deleteEdit) return false;
+    postArchDesignEdit(currentArchDesignInspector.deleteEdit);
+    return true;
+  }
+  dom.addPortButton.addEventListener("click", showAddPortDialog);
+  dom.connectButton.addEventListener("click", toggleConnectionMode);
+  dom.exportButton.addEventListener("click", exportRtl);
+  dom.deleteButton.addEventListener("click", deleteSelection);
   dom.addInstanceForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const name = dom.instanceNameInput.value.trim();
-    const module2 = dom.instanceModuleSelect.value;
-    if (!name || !module2) return;
+    const selected = selectedInstanceModule();
+    if (!name || !selected) return;
     dom.addInstanceDialog.close();
-    postArchDesignEdit({ type: "addInstance", instance: { name, module: module2 } });
+    postArchDesignEdit({
+      type: "addInstance",
+      instance: {
+        name,
+        module: selected.moduleName,
+        ...selected.definitionKey === void 0 ? {} : { definitionKey: selected.definitionKey }
+      }
+    });
   });
   dom.addPortForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -47932,7 +48067,7 @@
     if (!cell) return;
     const command = navigationCommandForCell(
       navigationTargetForCell(cell),
-      event.shiftKey
+      archDesignDocument || event.shiftKey
     );
     if (!command) return;
     event.preventDefault();
@@ -48037,10 +48172,77 @@
     if (!pendingConnectionPreview || !graph.hasCell(pendingConnectionPreview)) return;
     pendingConnectionPreview.setTarget(graph.clientToLocal(event.clientX, event.clientY));
   });
-  document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !pendingConnection) return;
-    event.preventDefault();
+  function editableShortcutTarget(target) {
+    return target instanceof Element && target.closest(
+      'input, select, textarea, [contenteditable]:not([contenteditable="false"])'
+    ) !== null;
+  }
+  function closeActiveDialog() {
+    const dialog = document.querySelector("dialog[open]");
+    if (!dialog) return false;
+    dialog.close();
+    if (dialog === dom.addInstanceDialog) dom.addInstanceButton.focus();
+    if (dialog === dom.addPortDialog) dom.addPortButton.focus();
+    return true;
+  }
+  function openSelectedDefinition() {
+    const selected = selection.getSelectedCells();
+    const cell = selected[selected.length - 1];
+    if (!cell) return false;
+    const command = navigationCommandForCell(navigationTargetForCell(cell), true);
+    if (!command) return false;
+    post(command);
+    return true;
+  }
+  function cancelPendingConnectionShortcut() {
+    if (!pendingConnection) return false;
     cancelPendingConnection();
+    return true;
+  }
+  function handleArchDesignShortcut(key) {
+    switch (key) {
+      case "a":
+        return showAddInstanceDialog();
+      case "p":
+        return showAddPortDialog();
+      case "c":
+        return toggleConnectionMode();
+      case "e":
+        return exportRtl();
+      case "f":
+        return fitSchematic();
+      case "0":
+        return resetSchematicZoom();
+      case "r":
+        return relayoutSchematic();
+      case "m":
+        return toggleMinimap();
+      case "i":
+        return toggleInspector();
+      case "delete":
+      case "backspace":
+        return deleteSelection();
+      case "enter":
+        return openSelectedDefinition();
+      default:
+        return false;
+    }
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    if (event.key === "Escape") {
+      const handled = closeActiveDialog() || closeSearch() || cancelPendingConnectionShortcut();
+      if (handled) event.preventDefault();
+      return;
+    }
+    if (document.querySelector("dialog[open]")) return;
+    const key = event.key.toLocaleLowerCase();
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === "f") {
+      if (focusSearch()) event.preventDefault();
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || !archDesignDocument || editableShortcutTarget(event.target)) return;
+    if (handleArchDesignShortcut(key)) event.preventDefault();
   });
   graph.on("blank:click", () => {
     selectNetwork(void 0);
