@@ -285,6 +285,33 @@ test('exports explicit ordered instances, parameters, and effective defaults', (
     ].join('\n'));
 });
 
+test('exports implicit zero and explicit overrides for open instance inputs', () => {
+    const sink: ArchDesignModuleDefinition = {
+        key: 'rtl/sink.v#sink',
+        name: 'sink',
+        parameters: [],
+        ports: [
+            { name: 'data_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+            { name: 'enable', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_sink', module: 'sink' }],
+        defaults: { 'u_sink.enable': "1'b1" },
+    });
+
+    const result = exportArchDesignRtl(design, [sink]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.ok(result.text.includes([
+        'sink u_sink (',
+        '    .data_i(0),',
+        "    .enable(1'b1)",
+        ');',
+    ].join('\n')));
+});
+
 test('exports scalar tri-state control and inout readback assignments', () => {
     const io: ArchDesignModuleDefinition = {
         key: 'rtl/io.v#io_core',

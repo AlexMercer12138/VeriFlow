@@ -95,7 +95,8 @@ export type ResolvedArchDesignConnection = Readonly<{
     endpoints: readonly ResolvedArchDesignEndpoint[];
 }>;
 
-export type ArchDesignDefaultOrigin = 'connection' | 'design' | 'implicit-inout-t';
+export type ArchDesignDefaultOrigin =
+    'connection' | 'design' | 'implicit-inout-t' | 'implicit-zero';
 
 export type ArchDesignEffectiveDefault = Readonly<{
     endpoint: string;
@@ -1128,6 +1129,17 @@ export function resolveArchDesign(
                 sourcePath: endpoint.declarationPath,
                 expression: "1'b1",
                 origin: 'implicit-inout-t',
+            }));
+            continue;
+        }
+        if (endpoint.kind === 'instance') {
+            effectiveDefaults.push(Object.freeze({
+                identity: endpoint.identity,
+                endpoint: endpoint.defaultKey,
+                declarationOrder: endpoint.declarationOrder,
+                sourcePath: endpoint.declarationPath,
+                expression: '0',
+                origin: 'implicit-zero',
             }));
             continue;
         }

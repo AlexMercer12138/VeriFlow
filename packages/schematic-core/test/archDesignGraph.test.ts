@@ -118,6 +118,42 @@ test('projects ports from the selected duplicate module definition', () => {
     assert.equal(instance?.definitionKey, second.key);
 });
 
+test('projects implicit zero sources for undriven instance inputs', () => {
+    const sink: ArchDesignModuleDefinition = {
+        key: 'rtl/sink.v#sink',
+        name: 'sink',
+        parameters: [],
+        ports: [
+            { name: 'connected_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+            { name: 'open_i', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_sink', module: 'sink' }],
+        connections: [{
+            name: 'driverless',
+            endpoints: [{ kind: 'instance', instance: 'u_sink', port: 'connected_i' }],
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [sink], {
+        fileUri: 'file:///workspace/implicit-zero.ad',
+    });
+
+    assert.equal(projection.validation.valid, true);
+    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant').map(node => [
+        node.id,
+        node.label,
+    ]), [
+        ['default:instance:u_sink:connected_i', '0'],
+        ['default:instance:u_sink:open_i', '0'],
+    ]);
+    assert.deepEqual(projection.graph.networks.map(network => network.id), [
+        'network:driverless',
+        'network:default:instance:u_sink:open_i',
+    ]);
+});
+
 test('projects an ordered schema-v1 design and exposes inout feedback flow', () => {
     const presentation = {
         nodes: {

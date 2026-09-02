@@ -447,6 +447,38 @@ test('reports a required connected load with no definite driver or default', () 
     ]);
 });
 
+test('uses implicit zero for unconnected and driverless instance inputs', () => {
+    const sink: ArchDesignModuleDefinition = {
+        key: 'rtl/sink.v#sink',
+        name: 'sink',
+        parameters: [],
+        ports: [
+            { name: 'data_i', direction: 'input', width: { kind: 'known', bits: 8 } },
+            { name: 'enable', direction: 'input', width: { kind: 'known', bits: 1 } },
+        ],
+    };
+    const design = designOf({
+        instances: [{ name: 'u_sink', module: 'sink' }],
+        connections: [{
+            name: 'driverless',
+            endpoints: [{ kind: 'instance', instance: 'u_sink', port: 'data_i' }],
+        }],
+    });
+
+    const result = validateArchDesign(design, [sink]);
+
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.effectiveDefaults, [{
+        endpoint: 'u_sink.data_i',
+        expression: '0',
+        origin: 'implicit-zero',
+    }, {
+        endpoint: 'u_sink.enable',
+        expression: '0',
+        origin: 'implicit-zero',
+    }]);
+});
+
 test('reports unknown interface endpoints instead of a blanket unsupported error', () => {
     const emptyModule: ArchDesignModuleDefinition = {
         key: 'rtl/empty.sv#empty',
