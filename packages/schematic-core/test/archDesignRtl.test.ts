@@ -88,7 +88,7 @@ test('exports a deterministic empty Verilog module with an owned marker', () => 
     assert.equal(result.extension, '.v');
     assert.match(result.fingerprint, /^ad-v1-[0-9a-f]{16}$/);
     assert.equal(result.marker,
-        `// vik-veriflow:generated arch-design schema=1 fingerprint=${result.fingerprint} language=verilog`);
+        `// vik-veriflow:generated arch-design schema=2 fingerprint=${result.fingerprint} language=verilog`);
     assert.equal(result.text, [
         result.marker,
         '// vik-veriflow:source "designs/soc_top.ad"',
@@ -98,7 +98,7 @@ test('exports a deterministic empty Verilog module with an owned marker', () => 
         '',
     ].join('\n'));
     assert.deepEqual(parseArchDesignRtlMarker(result.text), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         fingerprint: result.fingerprint,
         language: 'verilog',
     });

@@ -579,7 +579,9 @@ export function applyArchDesignEdit(
     const mutable = mutableSnapshot(design);
     switch (edit.type) {
         case 'addInstance':
-            assertPublicNameUnused(mutable, edit.instance.name);
+            if (mutable.logic.some(logic => logic.name === edit.instance.name)) {
+                throw new ArchDesignEditError(`Name already exists: ${edit.instance.name}`);
+            }
             assertUnused(
                 mutable.instances,
                 instance => instance.name === edit.instance.name,
@@ -596,9 +598,7 @@ export function applyArchDesignEdit(
                 edit.name
             );
             if (edit.name !== edit.nextName) {
-                const occupied = mutable.ports.some(port => port.name === edit.nextName)
-                    || mutable.interfacePorts.some(port => port.name === edit.nextName)
-                    || mutable.logic.some(logic => logic.name === edit.nextName);
+                const occupied = mutable.logic.some(logic => logic.name === edit.nextName);
                 if (occupied) {
                     throw new ArchDesignEditError(`Name already exists: ${edit.nextName}`);
                 }
@@ -787,7 +787,9 @@ export function applyArchDesignEdit(
             break;
         }
         case 'addPort':
-            assertPublicNameUnused(mutable, edit.port.name);
+            if (mutable.logic.some(logic => logic.name === edit.port.name)) {
+                throw new ArchDesignEditError(`Name already exists: ${edit.port.name}`);
+            }
             assertUnused(
                 mutable.ports,
                 port => port.name === edit.port.name,
@@ -804,10 +806,7 @@ export function applyArchDesignEdit(
                 edit.name
             );
             if (edit.name !== edit.port.name) {
-                const occupied = mutable.instances.some(instance =>
-                    instance.name === edit.port.name)
-                    || mutable.interfacePorts.some(port => port.name === edit.port.name)
-                    || mutable.logic.some(logic => logic.name === edit.port.name);
+                const occupied = mutable.logic.some(logic => logic.name === edit.port.name);
                 if (occupied) {
                     throw new ArchDesignEditError(`Name already exists: ${edit.port.name}`);
                 }
@@ -874,7 +873,9 @@ export function applyArchDesignEdit(
             break;
         }
         case 'promotePort':
-            assertPublicNameUnused(mutable, edit.port.name);
+            if (mutable.logic.some(logic => logic.name === edit.port.name)) {
+                throw new ArchDesignEditError(`Name already exists: ${edit.port.name}`);
+            }
             assertUnused(
                 mutable.ports,
                 port => port.name === edit.port.name,
@@ -1030,7 +1031,9 @@ export function applyArchDesignEdit(
             break;
         }
         case 'promoteInterface': {
-            assertPublicNameUnused(mutable, edit.port);
+            if (mutable.logic.some(logic => logic.name === edit.port)) {
+                throw new ArchDesignEditError(`Name already exists: ${edit.port}`);
+            }
             assertUnused(
                 mutable.ports,
                 port => port.name === edit.port,
@@ -1116,9 +1119,7 @@ export function applyArchDesignEdit(
                 edit.name
             );
             if (edit.name !== edit.nextName) {
-                const occupied = mutable.instances.some(instance =>
-                    instance.name === edit.nextName)
-                    || mutable.logic.some(logic => logic.name === edit.nextName);
+                const occupied = mutable.logic.some(logic => logic.name === edit.nextName);
                 if (occupied) {
                     throw new ArchDesignEditError(`Name already exists: ${edit.nextName}`);
                 }

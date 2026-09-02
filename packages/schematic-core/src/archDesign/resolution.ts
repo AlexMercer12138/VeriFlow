@@ -15,6 +15,7 @@ import type {
     ArchDesignConnection,
     ArchDesignEndpoint,
     ArchDesignInstance,
+    ArchDesignLogic,
     ArchDesignInterfaceConnection,
     ArchDesignInterfaceEndpoint,
     ArchDesignInterfaceOverride,
@@ -23,6 +24,7 @@ import type {
     ArchDesignPort,
     ArchDesignWidth,
 } from './model';
+import { archDesignLogicPins, type ArchDesignLogicPin } from './logic';
 import {
     resolveArchDesignInterfaces,
     type ArchDesignInterfacesResolution,
@@ -53,6 +55,13 @@ export type ResolvedArchDesignPort = Readonly<{
     port: ArchDesignPort;
 }>;
 
+export type ResolvedArchDesignLogic = Readonly<{
+    index: number;
+    nodeId: string;
+    logic: ArchDesignLogic;
+    pins: readonly ArchDesignLogicPin[];
+}>;
+
 export type ArchDesignEndpointRole = 'driver' | 'load' | 'bidirectional';
 
 export type ResolvedArchDesignEndpointTarget = Readonly<{
@@ -61,10 +70,11 @@ export type ResolvedArchDesignEndpointTarget = Readonly<{
     defaultKey: string;
     role: ArchDesignEndpointRole;
     width: WidthValue;
-    kind: 'port' | 'instance';
+    kind: 'port' | 'instance' | 'logic';
     port: string;
     signal?: 'value' | 'i' | 'o' | 't';
     instance?: string;
+    logic?: string;
     declarationPath: string;
     declarationOrder: number;
     inoutPortWidth?: WidthValue;
@@ -75,10 +85,11 @@ export type ResolvedArchDesignEndpoint = Readonly<{
     defaultKey: string;
     role: ArchDesignEndpointRole;
     width: WidthValue;
-    kind: 'port' | 'instance';
+    kind: 'port' | 'instance' | 'logic';
     port: string;
     signal?: 'value' | 'i' | 'o' | 't';
     instance?: string;
+    logic?: string;
     declarationPath: string;
     targetDeclarationOrder: number;
     inoutPortWidth?: WidthValue;
@@ -125,6 +136,7 @@ export type ArchDesignResolution = Readonly<{
     moduleName: string;
     ports: readonly ResolvedArchDesignPort[];
     instances: readonly ResolvedArchDesignInstance[];
+    logic: readonly ResolvedArchDesignLogic[];
     endpointTargets: readonly ResolvedArchDesignEndpointTarget[];
     connections: readonly ResolvedArchDesignConnection[];
     interfaces: ArchDesignInterfacesResolution;
@@ -150,6 +162,7 @@ type DesignSnapshot = Readonly<{
     moduleName: string;
     ports: readonly ArchDesignPort[];
     instances: readonly ArchDesignInstance[];
+    logic: readonly ArchDesignLogic[];
     connections: readonly ArchDesignConnection[];
     interfacePorts: readonly ArchDesignInterfacePort[];
     interfaceOverrides: Readonly<Record<string, ArchDesignInterfaceOverride>>;
@@ -161,6 +174,7 @@ type DesignSnapshotContext = Readonly<{
     widths: WeakMap<object, ArchDesignWidth>;
     ports: WeakMap<object, ArchDesignPort>;
     instances: WeakMap<object, ArchDesignInstance>;
+    logic: WeakMap<object, ArchDesignLogic>;
     endpoints: WeakMap<object, ArchDesignEndpoint>;
     connections: WeakMap<object, ArchDesignConnection>;
     interfaceEndpoints: WeakMap<object, ArchDesignInterfaceEndpoint>;
@@ -252,6 +266,81 @@ function snapshotDesignInstance(
             }),
     });
     context.instances.set(source, snapshot);
+    return snapshot;
+}
+
+function snapshotDesignLogic(
+    source: ArchDesignLogic,
+    context: DesignSnapshotContext
+): ArchDesignLogic {
+    const cached = context.logic.get(source);
+    if (cached) return cached;
+    const name = source.name;
+    const operation = source.operation;
+    let snapshot: ArchDesignLogic;
+    if (operation === 'constant') {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            width: snapshotDesignWidth(source.width, context),
+            expression: source.expression,
+        });
+    } else if (operation === 'not' || operation === 'mux') {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            width: snapshotDesignWidth(source.width, context),
+        });
+    } else if (
+        operation === 'and' || operation === 'or' || operation === 'xor'
+        || operation === 'nand' || operation === 'nor' || operation === 'xnor'
+    ) {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            width: snapshotDesignWidth(source.width, context),
+            inputCount: source.inputCount,
+        });
+    } else if (operation === 'concat') {
+        const widths = snapshotArray(source.inputWidths).map(width =>
+            snapshotDesignWidth(width, context));
+        snapshot = Object.freeze({
+            name,
+            operation,
+            inputWidths: Object.freeze(widths),
+        });
+    } else if (operation === 'slice') {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            inputWidth: snapshotDesignWidth(source.inputWidth, context),
+            msb: source.msb,
+            lsb: source.lsb,
+        });
+    } else if (operation === 'replicate') {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            inputWidth: snapshotDesignWidth(source.inputWidth, context),
+            count: source.count,
+        });
+    } else if (operation === 'zero-extend' || operation === 'sign-extend') {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            inputWidth: snapshotDesignWidth(source.inputWidth, context),
+            outputWidth: snapshotDesignWidth(source.outputWidth, context),
+        });
+    } else if ('inputWidth' in source) {
+        snapshot = Object.freeze({
+            name,
+            operation,
+            inputWidth: snapshotDesignWidth(source.inputWidth, context),
+        });
+    } else {
+        throw new TypeError(`Unsupported Logic Utility operation: ${operation}`);
+    }
+    context.logic.set(source, snapshot);
     return snapshot;
 }
 
@@ -394,6 +483,7 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
     const moduleName = source.module;
     const portSources = source.ports;
     const instanceSources = source.instances;
+    const logicSources = source.logic;
     const connectionSources = source.connections;
     const interfacePortSources = source.interfacePorts ?? [];
     const interfaceOverrideSources = source.interfaceOverrides ?? {};
@@ -401,6 +491,7 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
     const defaultSources = source.defaults;
     const portItems = snapshotArray(portSources);
     const instanceItems = snapshotArray(instanceSources);
+    const logicItems = snapshotArray(logicSources);
     const connectionItems = snapshotArray(connectionSources);
     const interfacePortItems = snapshotArray(interfacePortSources);
     const interfaceConnectionItems = snapshotArray(interfaceConnectionSources);
@@ -408,6 +499,7 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
         widths: new WeakMap(),
         ports: new WeakMap(),
         instances: new WeakMap(),
+        logic: new WeakMap(),
         endpoints: new WeakMap(),
         connections: new WeakMap(),
         interfaceEndpoints: new WeakMap(),
@@ -423,6 +515,7 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
     const instances = instanceItems.map(instance =>
         snapshotDesignInstance(instance, context)
     );
+    const logic = logicItems.map(item => snapshotDesignLogic(item, context));
     const connections = connectionItems.map(connection =>
         snapshotDesignConnection(connection, context)
     );
@@ -445,6 +538,7 @@ function snapshotDesign(source: ArchDesign): DesignSnapshot {
         moduleName,
         ports: Object.freeze(ports),
         instances: Object.freeze(instances),
+        logic: Object.freeze(logic),
         connections: Object.freeze(connections),
         interfacePorts: Object.freeze(interfacePorts),
         interfaceOverrides: Object.freeze(interfaceOverrides),
@@ -630,6 +724,27 @@ function addInstanceTargets(
     }
 }
 
+function addLogicTargets(
+    item: ResolvedArchDesignLogic,
+    targets: ResolvedArchDesignEndpointTarget[],
+    byIdentity: Map<string, ResolvedArchDesignEndpointTarget>,
+    byDefaultKey: Map<string, ResolvedArchDesignEndpointTarget[]>
+): void {
+    for (const pin of item.pins) {
+        addTarget(targets, byIdentity, byDefaultKey, {
+            identity: `${item.nodeId}:${pin.name}`,
+            nodeId: item.nodeId,
+            defaultKey: `${item.logic.name}.${pin.name}`,
+            role: pin.role,
+            width: pin.width,
+            kind: 'logic',
+            logic: item.logic.name,
+            port: pin.name,
+            declarationPath: `$.logic[${item.index}]`,
+        });
+    }
+}
+
 function resolvedEndpoint(
     endpoint: ArchDesignEndpoint,
     targetValue: ResolvedArchDesignEndpointTarget,
@@ -647,6 +762,7 @@ function resolvedEndpoint(
         port: targetValue.port,
         ...(targetValue.signal === undefined ? {} : { signal: targetValue.signal }),
         ...(targetValue.instance === undefined ? {} : { instance: targetValue.instance }),
+        ...(targetValue.logic === undefined ? {} : { logic: targetValue.logic }),
         declarationPath: targetValue.declarationPath,
         targetDeclarationOrder: targetValue.declarationOrder,
         ...(targetValue.inoutPortWidth === undefined
@@ -717,7 +833,7 @@ function appendNamed<T>(target: Map<string, T[]>, name: string, item: T): void {
 }
 
 function declarationId(
-    kind: 'port' | 'instance' | 'network',
+    kind: 'port' | 'instance' | 'logic' | 'network',
     name: string,
     index: number,
     seen: Set<string>,
@@ -853,6 +969,36 @@ export function resolveArchDesign(
         }
     }
 
+    const resolvedLogic: ResolvedArchDesignLogic[] = [];
+    const logicByName = new Map<string, ResolvedArchDesignLogic[]>();
+    const seenLogicNames = new Set<string>();
+    for (let index = 0; index < designSnapshot.logic.length; index += 1) {
+        const logic = designSnapshot.logic[index];
+        const nodeId = declarationId(
+            'logic',
+            logic.name,
+            index,
+            seenLogicNames,
+            `$.logic[${index}].name`,
+            diagnostics
+        );
+        if (portsByName.has(logic.name) || instancesByName.has(logic.name)) {
+            diagnostics.push(diagnostic(
+                `$.logic[${index}].name`,
+                'AD_DUPLICATE_NAME',
+                `Logic Utility name collides with another node: ${logic.name}`
+            ));
+        }
+        const resolved = Object.freeze({
+            index,
+            nodeId,
+            logic,
+            pins: archDesignLogicPins(logic),
+        });
+        resolvedLogic.push(resolved);
+        appendNamed(logicByName, logic.name, resolved);
+    }
+
     const targets: ResolvedArchDesignEndpointTarget[] = [];
     const targetsByIdentity = new Map<string, ResolvedArchDesignEndpointTarget>();
     const targetsByDefaultKey = new Map<string, ResolvedArchDesignEndpointTarget[]>();
@@ -866,6 +1012,9 @@ export function resolveArchDesign(
     }
     for (const instance of resolvedInstances) {
         addInstanceTargets(instance, targets, targetsByIdentity, targetsByDefaultKey);
+    }
+    for (const item of resolvedLogic) {
+        addLogicTargets(item, targets, targetsByIdentity, targetsByDefaultKey);
     }
 
     const targetsByNodeId = new Map<string, ResolvedArchDesignEndpointTarget[]>();
@@ -922,12 +1071,34 @@ export function resolveArchDesign(
         }
 
         if (endpoint.kind === 'logic') {
-            diagnostics.push(diagnostic(
-                `${path}.logic`,
-                'AD_ENDPOINT_UNKNOWN',
-                `No Logic Utility is named ${endpoint.logic}`
-            ));
-            return undefined;
+            const declarations = logicByName.get(endpoint.logic);
+            if (!declarations) {
+                diagnostics.push(diagnostic(
+                    `${path}.logic`,
+                    'AD_ENDPOINT_UNKNOWN',
+                    `No Logic Utility is named ${endpoint.logic}`
+                ));
+                return undefined;
+            }
+            if (declarations.length !== 1) {
+                diagnostics.push(diagnostic(
+                    `${path}.logic`,
+                    'AD_ENDPOINT_AMBIGUOUS',
+                    `More than one Logic Utility is named ${endpoint.logic}`
+                ));
+                return undefined;
+            }
+            const result = targetsByIdentity.get(
+                `${declarations[0].nodeId}:${endpoint.port}`
+            );
+            if (!result) {
+                diagnostics.push(diagnostic(
+                    `${path}.port`,
+                    'AD_ENDPOINT_UNKNOWN',
+                    `Logic Utility ${endpoint.logic} has no port named ${endpoint.port}`
+                ));
+            }
+            return result;
         }
 
         const instances = instancesByName.get(endpoint.instance);
@@ -1162,7 +1333,7 @@ export function resolveArchDesign(
             }));
             continue;
         }
-        if (endpoint.kind === 'instance') {
+        if (endpoint.kind === 'instance' || endpoint.kind === 'logic') {
             effectiveDefaults.push(Object.freeze({
                 identity: endpoint.identity,
                 endpoint: endpoint.defaultKey,
@@ -1226,6 +1397,7 @@ export function resolveArchDesign(
         moduleName,
         ports: Object.freeze(resolvedPorts),
         instances: Object.freeze(resolvedInstances),
+        logic: Object.freeze(resolvedLogic),
         endpointTargets: Object.freeze(targets),
         connections: Object.freeze(resolvedConnections),
         interfaces,

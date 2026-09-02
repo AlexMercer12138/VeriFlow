@@ -4,6 +4,7 @@ export * from './edit';
 export * from './fingerprint';
 export * from './graph';
 export * from './interfaces';
+export * from './logic';
 export * from './model';
 export * from './resolution';
 export * from './parser';

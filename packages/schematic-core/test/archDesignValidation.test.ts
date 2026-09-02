@@ -479,6 +479,149 @@ test('uses implicit zero for unconnected and driverless instance inputs', () => 
     }]);
 });
 
+test('derives stable endpoint roles and widths for every Logic Utility family', () => {
+    const design = designOf({
+        logic: [
+            { name: 'constant', operation: 'constant', width: 8, expression: "8'h5a" },
+            { name: 'not', operation: 'not', width: 8 },
+            { name: 'gate', operation: 'and', width: 8, inputCount: 3 },
+            { name: 'mux', operation: 'mux', width: 8 },
+            { name: 'concat', operation: 'concat', inputWidths: [4, 8] },
+            { name: 'slice', operation: 'slice', inputWidth: 16, msb: 11, lsb: 4 },
+            { name: 'replicate', operation: 'replicate', inputWidth: 2, count: 4 },
+            { name: 'extend', operation: 'sign-extend', inputWidth: 8, outputWidth: 16 },
+            { name: 'reduce', operation: 'reduce-xor', inputWidth: { expression: 'WIDTH' } },
+        ],
+    });
+
+    const resolution = resolveArchDesign(design, []);
+    const pins = Object.fromEntries(resolution.logic.flatMap(item =>
+        item.pins.map(pin => [`${item.logic.name}.${pin.name}`, {
+            role: pin.role,
+            width: pin.width,
+        }])));
+
+    assert.deepEqual(resolution.diagnostics, []);
+    assert.deepEqual(pins, {
+        'constant.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'not.in': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'not.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'gate.in0': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'gate.in1': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'gate.in2': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'gate.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'mux.in0': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'mux.in1': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'mux.select': { role: 'load', width: { kind: 'known', bits: 1 } },
+        'mux.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'concat.in0': { role: 'load', width: { kind: 'known', bits: 4 } },
+        'concat.in1': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'concat.out': { role: 'driver', width: { kind: 'known', bits: 12 } },
+        'slice.in': { role: 'load', width: { kind: 'known', bits: 16 } },
+        'slice.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'replicate.in': { role: 'load', width: { kind: 'known', bits: 2 } },
+        'replicate.out': { role: 'driver', width: { kind: 'known', bits: 8 } },
+        'extend.in': { role: 'load', width: { kind: 'known', bits: 8 } },
+        'extend.out': { role: 'driver', width: { kind: 'known', bits: 16 } },
+        'reduce.in': { role: 'load', width: { kind: 'symbolic', expression: 'WIDTH' } },
+        'reduce.out': { role: 'driver', width: { kind: 'known', bits: 1 } },
+    });
+});
+
+test('validates connected Logic Utility endpoints through scalar connection rules', () => {
+    const design = designOf({
+        ports: [{ name: 'source', direction: 'input', width: 8 }],
+        logic: [
+            { name: 'constant', operation: 'constant', width: 8, expression: '0' },
+            { name: 'mux', operation: 'mux', width: 8 },
+        ],
+        connections: [{
+            name: 'multiple',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'logic', logic: 'constant', port: 'out' },
+                { kind: 'logic', logic: 'mux', port: 'select' },
+            ],
+        }, {
+            name: 'unknown_utility',
+            endpoints: [{ kind: 'logic', logic: 'missing', port: 'out' }],
+        }, {
+            name: 'unknown_pin',
+            endpoints: [{ kind: 'logic', logic: 'mux', port: 'missing' }],
+        }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [])), [
+        ['$.connections[0].endpoints[1]', 'AD_MULTIPLE_DRIVERS'],
+        ['$.connections[0].endpoints[2]', 'AD_WIDTH_MISMATCH'],
+        ['$.connections[1].endpoints[0].logic', 'AD_ENDPOINT_UNKNOWN'],
+        ['$.connections[2].endpoints[0].port', 'AD_ENDPOINT_UNKNOWN'],
+    ]);
+});
+
+test('uses explicit defaults before implicit zero on Logic Utility inputs', () => {
+    const design = designOf({
+        logic: [{ name: 'gate', operation: 'and', width: 8, inputCount: 3 }],
+        connections: [{
+            name: 'driverless',
+            endpoints: [{ kind: 'logic', logic: 'gate', port: 'in1' }],
+            defaults: { 'gate.in1': "8'h22" },
+        }],
+        defaults: { 'gate.in0': "8'h11", 'gate.in1': "8'hff" },
+    });
+
+    const result = validateArchDesign(design, []);
+
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.effectiveDefaults, [{
+        endpoint: 'gate.in0', expression: "8'h11", origin: 'design',
+    }, {
+        endpoint: 'gate.in1', expression: "8'h22", origin: 'connection',
+        connection: 'driverless',
+    }, {
+        endpoint: 'gate.in2', expression: '0', origin: 'implicit-zero',
+    }]);
+});
+
+test('rejects a Logic Utility name shared with a port or instance', () => {
+    const design = designOf({
+        ports: [{ name: 'shared', direction: 'input' }],
+        instances: [{ name: 'shared', module: 'missing' }],
+        logic: [{ name: 'shared', operation: 'not', width: 1 }],
+    });
+
+    assert.deepEqual(pathCodes(validateArchDesign(design, [])), [
+        ['$.instances[0].module', 'AD_MODULE_UNRESOLVED'],
+        ['$.logic[0].name', 'AD_DUPLICATE_NAME'],
+    ]);
+});
+
+test('owns the resolved Logic Utility snapshot after caller mutation', () => {
+    const logic = {
+        name: 'concat',
+        operation: 'concat' as const,
+        inputWidths: [4, { expression: 'WIDTH' }],
+    };
+    const design = {
+        ...createEmptyArchDesign('soc_top'),
+        logic: [logic],
+    };
+
+    const resolution = resolveArchDesign(design, []);
+    logic.name = 'mutated';
+    logic.inputWidths[0] = 64;
+    (logic.inputWidths[1] as { expression: string }).expression = 'CHANGED';
+
+    assert.deepEqual(resolution.logic[0].logic, {
+        name: 'concat',
+        operation: 'concat',
+        inputWidths: [4, { expression: 'WIDTH' }],
+    });
+    assert.ok(Object.isFrozen(resolution.logic));
+    assert.ok(Object.isFrozen(resolution.logic[0].logic));
+    assert.ok(Object.isFrozen(resolution.logic[0].logic.inputWidths));
+});
+
 test('reports unknown interface endpoints instead of a blanket unsupported error', () => {
     const emptyModule: ArchDesignModuleDefinition = {
         key: 'rtl/empty.sv#empty',
