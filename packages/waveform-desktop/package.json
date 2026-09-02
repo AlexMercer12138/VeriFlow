@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/waveform-desktop",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Electron waveform host for the Vik-VeriFlow CLI.",
   "type": "commonjs",
   "license": "MIT",
@@ -45,7 +45,7 @@
     "scripts/install-electron.cjs"
   ],
   "dependencies": {
-    "@veriflow/waveform-runtime": "1.4.2",
+    "@veriflow/waveform-runtime": "1.4.3",
     "electron": "43.3.0"
   },
   "scripts": {

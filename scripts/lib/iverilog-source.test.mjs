@@ -499,6 +499,13 @@ test('CI and tagged release keep provenance validation and source delivery wired
     assert.doesNotMatch(publishJob, /sha256sum|SHA256SUMS\.txt/);
 });
 
+test('local release checks include Icarus source provenance tests', () => {
+    const manifest = JSON.parse(
+        readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
+    );
+    assert.match(manifest.scripts['test:release'], /scripts\/lib\/iverilog-source\.test\.mjs/);
+});
+
 test('release documentation records pinned GPL corresponding-source delivery', () => {
     const documentation = readFileSync(
         path.join(repositoryRoot, 'docs/licenses/iverilog-wasm.md'),
@@ -518,5 +525,6 @@ test('release documentation records pinned GPL corresponding-source delivery', (
     }
     assert.match(documentation, /git checkout --detach/);
     assert.match(documentation, /make -C wasm clean build package/);
+    assert.doesNotMatch(documentation, /VeriFlow \d+\.\d+\.\d+ includes/);
     assert.doesNotMatch(documentation, /(?:constitutes|provides) legal advice/i);
 });

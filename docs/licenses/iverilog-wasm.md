@@ -1,6 +1,6 @@
 # Icarus Verilog WebAssembly corresponding source
 
-VeriFlow 1.4.2 includes `@veriflow/iverilog-wasm` 0.1.4 under
+VeriFlow includes `@veriflow/iverilog-wasm` 0.1.4 under
 `GPL-2.0-or-later`. The packaged runtime records this corresponding source:
 
 - Repository: https://github.com/AlexMercer12138/iverilog

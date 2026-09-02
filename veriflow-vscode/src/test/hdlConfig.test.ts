@@ -245,6 +245,7 @@ async function main(): Promise<void> {
     const manifest = JSON.parse(
         fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')
     ) as {
+        version: string;
         engines: { vscode: string; node?: string };
         main: string;
         contributes: {
@@ -443,7 +444,7 @@ async function main(): Promise<void> {
     };
     assert.strictEqual(
         manifestWithDependencies.dependencies['@veriflow/simulator-iverilog-wasm'],
-        '1.4.2'
+        manifest.version
     );
     assert.strictEqual(manifest.engines.vscode, '^1.82.0');
     assert.strictEqual(manifest.engines.node, undefined);

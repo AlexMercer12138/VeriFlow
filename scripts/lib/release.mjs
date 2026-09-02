@@ -122,6 +122,9 @@ export function updateVersionFiles(root, targetVersion) {
         filepath,
         manifest: readJson(filepath),
     }));
+    const workspacePackageNames = new Set(manifests.flatMap(({ manifest }) =>
+        typeof manifest.name === 'string' ? [manifest.name] : []
+    ));
     const contractUpdate = prepareContractUpdate(root, currentVersion, newVersion);
 
     for (const { manifest } of manifests) {
@@ -132,7 +135,7 @@ export function updateVersionFiles(root, targetVersion) {
                 continue;
             }
             for (const dependency of Object.keys(dependencies)) {
-                if (dependency.startsWith('@veriflow/')) {
+                if (workspacePackageNames.has(dependency)) {
                     dependencies[dependency] = newVersion;
                 }
             }

@@ -1,7 +1,7 @@
 {
   "name": "vik-veriflow-workspace",
   "private": true,
-  "version": "1.4.2",
+  "version": "1.4.3",
   "engines": {
     "node": ">=24.14.1"
   },
@@ -23,7 +23,7 @@
     "typecheck:shared": "npm run build:shared && npm run typecheck --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/schematic-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime --workspace @veriflow/simulator-iverilog-wasm --workspace @veriflow/simulator-ts",
     "test:shared": "npm test --workspace @veriflow/flow-core --workspace @veriflow/hdl-core --workspace @veriflow/schematic-core --workspace @veriflow/hdl-runtime --workspace @veriflow/waveform-runtime --workspace @veriflow/simulator-iverilog-wasm --workspace @veriflow/simulator-ts",
     "test:cli": "npm test --workspace @veriflow/cli",
-    "test:release": "node --test scripts/lib/npm-command.test.mjs scripts/lib/python-retirement.test.mjs scripts/lib/release.test.mjs && node scripts/test-node-release.mjs",
+    "test:release": "node --test scripts/lib/iverilog-source.test.mjs scripts/lib/npm-command.test.mjs scripts/lib/python-retirement.test.mjs scripts/lib/release.test.mjs && node scripts/test-node-release.mjs",
     "test:sim-regression": "node scripts/simulation/run-iverilog-regression.mjs",
     "benchmark:sim": "node scripts/simulation/benchmark.mjs",
     "test": "npm run test --workspaces --if-present",

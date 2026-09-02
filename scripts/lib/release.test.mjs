@@ -44,7 +44,10 @@ function createRepository() {
     writeJson(path.join(root, 'packages/cli/package.json'), {
         name: '@veriflow/cli',
         version: '1.4.0',
-        dependencies: { '@veriflow/flow-core': '1.4.0' },
+        dependencies: {
+            '@veriflow/flow-core': '1.4.0',
+            '@veriflow/iverilog-wasm': '0.1.4',
+        },
         devDependencies: { '@veriflow/test-helper': '1.4.0' },
     });
     writeJson(path.join(root, 'veriflow-vscode/package.json'), {
@@ -114,7 +117,8 @@ test('version update synchronizes manifests, internal dependencies, and CLI cont
         assert.equal(rootPackage.dependencies.external, '^2.0.0');
         const cli = readJson(path.join(root, 'packages/cli/package.json'));
         assert.equal(cli.dependencies['@veriflow/flow-core'], '2.0.0');
-        assert.equal(cli.devDependencies['@veriflow/test-helper'], '2.0.0');
+        assert.equal(cli.dependencies['@veriflow/iverilog-wasm'], '0.1.4');
+        assert.equal(cli.devDependencies['@veriflow/test-helper'], '1.4.0');
 
         const contract = readJson(path.join(root, 'tests/cli_contract/cases.json'));
         assert.equal(contract.cases[0].expected.stdout, 'VeriFlow 2.0.0\n');

@@ -27,7 +27,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "VeriFlow 1.4.2\n",
+        "stdout": "VeriFlow 1.4.3\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -853,12 +853,12 @@
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           },
           {
             "cmd": "fake-run \"top.out\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           }
         ],
         "popen_calls": []
@@ -1063,7 +1063,7 @@
       "observe_json": [],
       "expected": {
         "exit_code": 0,
-        "stdout": "VeriFlow 1.4.2\n",
+        "stdout": "VeriFlow 1.4.3\n",
         "stderr": "",
         "observed_json": {},
         "observed_text": {},
@@ -1577,12 +1577,12 @@
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           },
           {
             "cmd": "fake-run \"top.out\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           }
         ],
         "popen_calls": []
@@ -1663,7 +1663,7 @@
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           }
         ],
         "popen_calls": []
@@ -1750,12 +1750,12 @@
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           },
           {
             "cmd": "fake-run \"top.out\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           }
         ],
         "popen_calls": []
@@ -2934,12 +2934,12 @@
           {
             "cmd": "fake-compile -o \"top.out\" \"child.v\" \"top.v\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           },
           {
             "cmd": "fake-run \"top.out\"",
             "cwd": "<CWD>/rtl",
-            "timeout": 300.0
+            "timeout": 300
           }
         ],
         "popen_calls": []
