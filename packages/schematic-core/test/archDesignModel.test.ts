@@ -14,15 +14,16 @@ function typedDesign(design: ArchDesign): ArchDesign {
     return design;
 }
 
-test('creates a deeply frozen minimal schema-v1 Arch Design', () => {
+test('creates a deeply frozen minimal schema-v2 Arch Design', () => {
     const design = createEmptyArchDesign('soc_top');
 
     assert.deepEqual(design, {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'soc_top',
         ports: [],
         instances: [],
+        logic: [],
         connections: [],
         interfacePorts: [],
         interfaceOverrides: {},
@@ -46,10 +47,11 @@ test('creates canonical empty Arch Design text', () => {
     assert.equal(text, [
         '{',
         '  "format": "vik-veriflow.arch-design",',
-        '  "schemaVersion": 1,',
+        '  "schemaVersion": 2,',
         '  "module": "soc_top",',
         '  "ports": [],',
         '  "instances": [],',
+        '  "logic": [],',
         '  "connections": [],',
         '  "interfacePorts": [],',
         '  "interfaceOverrides": {},',
@@ -67,10 +69,10 @@ test('creates canonical empty Arch Design text', () => {
     }
 });
 
-test('models the complete schema-v1 document surface', () => {
+test('models the complete schema-v2 document surface', () => {
     const design = typedDesign({
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'soc_top',
         ports: [
             { name: 'clk', direction: 'input' },
@@ -85,6 +87,12 @@ test('models the complete schema-v1 document surface', () => {
                 WIDTH: 16,
                 MODE: '"FAST"',
             },
+        }],
+        logic: [{
+            name: 'u_and_0',
+            operation: 'and',
+            width: 16,
+            inputCount: 2,
         }],
         connections: [{
             name: 'clock',
@@ -146,6 +154,7 @@ test('models the complete schema-v1 document surface', () => {
     });
 
     assert.equal(design.ports[2].direction, 'inout');
+    assert.equal(design.logic[0].operation, 'and');
     assert.deepEqual(design.connections[1].endpoints[0], {
         kind: 'port',
         port: 'gpio',

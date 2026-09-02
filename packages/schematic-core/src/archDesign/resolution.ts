@@ -273,6 +273,13 @@ function snapshotDesignEndpoint(
         context.endpoints.set(source, snapshot);
         return snapshot;
     }
+    if (kind === 'logic') {
+        const logic = source.logic;
+        const port = source.port;
+        const snapshot = Object.freeze({ kind, logic, port });
+        context.endpoints.set(source, snapshot);
+        return snapshot;
+    }
     const instance = source.instance;
     const port = source.port;
     const snapshot = Object.freeze({ kind, instance, port });
@@ -910,6 +917,15 @@ export function resolveArchDesign(
                 candidates.length === 1
                     ? 'Input and output ports use only the value signal'
                     : 'Inout ports require an explicit i, o, or t signal'
+            ));
+            return undefined;
+        }
+
+        if (endpoint.kind === 'logic') {
+            diagnostics.push(diagnostic(
+                `${path}.logic`,
+                'AD_ENDPOINT_UNKNOWN',
+                `No Logic Utility is named ${endpoint.logic}`
             ));
             return undefined;
         }

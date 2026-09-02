@@ -89,6 +89,7 @@ test('serializes normalized designs in fixed schema order and round trips', () =
         'module',
         'ports',
         'instances',
+        'logic',
         'connections',
         'interfacePorts',
         'interfaceOverrides',

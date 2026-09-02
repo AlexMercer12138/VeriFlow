@@ -3,6 +3,7 @@ import type {
     ArchDesignConnection,
     ArchDesignEndpoint,
     ArchDesignInstance,
+    ArchDesignLogic,
     ArchDesignInterfaceConnection,
     ArchDesignInterfaceEndpoint,
     ArchDesignInterfaceOverride,
@@ -51,6 +52,76 @@ function instanceValue(instance: ArchDesignInstance): unknown {
     };
 }
 
+function logicValue(logic: ArchDesignLogic): unknown {
+    if (logic.operation === 'constant') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            width: widthValue(logic.width),
+            expression: logic.expression,
+        };
+    }
+    if (logic.operation === 'not' || logic.operation === 'mux') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            width: widthValue(logic.width),
+        };
+    }
+    if (
+        logic.operation === 'and'
+        || logic.operation === 'or'
+        || logic.operation === 'xor'
+        || logic.operation === 'nand'
+        || logic.operation === 'nor'
+        || logic.operation === 'xnor'
+    ) {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            width: widthValue(logic.width),
+            inputCount: logic.inputCount,
+        };
+    }
+    if (logic.operation === 'concat') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            inputWidths: logic.inputWidths.map(widthValue),
+        };
+    }
+    if (logic.operation === 'slice') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            inputWidth: widthValue(logic.inputWidth),
+            msb: logic.msb,
+            lsb: logic.lsb,
+        };
+    }
+    if (logic.operation === 'replicate') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            inputWidth: widthValue(logic.inputWidth),
+            count: logic.count,
+        };
+    }
+    if (logic.operation === 'zero-extend' || logic.operation === 'sign-extend') {
+        return {
+            name: logic.name,
+            operation: logic.operation,
+            inputWidth: widthValue(logic.inputWidth),
+            outputWidth: widthValue(logic.outputWidth),
+        };
+    }
+    return 'inputWidth' in logic ? {
+        name: logic.name,
+        operation: logic.operation,
+        inputWidth: widthValue(logic.inputWidth),
+    } : { name: logic.name, operation: logic.operation };
+}
+
 function endpointValue(endpoint: ArchDesignEndpoint): unknown {
     if (endpoint.kind === 'port') {
         return {
@@ -58,6 +129,9 @@ function endpointValue(endpoint: ArchDesignEndpoint): unknown {
             port: endpoint.port,
             ...(endpoint.signal ? { signal: endpoint.signal } : {}),
         };
+    }
+    if (endpoint.kind === 'logic') {
+        return { kind: endpoint.kind, logic: endpoint.logic, port: endpoint.port };
     }
     return {
         kind: endpoint.kind,
@@ -143,6 +217,7 @@ function serializableArchDesign(design: ArchDesign): unknown {
         module: design.module,
         ports: design.ports.map(portValue),
         instances: design.instances.map(instanceValue),
+        logic: design.logic.map(logicValue),
         connections: design.connections.map(connectionValue),
         interfacePorts: design.interfacePorts.map(interfacePortValue),
         interfaceOverrides: sortedRecord(design.interfaceOverrides, interfaceOverrideValue),

@@ -9,6 +9,7 @@ import type {
     ArchDesignInterfacePort,
     ArchDesignInterfaceRole,
     ArchDesignLanguage,
+    ArchDesignLogic,
     ArchDesignParameterValue,
     ArchDesignPort,
     ArchDesignPresentation,
@@ -128,10 +129,11 @@ export class ArchDesignEditError extends Error {
 }
 
 type MutableEndpoint = {
-    kind: 'port' | 'instance';
+    kind: 'port' | 'instance' | 'logic';
     port: string;
     signal?: 'value' | 'i' | 'o' | 't';
     instance?: string;
+    logic?: string;
 };
 
 type MutableConnection = {
@@ -174,6 +176,7 @@ type MutableDesign = {
         definitionKey?: string;
         parameters?: Record<string, ArchDesignParameterValue>;
     }>;
+    logic: ArchDesignLogic[];
     connections: MutableConnection[];
     interfacePorts: MutableInterfacePort[];
     interfaceOverrides: Record<string, ArchDesignInterfaceOverride>;
@@ -248,14 +251,21 @@ function endpointEquals(left: MutableEndpoint, right: ArchDesignEndpoint): boole
     if (left.kind === 'instance' && right.kind === 'instance') {
         return left.instance === right.instance;
     }
+    if (left.kind === 'logic' && right.kind === 'logic') {
+        return left.logic === right.logic;
+    }
     return left.kind === 'port' && right.kind === 'port'
         && left.signal === right.signal;
 }
 
 function cloneEndpoint(endpoint: ArchDesignEndpoint): MutableEndpoint {
-    return endpoint.kind === 'instance'
-        ? { kind: 'instance', instance: endpoint.instance, port: endpoint.port }
-        : {
+    if (endpoint.kind === 'instance') {
+        return { kind: 'instance', instance: endpoint.instance, port: endpoint.port };
+    }
+    if (endpoint.kind === 'logic') {
+        return { kind: 'logic', logic: endpoint.logic, port: endpoint.port };
+    }
+    return {
             kind: 'port',
             port: endpoint.port,
             ...(endpoint.signal === undefined ? {} : { signal: endpoint.signal }),
@@ -264,6 +274,7 @@ function cloneEndpoint(endpoint: ArchDesignEndpoint): MutableEndpoint {
 
 function endpointDefaultKey(endpoint: ArchDesignEndpoint): string {
     if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    if (endpoint.kind === 'logic') return `${endpoint.logic}.${endpoint.port}`;
     return `${endpoint.port}.${endpoint.signal ?? 'value'}`;
 }
 

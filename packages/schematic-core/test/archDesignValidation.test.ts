@@ -964,11 +964,14 @@ test('snapshots every getter-backed design section and used field once during va
     const designDefaults = entry('designDefaults', 'sink.value', "1'b0");
     const design = {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         get module() { return once('design.module', 'getter_top'); },
         get ports() { return once('design.ports', ports); },
         get instances() { return once('design.instances', instances); },
+        logic: [],
         get connections() { return once('design.connections', connections); },
+        interfacePorts: [],
+        interfaceOverrides: {},
         get interfaceConnections() {
             return once('design.interfaceConnections', interfaceConnections);
         },

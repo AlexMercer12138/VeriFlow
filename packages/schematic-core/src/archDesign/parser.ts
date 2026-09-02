@@ -6,6 +6,7 @@ import {
     type ArchDesignEndpoint,
     type ArchDesignExportOptions,
     type ArchDesignInstance,
+    type ArchDesignLogic,
     type ArchDesignInterfaceConnection,
     type ArchDesignInterfaceEndpoint,
     type ArchDesignInterfaceOverride,
@@ -44,6 +45,12 @@ const PORT_DIRECTIONS = new Set(['input', 'output', 'inout']);
 const INOUT_SIGNALS = new Set(['value', 'i', 'o', 't']);
 const EXPORT_LANGUAGES = new Set(['verilog', 'systemverilog']);
 const INTERFACE_ROLES = new Set<ArchDesignInterfaceRole>(['master', 'slave']);
+const LOGIC_GATE_OPERATIONS = new Set([
+    'and', 'or', 'xor', 'nand', 'nor', 'xnor',
+]);
+const LOGIC_REDUCTION_OPERATIONS = new Set([
+    'reduce-and', 'reduce-or', 'reduce-xor',
+]);
 
 function isRecord(value: unknown): value is MutableRecord {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -363,6 +370,192 @@ function normalizeInstances(
     return result;
 }
 
+function integerInRange(
+    value: unknown,
+    path: string,
+    minimum: number,
+    maximum: number,
+    diagnostics: ArchDesignDiagnostic[]
+): number | undefined {
+    if (typeof value === 'number'
+        && Number.isSafeInteger(value)
+        && value >= minimum
+        && value <= maximum) return value;
+    diagnostic(
+        diagnostics,
+        path,
+        'AD_VALUE',
+        `Expected an integer from ${minimum} to ${maximum}`
+    );
+    return undefined;
+}
+
+function requiredWidth(
+    record: MutableRecord,
+    key: string,
+    path: string,
+    diagnostics: ArchDesignDiagnostic[]
+): ArchDesignWidth | undefined {
+    return normalizeWidth(ownValue(record, key), `${path}.${key}`, diagnostics);
+}
+
+function normalizeLogic(
+    value: unknown,
+    diagnostics: ArchDesignDiagnostic[]
+): ArchDesignLogic[] {
+    const source = arrayValue(value, '$.logic', diagnostics);
+    const result: ArchDesignLogic[] = [];
+    const names = new Set<string>();
+    visitArray(source, (item, index) => {
+        const path = `$.logic[${index}]`;
+        const record = recordValue(item, path, diagnostics);
+        const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
+        duplicateName(name, `${path}.name`, names, diagnostics);
+        const operation = ownValue(record, 'operation');
+        if (typeof operation !== 'string') {
+            diagnostic(diagnostics, `${path}.operation`, 'AD_VALUE', 'Unknown Logic Utility operation');
+            return;
+        }
+        if (operation === 'constant') {
+            const width = requiredWidth(record, 'width', path, diagnostics);
+            const expressionValue = ownValue(record, 'expression');
+            const expression = typeof expressionValue === 'string'
+                && isSafeDefaultExpression(expressionValue)
+                ? expressionValue
+                : undefined;
+            if (!expression) {
+                diagnostic(
+                    diagnostics,
+                    `${path}.expression`,
+                    'AD_DEFAULT_EXPRESSION',
+                    'Constant must be a safe Verilog constant expression'
+                );
+            }
+            if (name && width && expression) result.push({ name, operation, width, expression });
+            return;
+        }
+        if (operation === 'not' || operation === 'mux') {
+            const width = requiredWidth(record, 'width', path, diagnostics);
+            if (name && width) result.push({ name, operation, width });
+            return;
+        }
+        if (LOGIC_GATE_OPERATIONS.has(operation)) {
+            const width = requiredWidth(record, 'width', path, diagnostics);
+            const inputCount = integerInRange(
+                ownValue(record, 'inputCount'),
+                `${path}.inputCount`,
+                2,
+                8,
+                diagnostics
+            );
+            if (name && width && inputCount !== undefined) {
+                result.push({
+                    name,
+                    operation: operation as 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor',
+                    width,
+                    inputCount,
+                });
+            }
+            return;
+        }
+        if (operation === 'concat') {
+            const widthValues = arrayValue(
+                ownValue(record, 'inputWidths'),
+                `${path}.inputWidths`,
+                diagnostics
+            );
+            if (widthValues.length < 2 || widthValues.length > 8) {
+                diagnostic(
+                    diagnostics,
+                    `${path}.inputWidths`,
+                    'AD_VALUE',
+                    'Concat requires from 2 to 8 input widths'
+                );
+            }
+            const inputWidths: ArchDesignWidth[] = [];
+            visitArray(widthValues, (width, widthIndex) => {
+                const normalized = normalizeWidth(
+                    width,
+                    `${path}.inputWidths[${widthIndex}]`,
+                    diagnostics
+                );
+                if (normalized) inputWidths.push(normalized);
+            });
+            if (name && inputWidths.length === widthValues.length
+                && inputWidths.length >= 2 && inputWidths.length <= 8) {
+                result.push({ name, operation, inputWidths });
+            }
+            return;
+        }
+        if (operation === 'slice') {
+            const inputWidth = requiredWidth(record, 'inputWidth', path, diagnostics);
+            const msb = integerInRange(
+                ownValue(record, 'msb'), `${path}.msb`, 0, Number.MAX_SAFE_INTEGER, diagnostics
+            );
+            const lsb = integerInRange(
+                ownValue(record, 'lsb'), `${path}.lsb`, 0, Number.MAX_SAFE_INTEGER, diagnostics
+            );
+            let boundsValid = msb !== undefined && lsb !== undefined;
+            if (msb !== undefined && lsb !== undefined && msb < lsb) {
+                diagnostic(diagnostics, `${path}.msb`, 'AD_VALUE', 'Slice MSB must not be below LSB');
+                boundsValid = false;
+            }
+            if (msb !== undefined && boundsValid
+                && typeof inputWidth === 'number' && msb >= inputWidth) {
+                diagnostic(diagnostics, `${path}.msb`, 'AD_VALUE', 'Slice MSB must be within input width');
+                boundsValid = false;
+            }
+            if (name && inputWidth && boundsValid) {
+                result.push({ name, operation, inputWidth, msb: msb!, lsb: lsb! });
+            }
+            return;
+        }
+        if (operation === 'replicate') {
+            const inputWidth = requiredWidth(record, 'inputWidth', path, diagnostics);
+            const count = integerInRange(
+                ownValue(record, 'count'), `${path}.count`, 1, 65_536, diagnostics
+            );
+            if (name && inputWidth && count !== undefined) {
+                result.push({ name, operation, inputWidth, count });
+            }
+            return;
+        }
+        if (operation === 'zero-extend' || operation === 'sign-extend') {
+            const inputWidth = requiredWidth(record, 'inputWidth', path, diagnostics);
+            const outputWidth = requiredWidth(record, 'outputWidth', path, diagnostics);
+            let widthsValid = inputWidth !== undefined && outputWidth !== undefined;
+            if (typeof inputWidth === 'number'
+                && typeof outputWidth === 'number'
+                && outputWidth < inputWidth) {
+                diagnostic(
+                    diagnostics,
+                    `${path}.outputWidth`,
+                    'AD_VALUE',
+                    'Extend output width must not be smaller than input width'
+                );
+                widthsValid = false;
+            }
+            if (name && inputWidth && outputWidth && widthsValid) {
+                result.push({ name, operation, inputWidth, outputWidth });
+            }
+            return;
+        }
+        if (LOGIC_REDUCTION_OPERATIONS.has(operation)) {
+            const inputWidth = requiredWidth(record, 'inputWidth', path, diagnostics);
+            if (name && inputWidth) {
+                result.push({
+                    name,
+                    operation: operation as 'reduce-and' | 'reduce-or' | 'reduce-xor',
+                    inputWidth,
+                });
+            }
+            return;
+        }
+        diagnostic(diagnostics, `${path}.operation`, 'AD_VALUE', 'Unknown Logic Utility operation');
+    });
+    return result;
+}
+
 function normalizeInterfaceRole(
     value: unknown,
     path: string,
@@ -493,11 +686,20 @@ function normalizeEndpoint(
         const port = validIdentifier(ownValue(record, 'port'), `${path}.port`, diagnostics);
         return instance && port ? { kind, instance, port } : undefined;
     }
+    if (kind === 'logic') {
+        const logic = validIdentifier(
+            ownValue(record, 'logic'),
+            `${path}.logic`,
+            diagnostics
+        );
+        const port = validIdentifier(ownValue(record, 'port'), `${path}.port`, diagnostics);
+        return logic && port ? { kind, logic, port } : undefined;
+    }
     diagnostic(
         diagnostics,
         `${path}.kind`,
         'AD_VALUE',
-        'Endpoint kind must be port or instance'
+        'Endpoint kind must be port, instance, or logic'
     );
     return undefined;
 }
@@ -842,7 +1044,7 @@ function parseValue(input: unknown): ArchDesignReadResult {
     if (headerDiagnostics.length > 0 || schemaVersion === undefined) {
         return invalidResult(headerDiagnostics);
     }
-    if (schemaVersion !== ARCH_DESIGN_SCHEMA_VERSION) {
+    if (schemaVersion !== 1 && schemaVersion !== ARCH_DESIGN_SCHEMA_VERSION) {
         const snapshot = cloneUnknownRoot(input, format, schemaVersion);
         return deepFreeze({ status: 'unsupported' as const, schemaVersion, value: snapshot });
     }
@@ -851,6 +1053,9 @@ function parseValue(input: unknown): ArchDesignReadResult {
     const module = validIdentifier(ownValue(input, 'module'), '$.module', diagnostics);
     const ports = normalizePorts(ownValue(input, 'ports'), diagnostics);
     const instances = normalizeInstances(ownValue(input, 'instances'), diagnostics);
+    const logic = schemaVersion === 1
+        ? []
+        : normalizeLogic(ownValue(input, 'logic'), diagnostics);
     const connections = normalizeConnections(ownValue(input, 'connections'), diagnostics);
     const interfacePorts = normalizeInterfacePorts(
         ownValue(input, 'interfacePorts'),
@@ -876,6 +1081,7 @@ function parseValue(input: unknown): ArchDesignReadResult {
         module,
         ports,
         instances,
+        logic,
         connections,
         interfacePorts,
         interfaceOverrides,

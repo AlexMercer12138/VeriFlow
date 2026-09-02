@@ -31,7 +31,7 @@ function invalidDiagnostics(result: ArchDesignReadResult) {
     return result.diagnostics;
 }
 
-test('parses a complete schema-v1 document into an owned frozen snapshot', () => {
+test('migrates a complete schema-v1 document into an owned frozen schema-v2 snapshot', () => {
     const source = JSON.stringify(minimalDesign({
         ports: [
             { name: 'clk', direction: 'input' },
@@ -91,6 +91,8 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
     assert.equal(result.status, 'editable');
     if (result.status !== 'editable') return;
     assert.equal(result.design.module, 'soc_top');
+    assert.equal(result.design.schemaVersion, 2);
+    assert.deepEqual(result.design.logic, []);
     assert.equal(
         Reflect.get(result.design.instances[0], 'definitionKey'),
         'module:file:///workspace/rtl/core.v:0'
@@ -248,16 +250,73 @@ test('reports invalid JSON and the wrong format without throwing', () => {
 });
 
 test('keeps an unknown positive schema version available for read-only use', () => {
-    const value = minimalDesign({ schemaVersion: 2, futureField: { enabled: true } });
+    const value = minimalDesign({ schemaVersion: 3, futureField: { enabled: true } });
     const result = parseArchDesignValue(value);
 
     assert.equal(result.status, 'unsupported');
     if (result.status !== 'unsupported') return;
-    assert.equal(result.schemaVersion, 2);
+    assert.equal(result.schemaVersion, 3);
     assert.deepEqual(result.value.futureField, { enabled: true });
     assert.ok(Object.isFrozen(result));
     assert.ok(Object.isFrozen(result.value));
     assert.ok(Object.isFrozen(result.value.futureField));
+});
+
+test('parses and freezes every schema-v2 Logic Utility operation', () => {
+    const logic = [
+        { name: 'u_constant_0', operation: 'constant', width: 8, expression: "8'h5a" },
+        { name: 'u_not_0', operation: 'not', width: 8 },
+        { name: 'u_and_0', operation: 'and', width: 8, inputCount: 3 },
+        { name: 'u_or_0', operation: 'or', width: 8, inputCount: 2 },
+        { name: 'u_xor_0', operation: 'xor', width: 8, inputCount: 2 },
+        { name: 'u_nand_0', operation: 'nand', width: 8, inputCount: 2 },
+        { name: 'u_nor_0', operation: 'nor', width: 8, inputCount: 2 },
+        { name: 'u_xnor_0', operation: 'xnor', width: 8, inputCount: 2 },
+        { name: 'u_mux_0', operation: 'mux', width: 8 },
+        { name: 'u_concat_0', operation: 'concat', inputWidths: [4, { expression: 'WIDTH' }] },
+        { name: 'u_slice_0', operation: 'slice', inputWidth: 16, msb: 11, lsb: 4 },
+        { name: 'u_replicate_0', operation: 'replicate', inputWidth: 2, count: 4 },
+        { name: 'u_zero_extend_0', operation: 'zero-extend', inputWidth: 8, outputWidth: 16 },
+        { name: 'u_sign_extend_0', operation: 'sign-extend', inputWidth: 8, outputWidth: 16 },
+        { name: 'u_reduce_and_0', operation: 'reduce-and', inputWidth: 8 },
+        { name: 'u_reduce_or_0', operation: 'reduce-or', inputWidth: 8 },
+        { name: 'u_reduce_xor_0', operation: 'reduce-xor', inputWidth: 8 },
+    ];
+    const result = parseArchDesignValue(minimalDesign({ schemaVersion: 2, logic }));
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.deepEqual(result.design.logic, logic);
+    assert.ok(Object.isFrozen(result.design.logic));
+    assert.ok(result.design.logic.every(item => Object.isFrozen(item)));
+    assert.ok(Object.isFrozen(result.design.logic[9].inputWidths));
+});
+
+test('reports operation-specific Logic Utility diagnostics', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        schemaVersion: 2,
+        logic: [
+            { name: 'bad_constant', operation: 'constant', width: 0, expression: 'a();' },
+            { name: 'bad_gate', operation: 'and', width: 8, inputCount: 9 },
+            { name: 'bad_concat', operation: 'concat', inputWidths: [8] },
+            { name: 'bad_slice', operation: 'slice', inputWidth: 8, msb: 2, lsb: 4 },
+            { name: 'bad_replicate', operation: 'replicate', inputWidth: 8, count: 0 },
+            { name: 'bad_extend', operation: 'zero-extend', inputWidth: 16, outputWidth: 8 },
+            { name: 'bad_operation', operation: 'add', width: 8 },
+        ],
+    }));
+
+    const paths = invalidDiagnostics(result).map(item => item.path);
+    for (const path of [
+        '$.logic[0].width',
+        '$.logic[0].expression',
+        '$.logic[1].inputCount',
+        '$.logic[2].inputWidths',
+        '$.logic[3].msb',
+        '$.logic[4].count',
+        '$.logic[5].outputWidth',
+        '$.logic[6].operation',
+    ]) assert.ok(paths.includes(path), `missing diagnostic for ${path}`);
 });
 
 test('collects deterministic path diagnostics for malformed current fields', () => {
@@ -454,7 +513,7 @@ test('clones unknown-version arrays without invoking their map property', () => 
     });
 
     const result = parseArchDesignValue(minimalDesign({
-        schemaVersion: 2,
+        schemaVersion: 3,
         futureArray,
     }));
 
@@ -481,7 +540,7 @@ test('rejects sparse arrays instead of reading inherited index values', () => {
     futureArray.length = 1;
     Object.setPrototypeOf(futureArray, { 0: inheritedPort });
     const future = parseArchDesignValue(minimalDesign({
-        schemaVersion: 2,
+        schemaVersion: 3,
         futureArray,
     }));
     assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [
@@ -491,7 +550,7 @@ test('rejects sparse arrays instead of reading inherited index values', () => {
 });
 
 test('snapshots unknown-version header getters exactly once', () => {
-    const value = minimalDesign({ schemaVersion: 2 });
+    const value = minimalDesign({ schemaVersion: 3 });
     let formatReads = 0;
     let versionReads = 0;
     Object.defineProperty(value, 'format', {
@@ -500,7 +559,7 @@ test('snapshots unknown-version header getters exactly once', () => {
     });
     Object.defineProperty(value, 'schemaVersion', {
         enumerable: true,
-        get: () => ++versionReads === 1 ? 2 : 3,
+        get: () => ++versionReads === 1 ? 3 : 4,
     });
 
     const result = parseArchDesignValue(value);
@@ -509,9 +568,9 @@ test('snapshots unknown-version header getters exactly once', () => {
     if (result.status !== 'unsupported') return;
     assert.equal(formatReads, 1);
     assert.equal(versionReads, 1);
-    assert.equal(result.schemaVersion, 2);
+    assert.equal(result.schemaVersion, 3);
     assert.equal(result.value.format, 'vik-veriflow.arch-design');
-    assert.equal(result.value.schemaVersion, 2);
+    assert.equal(result.value.schemaVersion, 3);
 });
 
 test('snapshots array items before normalizing getter-mutated input', () => {
@@ -548,7 +607,7 @@ test('snapshots array items before normalizing getter-mutated input', () => {
     });
     futureArray[1] = { enabled: false };
     const future = parseArchDesignValue(minimalDesign({
-        schemaVersion: 2,
+        schemaVersion: 3,
         futureArray,
     }));
     assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [
@@ -605,7 +664,7 @@ test('rejects dictionaries whose getter replaces a later own key with an inherit
     });
     futureObject.b = 2;
     const future = parseArchDesignValue(minimalDesign({
-        schemaVersion: 2,
+        schemaVersion: 3,
         futureObject,
     }));
     assert.deepEqual(invalidDiagnostics(future).map(item => [item.path, item.code]), [

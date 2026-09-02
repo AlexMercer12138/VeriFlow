@@ -1,5 +1,5 @@
 export const ARCH_DESIGN_FORMAT = 'vik-veriflow.arch-design' as const;
-export const ARCH_DESIGN_SCHEMA_VERSION = 1 as const;
+export const ARCH_DESIGN_SCHEMA_VERSION = 2 as const;
 
 export type ArchDesignWidth = number | Readonly<{ expression: string }>;
 export type ArchDesignParameterValue = string | number | boolean;
@@ -20,6 +20,59 @@ export type ArchDesignInstance = Readonly<{
     parameters?: Readonly<Record<string, ArchDesignParameterValue>>;
 }>;
 
+export type ArchDesignLogicGateOperation =
+    'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor';
+export type ArchDesignLogicReductionOperation =
+    'reduce-and' | 'reduce-or' | 'reduce-xor';
+
+export type ArchDesignLogic =
+    | Readonly<{
+        name: string;
+        operation: 'constant';
+        width: ArchDesignWidth;
+        expression: string;
+    }>
+    | Readonly<{
+        name: string;
+        operation: 'not' | 'mux';
+        width: ArchDesignWidth;
+    }>
+    | Readonly<{
+        name: string;
+        operation: ArchDesignLogicGateOperation;
+        width: ArchDesignWidth;
+        inputCount: number;
+    }>
+    | Readonly<{
+        name: string;
+        operation: 'concat';
+        inputWidths: readonly ArchDesignWidth[];
+    }>
+    | Readonly<{
+        name: string;
+        operation: 'slice';
+        inputWidth: ArchDesignWidth;
+        msb: number;
+        lsb: number;
+    }>
+    | Readonly<{
+        name: string;
+        operation: 'replicate';
+        inputWidth: ArchDesignWidth;
+        count: number;
+    }>
+    | Readonly<{
+        name: string;
+        operation: 'zero-extend' | 'sign-extend';
+        inputWidth: ArchDesignWidth;
+        outputWidth: ArchDesignWidth;
+    }>
+    | Readonly<{
+        name: string;
+        operation: ArchDesignLogicReductionOperation;
+        inputWidth: ArchDesignWidth;
+    }>;
+
 export type ArchDesignEndpoint =
     | Readonly<{
         kind: 'port';
@@ -29,6 +82,11 @@ export type ArchDesignEndpoint =
     | Readonly<{
         kind: 'instance';
         instance: string;
+        port: string;
+    }>
+    | Readonly<{
+        kind: 'logic';
+        logic: string;
         port: string;
     }>;
 
@@ -99,6 +157,7 @@ export type ArchDesign = Readonly<{
     module: string;
     ports: readonly ArchDesignPort[];
     instances: readonly ArchDesignInstance[];
+    logic: readonly ArchDesignLogic[];
     connections: readonly ArchDesignConnection[];
     interfacePorts: readonly ArchDesignInterfacePort[];
     interfaceOverrides: Readonly<Record<string, ArchDesignInterfaceOverride>>;
@@ -130,6 +189,7 @@ export function createEmptyArchDesign(module: string): ArchDesign {
         module,
         ports: [],
         instances: [],
+        logic: [],
         connections: [],
         interfacePorts: [],
         interfaceOverrides: {},
