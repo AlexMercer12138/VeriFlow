@@ -669,23 +669,49 @@ function projectPinAuthoringInspector(
         direction,
         ...(width === undefined ? {} : { width }),
     };
+    const fields: ArchDesignInspectorField[] = [
+        readonlyField('pin-instance', 'Instance', instance.name),
+        readonlyField('pin-name', 'Port', pin.name),
+        readonlyField('pin-direction', 'Direction', direction),
+        readonlyField('pin-width', 'Width', formatWidth(pin.width)),
+        readonlyField(
+            'pin-interface',
+            'Interface',
+            interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
+                interfaceItem.endpoint
+            )}` : 'None'
+        ),
+        readonlyField('pin-occupancy', 'Occupancy', occupancy ?? 'Unconnected'),
+    ];
+    if (direction === 'input') {
+        const defaultKey = endpointDefaultKey({
+            kind: 'instance',
+            instance: instance.name,
+            port: pin.name,
+        });
+        const explicit = Object.prototype.hasOwnProperty.call(
+            snapshot.design.defaults,
+            defaultKey
+        ) ? snapshot.design.defaults[defaultKey] : '';
+        fields.push(textField(
+            'pin-default',
+            'Default',
+            explicit,
+            value => {
+                const expression = value.trim();
+                return {
+                    type: 'setDefault',
+                    endpoint: defaultKey,
+                    ...(expression.length === 0 ? {} : { expression }),
+                };
+            },
+            'Implicit default: 0'
+        ));
+    }
     return {
         kind: 'pin',
         title: `${instance.name}.${pin.name}`,
-        fields: [
-            readonlyField('pin-instance', 'Instance', instance.name),
-            readonlyField('pin-name', 'Port', pin.name),
-            readonlyField('pin-direction', 'Direction', direction),
-            readonlyField('pin-width', 'Width', formatWidth(pin.width)),
-            readonlyField(
-                'pin-interface',
-                'Interface',
-                interfaceItem ? `${interfaceItem.protocolName} ${interfaceEndpointName(
-                    interfaceItem.endpoint
-                )}` : 'None'
-            ),
-            readonlyField('pin-occupancy', 'Occupancy', occupancy ?? 'Unconnected'),
-        ],
+        fields,
         actions: [{
             id: 'expose-port',
             label: 'Expose as top-level port',

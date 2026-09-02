@@ -278,7 +278,7 @@ function testArchDesignInspectorProjection(): void {
         interfacePorts: [],
         interfaceOverrides: {},
         interfaceConnections: [],
-        defaults: { 'done.value': "1'b0" },
+        defaults: { 'done.value': "1'b0", 'u_core.clk': "1'b0" },
         export: { language: 'systemverilog', output: 'rtl/generated_top.sv' },
         presentation: {},
     };
@@ -369,6 +369,38 @@ function testArchDesignInspectorProjection(): void {
         type: 'removeInstance',
         name: 'u_core',
     });
+
+    const inputPinModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        [],
+        undefined,
+        'instance:u_core:clk'
+    );
+    assert.strictEqual(inputPinModel.kind, 'pin');
+    assert.strictEqual(fieldById(inputPinModel, 'pin-default').value, "1'b0");
+    assert.strictEqual(
+        fieldById(inputPinModel, 'pin-default').placeholder,
+        'Implicit default: 0'
+    );
+    assert.deepStrictEqual(fieldById(inputPinModel, 'pin-default').commit?.(" 1'b1 "), {
+        type: 'setDefault',
+        endpoint: 'u_core.clk',
+        expression: "1'b1",
+    });
+    assert.deepStrictEqual(fieldById(inputPinModel, 'pin-default').commit?.('  '), {
+        type: 'setDefault',
+        endpoint: 'u_core.clk',
+    });
+
+    const outputPinModel = projectArchDesignInspector(
+        snapshot,
+        graph,
+        [],
+        undefined,
+        'instance:u_core:data'
+    );
+    assert.equal(outputPinModel.fields.some(field => field.id === 'pin-default'), false);
 
     const portModel = projectArchDesignInspector(
         snapshot,
