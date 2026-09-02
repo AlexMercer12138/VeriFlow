@@ -1239,6 +1239,12 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
             { name: 'result', direction: 'output' },
         ],
         instances: [{ name: 'u_core', module: 'core' }],
+        logic: [{
+            name: 'u_constant',
+            operation: 'constant',
+            width: 1,
+            expression: "1'b0",
+        }],
         connections: [{
             name: 'clock',
             endpoints: [
@@ -1246,7 +1252,6 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
                 { kind: 'instance', instance: 'u_core', port: 'clk' },
             ],
         }],
-        defaults: { 'result.value': "1'b0" },
     });
     const harness = await createHarness(source, [moduleDefinition()]);
     try {
@@ -1255,7 +1260,9 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
         if (graphEvent?.type !== 'graph') return;
         const layout = structuredClone(graphEvent.layout);
         positionCore(layout, 24);
-        const constantNode = graphEvent.graph.nodes.find(node => node.kind === 'constant');
+        const constantNode = graphEvent.graph.nodes.find(
+            node => node.id === 'logic:u_constant'
+        );
         assert.ok(constantNode);
         layout.placement.nodes[constantNode!.id] = {
             column: 1,
@@ -1277,18 +1284,15 @@ async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> 
         if (parsed.status !== 'editable') return;
         assert.deepStrictEqual(
             Object.keys(parsed.design.presentation.nodes ?? {}).sort(),
-            ['instance:u_core', 'port:clk', 'port:result']
+            ['instance:u_core', 'logic:u_constant', 'port:clk', 'port:result']
         );
         assert.deepStrictEqual(
             parsed.design.presentation.nodes?.['instance:u_core'],
             { column: 1, order: 0, offset: 24, userPositioned: true }
         );
-        assert.strictEqual(
-            Object.prototype.hasOwnProperty.call(
-                parsed.design.presentation.nodes ?? {},
-                constantNode!.id
-            ),
-            false
+        assert.deepStrictEqual(
+            parsed.design.presentation.nodes?.[constantNode.id],
+            { column: 1, order: 9, offset: 40, userPositioned: true }
         );
     } finally {
         await harness.dispose();

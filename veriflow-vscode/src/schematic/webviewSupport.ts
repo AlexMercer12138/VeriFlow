@@ -10,8 +10,10 @@ import type {
     ArchDesign,
     ArchDesignEdit,
     ArchDesignEndpoint,
+    ArchDesignLogic,
     ArchDesignModuleDefinition,
     ArchDesignPort,
+    ArchDesignWidth,
     ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
 import type { ArchDesignInspectorData } from '../archDesign/editorSupport';
@@ -120,7 +122,7 @@ export type ArchDesignInspectorField = Readonly<{
 }>;
 
 export type ArchDesignInspectorModel = Readonly<{
-    kind: 'design' | 'instance' | 'port' | 'pin' | 'interface' | 'network' | 'multiple';
+    kind: 'design' | 'instance' | 'logic' | 'port' | 'pin' | 'interface' | 'network' | 'multiple';
     title: string;
     fields: readonly ArchDesignInspectorField[];
     actions?: readonly Readonly<{
@@ -131,6 +133,29 @@ export type ArchDesignInspectorModel = Readonly<{
     }>[];
     deleteEdit?: ArchDesignEdit;
 }>;
+
+export const ARCH_DESIGN_LOGIC_OPERATION_OPTIONS: readonly Readonly<{
+    value: ArchDesignLogic['operation'];
+    label: string;
+}>[] = Object.freeze([
+    { value: 'constant', label: 'Constant' },
+    { value: 'not', label: 'NOT' },
+    { value: 'and', label: 'AND' },
+    { value: 'or', label: 'OR' },
+    { value: 'xor', label: 'XOR' },
+    { value: 'nand', label: 'NAND' },
+    { value: 'nor', label: 'NOR' },
+    { value: 'xnor', label: 'XNOR' },
+    { value: 'mux', label: 'MUX' },
+    { value: 'concat', label: 'Concat' },
+    { value: 'slice', label: 'Slice' },
+    { value: 'replicate', label: 'Replicate' },
+    { value: 'zero-extend', label: 'Zero Extend' },
+    { value: 'sign-extend', label: 'Sign Extend' },
+    { value: 'reduce-and', label: 'Reduction AND' },
+    { value: 'reduce-or', label: 'Reduction OR' },
+    { value: 'reduce-xor', label: 'Reduction XOR' },
+]);
 
 const MAX_INSPECTOR_ENDPOINT_PREVIEW = 8;
 
@@ -369,6 +394,29 @@ function displayedWidth(width: ArchDesignPort['width']): string {
     return typeof width === 'number' ? String(width) : width.expression;
 }
 
+function normalizedRequiredWidth(value: string): ArchDesignWidth | undefined {
+    return normalizedWidth(value);
+}
+
+function normalizedInteger(
+    value: string,
+    minimum: number,
+    maximum = Number.MAX_SAFE_INTEGER
+): number | undefined {
+    const trimmed = value.trim();
+    if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return undefined;
+    const result = Number(trimmed);
+    return Number.isSafeInteger(result) && result >= minimum && result <= maximum
+        ? result
+        : undefined;
+}
+
+function displayedResolvedWidth(width: GraphPin['width'] | undefined): string {
+    if (width?.kind === 'known') return String(width.bits);
+    if (width?.kind === 'symbolic') return width.expression;
+    return 'Unknown';
+}
+
 function promotedWidth(width: GraphPin['width']): ArchDesignPort['width'] {
     if (width.kind === 'known') return width.bits;
     if (width.kind === 'symbolic') return { expression: width.expression };
@@ -502,6 +550,180 @@ function projectInstanceInspector(
     };
 }
 
+function logicForNodeId(
+    design: ArchDesign,
+    nodeId: string
+): ArchDesignLogic | undefined {
+    return design.logic.find(candidate => `logic:${candidate.name}` === nodeId);
+}
+
+function projectLogicInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    graph: SchematicGraph,
+    nodeId: string
+): ArchDesignInspectorModel | undefined {
+    const logic = logicForNodeId(snapshot.design, nodeId);
+    if (!logic) return undefined;
+    const update = (next: ArchDesignLogic): ArchDesignEdit => ({
+        type: 'updateLogic',
+        name: logic.name,
+        logic: next,
+    });
+    const operationLabel = ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.find(
+        option => option.value === logic.operation
+    )?.label ?? logic.operation;
+    const fields: ArchDesignInspectorField[] = [
+        textField('logic-name', 'Name', logic.name, value => {
+            const name = value.trim();
+            return name.length === 0 ? undefined : update({ ...logic, name });
+        }),
+        readonlyField('logic-operation', 'Operation', operationLabel),
+    ];
+    const widthField = (
+        id: string,
+        label: string,
+        width: ArchDesignWidth,
+        commit: (width: ArchDesignWidth) => ArchDesignLogic
+    ): void => {
+        fields.push(textField(id, label, displayedWidth(width), value => {
+            const next = normalizedRequiredWidth(value);
+            return next === undefined ? undefined : update(commit(next));
+        }));
+    };
+    const integerField = (
+        id: string,
+        label: string,
+        value: number,
+        minimum: number,
+        maximum: number,
+        commit: (next: number) => ArchDesignLogic
+    ): void => {
+        fields.push(textField(id, label, String(value), candidate => {
+            const next = normalizedInteger(candidate, minimum, maximum);
+            return next === undefined ? undefined : update(commit(next));
+        }));
+    };
+    const outputWidthField = (): void => {
+        const node = graph.nodes.find(candidate => candidate.id === nodeId);
+        fields.push(readonlyField(
+            'logic-output-width',
+            'Output width',
+            displayedResolvedWidth(node?.pins.find(pin => pin.name === 'out')?.width)
+        ));
+    };
+
+    if (logic.operation === 'constant') {
+        widthField('logic-width', 'Width', logic.width, width => ({ ...logic, width }));
+        fields.push(textField(
+            'logic-expression',
+            'Expression',
+            logic.expression,
+            value => value.trim().length === 0
+                ? undefined
+                : update({ ...logic, expression: value.trim() })
+        ));
+    } else if (logic.operation === 'not' || logic.operation === 'mux') {
+        widthField('logic-width', 'Width', logic.width, width => ({ ...logic, width }));
+    } else if (
+        logic.operation === 'and'
+        || logic.operation === 'or'
+        || logic.operation === 'xor'
+        || logic.operation === 'nand'
+        || logic.operation === 'nor'
+        || logic.operation === 'xnor'
+    ) {
+        widthField('logic-width', 'Width', logic.width, width => ({ ...logic, width }));
+        integerField(
+            'logic-input-count',
+            'Input count',
+            logic.inputCount,
+            2,
+            8,
+            inputCount => ({ ...logic, inputCount })
+        );
+    } else if (logic.operation === 'concat') {
+        logic.inputWidths.forEach((width, index) => widthField(
+            `logic-input-width-${index}`,
+            `Input ${index} width`,
+            width,
+            next => {
+                const inputWidths = [...logic.inputWidths];
+                inputWidths[index] = next;
+                return { ...logic, inputWidths };
+            }
+        ));
+        outputWidthField();
+    } else if (logic.operation === 'slice') {
+        widthField(
+            'logic-input-width',
+            'Input width',
+            logic.inputWidth,
+            inputWidth => ({ ...logic, inputWidth })
+        );
+        integerField(
+            'logic-msb',
+            'MSB',
+            logic.msb,
+            0,
+            Number.MAX_SAFE_INTEGER,
+            msb => ({ ...logic, msb })
+        );
+        integerField(
+            'logic-lsb',
+            'LSB',
+            logic.lsb,
+            0,
+            Number.MAX_SAFE_INTEGER,
+            lsb => ({ ...logic, lsb })
+        );
+        outputWidthField();
+    } else if (logic.operation === 'replicate') {
+        widthField(
+            'logic-input-width',
+            'Input width',
+            logic.inputWidth,
+            inputWidth => ({ ...logic, inputWidth })
+        );
+        integerField(
+            'logic-count',
+            'Count',
+            logic.count,
+            1,
+            65_536,
+            count => ({ ...logic, count })
+        );
+        outputWidthField();
+    } else if (logic.operation === 'zero-extend' || logic.operation === 'sign-extend') {
+        widthField(
+            'logic-input-width',
+            'Input width',
+            logic.inputWidth,
+            inputWidth => ({ ...logic, inputWidth })
+        );
+        widthField(
+            'logic-output-width',
+            'Output width',
+            logic.outputWidth,
+            outputWidth => ({ ...logic, outputWidth })
+        );
+    } else if ('inputWidth' in logic) {
+        widthField(
+            'logic-input-width',
+            'Input width',
+            logic.inputWidth,
+            inputWidth => ({ ...logic, inputWidth })
+        );
+        outputWidthField();
+    }
+
+    return {
+        kind: 'logic',
+        title: logic.name,
+        fields,
+        deleteEdit: { type: 'removeLogic', name: logic.name },
+    };
+}
+
 function portDefaultKeys(port: ArchDesignPort): string[] {
     if (port.direction === 'output') return [`${port.name}.value`];
     if (port.direction === 'inout') return [`${port.name}.o`, `${port.name}.t`];
@@ -515,10 +737,13 @@ function effectiveDefaultPlaceholder(
 ): string {
     const effective = snapshot.validation.effectiveDefaults.find(candidate =>
         candidate.endpoint === endpoint
-        && (connection === undefined || candidate.connection === connection)
+        && (connection === undefined
+            || candidate.connection === undefined
+            || candidate.connection === connection)
     );
     if (!effective) return 'No default';
     const source = effective.origin === 'implicit-inout-t'
+        || effective.origin === 'implicit-zero'
         ? 'Implicit default'
         : effective.origin === 'design'
             ? 'Design default'
@@ -649,12 +874,61 @@ function scalarConnectionForPin(
     node: GraphNode,
     pin: GraphPin
 ): string | undefined {
-    if (node.kind !== 'instance') return undefined;
+    const selected = archDesignEndpointForPin(snapshot.design, node, pin);
+    if (!selected) return undefined;
+    const identity = endpointIdentity(selected);
     return snapshot.design.connections.find(connection => connection.endpoints.some(endpoint =>
-        endpoint.kind === 'instance'
-        && endpoint.instance === node.label
-        && endpoint.port === pin.name
+        endpointIdentity(endpoint) === identity
     ))?.name;
+}
+
+function projectLogicPinAuthoringInspector(
+    snapshot: ArchDesignAuthoringSnapshot,
+    node: GraphNode,
+    pin: GraphPin
+): ArchDesignInspectorModel | undefined {
+    const logic = logicForNodeId(snapshot.design, node.id);
+    const endpoint = archDesignEndpointForPin(snapshot.design, node, pin);
+    if (!logic || endpoint?.kind !== 'logic') return undefined;
+    const occupancy = scalarConnectionForPin(snapshot, node, pin);
+    const direction = pin.direction === 'load' ? 'input' : 'output';
+    const fields: ArchDesignInspectorField[] = [
+        readonlyField('pin-logic', 'Logic Utility', logic.name),
+        readonlyField('pin-name', 'Port', pin.name),
+        readonlyField('pin-direction', 'Direction', direction),
+        readonlyField('pin-width', 'Width', formatWidth(pin.width)),
+        readonlyField('pin-occupancy', 'Occupancy', occupancy ?? 'Unconnected'),
+    ];
+    if (pin.direction === 'load') {
+        const defaultKey = endpointDefaultKey(endpoint);
+        const connection = occupancy === undefined
+            ? undefined
+            : snapshot.design.connections.find(candidate => candidate.name === occupancy);
+        const defaults = connection?.defaults ?? snapshot.design.defaults;
+        const explicit = Object.prototype.hasOwnProperty.call(defaults, defaultKey)
+            ? defaults[defaultKey]
+            : '';
+        fields.push(textField(
+            'pin-default',
+            'Default',
+            explicit,
+            value => {
+                const expression = value.trim();
+                return {
+                    type: 'setDefault',
+                    ...(connection === undefined ? {} : { connection: connection.name }),
+                    endpoint: defaultKey,
+                    ...(expression.length === 0 ? {} : { expression }),
+                };
+            },
+            effectiveDefaultPlaceholder(snapshot, defaultKey, connection?.name)
+        ));
+    }
+    return {
+        kind: 'pin',
+        title: `${logic.name}.${pin.name}`,
+        fields,
+    };
 }
 
 function projectPinAuthoringInspector(
@@ -662,6 +936,8 @@ function projectPinAuthoringInspector(
     node: GraphNode,
     pin: GraphPin
 ): ArchDesignInspectorModel | undefined {
+    const logicPin = projectLogicPinAuthoringInspector(snapshot, node, pin);
+    if (logicPin) return logicPin;
     if (node.kind !== 'instance') return undefined;
     if (pin.interface?.kind === 'aggregate') {
         return projectInterfaceAuthoringInspector(snapshot, pin.interface.id);
@@ -1101,6 +1377,10 @@ export function projectArchDesignInspector(
         const model = projectInstanceInspector(snapshot, nodeId.slice('instance:'.length));
         if (model) return model;
     }
+    if (nodeId?.startsWith('logic:')) {
+        const model = projectLogicInspector(snapshot, graph, nodeId);
+        if (model) return model;
+    }
     if (nodeId?.startsWith('port:')) {
         const model = projectPortInspector(snapshot, nodeId.slice('port:'.length));
         if (model) return model;
@@ -1126,6 +1406,12 @@ export function archDesignEndpointForPin(
         const instance = design.instances.find(candidate => candidate.name === node.label);
         return instance
             ? { kind: 'instance', instance: instance.name, port: pin.name }
+            : undefined;
+    }
+    if (node.kind === 'constant' || node.kind === 'expression') {
+        const logic = logicForNodeId(design, node.id);
+        return logic
+            ? { kind: 'logic', logic: logic.name, port: pin.name }
             : undefined;
     }
     if (node.kind !== 'port') return undefined;

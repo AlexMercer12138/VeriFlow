@@ -271,7 +271,10 @@ export function archDesignPresentationFromLayout(
 ): ArchDesignPresentation {
     const nodes: Record<string, ArchDesignNodePlacement> = Object.create(null);
     for (const node of graph.nodes) {
-        if (node.kind !== 'port' && node.kind !== 'instance') continue;
+        if (node.kind !== 'port'
+            && node.kind !== 'instance'
+            && node.kind !== 'constant'
+            && node.kind !== 'expression') continue;
         const placement = persistedPlacement(layout, node.id);
         if (placement) {
             Object.defineProperty(nodes, node.id, {

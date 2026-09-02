@@ -485,6 +485,167 @@ function testArchDesignInspectorProjection(): void {
     });
 }
 
+function testLogicUtilityInspectorProjection(): void {
+    const design: ArchDesign = {
+        format: 'vik-veriflow.arch-design',
+        schemaVersion: 2,
+        module: 'logic_top',
+        ports: [],
+        instances: [],
+        logic: [
+            { name: 'u_constant', operation: 'constant', width: 8, expression: "8'h5a" },
+            { name: 'u_gate', operation: 'and', width: 8, inputCount: 3 },
+            { name: 'u_concat', operation: 'concat', inputWidths: [4, 8] },
+            { name: 'u_slice', operation: 'slice', inputWidth: 16, msb: 11, lsb: 4 },
+            { name: 'u_replicate', operation: 'replicate', inputWidth: 2, count: 4 },
+            { name: 'u_extend', operation: 'sign-extend', inputWidth: 8, outputWidth: 16 },
+            { name: 'u_reduce', operation: 'reduce-xor', inputWidth: 16 },
+        ],
+        connections: [{
+            name: 'gate_input',
+            endpoints: [{ kind: 'logic', logic: 'u_gate', port: 'in0' }],
+            defaults: { 'u_gate.in0': "8'h3c" },
+        }],
+        interfacePorts: [],
+        interfaceOverrides: {},
+        interfaceConnections: [],
+        defaults: { 'u_gate.in1': "8'h0f" },
+        export: {},
+        presentation: {},
+    };
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/logic.ad',
+    });
+    const snapshot = {
+        design,
+        catalog: [],
+        validation: projection.validation,
+    };
+    const inspector = (name: string) => projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        [`logic:${name}`],
+        undefined
+    );
+
+    const constant = inspector('u_constant');
+    assert.strictEqual(constant.kind, 'logic');
+    assert.strictEqual(fieldById(constant, 'logic-operation').value, 'Constant');
+    assert.strictEqual(fieldById(constant, 'logic-operation').control, 'readonly');
+    assert.deepStrictEqual(fieldById(constant, 'logic-name').commit?.('u_value'), {
+        type: 'updateLogic',
+        name: 'u_constant',
+        logic: { name: 'u_value', operation: 'constant', width: 8, expression: "8'h5a" },
+    });
+    assert.deepStrictEqual(fieldById(constant, 'logic-width').commit?.('DATA_WIDTH'), {
+        type: 'updateLogic',
+        name: 'u_constant',
+        logic: {
+            name: 'u_constant',
+            operation: 'constant',
+            width: { expression: 'DATA_WIDTH' },
+            expression: "8'h5a",
+        },
+    });
+    assert.deepStrictEqual(fieldById(constant, 'logic-expression').commit?.("8'ha5"), {
+        type: 'updateLogic',
+        name: 'u_constant',
+        logic: { name: 'u_constant', operation: 'constant', width: 8, expression: "8'ha5" },
+    });
+    assert.deepStrictEqual(constant.deleteEdit, {
+        type: 'removeLogic',
+        name: 'u_constant',
+    });
+
+    const gate = inspector('u_gate');
+    assert.strictEqual(fieldById(gate, 'logic-operation').value, 'AND');
+    assert.deepStrictEqual(fieldById(gate, 'logic-input-count').commit?.('4'), {
+        type: 'updateLogic',
+        name: 'u_gate',
+        logic: { name: 'u_gate', operation: 'and', width: 8, inputCount: 4 },
+    });
+
+    const concat = inspector('u_concat');
+    assert.strictEqual(fieldById(concat, 'logic-output-width').control, 'readonly');
+    assert.strictEqual(fieldById(concat, 'logic-output-width').value, '12');
+    assert.deepStrictEqual(fieldById(concat, 'logic-input-width-1').commit?.('LANES'), {
+        type: 'updateLogic',
+        name: 'u_concat',
+        logic: {
+            name: 'u_concat',
+            operation: 'concat',
+            inputWidths: [4, { expression: 'LANES' }],
+        },
+    });
+
+    const slice = inspector('u_slice');
+    assert.strictEqual(fieldById(slice, 'logic-output-width').value, '8');
+    assert.deepStrictEqual(fieldById(slice, 'logic-msb').commit?.('7'), {
+        type: 'updateLogic',
+        name: 'u_slice',
+        logic: { name: 'u_slice', operation: 'slice', inputWidth: 16, msb: 7, lsb: 4 },
+    });
+
+    const replicate = inspector('u_replicate');
+    assert.strictEqual(fieldById(replicate, 'logic-output-width').value, '8');
+    assert.deepStrictEqual(fieldById(replicate, 'logic-count').commit?.('8'), {
+        type: 'updateLogic',
+        name: 'u_replicate',
+        logic: { name: 'u_replicate', operation: 'replicate', inputWidth: 2, count: 8 },
+    });
+
+    const extend = inspector('u_extend');
+    assert.deepStrictEqual(fieldById(extend, 'logic-output-width').commit?.('32'), {
+        type: 'updateLogic',
+        name: 'u_extend',
+        logic: { name: 'u_extend', operation: 'sign-extend', inputWidth: 8, outputWidth: 32 },
+    });
+
+    const reduction = inspector('u_reduce');
+    assert.strictEqual(fieldById(reduction, 'logic-output-width').control, 'readonly');
+    assert.strictEqual(fieldById(reduction, 'logic-output-width').value, '1');
+
+    const connectedPin = projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        [],
+        undefined,
+        'logic:u_gate:in0'
+    );
+    assert.strictEqual(connectedPin.kind, 'pin');
+    assert.strictEqual(fieldById(connectedPin, 'pin-logic').value, 'u_gate');
+    assert.strictEqual(fieldById(connectedPin, 'pin-occupancy').value, 'gate_input');
+    assert.strictEqual(fieldById(connectedPin, 'pin-default').value, "8'h3c");
+    assert.strictEqual(
+        fieldById(connectedPin, 'pin-default').placeholder,
+        "Connection default: 8'h3c"
+    );
+    assert.deepStrictEqual(fieldById(connectedPin, 'pin-default').commit?.("8'hff"), {
+        type: 'setDefault',
+        connection: 'gate_input',
+        endpoint: 'u_gate.in0',
+        expression: "8'hff",
+    });
+
+    const openPin = projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        [],
+        undefined,
+        'logic:u_gate:in2'
+    );
+    assert.strictEqual(fieldById(openPin, 'pin-default').value, '');
+    assert.strictEqual(fieldById(openPin, 'pin-default').placeholder, 'Implicit default: 0');
+    const outputPin = projectArchDesignInspector(
+        snapshot,
+        projection.graph,
+        [],
+        undefined,
+        'logic:u_gate:out'
+    );
+    assert.equal(outputPin.fields.some(field => field.id === 'pin-default'), false);
+}
+
 function interfaceFixture() {
     const interfaceCatalog = createInterfaceProtocolCatalog([{
         source: '/workspace/protocols/link.json',
@@ -1113,6 +1274,7 @@ void Promise.resolve()
     .then(testDiagnosticDetailFormatting)
     .then(testSchematicInspectorProjection)
     .then(testArchDesignInspectorProjection)
+    .then(testLogicUtilityInspectorProjection)
     .then(testPinAndInterfaceInspectorProjection)
     .then(testTopInterfaceResynchronizationProjection)
     .then(testInterfaceNetworkInspectorProjection)

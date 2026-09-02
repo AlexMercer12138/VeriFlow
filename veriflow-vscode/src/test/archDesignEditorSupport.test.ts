@@ -90,6 +90,12 @@ function testLayoutProjection(): void {
             { name: 'gpio', direction: 'inout', width: 8 },
         ],
         instances: [{ name: 'u_core', module: 'core' }],
+        logic: [{
+            name: 'u_constant',
+            operation: 'constant',
+            width: 8,
+            expression: "8'h5a",
+        }],
         defaults: { 'gpio.o': "8'b0" },
         presentation: {
             nodes: {
@@ -112,7 +118,7 @@ function testLayoutProjection(): void {
     assert.deepStrictEqual(layout.viewport, { x: 0, y: 0, zoom: 1 });
     assert.strictEqual(layout.minimap, true);
     assert.deepStrictEqual(layout.placement.nodes['instance:u_core'], {
-        column: 2,
+        column: 1,
         order: 0,
         yOffset: 12,
         fixed: true,
@@ -138,9 +144,9 @@ function testLayoutProjection(): void {
         yOffset: 6,
         fixed: true,
     };
-    const constantNode = projection.graph.nodes.find(node => node.kind === 'constant');
+    const constantNode = projection.graph.nodes.find(node => node.id === 'logic:u_constant');
     assert.ok(constantNode);
-    layout.placement.nodes[constantNode!.id] = {
+    layout.placement.nodes[constantNode.id] = {
         column: 1,
         order: 0,
         yOffset: 0,
@@ -155,7 +161,7 @@ function testLayoutProjection(): void {
     );
     assert.deepStrictEqual(Object.fromEntries(Object.entries(presentation.nodes ?? {})), {
         'port:clk': { column: 0, order: 0 },
-        'port:gpio': { column: 3, order: 0 },
+        'port:gpio': { column: 2, order: 0 },
         'instance:u_core': {
             column: 3,
             order: 1,
@@ -166,6 +172,11 @@ function testLayoutProjection(): void {
             column: 4,
             order: 0,
             offset: 6,
+            userPositioned: true,
+        },
+        'logic:u_constant': {
+            column: 1,
+            order: 0,
             userPositioned: true,
         },
     });
@@ -182,6 +193,12 @@ function testEndpointProjection(): void {
             { name: 'gpio', direction: 'inout', width: 8 },
         ],
         instances: [{ name: 'u_core', module: 'core' }],
+        logic: [{
+            name: 'u_constant',
+            operation: 'constant',
+            width: 8,
+            expression: "8'h5a",
+        }],
         defaults: { 'gpio.o': "8'b0" },
     });
     const graph = projectArchDesignGraph(design, [definition()], {
@@ -190,7 +207,7 @@ function testEndpointProjection(): void {
     const clk = graph.nodes.find(node => node.id === 'port:clk')!;
     const gpio = graph.nodes.find(node => node.id === 'port:gpio')!;
     const core = graph.nodes.find(node => node.id === 'instance:u_core')!;
-    const constant = graph.nodes.find(node => node.kind === 'constant')!;
+    const constant = graph.nodes.find(node => node.id === 'logic:u_constant')!;
 
     assert.deepStrictEqual(archDesignEndpointForPin(design, clk, clk.pins[0]), {
         kind: 'port', port: 'clk',
@@ -211,9 +228,9 @@ function testEndpointProjection(): void {
         ),
         { kind: 'instance', instance: 'u_core', port: 'data_o' }
     );
-    assert.strictEqual(
+    assert.deepStrictEqual(
         archDesignEndpointForPin(design, constant, constant.pins[0]),
-        undefined
+        { kind: 'logic', logic: 'u_constant', port: 'out' }
     );
 }
 
