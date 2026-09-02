@@ -721,6 +721,10 @@ export function resolveArchDesign(
     const moduleName = designSnapshot.moduleName;
     const definitions = snapshotDefinitions(definitionSources);
     const catalog = definitionsByName(definitions);
+    const definitionsByKey = new Map(definitions.map(definition => [
+        definition.key,
+        definition,
+    ]));
     const parameterNamesByDefinition = new Map(definitions.map(definition => [
         definition,
         new Set(definition.parameters.map(parameter => parameter.name)),
@@ -758,9 +762,25 @@ export function resolveArchDesign(
             `$.instances[${index}].name`,
             diagnostics
         );
-        const matches = catalog.get(instance.module) ?? [];
         const modulePath = `$.instances[${index}].module`;
-        if (matches.length === 0) {
+        const definitionKey = instance.definitionKey;
+        const matches = catalog.get(instance.module) ?? [];
+        let definition: ResolvedArchDesignModuleDefinition | undefined;
+        if (definitionKey !== undefined) {
+            const exact = definitionsByKey.get(definitionKey);
+            if (!exact || exact.name !== instance.module) {
+                diagnostics.push(diagnostic(
+                    `$.instances[${index}].definitionKey`,
+                    'AD_MODULE_UNRESOLVED',
+                    `No definition of module ${instance.module} matches ${definitionKey}`
+                ));
+                const resolved = Object.freeze({ index, nodeId, instance });
+                resolvedInstances.push(resolved);
+                appendNamed(instancesByName, instance.name, resolved);
+                continue;
+            }
+            definition = exact;
+        } else if (matches.length === 0) {
             diagnostics.push(diagnostic(
                 modulePath,
                 'AD_MODULE_UNRESOLVED',
@@ -770,8 +790,7 @@ export function resolveArchDesign(
             resolvedInstances.push(resolved);
             appendNamed(instancesByName, instance.name, resolved);
             continue;
-        }
-        if (matches.length > 1) {
+        } else if (matches.length > 1) {
             diagnostics.push(diagnostic(
                 modulePath,
                 'AD_MODULE_AMBIGUOUS',
@@ -781,9 +800,10 @@ export function resolveArchDesign(
             resolvedInstances.push(resolved);
             appendNamed(instancesByName, instance.name, resolved);
             continue;
+        } else {
+            definition = matches[0];
         }
 
-        const definition = matches[0];
         const resolved = Object.freeze({ index, nodeId, instance, definition });
         resolvedInstances.push(resolved);
         appendNamed(instancesByName, instance.name, resolved);

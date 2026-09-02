@@ -74,6 +74,50 @@ const ioDefinition: ArchDesignModuleDefinition = {
     ],
 };
 
+test('projects ports from the selected duplicate module definition', () => {
+    const first: ArchDesignModuleDefinition = {
+        key: 'rtl/first/duplicate.v#duplicate',
+        name: 'duplicate',
+        parameters: [],
+        ports: [{
+            name: 'first_result',
+            direction: 'output',
+            width: { kind: 'known', bits: 1 },
+        }],
+    };
+    const second: ArchDesignModuleDefinition = {
+        key: 'rtl/second/duplicate.v#duplicate',
+        name: 'duplicate',
+        parameters: [],
+        ports: [{
+            name: 'second_result',
+            direction: 'output',
+            width: { kind: 'known', bits: 8 },
+        }],
+    };
+    const design = designOf({
+        instances: [{
+            name: 'u_duplicate_0',
+            module: 'duplicate',
+            definitionKey: second.key,
+        }],
+    });
+
+    const projection = projectArchDesignGraph(design, [first, second], {
+        fileUri: 'file:///workspace/duplicate.ad',
+    });
+    const instance = projection.graph.nodes.find(
+        node => node.id === 'instance:u_duplicate_0'
+    );
+
+    assert.equal(projection.validation.valid, true);
+    assert.deepEqual(instance?.pins.map(pin => [pin.name, pin.width]), [[
+        'second_result',
+        { kind: 'known', bits: 8 },
+    ]]);
+    assert.equal(instance?.definitionKey, second.key);
+});
+
 test('projects an ordered schema-v1 design and exposes inout feedback flow', () => {
     const presentation = {
         nodes: {

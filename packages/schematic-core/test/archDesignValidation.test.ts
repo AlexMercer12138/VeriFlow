@@ -81,6 +81,53 @@ test('reports an ambiguous instance module without selecting a definition', () =
     ]);
 });
 
+test('resolves an ambiguous module by its exact definition key', () => {
+    const alternate: ArchDesignModuleDefinition = {
+        ...coreDefinition,
+        key: 'generated/core.sv#core',
+        parameters: [{ name: 'ALTERNATE' }],
+        ports: [{
+            name: 'alternate_result',
+            direction: 'output',
+            width: { kind: 'known', bits: 4 },
+        }],
+    };
+    const design = designOf({
+        instances: [{
+            name: 'u_core',
+            module: 'core',
+            definitionKey: alternate.key,
+            parameters: { ALTERNATE: 1 },
+        }],
+    });
+
+    const result = resolveArchDesign(design, [coreDefinition, alternate]);
+
+    assert.deepEqual(result.diagnostics, []);
+    assert.equal(result.instances[0].definition?.key, alternate.key);
+    assert.deepEqual(
+        result.instances[0].definition?.ports.map(port => port.name),
+        ['alternate_result']
+    );
+});
+
+test('does not guess another definition when an explicit key is stale', () => {
+    const design = designOf({
+        instances: [{
+            name: 'u_core',
+            module: 'core',
+            definitionKey: 'module:file:///workspace/missing.v:0',
+        }],
+    });
+
+    const result = validateArchDesign(design, definitions);
+
+    assert.deepEqual(pathCodes(result), [[
+        '$.instances[0].definitionKey',
+        'AD_MODULE_UNRESOLVED',
+    ]]);
+});
+
 test('reports an override absent from the resolved module parameter declarations', () => {
     const design = designOf({
         instances: [{ name: 'u_core', module: 'core', parameters: { DEPTH: 16 } }],
