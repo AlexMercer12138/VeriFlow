@@ -11,6 +11,7 @@ import {
     ARCH_DESIGN_SCHEMA_VERSION,
     type ArchDesign,
     type ArchDesignLanguage,
+    type ArchDesignLogic,
     type ArchDesignPort,
     type ArchDesignWidth,
 } from './model';
@@ -249,6 +250,91 @@ function renderInstance(
     ];
 }
 
+function archWidthExpression(width: ArchDesignWidth): string {
+    return typeof width === 'number' ? String(width) : `(${width.expression})`;
+}
+
+function archWidthsEqual(left: ArchDesignWidth, right: ArchDesignWidth): boolean {
+    if (typeof left === 'number' || typeof right === 'number') return left === right;
+    return left.expression === right.expression;
+}
+
+function renderLogicExpression(
+    logic: ArchDesignLogic,
+    input: (name: string) => string
+): string {
+    if (logic.operation === 'constant') return logic.expression;
+    if (logic.operation === 'not') return `~${input('in')}`;
+    if (
+        logic.operation === 'and'
+        || logic.operation === 'or'
+        || logic.operation === 'xor'
+        || logic.operation === 'nand'
+        || logic.operation === 'nor'
+        || logic.operation === 'xnor'
+    ) {
+        const operator = logic.operation === 'and' || logic.operation === 'nand'
+            ? '&'
+            : logic.operation === 'or' || logic.operation === 'nor' ? '|' : '^';
+        const expression = Array.from(
+            { length: logic.inputCount },
+            (_, index) => input(`in${index}`)
+        ).join(` ${operator} `);
+        return logic.operation === 'nand'
+            || logic.operation === 'nor'
+            || logic.operation === 'xnor'
+            ? `~(${expression})`
+            : expression;
+    }
+    if (logic.operation === 'mux') {
+        return `${input('select')} ? ${input('in1')} : ${input('in0')}`;
+    }
+    if (logic.operation === 'concat') {
+        return `{${logic.inputWidths.map((_, index) => input(`in${index}`)).join(', ')}}`;
+    }
+    if (logic.operation === 'slice') {
+        return `${input('in')}[${logic.msb}:${logic.lsb}]`;
+    }
+    if (logic.operation === 'replicate') {
+        return `{${logic.count}{${input('in')}}}`;
+    }
+    if (logic.operation === 'zero-extend' || logic.operation === 'sign-extend') {
+        const value = input('in');
+        if (archWidthsEqual(logic.inputWidth, logic.outputWidth)) return value;
+        const padding = `(${archWidthExpression(logic.outputWidth)}-${archWidthExpression(logic.inputWidth)})`;
+        const fill = logic.operation === 'zero-extend'
+            ? "1'b0"
+            : `${value}[${typeof logic.inputWidth === 'number'
+                ? logic.inputWidth - 1
+                : `(${logic.inputWidth.expression})-1`}]`;
+        return `{{${padding}{${fill}}}, ${value}}`;
+    }
+    const operator = logic.operation === 'reduce-and'
+        ? '&'
+        : logic.operation === 'reduce-or' ? '|' : '^';
+    return `${operator}${input('in')}`;
+}
+
+function renderLogicAssignment(
+    item: ArchDesignResolution['logic'][number],
+    targets: readonly ResolvedArchDesignEndpointTarget[],
+    netByEndpoint: ReadonlyMap<string, string>,
+    defaultByEndpoint: ReadonlyMap<string, string>
+): string | undefined {
+    const targetByPort = new Map(targets.map(target => [target.port, target]));
+    const output = targetByPort.get('out');
+    const outputNet = output ? netByEndpoint.get(output.identity) : undefined;
+    if (!outputNet) return undefined;
+    const input = (name: string): string => {
+        const target = targetByPort.get(name);
+        if (!target) return '0';
+        return netByEndpoint.get(target.identity)
+            ?? defaultByEndpoint.get(target.identity)
+            ?? '0';
+    };
+    return `assign ${outputNet} = ${renderLogicExpression(item.logic, input)};`;
+}
+
 function archWidthValue(width: ArchDesignWidth | undefined): WidthValue {
     if (width === undefined) return { kind: 'known', bits: 1 };
     return typeof width === 'number'
@@ -429,6 +515,15 @@ function renderModule(resolution: ArchDesignResolution): string {
     for (const source of resolution.connectionDefaultSources) {
         const net = netByConnection.get(source.connectionIndex);
         if (net) assignments.push(`assign ${net} = ${source.default.expression};`);
+    }
+    for (const item of resolution.logic) {
+        const assignment = renderLogicAssignment(
+            item,
+            targets.get(item.nodeId) ?? [],
+            netByEndpoint,
+            defaultByEndpoint
+        );
+        if (assignment) assignments.push(assignment);
     }
     const instances: string[] = [];
     for (const item of resolution.instances) {

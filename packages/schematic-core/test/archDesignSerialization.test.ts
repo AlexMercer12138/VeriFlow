@@ -244,6 +244,15 @@ test('fingerprints every RTL-relevant semantic section and export language', () 
             }],
         }),
         sourceDesign({ defaults: { 'u_core.enable': "1'b0" } }),
+        sourceDesign({
+            schemaVersion: 2,
+            logic: [{
+                name: 'u_constant',
+                operation: 'constant',
+                width: 8,
+                expression: "8'h5a",
+            }],
+        }),
         sourceDesign({ export: { language: 'systemverilog', output: 'generated/soc_top.sv' } }),
     ];
 

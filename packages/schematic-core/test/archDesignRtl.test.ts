@@ -351,6 +351,165 @@ test('exports implicit zero and explicit overrides for open instance inputs', ()
     ].join('\n')));
 });
 
+test('exports every Logic Utility as deterministic continuous assignments', () => {
+    const logic = [
+        { name: 'u_constant', operation: 'constant', width: 8, expression: "8'h5a" },
+        { name: 'u_not', operation: 'not', width: 8 },
+        { name: 'u_and', operation: 'and', width: 8, inputCount: 2 },
+        { name: 'u_or', operation: 'or', width: 8, inputCount: 2 },
+        { name: 'u_xor', operation: 'xor', width: 8, inputCount: 2 },
+        { name: 'u_nand', operation: 'nand', width: 8, inputCount: 2 },
+        { name: 'u_nor', operation: 'nor', width: 8, inputCount: 2 },
+        { name: 'u_xnor', operation: 'xnor', width: 8, inputCount: 2 },
+        { name: 'u_mux', operation: 'mux', width: 8 },
+        { name: 'u_concat', operation: 'concat', inputWidths: [8, 8] },
+        { name: 'u_slice', operation: 'slice', inputWidth: 16, msb: 7, lsb: 0 },
+        { name: 'u_replicate', operation: 'replicate', inputWidth: 8, count: 2 },
+        { name: 'u_zero_extend', operation: 'zero-extend', inputWidth: 16, outputWidth: 24 },
+        { name: 'u_sign_extend', operation: 'sign-extend', inputWidth: 24, outputWidth: 32 },
+        { name: 'u_reduce_and', operation: 'reduce-and', inputWidth: 32 },
+        { name: 'u_reduce_or', operation: 'reduce-or', inputWidth: 1 },
+        { name: 'u_reduce_xor', operation: 'reduce-xor', inputWidth: 1 },
+    ] as const;
+    const links = [
+        ['const_to_not', 'u_constant', 'u_not', 'in'],
+        ['not_to_and', 'u_not', 'u_and', 'in0'],
+        ['and_to_or', 'u_and', 'u_or', 'in0'],
+        ['or_to_xor', 'u_or', 'u_xor', 'in0'],
+        ['xor_to_nand', 'u_xor', 'u_nand', 'in0'],
+        ['nand_to_nor', 'u_nand', 'u_nor', 'in0'],
+        ['nor_to_xnor', 'u_nor', 'u_xnor', 'in0'],
+        ['xnor_to_mux', 'u_xnor', 'u_mux', 'in0'],
+        ['mux_to_concat', 'u_mux', 'u_concat', 'in0'],
+        ['concat_to_slice', 'u_concat', 'u_slice', 'in'],
+        ['slice_to_replicate', 'u_slice', 'u_replicate', 'in'],
+        ['replicate_to_zext', 'u_replicate', 'u_zero_extend', 'in'],
+        ['zext_to_sext', 'u_zero_extend', 'u_sign_extend', 'in'],
+        ['sext_to_reduce_and', 'u_sign_extend', 'u_reduce_and', 'in'],
+        ['reduce_and_to_reduce_or', 'u_reduce_and', 'u_reduce_or', 'in'],
+        ['reduce_or_to_reduce_xor', 'u_reduce_or', 'u_reduce_xor', 'in'],
+    ] as const;
+    const design = designOf({
+        ports: [
+            { name: '__vf_net_const_to_not', direction: 'input' },
+            { name: 'result', direction: 'output' },
+        ],
+        logic,
+        connections: [
+            ...links.map(([name, source, target, port]) => ({
+                name,
+                endpoints: [
+                    { kind: 'logic' as const, logic: source, port: 'out' },
+                    { kind: 'logic' as const, logic: target, port },
+                ],
+            })),
+            {
+                name: 'concat_default',
+                endpoints: [{ kind: 'logic', logic: 'u_concat', port: 'in1' }],
+                defaults: { 'u_concat.in1': "8'hf0" },
+            },
+            {
+                name: 'reduce_xor_to_result',
+                endpoints: [
+                    { kind: 'logic', logic: 'u_reduce_xor', port: 'out' },
+                    { kind: 'port', port: 'result' },
+                ],
+            },
+        ],
+        defaults: {
+            'u_mux.in1': "8'h3c",
+            'u_mux.select': "1'b1",
+        },
+    });
+
+    const verilog = exportArchDesignRtl(design, [], { language: 'verilog' });
+    const systemVerilog = exportArchDesignRtl(design, [], { language: 'systemverilog' });
+
+    assert.equal(verilog.status, 'generated');
+    assert.equal(systemVerilog.status, 'generated');
+    if (verilog.status !== 'generated' || systemVerilog.status !== 'generated') return;
+    const body = verilog.text.slice(verilog.text.indexOf('module'));
+    assert.equal(body, [
+        'module soc_top (',
+        '    input wire __vf_net_const_to_not,',
+        '    output wire result',
+        ');',
+        '',
+        'wire [7:0] __vf_net_const_to_not_2;',
+        'wire [7:0] __vf_net_not_to_and;',
+        'wire [7:0] __vf_net_and_to_or;',
+        'wire [7:0] __vf_net_or_to_xor;',
+        'wire [7:0] __vf_net_xor_to_nand;',
+        'wire [7:0] __vf_net_nand_to_nor;',
+        'wire [7:0] __vf_net_nor_to_xnor;',
+        'wire [7:0] __vf_net_xnor_to_mux;',
+        'wire [7:0] __vf_net_mux_to_concat;',
+        'wire [15:0] __vf_net_concat_to_slice;',
+        'wire [7:0] __vf_net_slice_to_replicate;',
+        'wire [15:0] __vf_net_replicate_to_zext;',
+        'wire [23:0] __vf_net_zext_to_sext;',
+        'wire [31:0] __vf_net_sext_to_reduce_and;',
+        'wire __vf_net_reduce_and_to_reduce_or;',
+        'wire __vf_net_reduce_or_to_reduce_xor;',
+        'wire [7:0] __vf_net_concat_default;',
+        'wire __vf_net_reduce_xor_to_result;',
+        '',
+        'assign result = __vf_net_reduce_xor_to_result;',
+        "assign __vf_net_concat_default = 8'hf0;",
+        "assign __vf_net_const_to_not_2 = 8'h5a;",
+        'assign __vf_net_not_to_and = ~__vf_net_const_to_not_2;',
+        'assign __vf_net_and_to_or = __vf_net_not_to_and & 0;',
+        'assign __vf_net_or_to_xor = __vf_net_and_to_or | 0;',
+        'assign __vf_net_xor_to_nand = __vf_net_or_to_xor ^ 0;',
+        'assign __vf_net_nand_to_nor = ~(__vf_net_xor_to_nand & 0);',
+        'assign __vf_net_nor_to_xnor = ~(__vf_net_nand_to_nor | 0);',
+        'assign __vf_net_xnor_to_mux = ~(__vf_net_nor_to_xnor ^ 0);',
+        "assign __vf_net_mux_to_concat = 1'b1 ? 8'h3c : __vf_net_xnor_to_mux;",
+        'assign __vf_net_concat_to_slice = {__vf_net_mux_to_concat, __vf_net_concat_default};',
+        'assign __vf_net_slice_to_replicate = __vf_net_concat_to_slice[7:0];',
+        'assign __vf_net_replicate_to_zext = {2{__vf_net_slice_to_replicate}};',
+        "assign __vf_net_zext_to_sext = {{(24-16){1'b0}}, __vf_net_replicate_to_zext};",
+        'assign __vf_net_sext_to_reduce_and = {{(32-24){__vf_net_zext_to_sext[23]}}, __vf_net_zext_to_sext};',
+        'assign __vf_net_reduce_and_to_reduce_or = &__vf_net_sext_to_reduce_and;',
+        'assign __vf_net_reduce_or_to_reduce_xor = |__vf_net_reduce_and_to_reduce_or;',
+        'assign __vf_net_reduce_xor_to_result = ^__vf_net_reduce_or_to_reduce_xor;',
+        '',
+        'endmodule',
+        '',
+    ].join('\n'));
+    assert.equal(
+        systemVerilog.text.slice(systemVerilog.text.indexOf('module')),
+        body
+    );
+});
+
+test('uses a direct assignment for equal-width extensions', () => {
+    const design = designOf({
+        ports: [{ name: 'result', direction: 'output', width: 8 }],
+        logic: [{
+            name: 'u_extend',
+            operation: 'zero-extend',
+            inputWidth: 8,
+            outputWidth: 8,
+        }],
+        connections: [{
+            name: 'result',
+            endpoints: [
+                { kind: 'logic', logic: 'u_extend', port: 'out' },
+                { kind: 'port', port: 'result' },
+            ],
+        }],
+        defaults: { 'u_extend.in': "8'ha5" },
+    });
+
+    const result = exportArchDesignRtl(design, []);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /assign __vf_net_result = 8'ha5;/);
+    assert.doesNotMatch(result.text, /\{\{/);
+});
+
 test('exports scalar tri-state control and inout readback assignments', () => {
     const io: ArchDesignModuleDefinition = {
         key: 'rtl/io.v#io_core',
