@@ -343,12 +343,21 @@ function normalizeInstances(
         const name = validIdentifier(ownValue(record, 'name'), `${path}.name`, diagnostics);
         duplicateName(name, `${path}.name`, names, diagnostics);
         const module = validIdentifier(ownValue(record, 'module'), `${path}.module`, diagnostics);
+        const definitionKeyValue = ownValue(record, 'definitionKey');
+        const definitionKey = definitionKeyValue === undefined
+            ? undefined
+            : nonEmptyString(definitionKeyValue, `${path}.definitionKey`, diagnostics);
         const parameterValue = ownValue(record, 'parameters');
         const parameters = parameterValue === undefined
             ? undefined
             : normalizeParameters(parameterValue, `${path}.parameters`, diagnostics);
         if (name && module) {
-            result.push({ name, module, ...(parameters ? { parameters } : {}) });
+            result.push({
+                name,
+                module,
+                ...(definitionKey ? { definitionKey } : {}),
+                ...(parameters ? { parameters } : {}),
+            });
         }
     });
     return result;

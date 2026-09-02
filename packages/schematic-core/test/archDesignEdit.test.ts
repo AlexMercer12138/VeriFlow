@@ -27,11 +27,19 @@ test('adds an instance without mutating the source design', () => {
 
     const next = applyArchDesignEdit(source, {
         type: 'addInstance',
-        instance: { name: 'u_core', module: 'core' },
-    });
+        instance: {
+            name: 'u_core',
+            module: 'core',
+            definitionKey: 'module:file:///workspace/rtl/core.v:0',
+        },
+    } as never);
 
     assert.deepEqual(source.instances, []);
-    assert.deepEqual(next.instances, [{ name: 'u_core', module: 'core' }]);
+    assert.deepEqual(next.instances, [{
+        name: 'u_core',
+        module: 'core',
+        definitionKey: 'module:file:///workspace/rtl/core.v:0',
+    }]);
     assert.ok(Object.isFrozen(next));
     assert.ok(Object.isFrozen(next.instances));
     assert.ok(Object.isFrozen(next.instances[0]));

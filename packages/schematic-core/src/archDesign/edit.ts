@@ -171,6 +171,7 @@ type MutableDesign = {
     instances: Array<{
         name: string;
         module: string;
+        definitionKey?: string;
         parameters?: Record<string, ArchDesignParameterValue>;
     }>;
     connections: MutableConnection[];

@@ -237,10 +237,12 @@ function snapshotDesignInstance(
     if (cached) return cached;
     const name = source.name;
     const module = source.module;
+    const definitionKey = source.definitionKey;
     const parameters = source.parameters;
     const snapshot = Object.freeze({
         name,
         module,
+        ...(definitionKey === undefined ? {} : { definitionKey }),
         ...(parameters === undefined
             ? {}
             : {

@@ -16,6 +16,7 @@ export type ArchDesignPort = Readonly<{
 export type ArchDesignInstance = Readonly<{
     name: string;
     module: string;
+    definitionKey?: string;
     parameters?: Readonly<Record<string, ArchDesignParameterValue>>;
 }>;
 

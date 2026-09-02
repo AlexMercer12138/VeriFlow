@@ -40,6 +40,7 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
         instances: [{
             name: 'u_core',
             module: 'core',
+            definitionKey: 'module:file:///workspace/rtl/core.v:0',
             parameters: { WIDTH: 32, ENABLED: true, MODE: '"FAST"' },
         }],
         connections: [{
@@ -90,6 +91,10 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
     assert.equal(result.status, 'editable');
     if (result.status !== 'editable') return;
     assert.equal(result.design.module, 'soc_top');
+    assert.equal(
+        Reflect.get(result.design.instances[0], 'definitionKey'),
+        'module:file:///workspace/rtl/core.v:0'
+    );
     assert.equal(result.design.instances[0].parameters?.WIDTH, 32);
     assert.ok(Object.isFrozen(result));
     assert.ok(Object.isFrozen(result.design));
@@ -99,6 +104,16 @@ test('parses a complete schema-v1 document into an owned frozen snapshot', () =>
     assert.equal(Object.getPrototypeOf(result.design.interfaceOverrides), null);
     assert.equal(result.design.interfaceOverrides['u_core.M_AXI'].role, 'master');
     assert.equal(result.design.interfaceOverrides['u_core.m_axi'].role, 'slave');
+});
+
+test('keeps legacy schema-v1 instances without a definition reference', () => {
+    const result = parseArchDesignValue(minimalDesign({
+        instances: [{ name: 'u_core', module: 'core' }],
+    }));
+
+    assert.equal(result.status, 'editable');
+    if (result.status !== 'editable') return;
+    assert.deepEqual(result.design.instances, [{ name: 'u_core', module: 'core' }]);
 });
 
 test('normalizes omitted interface sections for legacy schema-v1 documents', () => {

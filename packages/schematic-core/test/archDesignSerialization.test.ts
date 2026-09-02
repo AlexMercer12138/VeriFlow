@@ -21,6 +21,7 @@ function sourceDesign(overrides: Record<string, unknown> = {}): Record<string, u
         instances: [{
             name: 'u_core',
             module: 'core',
+            definitionKey: 'module:file:///workspace/rtl/core.v:0',
             parameters: { WIDTH: 16, ENABLED: true },
         }],
         connections: [{
@@ -100,6 +101,12 @@ test('serializes normalized designs in fixed schema order and round trips', () =
     assert.ok(source.indexOf('"u_core.enable"') < source.indexOf('"u_core.reset"'));
     assert.ok(source.indexOf('"awlen"') < source.indexOf('"wlast"'));
     assert.ok(source.indexOf('"u_core.M_AXI"') < source.indexOf('"u_core.z_axi"'));
+    assert.deepEqual(Object.keys(JSON.parse(source).instances[0]), [
+        'name',
+        'module',
+        'definitionKey',
+        'parameters',
+    ]);
 
     const reparsed = parseArchDesignText(source);
     assert.equal(reparsed.status, 'editable');

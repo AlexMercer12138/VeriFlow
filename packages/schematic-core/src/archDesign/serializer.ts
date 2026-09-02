@@ -42,6 +42,9 @@ function instanceValue(instance: ArchDesignInstance): unknown {
     return {
         name: instance.name,
         module: instance.module,
+        ...(instance.definitionKey !== undefined
+            ? { definitionKey: instance.definitionKey }
+            : {}),
         ...(instance.parameters
             ? { parameters: sortedRecord(instance.parameters) }
             : {}),
