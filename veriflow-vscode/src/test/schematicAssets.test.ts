@@ -1125,7 +1125,9 @@ async function testSchematicAssets(): Promise<void> {
     );
     assert.match(webviewSource, /layoutSchematic\(model,/);
     assert.match(webviewSource, /\bsnapNodesToPlacement\b/);
-    assert.match(webviewSource, /layoutSchematic\(model,\s*layout\.placement,/);
+    assert.match(webviewSource, /const placement = preservePlacement/);
+    assert.match(webviewSource, /\[id,\s*{\s*\.\.\.node,\s*fixed:\s*true\s*}\]/);
+    assert.match(webviewSource, /layoutSchematic\(model,\s*placement,/);
     assert.match(webviewSource, /graph\.on\('node:moved'/);
     assert.match(webviewSource, /selection\.on\('box:mousedown'/);
     assert.match(webviewSource, /selection\.on\('box:mouseup'/);

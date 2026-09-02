@@ -28,6 +28,7 @@ import {
     type ArchDesignInterfacesResolution,
 } from './interfaces';
 import { compareCodeUnits } from './ordering';
+import { resolveInstancePortWidth } from './parameterWidth';
 import type { ArchDesignDiagnostic } from './parser';
 
 const DEFAULT_INTERFACE_PROTOCOL_CATALOG = createInterfaceProtocolCatalog();
@@ -489,6 +490,22 @@ function snapshotDefinition(
     });
 }
 
+function resolveDefinitionWidths(
+    definition: ResolvedArchDesignModuleDefinition,
+    instance: ArchDesignInstance
+): ResolvedArchDesignModuleDefinition {
+    let changed = false;
+    const ports = definition.ports.map(port => {
+        const width = resolveInstancePortWidth(port.width, definition, instance);
+        if (width === port.width) return port;
+        changed = true;
+        return Object.freeze({ ...port, width });
+    });
+    return changed
+        ? Object.freeze({ ...definition, ports: Object.freeze(ports) })
+        : definition;
+}
+
 function snapshotDefinitions(
     sources: readonly ArchDesignModuleDefinition[]
 ): readonly ResolvedArchDesignModuleDefinition[] {
@@ -726,10 +743,6 @@ export function resolveArchDesign(
         definition.key,
         definition,
     ]));
-    const parameterNamesByDefinition = new Map(definitions.map(definition => [
-        definition,
-        new Set(definition.parameters.map(parameter => parameter.name)),
-    ]));
     const diagnostics: ArchDesignDiagnostic[] = [];
     const resolvedPorts: ResolvedArchDesignPort[] = [];
     const portsByName = new Map<string, ResolvedArchDesignPort[]>();
@@ -805,6 +818,7 @@ export function resolveArchDesign(
             definition = matches[0];
         }
 
+        definition = resolveDefinitionWidths(definition, instance);
         const resolved = Object.freeze({ index, nodeId, instance, definition });
         resolvedInstances.push(resolved);
         appendNamed(instancesByName, instance.name, resolved);
@@ -823,7 +837,7 @@ export function resolveArchDesign(
         const parameters = instance.parameters;
         if (!parameters) continue;
         for (const key of Object.keys(parameters).sort(compareCodeUnits)) {
-            if (parameterNamesByDefinition.get(definition)?.has(key)) continue;
+            if (definition.parameters.some(parameter => parameter.name === key)) continue;
             diagnostics.push(diagnostic(
                 `$.instances[${index}].parameters.${key}`,
                 'AD_PARAMETER_UNKNOWN',

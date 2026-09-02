@@ -846,6 +846,10 @@ let archDesignGraphRefreshInProgress = false;
 type PendingConnection = Readonly<{ nodeId: string; portId: string }>;
 let pendingConnection: PendingConnection | undefined;
 let pendingConnectionPreview: Edge | undefined;
+let connectionLayoutSnapshot: Readonly<{
+    moduleKey: string;
+    layout: SchematicLayout;
+}> | undefined;
 
 function connectionAuthoringEnabled(): boolean {
     return archDesignEditable
@@ -1344,6 +1348,15 @@ function setAuthoringControls(): void {
 
 function postArchDesignEdit(requestedEdit: ArchDesignEdit): void {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    connectionLayoutSnapshot = (requestedEdit.type === 'connect'
+        || requestedEdit.type === 'connectInterface')
+        && currentGraph
+        && currentLayout
+        ? {
+            moduleKey: currentGraph.moduleKey,
+            layout: cloneSchematicLayout(currentLayout),
+        }
+        : undefined;
     const edit = requestedEdit.type === 'setPresentation' && currentGraph && currentLayout
         ? {
             ...requestedEdit,
@@ -1674,16 +1687,25 @@ function restoreSelection(
 
 function layoutDisplaySchematic(
     model: SchematicGraph,
-    layout: SchematicLayout
+    layout: SchematicLayout,
+    preservePlacement = false
 ): SchematicRenderModel {
-    return layoutSchematic(model, layout.placement, measureNodeText);
+    const placement = preservePlacement
+        ? {
+            nodes: Object.fromEntries(Object.entries(layout.placement.nodes).map(
+                ([id, node]) => [id, { ...node, fixed: true }]
+            )),
+        }
+        : layout.placement;
+    return layoutSchematic(model, placement, measureNodeText);
 }
 
 function renderSchematic(
     model: SchematicGraph,
     layout: SchematicLayout,
     preservedSelection?: readonly string[],
-    fitOnFirstRender = false
+    fitOnFirstRender = false,
+    preservePlacement = false
 ): void {
     const searchQuery = dom.searchInput.value;
     cancelPendingConnection();
@@ -1694,7 +1716,7 @@ function renderSchematic(
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const renderModel = layoutDisplaySchematic(model, layout);
+    const renderModel = layoutDisplaySchematic(model, layout, preservePlacement);
     currentRenderModel = renderModel;
     graph.batchUpdate('render-schematic', () => {
         for (const node of model.nodes) {
@@ -1933,6 +1955,7 @@ function clearSchematicState(): void {
     applyingLayout = false;
     currentGraph = undefined;
     currentLayout = undefined;
+    connectionLayoutSnapshot = undefined;
     currentRenderModel = undefined;
     currentRevision = '';
     selectedModuleKey = '';
@@ -1979,6 +2002,7 @@ function initialize(event: Extract<HostEvent, { type: 'initialize' }>): void {
         queuedArchDesignCommand = undefined;
         archDesignSemanticEditInFlight = false;
         authoringPending = false;
+        connectionLayoutSnapshot = undefined;
     }
     archDesignDocument = nextArchDesignDocument;
     archDesignEditable = false;
@@ -2076,7 +2100,26 @@ function handleHostEvent(event: HostEvent): void {
                 === event.graph.moduleKey
                 ? queuedArchDesignLayoutSave.layout
                 : undefined;
-            const layout = localLayout ?? (localViewport
+            const capturedConnectionLayout = connectionLayoutSnapshot?.moduleKey
+                === event.graph.moduleKey
+                ? connectionLayoutSnapshot.layout
+                : undefined;
+            connectionLayoutSnapshot = undefined;
+            const connectionLayout = capturedConnectionLayout === undefined
+                ? undefined
+                : {
+                    ...cloneSchematicLayout(capturedConnectionLayout),
+                    placement: {
+                        nodes: Object.fromEntries(event.graph.nodes.flatMap(node => {
+                            const placement = capturedConnectionLayout.placement.nodes[node.id]
+                                ?? event.layout.placement.nodes[node.id];
+                            return placement === undefined
+                                ? []
+                                : [[node.id, { ...placement }] as const];
+                        })),
+                    },
+                };
+            const layout = connectionLayout ?? localLayout ?? (localViewport
                 ? {
                     ...event.layout,
                     viewport: { ...localViewport },
@@ -2087,7 +2130,8 @@ function handleHostEvent(event: HostEvent): void {
                 event.graph,
                 layout,
                 preservedSelection,
-                event.fitOnFirstRender === true
+                event.fitOnFirstRender === true,
+                connectionLayout !== undefined
             );
             drainArchDesignWrites();
             return;
@@ -2127,6 +2171,7 @@ function handleHostEvent(event: HostEvent): void {
             drainArchDesignWrites();
             return;
         case 'hostError':
+            connectionLayoutSnapshot = undefined;
             setGraphControls(false);
             setCanvasState(event.message || 'Unable to render schematic');
             return;

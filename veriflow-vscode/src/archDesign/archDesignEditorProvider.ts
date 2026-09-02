@@ -7,6 +7,7 @@ import {
     applyArchDesignEdit,
     parseArchDesignText,
     projectArchDesignGraph,
+    reconcileArchDesignInstanceParameters,
     serializeArchDesign,
     type ArchDesign,
     type ArchDesignDiagnostic,
@@ -403,7 +404,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 return;
             }
 
-            const design = parsed.design;
+            const parsedDesign = parsed.design;
             const [index, interfaceProtocols] = await Promise.all([
                 this.services.getIndex(document, indexOwner),
                 this.services.getInterfaceProtocols?.(document) ?? Promise.resolve({
@@ -418,6 +419,10 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             state.lastIndex = index;
             const sourceDefinitions = index?.getAllDefinitions('module') ?? [];
             const definitions = toArchDesignModuleDefinitions(sourceDefinitions);
+            const design = reconcileArchDesignInstanceParameters(
+                parsedDesign,
+                definitions
+            );
             const workspaceRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath
                 ?? path.dirname(document.uri.fsPath);
             const moduleChoices = buildModuleInstantiationChoices(
@@ -506,18 +511,21 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 || state.disposed
                 || token.isCancellationRequested
                 || state.snapshot !== snapshot) return;
+            if (design !== parsedDesign) {
+                await applyResolvedDocumentEdit(snapshot, design, false, false);
+            }
             return snapshot;
         };
-        const applyDocumentEdit = async (
+        const applyResolvedDocumentEdit = async (
             snapshot: EditableSnapshot,
-            edit: Parameters<typeof applyArchDesignEdit>[1],
-            acknowledgePresentation = false
+            next: ArchDesign,
+            acknowledgePresentation: boolean,
+            refreshOnFailure = true
         ): Promise<void> => {
             if (state.snapshot !== snapshot
                 || (state.disposed && !acknowledgePresentation)) return;
             let pendingWrite: PanelState['pendingPresentationWrite'];
             try {
-                const next = applyArchDesignEdit(snapshot.design, edit);
                 const nextText = serializeArchDesign(next);
                 if (nextText === document.getText()) {
                     if (acknowledgePresentation) {
@@ -558,10 +566,23 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 if (!state.disposed) await vscode.window.showErrorMessage(message);
                 if (state.disposed) {
                     finishClosedPanelPresentationWrites();
-                } else {
+                } else if (refreshOnFailure) {
                     await refresh();
+                } else {
+                    state.snapshot = snapshot;
                 }
             }
+        };
+        const applyDocumentEdit = async (
+            snapshot: EditableSnapshot,
+            edit: Parameters<typeof applyArchDesignEdit>[1],
+            acknowledgePresentation = false
+        ): Promise<void> => {
+            await applyResolvedDocumentEdit(
+                snapshot,
+                applyArchDesignEdit(snapshot.design, edit),
+                acknowledgePresentation
+            );
         };
         const applyQueuedPresentation = async (
             snapshot: EditableSnapshot

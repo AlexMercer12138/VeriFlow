@@ -1195,6 +1195,43 @@ async function testCatalogInvalidationAndDisposal(): Promise<void> {
     assert.deepStrictEqual(harness.diagnostics, []);
 }
 
+async function testCatalogInvalidationRemovesDeletedParameterOverrides(): Promise<void> {
+    const originalDefinition = {
+        ...moduleDefinition(),
+        parameters: [
+            { name: 'WIDTH', defaultExpression: '8' },
+            { name: 'DEPTH', defaultExpression: '16' },
+        ],
+    };
+    const source = sourceDesign({
+        instances: [{
+            name: 'u_core',
+            module: 'core',
+            definitionKey: originalDefinition.key,
+            parameters: { WIDTH: 12, DEPTH: 32 },
+        }],
+    });
+    const harness = await createHarness(source, [originalDefinition]);
+    try {
+        harness.setDefinitions([moduleDefinition()]);
+        harness.invalidateIndex();
+        await waitFor(
+            () => harness.replacements.length === 1,
+            'deleted parameter cleanup'
+        );
+
+        const parsed = parseArchDesignText(harness.replacements[0].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(
+            Object.fromEntries(Object.entries(parsed.design.instances[0].parameters ?? {})),
+            { WIDTH: 12 }
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
 async function testLayoutSavePersistsOnlyStableArchDesignNodes(): Promise<void> {
     const source = sourceDesign({
         ports: [
@@ -1666,6 +1703,7 @@ async function main(): Promise<void> {
     await testInvalidTextRetainsLastValidGraph();
     await testUnsupportedSchemaIsReadOnly();
     await testCatalogInvalidationAndDisposal();
+    await testCatalogInvalidationRemovesDeletedParameterOverrides();
     await testLayoutSavePersistsOnlyStableArchDesignNodes();
     await testViewportOnlyLayoutSaveDoesNotEditDocument();
     await testPresentationChangeAcknowledgesWithoutReloadingGraph();

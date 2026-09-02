@@ -8,6 +8,7 @@ export * from './model';
 export * from './resolution';
 export * from './parser';
 export * from './presentation';
+export * from './reconcile';
 export * from './rtl';
 export * from './serializer';
 export * from './validation';

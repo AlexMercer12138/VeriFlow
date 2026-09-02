@@ -764,8 +764,8 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
                     fixed: false,
                 },
                 'instance:u_sink': {
-                    column: 1,
-                    order: 0,
+                    column: 0,
+                    order: 1,
                     yOffset: 0,
                     fixed: false,
                 },
@@ -777,7 +777,8 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
     const publish = async (
         revision: string,
         selectedDesign: Record<string, unknown>,
-        selectedGraph: Record<string, unknown>
+        selectedGraph: Record<string, unknown>,
+        selectedLayout: Record<string, unknown> = layout
     ): Promise<void> => {
         await page.evaluate(({ revision, design, catalog, graph, layout }) => {
             const graphIdentity = graph as {
@@ -810,7 +811,13 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
             }]) {
                 window.dispatchEvent(new MessageEvent('message', { data }));
             }
-        }, { revision, design: selectedDesign, catalog, graph: selectedGraph, layout });
+        }, {
+            revision,
+            design: selectedDesign,
+            catalog,
+            graph: selectedGraph,
+            layout: selectedLayout,
+        });
     };
 
     await publish('fixture:ad-connect:1', design, disconnectedGraph);
@@ -893,6 +900,10 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
     );
     const selectedSourceBounds = await sourcePin.boundingBox();
     assert.ok(selectedSourceBounds);
+    const sourceBoundsBeforeConnection = await sourceNode.boundingBox();
+    const sinkBoundsBeforeConnection = await sinkNode.boundingBox();
+    assert.ok(sourceBoundsBeforeConnection);
+    assert.ok(sinkBoundsBeforeConnection);
     await page.mouse.click(
         selectedSourceBounds.x + selectedSourceBounds.width / 2,
         selectedSourceBounds.y + selectedSourceBounds.height / 2
@@ -963,11 +974,44 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
             }],
         }],
     };
-    await publish('fixture:ad-connect:2', connectedDesign, connectedGraph);
+    const changedLayout = structuredClone(layout);
+    changedLayout.placement.nodes['instance:u_source'].column = 4;
+    changedLayout.placement.nodes['instance:u_sink'].column = 0;
+    changedLayout.viewport = { x: -320, y: 240, zoom: 0.5 };
+    await publish('fixture:ad-connect:2', connectedDesign, connectedGraph, changedLayout);
     const canonicalSegments = page.locator(
         '#canvas .x6-edge > path:nth-child(2)'
     );
     await canonicalSegments.first().waitFor({ state: 'attached' });
+    const sourceBoundsAfterConnection = await sourceNode.boundingBox();
+    const sinkBoundsAfterConnection = await sinkNode.boundingBox();
+    assert.ok(sourceBoundsAfterConnection);
+    assert.ok(sinkBoundsAfterConnection);
+    const maximumRoutingShift = 64;
+    assert.ok(
+        Math.abs(sourceBoundsAfterConnection.x - sourceBoundsBeforeConnection.x)
+            <= maximumRoutingShift
+    );
+    assert.ok(
+        Math.abs(sourceBoundsAfterConnection.y - sourceBoundsBeforeConnection.y)
+            <= maximumRoutingShift
+    );
+    assert.ok(
+        Math.abs(sinkBoundsAfterConnection.x - sinkBoundsBeforeConnection.x)
+            <= maximumRoutingShift
+    );
+    assert.ok(
+        Math.abs(sinkBoundsAfterConnection.y - sinkBoundsBeforeConnection.y)
+            <= maximumRoutingShift
+    );
+    const canvasAfterConnection = await page.locator('#canvas').boundingBox();
+    assert.ok(canvasAfterConnection);
+    for (const bounds of [sourceBoundsAfterConnection, sinkBoundsAfterConnection]) {
+        assert.ok(bounds.x + bounds.width > canvasAfterConnection.x);
+        assert.ok(bounds.x < canvasAfterConnection.x + canvasAfterConnection.width);
+        assert.ok(bounds.y + bounds.height > canvasAfterConnection.y);
+        assert.ok(bounds.y < canvasAfterConnection.y + canvasAfterConnection.height);
+    }
     await page.waitForFunction(() => [...document.querySelectorAll<SVGPathElement>(
         '#canvas .x6-edge > path:nth-child(2)'
     )].every(path => path.getTotalLength() > 0));

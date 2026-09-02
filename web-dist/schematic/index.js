@@ -46681,6 +46681,7 @@
   var archDesignGraphRefreshInProgress = false;
   var pendingConnection;
   var pendingConnectionPreview;
+  var connectionLayoutSnapshot;
   function connectionAuthoringEnabled() {
     return archDesignEditable && !authoringPending && currentArchDesignState !== void 0 && dom.connectButton.getAttribute("aria-pressed") === "true";
   }
@@ -47098,6 +47099,10 @@
   }
   function postArchDesignEdit(requestedEdit) {
     if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+    connectionLayoutSnapshot = (requestedEdit.type === "connect" || requestedEdit.type === "connectInterface") && currentGraph && currentLayout ? {
+      moduleKey: currentGraph.moduleKey,
+      layout: cloneSchematicLayout(currentLayout)
+    } : void 0;
     const edit = requestedEdit.type === "setPresentation" && currentGraph && currentLayout ? {
       ...requestedEdit,
       presentation: {
@@ -47382,10 +47387,15 @@
     refreshPinSelectionStyles();
     updateSelectionStatus(selection.getSelectedCells(), false);
   }
-  function layoutDisplaySchematic(model, layout) {
-    return (0, import_schematic_core.layoutSchematic)(model, layout.placement, measureNodeText);
+  function layoutDisplaySchematic(model, layout, preservePlacement = false) {
+    const placement = preservePlacement ? {
+      nodes: Object.fromEntries(Object.entries(layout.placement.nodes).map(
+        ([id, node]) => [id, { ...node, fixed: true }]
+      ))
+    } : layout.placement;
+    return (0, import_schematic_core.layoutSchematic)(model, placement, measureNodeText);
   }
-  function renderSchematic(model, layout, preservedSelection, fitOnFirstRender = false) {
+  function renderSchematic(model, layout, preservedSelection, fitOnFirstRender = false, preservePlacement = false) {
     const searchQuery = dom.searchInput.value;
     cancelPendingConnection();
     clearPendingNodeMoves();
@@ -47395,7 +47405,7 @@
     selectedModuleKey = model.moduleKey;
     dom.moduleSelector.value = model.moduleKey;
     graph.resetCells([]);
-    const renderModel = layoutDisplaySchematic(model, layout);
+    const renderModel = layoutDisplaySchematic(model, layout, preservePlacement);
     currentRenderModel = renderModel;
     graph.batchUpdate("render-schematic", () => {
       for (const node of model.nodes) {
@@ -47602,6 +47612,7 @@
     applyingLayout = false;
     currentGraph = void 0;
     currentLayout = void 0;
+    connectionLayoutSnapshot = void 0;
     currentRenderModel = void 0;
     currentRevision = "";
     selectedModuleKey = "";
@@ -47647,6 +47658,7 @@
       queuedArchDesignCommand = void 0;
       archDesignSemanticEditInFlight = false;
       authoringPending = false;
+      connectionLayoutSnapshot = void 0;
     }
     archDesignDocument = nextArchDesignDocument;
     archDesignEditable = false;
@@ -47727,7 +47739,18 @@
         const preservedSelection = archDesignDocument && currentGraph?.moduleKey === event.graph.moduleKey ? selectedObjectIds(selection.getSelectedCells()) : void 0;
         const localViewport = event.fitOnFirstRender === true && autoFittedModules.has(event.graph.moduleKey) ? vscode.getState()?.layouts?.[event.graph.moduleKey]?.viewport : void 0;
         const localLayout = queuedArchDesignLayoutSave?.moduleKey === event.graph.moduleKey ? queuedArchDesignLayoutSave.layout : void 0;
-        const layout = localLayout ?? (localViewport ? {
+        const capturedConnectionLayout = connectionLayoutSnapshot?.moduleKey === event.graph.moduleKey ? connectionLayoutSnapshot.layout : void 0;
+        connectionLayoutSnapshot = void 0;
+        const connectionLayout = capturedConnectionLayout === void 0 ? void 0 : {
+          ...cloneSchematicLayout(capturedConnectionLayout),
+          placement: {
+            nodes: Object.fromEntries(event.graph.nodes.flatMap((node) => {
+              const placement = capturedConnectionLayout.placement.nodes[node.id] ?? event.layout.placement.nodes[node.id];
+              return placement === void 0 ? [] : [[node.id, { ...placement }]];
+            }))
+          }
+        };
+        const layout = connectionLayout ?? localLayout ?? (localViewport ? {
           ...event.layout,
           viewport: { ...localViewport }
         } : event.layout);
@@ -47736,7 +47759,8 @@
           event.graph,
           layout,
           preservedSelection,
-          event.fitOnFirstRender === true
+          event.fitOnFirstRender === true,
+          connectionLayout !== void 0
         );
         drainArchDesignWrites();
         return;
@@ -47776,6 +47800,7 @@
         drainArchDesignWrites();
         return;
       case "hostError":
+        connectionLayoutSnapshot = void 0;
         setGraphControls(false);
         setCanvasState(event.message || "Unable to render schematic");
         return;

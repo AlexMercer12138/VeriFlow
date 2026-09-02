@@ -285,6 +285,45 @@ test('exports explicit ordered instances, parameters, and effective defaults', (
     ].join('\n'));
 });
 
+test('resolves parameterized instance port widths to numeric RTL ranges', () => {
+    const producer: ArchDesignModuleDefinition = {
+        key: 'rtl/parameterized_producer.v#parameterized_producer',
+        name: 'parameterized_producer',
+        parameters: [
+            { name: 'WIDTH', defaultExpression: '8' },
+            { name: 'LANES', defaultExpression: '2' },
+        ],
+        ports: [{
+            name: 'data_o',
+            direction: 'output',
+            width: { kind: 'symbolic', expression: '[WIDTH * LANES - 1:0]' },
+        }],
+    };
+    const design = designOf({
+        ports: [{ name: 'data_o', direction: 'output', width: 24 }],
+        instances: [{
+            name: 'u_producer',
+            module: 'parameterized_producer',
+            parameters: { WIDTH: 12 },
+        }],
+        connections: [{
+            name: 'data_o',
+            endpoints: [
+                { kind: 'instance', instance: 'u_producer', port: 'data_o' },
+                { kind: 'port', port: 'data_o' },
+            ],
+        }],
+    });
+
+    const result = exportArchDesignRtl(design, [producer]);
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.match(result.text, /output wire \[23:0\] data_o/);
+    assert.match(result.text, /wire \[23:0\] __vf_net_data_o;/);
+    assert.doesNotMatch(result.text, /wire \[[^\n]*WIDTH/);
+});
+
 test('exports implicit zero and explicit overrides for open instance inputs', () => {
     const sink: ArchDesignModuleDefinition = {
         key: 'rtl/sink.v#sink',
