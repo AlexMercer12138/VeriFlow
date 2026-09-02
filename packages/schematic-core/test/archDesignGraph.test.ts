@@ -118,7 +118,7 @@ test('projects ports from the selected duplicate module definition', () => {
     assert.equal(instance?.definitionKey, second.key);
 });
 
-test('projects implicit zero sources for undriven instance inputs', () => {
+test('keeps implicit zero sources out of the graph while preserving receiver networks', () => {
     const sink: ArchDesignModuleDefinition = {
         key: 'rtl/sink.v#sink',
         name: 'sink',
@@ -141,17 +141,16 @@ test('projects implicit zero sources for undriven instance inputs', () => {
     });
 
     assert.equal(projection.validation.valid, true);
-    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant').map(node => [
-        node.id,
-        node.label,
-    ]), [
-        ['default:instance:u_sink:connected_i', '0'],
-        ['default:instance:u_sink:open_i', '0'],
-    ]);
+    assert.deepEqual(projection.graph.nodes.map(node => node.id), ['instance:u_sink']);
+    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant'), []);
     assert.deepEqual(projection.graph.networks.map(network => network.id), [
         'network:driverless',
-        'network:default:instance:u_sink:open_i',
     ]);
+    assert.deepEqual(projection.graph.networks[0].endpoints, [{
+        nodeId: 'instance:u_sink',
+        pinId: 'instance:u_sink:connected_i',
+        role: 'load',
+    }]);
 });
 
 test('projects an ordered schema-v1 design and exposes inout feedback flow', () => {
@@ -232,9 +231,6 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
         'instance:u_io',
         'port:result',
         'port:gpio',
-        'default:port:gpio:t',
-        'default:instance:u_core:enable',
-        'default:instance:u_io:data_i',
     ]);
     assert.deepEqual(graph.nodes.slice(0, 5).map(node => [
         node.id,
@@ -268,12 +264,7 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
         { kind: 'known', bits: 8 },
         { kind: 'known', bits: 8 },
     ]);
-    assert.equal(graph.nodes.slice(5).every(node =>
-        node.kind === 'constant'
-        && node.readOnly
-        && node.pins.length === 1
-        && node.pins[0].readOnly
-        && node.pins[0].direction === 'driver'), true);
+    assert.equal(graph.nodes.some(node => node.id.startsWith('default:')), false);
 
     assert.deepEqual(graph.networks.map(network => network.id), [
         'network:clock',
@@ -281,8 +272,6 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
         'network:driverless',
         'network:gpio_drive',
         'network:gpio_readback',
-        'network:default:port:gpio:t',
-        'network:default:instance:u_core:enable',
     ]);
     assert.deepEqual(graph.networks.map(network => network.width), [
         { kind: 'known', bits: 1 },
@@ -290,28 +279,22 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
         { kind: 'known', bits: 8 },
         { kind: 'known', bits: 8 },
         { kind: 'known', bits: 8 },
-        { kind: 'known', bits: 8 },
-        { kind: 'known', bits: 1 },
     ]);
     assert.deepEqual(graph.networks.map(network =>
         network.endpoints.map(endpoint => endpoint.role)), [
         ['driver', 'load'],
         ['driver', 'load'],
-        ['load', 'driver'],
+        ['load'],
         ['driver', 'load'],
         ['driver', 'load'],
-        ['load', 'driver'],
-        ['load', 'driver'],
     ]);
     assert.deepEqual(graph.networks.map(network =>
         network.endpoints.map(endpoint => endpoint.nodeId)), [
         ['port:clk', 'instance:u_core'],
         ['instance:u_core', 'port:result'],
-        ['instance:u_io', 'default:instance:u_io:data_i'],
+        ['instance:u_io'],
         ['instance:u_io', 'port:gpio'],
         ['port:gpio', 'instance:u_io'],
-        ['port:gpio', 'default:port:gpio:t'],
-        ['instance:u_core', 'default:instance:u_core:enable'],
     ]);
     assert.deepEqual(
         projection.validation,
@@ -333,7 +316,7 @@ test('projects an ordered schema-v1 design and exposes inout feedback flow', () 
     assert.equal(columns.feedbackNetworkIds.has('network:gpio_drive'), true);
 });
 
-test('maps colliding public default keys by canonical receiver identity', () => {
+test('keeps defaults hidden when public keys collide with endpoint names', () => {
     const consumer: ArchDesignModuleDefinition = {
         key: 'rtl/consumer.sv#consumer',
         name: 'consumer',
@@ -359,29 +342,12 @@ test('maps colliding public default keys by canonical receiver identity', () => 
     const projection = projectArchDesignGraph(design, [consumer], {
         fileUri: 'file:///workspace/collision.ad',
     });
-    const topDefault = projection.graph.nodes.find(node =>
-        node.id === 'default:port:node:t'
-    );
-    const defaultNetwork = projection.graph.networks.find(network =>
-        network.id === 'network:default:port:node:t'
-    );
-
-    assert.ok(topDefault);
-    assert.ok(defaultNetwork);
-    assert.equal(topDefault.label, "1'b1");
-    assert.deepEqual(defaultNetwork.endpoints, [
-        { nodeId: 'port:node', pinId: 'port:node:t', role: 'load' },
-        {
-            nodeId: 'default:port:node:t',
-            pinId: 'default:port:node:t:value',
-            role: 'driver',
-        },
-    ]);
-    assert.equal(projection.graph.nodes.some(node =>
-        node.id === 'default:instance:node:t'), false);
+    assert.equal(projection.graph.nodes.some(node => node.id.startsWith('default:')), false);
+    assert.equal(projection.graph.networks.some(network =>
+        network.id.startsWith('network:default:')), false);
 });
 
-test('projects one coherent source for identical defaults on a driverless network', () => {
+test('keeps identical connection defaults off a driverless network', () => {
     const design = designOf({
         ports: [
             { name: 'first', direction: 'output' },
@@ -420,14 +386,12 @@ test('projects one coherent source for identical defaults on a driverless networ
     assert.deepEqual(projection.graph.nodes.map(node => node.id), [
         'port:first',
         'port:second',
-        'default:port:first:value',
     ]);
     assert.deepEqual(network.endpoints.map(endpoint => endpoint.role), [
         'load',
         'load',
-        'driver',
     ]);
-    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 1);
+    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 0);
 });
 
 test('treats a bidirectional endpoint as a source without projecting a receiver default', () => {
@@ -505,7 +469,7 @@ test('treats a bidirectional endpoint as a source without projecting a receiver 
     );
 });
 
-test('uses one receiver default to drive every load on its driverless network', () => {
+test('keeps a receiver default off its driverless network', () => {
     const design = designOf({
         ports: [
             { name: 'defaulted', direction: 'output' },
@@ -536,12 +500,10 @@ test('uses one receiver default to drive every load on its driverless network', 
     assert.deepEqual(projection.graph.nodes.map(node => node.id), [
         'port:defaulted',
         'port:peer',
-        'default:port:defaulted:value',
     ]);
     assert.deepEqual(projection.graph.networks[0].endpoints.map(endpoint => endpoint.role), [
         'load',
         'load',
-        'driver',
     ]);
 });
 
@@ -594,7 +556,7 @@ test('rejects conflicting defaults without projecting a driver or undriven casca
     assert.equal(projection.graph.diagnostics[0].code, 'AD_DEFAULT_CONFLICT');
 });
 
-test('keeps defaulted fanout structurally linear through column assignment', () => {
+test('keeps a wide defaulted receiver network visible without a synthetic source', () => {
     const portNames = Array.from({ length: 600 }, (_, index) => `sink_${index}`);
     const consumer: ArchDesignModuleDefinition = {
         key: 'rtl/wide_consumer.sv#wide_consumer',
@@ -630,14 +592,121 @@ test('keeps defaulted fanout structurally linear through column assignment', () 
 
     assert.equal(projection.validation.valid, true);
     assert.equal(projection.validation.effectiveDefaults.length, portNames.length);
-    assert.equal(projection.graph.nodes.filter(node => node.kind === 'constant').length, 1);
-    assert.equal(network.endpoints.length, portNames.length + 1);
-    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 1);
-    assert.deepEqual(assignment.columns, [
-        ['default:instance:u_consumer:sink_0'],
-        ['instance:u_consumer'],
-    ]);
+    assert.equal(projection.graph.nodes.filter(node => node.kind === 'constant').length, 0);
+    assert.equal(network.endpoints.length, portNames.length);
+    assert.equal(network.endpoints.filter(endpoint => endpoint.role === 'driver').length, 0);
+    assert.deepEqual(assignment.columns, [['instance:u_consumer']]);
     assert.deepEqual([...assignment.feedbackNetworkIds], []);
+});
+
+test('projects explicit Logic Utilities as editable nodes with stable pins', () => {
+    const design = designOf({
+        logic: [
+            { name: 'u_constant', operation: 'constant', width: 8, expression: "8'h5a" },
+            { name: 'u_not', operation: 'not', width: 8 },
+            { name: 'u_and', operation: 'and', width: 8, inputCount: 3 },
+            { name: 'u_or', operation: 'or', width: 8, inputCount: 2 },
+            { name: 'u_xor', operation: 'xor', width: 8, inputCount: 2 },
+            { name: 'u_nand', operation: 'nand', width: 8, inputCount: 2 },
+            { name: 'u_nor', operation: 'nor', width: 8, inputCount: 2 },
+            { name: 'u_xnor', operation: 'xnor', width: 8, inputCount: 2 },
+            { name: 'u_mux', operation: 'mux', width: 8 },
+            { name: 'u_concat', operation: 'concat', inputWidths: [4, 8] },
+            { name: 'u_slice', operation: 'slice', inputWidth: 16, msb: 11, lsb: 4 },
+            { name: 'u_replicate', operation: 'replicate', inputWidth: 2, count: 4 },
+            { name: 'u_zero_extend', operation: 'zero-extend', inputWidth: 4, outputWidth: 8 },
+            { name: 'u_sign_extend', operation: 'sign-extend', inputWidth: 4, outputWidth: 8 },
+            { name: 'u_reduce_and', operation: 'reduce-and', inputWidth: 8 },
+            { name: 'u_reduce_or', operation: 'reduce-or', inputWidth: 8 },
+            { name: 'u_reduce_xor', operation: 'reduce-xor', inputWidth: 8 },
+        ],
+    });
+
+    const projection = projectArchDesignGraph(design, [], {
+        fileUri: 'file:///workspace/logic.ad',
+    });
+    const nodes = projection.graph.nodes;
+
+    assert.equal(projection.validation.valid, true);
+    assert.deepEqual(nodes.map(node => [node.id, node.kind, node.readOnly]), [
+        ['logic:u_constant', 'constant', false],
+        ['logic:u_not', 'expression', false],
+        ['logic:u_and', 'expression', false],
+        ['logic:u_or', 'expression', false],
+        ['logic:u_xor', 'expression', false],
+        ['logic:u_nand', 'expression', false],
+        ['logic:u_nor', 'expression', false],
+        ['logic:u_xnor', 'expression', false],
+        ['logic:u_mux', 'expression', false],
+        ['logic:u_concat', 'expression', false],
+        ['logic:u_slice', 'expression', false],
+        ['logic:u_replicate', 'expression', false],
+        ['logic:u_zero_extend', 'expression', false],
+        ['logic:u_sign_extend', 'expression', false],
+        ['logic:u_reduce_and', 'expression', false],
+        ['logic:u_reduce_or', 'expression', false],
+        ['logic:u_reduce_xor', 'expression', false],
+    ]);
+    assert.deepEqual(nodes.map(node => [
+        node.id,
+        node.pins.map(pin => [pin.id, pin.name, pin.direction, pin.readOnly]),
+    ]), [
+        ['logic:u_constant', [['logic:u_constant:out', 'out', 'driver', false]]],
+        ['logic:u_not', [
+            ['logic:u_not:in', 'in', 'load', false],
+            ['logic:u_not:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_and', [
+            ['logic:u_and:in0', 'in0', 'load', false],
+            ['logic:u_and:in1', 'in1', 'load', false],
+            ['logic:u_and:in2', 'in2', 'load', false],
+            ['logic:u_and:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_or', [
+            ['logic:u_or:in0', 'in0', 'load', false],
+            ['logic:u_or:in1', 'in1', 'load', false],
+            ['logic:u_or:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_xor', [
+            ['logic:u_xor:in0', 'in0', 'load', false],
+            ['logic:u_xor:in1', 'in1', 'load', false],
+            ['logic:u_xor:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_nand', [
+            ['logic:u_nand:in0', 'in0', 'load', false],
+            ['logic:u_nand:in1', 'in1', 'load', false],
+            ['logic:u_nand:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_nor', [
+            ['logic:u_nor:in0', 'in0', 'load', false],
+            ['logic:u_nor:in1', 'in1', 'load', false],
+            ['logic:u_nor:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_xnor', [
+            ['logic:u_xnor:in0', 'in0', 'load', false],
+            ['logic:u_xnor:in1', 'in1', 'load', false],
+            ['logic:u_xnor:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_mux', [
+            ['logic:u_mux:in0', 'in0', 'load', false],
+            ['logic:u_mux:in1', 'in1', 'load', false],
+            ['logic:u_mux:select', 'select', 'load', false],
+            ['logic:u_mux:out', 'out', 'driver', false],
+        ]],
+        ['logic:u_concat', [
+            ['logic:u_concat:in0', 'in0', 'load', false],
+            ['logic:u_concat:in1', 'in1', 'load', false],
+            ['logic:u_concat:out', 'out', 'driver', false],
+        ]],
+        ...nodes.slice(10).map(node => [
+            node.id,
+            [
+                [`${node.id}:in`, 'in', 'load', false],
+                [`${node.id}:out`, 'out', 'driver', false],
+            ],
+        ]),
+    ]);
+    assert.equal(nodes.some(node => node.id.startsWith('default:')), false);
 });
 
 test('projects network widths without hiding mismatches or ambiguous symbols', () => {
@@ -1118,16 +1187,12 @@ test('expands both interface endpoints into declaration-ordered member routes an
         ['network:interface:control:accept', 'accept', undefined],
         ['network:interface:control:tag', 'tag', undefined],
     ]);
-    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant').map(node => [
-        node.id,
-        node.label,
-    ]), [[
-        'default:interface:control:tag',
-        '0',
-    ]]);
-    assert.equal(projection.graph.networks[2].endpoints.find(endpoint =>
-        endpoint.role === 'driver'
-    )?.nodeId, 'default:interface:control:tag');
+    assert.deepEqual(projection.graph.nodes.filter(node => node.kind === 'constant'), []);
+    assert.deepEqual(projection.graph.networks[2].endpoints, [{
+        nodeId: 'instance:u_slave',
+        pinId: 'instance:u_slave:LINK_TAG',
+        role: 'load',
+    }]);
     assertUniqueAndLayoutable(design, projection.graph);
 });
 

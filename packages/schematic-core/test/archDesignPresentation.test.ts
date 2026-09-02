@@ -22,6 +22,7 @@ const FIRST_ID = 'instance:u_first';
 const SECOND_ID = 'instance:u_second';
 const SINK_ID = 'port:sink';
 const DEFAULT_ID = 'default:instance:u_first:enable';
+const LOGIC_ID = 'logic:u_constant';
 
 const stageDefinition: ArchDesignModuleDefinition = {
     key: 'rtl/stage.sv#stage',
@@ -206,18 +207,35 @@ test('discards stale presentation node IDs', () => {
     assert.deepEqual(Object.keys(placement.nodes), graph.nodes.map(node => node.id));
 });
 
-test('automatically places derived default nodes missing from presentation', () => {
-    const { design, graph } = fixture({
-        nodes: {
-            [SINK_ID]: { column: 1, order: 0, offset: 8, userPositioned: true },
-        },
+test('retains explicit Logic Utility placement and discards obsolete default placement', () => {
+    const parsed = parseArchDesignValue({
+        ...createEmptyArchDesign('logic_placement'),
+        logic: [{
+            name: 'u_constant',
+            operation: 'constant',
+            width: 8,
+            expression: "8'h5a",
+        }],
+        presentation: { nodes: {
+            [LOGIC_ID]: { column: 0, order: 0, offset: 17, userPositioned: true },
+            [DEFAULT_ID]: { column: 1, order: 0, offset: 8, userPositioned: true },
+        } },
     });
-    assert.equal(graph.nodes.some(node => node.id === DEFAULT_ID), true);
+    if (parsed.status !== 'editable') throw new Error('expected editable design');
+    const graph = projectArchDesignGraph(parsed.design, [], {
+        fileUri: 'file:///workspace/logic-placement.ad',
+    }).graph;
 
-    const placement = projectArchDesignPlacement(design, graph);
-    const automatic = createPlacement(graph, assignColumns(graph));
+    const placement = projectArchDesignPlacement(parsed.design, graph);
 
-    assert.deepEqual(placement.nodes[DEFAULT_ID], automatic.nodes[DEFAULT_ID]);
+    assert.deepEqual(graph.nodes.map(node => node.id), [LOGIC_ID]);
+    assert.deepEqual(placement.nodes[LOGIC_ID], {
+        column: 0,
+        order: 0,
+        yOffset: 17,
+        fixed: true,
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(placement.nodes, DEFAULT_ID), false);
 });
 
 test('normalizes duplicate persisted orders deterministically', () => {

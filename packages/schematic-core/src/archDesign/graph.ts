@@ -15,11 +15,9 @@ import { isArchDesignInterfaceCollapsed } from './presentation';
 import {
     resolveArchDesign,
     type ArchDesignResolution,
-    type ResolvedArchDesignDefault,
     type ResolvedArchDesignEndpointTarget,
 } from './resolution';
 import type {
-    ResolvedArchDesignInterfaceConnection,
     ResolvedArchDesignInterfaceEndpoint,
     ResolvedArchDesignInterfaceMember,
 } from './interfaces';
@@ -200,57 +198,18 @@ function topPortNode(group: TopPortTargets): GraphNode {
     };
 }
 
-function instanceTargets(
-    resolution: ArchDesignResolution
+function targetsByNode(
+    resolution: ArchDesignResolution,
+    kind: ResolvedArchDesignEndpointTarget['kind']
 ): ReadonlyMap<string, readonly ResolvedArchDesignEndpointTarget[]> {
     const mutable = new Map<string, ResolvedArchDesignEndpointTarget[]>();
     for (const target of resolution.endpointTargets) {
-        if (target.kind !== 'instance') continue;
+        if (target.kind !== kind) continue;
         const targets = mutable.get(target.nodeId);
         if (targets) targets.push(target);
         else mutable.set(target.nodeId, [target]);
     }
     return mutable;
-}
-
-function constantNode(
-    item: ResolvedArchDesignDefault,
-    target: ResolvedArchDesignEndpointTarget
-): GraphNode {
-    const nodeId = `default:${item.identity}`;
-    return {
-        id: nodeId,
-        kind: 'constant',
-        label: item.expression,
-        pins: [{
-            id: `${nodeId}:value`,
-            name: 'value',
-            direction: 'driver',
-            width: cloneWidth(target.width),
-            readOnly: true,
-        }],
-        readOnly: true,
-    };
-}
-
-function interfaceDefaultNode(
-    connection: ResolvedArchDesignInterfaceConnection,
-    item: ResolvedArchDesignInterfaceConnection['defaults'][number]
-): GraphNode {
-    const nodeId = `default:interface:${connection.connection.name}:${item.member}`;
-    return {
-        id: nodeId,
-        kind: 'constant',
-        label: item.expression,
-        pins: [{
-            id: `${nodeId}:value`,
-            name: 'value',
-            direction: 'driver',
-            width: cloneWidth(item.receiver.width),
-            readOnly: true,
-        }],
-        readOnly: true,
-    };
 }
 
 function selectNetworkWidth(widths: readonly WidthValue[]): WidthValue {
@@ -285,9 +244,6 @@ export function projectArchDesignGraph(
 ): ArchDesignGraphProjection {
     const resolution = resolveArchDesign(design, definitions, options.interfaceCatalog);
     const validation = projectValidation(resolution);
-    const targetByIdentity = new Map(
-        resolution.endpointTargets.map(target => [target.identity, target])
-    );
     const locations = new Map<string, PinLocation>();
     const nodes: GraphNode[] = [];
 
@@ -371,7 +327,7 @@ export function projectArchDesignGraph(
             : state.endpoint.members.map(member => member.targetIdentity));
     }
 
-    const targetsByInstance = instanceTargets(resolution);
+    const targetsByInstance = targetsByNode(resolution, 'instance');
     for (const item of resolution.instances) {
         const nodeId = item.nodeId;
         const targets = targetsByInstance.get(nodeId) ?? [];
@@ -409,6 +365,19 @@ export function projectArchDesignGraph(
         }, identities);
     }
 
+    const targetsByLogic = targetsByNode(resolution, 'logic');
+    for (const item of resolution.logic) {
+        const targets = targetsByLogic.get(item.nodeId) ?? [];
+        addNode({
+            id: item.nodeId,
+            kind: item.logic.operation === 'constant' ? 'constant' : 'expression',
+            label: item.logic.name,
+            subtitle: item.logic.operation,
+            pins: targets.map(target => graphPin(target, target.port)),
+            readOnly: false,
+        }, targets.map(target => target.identity));
+    }
+
     for (const port of outputPorts) {
         const node = topPortNode(port);
         const identities = node.pins.map(pin => pin.id);
@@ -421,46 +390,12 @@ export function projectArchDesignGraph(
             : state.endpoint.members.map(member => member.targetIdentity));
     }
 
-    const connectedDefaultIdentities = new Set(
-        resolution.connectionDefaultSources.map(source => source.default.identity)
-    );
-    const connectedEndpointIdentities = new Set(resolution.connections.flatMap(connection =>
-        connection.endpoints.map(endpoint => endpoint.identity)
-    ));
-    const projectedDefaults = resolution.effectiveDefaults.filter(item =>
-        connectedDefaultIdentities.has(item.identity)
-        || !connectedEndpointIdentities.has(item.identity)
-    );
-    for (const item of projectedDefaults) {
-        const target = targetByIdentity.get(item.identity);
-        if (!target) continue;
-        const node = constantNode(item, target);
-        nodes.push(node);
-        locations.set(`default:${item.identity}`, {
-            nodeId: node.id,
-            pinId: node.pins[0].id,
-        });
-    }
-
-    const defaultByConnection = new Map<number, ResolvedArchDesignDefault>();
-    for (const source of resolution.connectionDefaultSources) {
-        defaultByConnection.set(source.connectionIndex, source.default);
-    }
-    const defaultOnly = projectedDefaults.filter(item =>
-        !connectedEndpointIdentities.has(item.identity)
-    );
-
     const networks: SchematicNetwork[] = [];
     for (const connection of resolution.connections) {
         const endpoints: NetworkEndpoint[] = [];
         for (const item of connection.endpoints) {
             const location = locations.get(item.identity);
             if (location) endpoints.push(endpoint(location, item.role));
-        }
-        const item = defaultByConnection.get(connection.index);
-        if (item) {
-            const location = locations.get(`default:${item.identity}`);
-            if (location) endpoints.push(endpoint(location, 'driver'));
         }
         networks.push({
             id: connection.networkId,
@@ -469,23 +404,6 @@ export function projectArchDesignGraph(
             endpoints,
         });
     }
-
-    for (const item of defaultOnly) {
-        const receiver = locations.get(item.identity);
-        const driver = locations.get(`default:${item.identity}`);
-        const target = targetByIdentity.get(item.identity);
-        if (!receiver || !driver || !target) continue;
-        networks.push({
-            id: `network:default:${item.identity}`,
-            name: item.endpoint,
-            width: cloneWidth(target.width),
-            endpoints: [
-                endpoint(receiver, target.role),
-                endpoint(driver, 'driver'),
-            ],
-        });
-    }
-
 
     for (const connection of resolution.interfaces.connections) {
         const collapsed = connection.master !== undefined
@@ -528,20 +446,12 @@ export function projectArchDesignGraph(
                 member: item.member,
                 width: item.receiver.width,
                 endpoints: [
-                    [`default:interface:${connection.connection.name}:${item.member}`, 'driver' as const],
                     [item.receiver.targetIdentity, 'load' as const],
                 ] as const,
                 order: item.receiver.declarationOrder,
             })),
         ].sort((left, right) => left.order - right.order
             || compareCodeUnits(left.member, right.member));
-        for (const item of connection.defaults) {
-            const receiver = locations.get(item.receiver.targetIdentity);
-            if (!receiver) continue;
-            const node = interfaceDefaultNode(connection, item);
-            nodes.push(node);
-            locations.set(node.id, { nodeId: node.id, pinId: node.pins[0].id });
-        }
         for (const member of members) {
             const endpoints = member.endpoints.flatMap(([identity, role]) => {
                 const location = locations.get(identity);
