@@ -1138,7 +1138,7 @@ async function testInvalidTextRetainsLastValidGraph(): Promise<void> {
 async function testUnsupportedSchemaIsReadOnly(): Promise<void> {
     const source = JSON.stringify({
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 2,
+        schemaVersion: 3,
         module: 'future',
     });
     const harness = await createHarness(source);
@@ -1146,7 +1146,7 @@ async function testUnsupportedSchemaIsReadOnly(): Promise<void> {
         const state = harness.messages.find(event => event.type === 'archDesignState');
         assert.ok(state?.type === 'archDesignState' && state.status === 'readonly');
         if (state?.type === 'archDesignState' && state.status === 'readonly') {
-            assert.strictEqual(state.schemaVersion, 2);
+            assert.strictEqual(state.schemaVersion, 3);
         }
         assert.strictEqual(harness.messages.some(event => event.type === 'graph'), false);
         harness.send({

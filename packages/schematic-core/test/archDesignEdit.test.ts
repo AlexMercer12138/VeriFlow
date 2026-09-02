@@ -709,3 +709,82 @@ test('cascades instance and interface-port rename and removal references', () =>
         'interface:instance:u_new:M_AXI': true,
     });
 });
+
+test('adds updates and removes a Logic Utility with every stable reference', () => {
+    const source = designOf({
+        ports: [{ name: 'source', direction: 'input', width: 8 }],
+        logic: [{ name: 'u_old', operation: 'and', width: 8, inputCount: 2 }],
+        connections: [{
+            name: 'shared',
+            endpoints: [
+                { kind: 'port', port: 'source' },
+                { kind: 'logic', logic: 'u_old', port: 'in0' },
+            ],
+            defaults: { 'u_old.in0': "8'h11" },
+        }, {
+            name: 'output_only',
+            endpoints: [{ kind: 'logic', logic: 'u_old', port: 'out' }],
+        }],
+        defaults: { 'u_old.in1': "8'h22" },
+        presentation: { nodes: { 'logic:u_old': { column: 1, order: 0 } } },
+    });
+
+    const added = applyArchDesignEdit(source, {
+        type: 'addLogic',
+        logic: { name: 'u_constant_0', operation: 'constant', width: 8, expression: "8'h5a" },
+    });
+    const updated = applyArchDesignEdit(added, {
+        type: 'updateLogic',
+        name: 'u_old',
+        logic: { name: 'u_new', operation: 'or', width: 8, inputCount: 3 },
+    });
+
+    assert.deepEqual(updated.logic, [
+        { name: 'u_new', operation: 'or', width: 8, inputCount: 3 },
+        { name: 'u_constant_0', operation: 'constant', width: 8, expression: "8'h5a" },
+    ]);
+    assert.deepEqual(updated.connections[0].endpoints[1], {
+        kind: 'logic', logic: 'u_new', port: 'in0',
+    });
+    assert.deepEqual(plainRecord(updated.connections[0].defaults), {
+        'u_new.in0': "8'h11",
+    });
+    assert.deepEqual(plainRecord(updated.defaults), { 'u_new.in1': "8'h22" });
+    assert.deepEqual(plainRecord(updated.presentation.nodes), {
+        'logic:u_new': { column: 1, order: 0 },
+    });
+
+    const removed = applyArchDesignEdit(updated, { type: 'removeLogic', name: 'u_new' });
+    assert.deepEqual(removed.logic, [
+        { name: 'u_constant_0', operation: 'constant', width: 8, expression: "8'h5a" },
+    ]);
+    assert.deepEqual(removed.connections, [{
+        name: 'shared',
+        endpoints: [{ kind: 'port', port: 'source' }],
+    }]);
+    assert.deepEqual(plainRecord(removed.defaults), {});
+    assert.deepEqual(plainRecord(removed.presentation.nodes), {});
+    assert.equal(source.logic[0].name, 'u_old');
+});
+
+test('keeps instance port and Logic Utility names in one namespace', () => {
+    const source = designOf({
+        ports: [{ name: 'public_name', direction: 'input' }],
+        instances: [{ name: 'instance_name', module: 'core' }],
+        logic: [{ name: 'logic_name', operation: 'not', width: 1 }],
+    });
+
+    assert.throws(() => applyArchDesignEdit(source, {
+        type: 'addLogic',
+        logic: { name: 'public_name', operation: 'not', width: 1 },
+    }), /already exists/);
+    assert.throws(() => applyArchDesignEdit(source, {
+        type: 'updateLogic',
+        name: 'logic_name',
+        logic: { name: 'instance_name', operation: 'not', width: 1 },
+    }), /already exists/);
+    assert.throws(() => applyArchDesignEdit(source, {
+        type: 'addPort',
+        port: { name: 'logic_name', direction: 'output' },
+    }), /already exists/);
+});

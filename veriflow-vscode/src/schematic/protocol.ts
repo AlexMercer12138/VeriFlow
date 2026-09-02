@@ -10,11 +10,13 @@ import type {
     ArchDesignInterfaceConnection,
     ArchDesignInterfaceEndpoint,
     ArchDesignInterfaceSnapshot,
+    ArchDesignLogic,
     ArchDesignModuleDefinition,
     ArchDesignPort,
     ArchDesignPresentation,
     ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
+import { isSafeDefaultExpression } from '@veriflow/schematic-core/arch-design';
 import type { ArchDesignInspectorData } from '../archDesign/editorSupport';
 
 import type { SourceSpan } from '../core/hdl/model';
@@ -222,6 +224,10 @@ function normalizeEndpoint(value: unknown): ArchDesignEndpoint | undefined {
         const instance = ownValue(value, 'instance');
         return identifier(instance) ? { kind, instance, port } : undefined;
     }
+    if (kind === 'logic') {
+        const logic = ownValue(value, 'logic');
+        return identifier(logic) ? { kind, logic, port } : undefined;
+    }
     if (kind !== 'port') return undefined;
     const signal = ownValue(value, 'signal');
     return signal === undefined
@@ -229,6 +235,91 @@ function normalizeEndpoint(value: unknown): ArchDesignEndpoint | undefined {
         : signal === 'value' || signal === 'i' || signal === 'o' || signal === 't'
             ? { kind, port, signal }
             : undefined;
+}
+
+function normalizeRequiredWidth(value: unknown): ArchDesignPort['width'] | undefined {
+    const width = normalizeWidth(value);
+    return width === false || width === undefined ? undefined : width;
+}
+
+function normalizePositiveInteger(
+    value: unknown,
+    minimum: number,
+    maximum = Number.MAX_SAFE_INTEGER
+): number | undefined {
+    return typeof value === 'number'
+        && Number.isSafeInteger(value)
+        && value >= minimum
+        && value <= maximum
+        ? value
+        : undefined;
+}
+
+function normalizeLogic(value: unknown): ArchDesignLogic | undefined {
+    if (!isRecord(value)) return undefined;
+    const name = ownValue(value, 'name');
+    const operation = ownValue(value, 'operation');
+    if (!identifier(name) || typeof operation !== 'string') return undefined;
+    if (operation === 'constant') {
+        const width = normalizeRequiredWidth(ownValue(value, 'width'));
+        const expression = ownValue(value, 'expression');
+        return width && typeof expression === 'string'
+            && expression.length <= MAX_AD_STRING_LENGTH
+            && isSafeDefaultExpression(expression)
+            ? { name, operation, width, expression }
+            : undefined;
+    }
+    if (operation === 'not' || operation === 'mux') {
+        const width = normalizeRequiredWidth(ownValue(value, 'width'));
+        return width ? { name, operation, width } : undefined;
+    }
+    if (operation === 'and' || operation === 'or' || operation === 'xor'
+        || operation === 'nand' || operation === 'nor' || operation === 'xnor') {
+        const width = normalizeRequiredWidth(ownValue(value, 'width'));
+        const inputCount = normalizePositiveInteger(ownValue(value, 'inputCount'), 2, 8);
+        return width && inputCount ? { name, operation, width, inputCount } : undefined;
+    }
+    if (operation === 'concat') {
+        const candidates = ownValue(value, 'inputWidths');
+        if (!Array.isArray(candidates) || candidates.length < 2 || candidates.length > 8) {
+            return undefined;
+        }
+        const inputWidths = candidates.map(normalizeRequiredWidth);
+        return inputWidths.every((width): width is NonNullable<typeof width> =>
+            width !== undefined)
+            ? { name, operation, inputWidths }
+            : undefined;
+    }
+    if (operation === 'slice') {
+        const inputWidth = normalizeRequiredWidth(ownValue(value, 'inputWidth'));
+        const msb = normalizePositiveInteger(ownValue(value, 'msb'), 0);
+        const lsb = normalizePositiveInteger(ownValue(value, 'lsb'), 0);
+        return inputWidth && msb !== undefined && lsb !== undefined
+            && msb >= lsb && (typeof inputWidth !== 'number' || msb < inputWidth)
+            ? { name, operation, inputWidth, msb, lsb }
+            : undefined;
+    }
+    if (operation === 'replicate') {
+        const inputWidth = normalizeRequiredWidth(ownValue(value, 'inputWidth'));
+        const count = normalizePositiveInteger(ownValue(value, 'count'), 1, 65_536);
+        return inputWidth && count ? { name, operation, inputWidth, count } : undefined;
+    }
+    if (operation === 'zero-extend' || operation === 'sign-extend') {
+        const inputWidth = normalizeRequiredWidth(ownValue(value, 'inputWidth'));
+        const outputWidth = normalizeRequiredWidth(ownValue(value, 'outputWidth'));
+        return inputWidth && outputWidth
+            && (typeof inputWidth !== 'number'
+                || typeof outputWidth !== 'number'
+                || outputWidth >= inputWidth)
+            ? { name, operation, inputWidth, outputWidth }
+            : undefined;
+    }
+    if (operation === 'reduce-and' || operation === 'reduce-or'
+        || operation === 'reduce-xor') {
+        const inputWidth = normalizeRequiredWidth(ownValue(value, 'inputWidth'));
+        return inputWidth ? { name, operation, inputWidth } : undefined;
+    }
+    return undefined;
 }
 
 function normalizeInterfaceEndpoint(value: unknown): ArchDesignInterfaceEndpoint | undefined {
@@ -393,6 +484,19 @@ function normalizeArchDesignEdit(value: unknown): ArchDesignEdit | undefined {
                 parameter,
                 ...(parameterValue === undefined ? {} : { value: parameterValue }),
             };
+        }
+        case 'addLogic': {
+            const logic = normalizeLogic(ownValue(value, 'logic'));
+            return logic ? { type, logic } : undefined;
+        }
+        case 'updateLogic': {
+            const name = ownValue(value, 'name');
+            const logic = normalizeLogic(ownValue(value, 'logic'));
+            return identifier(name) && logic ? { type, name, logic } : undefined;
+        }
+        case 'removeLogic': {
+            const name = ownValue(value, 'name');
+            return identifier(name) ? { type, name } : undefined;
         }
         case 'addPort': {
             const port = normalizePort(ownValue(value, 'port'));

@@ -206,6 +206,47 @@ function testArchDesignCommands(): void {
     assert.deepStrictEqual(parseWebviewCommand({
         type: 'exportArchDesign', revision: 'ad:4', ignored: true,
     }), { type: 'exportArchDesign', revision: 'ad:4' });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'addLogic',
+            logic: {
+                name: 'u_concat_0',
+                operation: 'concat',
+                inputWidths: [4, { expression: 'WIDTH' }],
+                ignored: true,
+            },
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'addLogic',
+            logic: {
+                name: 'u_concat_0',
+                operation: 'concat',
+                inputWidths: [4, { expression: 'WIDTH' }],
+            },
+        },
+    });
+    assert.deepStrictEqual(parseWebviewCommand({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'connect',
+            source: { kind: 'logic', logic: 'u_constant_0', port: 'out' },
+            target: { kind: 'logic', logic: 'u_not_0', port: 'in' },
+        },
+    }), {
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'connect',
+            source: { kind: 'logic', logic: 'u_constant_0', port: 'out' },
+            target: { kind: 'logic', logic: 'u_not_0', port: 'in' },
+        },
+    });
 
     for (const value of [
         { type: 'editArchDesign', revision: '', edit: { type: 'removePort', name: 'clk' } },
@@ -246,6 +287,35 @@ function testArchDesignCommands(): void {
                 instance: 'u_dma',
                 interface: 'M_AXI',
                 role: 'unknown',
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'addLogic',
+                logic: { name: 'bad', operation: 'constant', width: 8, expression: 'call();' },
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'updateLogic',
+                name: 'gate',
+                logic: { name: 'gate', operation: 'and', width: 8, inputCount: 9 },
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'addLogic',
+                logic: { name: 'slice', operation: 'slice', inputWidth: 8, msb: 2, lsb: 4 },
+            },
+        },
+        {
+            type: 'editArchDesign', revision: 'ad:4',
+            edit: {
+                type: 'addLogic',
+                logic: { name: 'unknown', operation: 'shift', width: 8 },
             },
         },
         { type: 'exportArchDesign', revision: 4 },

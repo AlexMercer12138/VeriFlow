@@ -247,7 +247,7 @@ function testArchDesignInspectorProjection(): void {
     const graph = inspectorGraph();
     const design: ArchDesign = {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'inspector_top',
         ports: [{ name: 'clk', direction: 'input' }, {
             name: 'shared',
@@ -259,6 +259,7 @@ function testArchDesignInspectorProjection(): void {
             module: 'core',
             parameters: { WIDTH: 8 },
         }, { name: 'u_sink', module: 'sink' }],
+        logic: [],
         connections: [{
             name: 'clk',
             endpoints: [{ kind: 'port', port: 'clk' }, {
@@ -523,13 +524,14 @@ function interfaceFixture() {
     }];
     const design: ArchDesign = {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'interface_top',
         ports: [],
         instances: [
             { name: 'u_master', module: 'master' },
             { name: 'u_slave', module: 'slave' },
         ],
+        logic: [],
         connections: [],
         interfacePorts: [],
         interfaceOverrides: {},

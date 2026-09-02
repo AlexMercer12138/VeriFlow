@@ -383,6 +383,7 @@ function promotedDirection(pin: GraphPin): ArchDesignPort['direction'] {
 
 function endpointLabel(endpoint: ArchDesignEndpoint): string {
     if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    if (endpoint.kind === 'logic') return `${endpoint.logic}.${endpoint.port}`;
     return endpoint.signal === undefined
         ? endpoint.port
         : `${endpoint.port}.${endpoint.signal}`;
@@ -392,11 +393,13 @@ function endpointIdentity(endpoint: ArchDesignEndpoint): string {
     if (endpoint.kind === 'instance') {
         return `instance:${endpoint.instance}:${endpoint.port}`;
     }
+    if (endpoint.kind === 'logic') return `logic:${endpoint.logic}:${endpoint.port}`;
     return `port:${endpoint.port}:${endpoint.signal ?? 'value'}`;
 }
 
 function endpointDefaultKey(endpoint: ArchDesignEndpoint): string {
     if (endpoint.kind === 'instance') return `${endpoint.instance}.${endpoint.port}`;
+    if (endpoint.kind === 'logic') return `${endpoint.logic}.${endpoint.port}`;
     return `${endpoint.port}.${endpoint.signal ?? 'value'}`;
 }
 

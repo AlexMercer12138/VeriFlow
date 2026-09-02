@@ -671,7 +671,7 @@ test('uses an absolute diagnostic path for a design outside the working director
 
 test('reports unsupported Arch Design schemas as a CLI diagnostic', async () => {
     await withTemporaryDirectory(async cwd => {
-        writeDesign(cwd, archDesign({ schemaVersion: 2 }));
+        writeDesign(cwd, archDesign({ schemaVersion: 3 }));
 
         const result = await invoke(['ad', 'validate', 'design/soc.ad'], cwd);
 
@@ -679,7 +679,7 @@ test('reports unsupported Arch Design schemas as a CLI diagnostic', async () => 
             exitCode: 1,
             stdout: '',
             stderr: 'design/soc.ad:$.schemaVersion [AD_SCHEMA_UNSUPPORTED] '
-                + 'Arch Design schema version 2 is not supported\n',
+                + 'Arch Design schema version 3 is not supported\n',
         });
     });
 });
