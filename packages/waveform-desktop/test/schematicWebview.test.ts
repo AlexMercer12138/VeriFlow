@@ -4211,6 +4211,301 @@ test('Arch Design generates source-aware instance names', {
     }
 });
 
+test('Arch Design keyboard shortcuts', {
+    timeout: 45_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        await page.evaluate(() => {
+            const state = window as unknown as { __veriflowHandledKeys: string[] };
+            state.__veriflowHandledKeys = [];
+            document.addEventListener('keydown', event => {
+                if (event.defaultPrevented) state.__veriflowHandledKeys.push(event.key);
+            });
+        });
+
+        const fixture = archDesignInteractionFixture();
+        const source = {
+            ...fixture.graph.nodes[0],
+            definitionKey: 'module:file:///source.sv:0',
+        };
+        const sink = {
+            ...fixture.graph.nodes[1],
+            definitionKey: 'module:file:///sink.sv:0',
+        };
+        const stages = Array.from({ length: 20 }, (_, index) => ({
+            id: `instance:stage_${index}`,
+            kind: 'instance',
+            label: `stage_${index}`,
+            subtitle: 'stage',
+            definitionKey: `module:file:///stage_${index}.sv:0`,
+            pins: [{
+                id: `instance:stage_${index}:in`,
+                name: 'in',
+                direction: 'load',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }, {
+                id: `instance:stage_${index}:out`,
+                name: 'out',
+                direction: 'driver',
+                width: { kind: 'known', bits: 1 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        }));
+        fixture.graph.nodes = [source, ...stages, sink];
+        fixture.graph.networks = Array.from({ length: stages.length + 1 }, (_, index) => {
+            const sourceNode = index === 0 ? source : stages[index - 1];
+            const targetNode = index === stages.length ? sink : stages[index];
+            const sourcePin = index === 0 ? source.pins[0] : sourceNode.pins[1];
+            const targetPin = index === stages.length ? sink.pins[0] : targetNode.pins[0];
+            return {
+                id: `network:shortcut_${index}`,
+                name: `shortcut_${index}`,
+                width: { kind: 'known', bits: 1 },
+                endpoints: [
+                    { nodeId: sourceNode.id, pinId: sourcePin.id, role: 'driver' },
+                    { nodeId: targetNode.id, pinId: targetPin.id, role: 'load' },
+                ],
+            };
+        });
+        fixture.layout.placement.nodes['instance:u_sink'] = {
+            column: stages.length + 1,
+            order: 0,
+            yOffset: 160,
+            fixed: true,
+        };
+        fixture.layout.viewport.zoom = 2;
+        await publishArchDesignFixture(page, 'fixture:shortcuts:1', fixture);
+        const sourceNode = page.locator('.x6-node[data-cell-id="instance:u_source"]');
+        await sourceNode.waitFor();
+
+        assert.equal(await page.locator('#delete-button').isDisabled(), true);
+        await page.keyboard.press('Backspace');
+        assert.deepEqual(await archDesignEditMessages(page), []);
+
+        await page.keyboard.press('a');
+        await page.locator('#add-instance-dialog').waitFor({ state: 'visible' });
+        await page.keyboard.press('Escape');
+        await page.locator('#add-instance-dialog').waitFor({ state: 'hidden' });
+        assert.equal(
+            await page.evaluate(() => document.activeElement?.id),
+            'add-instance-button'
+        );
+
+        await page.keyboard.press('p');
+        await page.locator('#add-port-dialog').waitFor({ state: 'visible' });
+        await page.keyboard.press('a');
+        assert.equal(await page.locator('#add-instance-dialog').isVisible(), false);
+        await page.keyboard.press('Escape');
+        await page.locator('#add-port-dialog').waitFor({ state: 'hidden' });
+
+        await page.keyboard.press('c');
+        assert.equal(
+            await page.locator('#connect-button').getAttribute('aria-pressed'),
+            'true'
+        );
+        const sourcePin = page.locator(
+            '.x6-node[data-cell-id="instance:u_source"] '
+            + '.x6-port-body[port="instance:u_source:out"]'
+        );
+        await sourcePin.click();
+        const connectionPreview = page.locator(
+            '#canvas .x6-edge[data-cell-id="veriflow:connection-preview"]'
+        );
+        await connectionPreview.waitFor({ state: 'attached' });
+        await page.keyboard.press('Escape');
+        await connectionPreview.waitFor({ state: 'detached' });
+        await page.keyboard.press('c');
+        assert.equal(
+            await page.locator('#connect-button').getAttribute('aria-pressed'),
+            'false'
+        );
+
+        await page.evaluate(() => {
+            const controls: HTMLElement[] = [
+                document.createElement('input'),
+                document.createElement('select'),
+                document.createElement('textarea'),
+                document.createElement('div'),
+            ];
+            controls.forEach((control, index) => {
+                control.id = `shortcut-editable-${index}`;
+                if (control instanceof HTMLDivElement) control.contentEditable = 'true';
+                document.body.append(control);
+            });
+        });
+        await page.locator('#shortcut-editable-0').focus();
+        await page.keyboard.press('i');
+        assert.equal(
+            await page.locator('#inspector-toggle-button').getAttribute('aria-expanded'),
+            'true'
+        );
+        await page.locator('#shortcut-editable-1').focus();
+        await page.keyboard.press('c');
+        assert.equal(
+            await page.locator('#connect-button').getAttribute('aria-pressed'),
+            'false'
+        );
+        await page.locator('#shortcut-editable-2').focus();
+        await page.keyboard.press('a');
+        assert.equal(await page.locator('#add-instance-dialog').isVisible(), false);
+        await page.locator('#shortcut-editable-3').focus();
+        await page.keyboard.press('p');
+        assert.equal(await page.locator('#add-port-dialog').isVisible(), false);
+        await page.evaluate(() => {
+            document.querySelectorAll('[id^="shortcut-editable-"]').forEach(
+                control => control.remove()
+            );
+            document.body.focus();
+        });
+
+        await page.keyboard.press('i');
+        await page.locator('#inspector').waitFor({ state: 'hidden' });
+        await page.keyboard.press('i');
+        await page.locator('#inspector').waitFor({ state: 'visible' });
+
+        const viewportScale = () => page.locator(
+            '#canvas .x6-graph-svg-viewport'
+        ).evaluate(element => (
+            (element as SVGGraphicsElement).transform.baseVal.consolidate()?.matrix.a
+        ));
+        assert.equal(await viewportScale(), 2);
+        await page.keyboard.press('0');
+        assert.equal(await viewportScale(), 1);
+
+        assert.equal(await page.locator('#minimap-button').isEnabled(), true);
+        await page.keyboard.press('m');
+        assert.equal(
+            await page.locator('#minimap-button').getAttribute('aria-pressed'),
+            'true'
+        );
+        await page.keyboard.press('m');
+        assert.equal(
+            await page.locator('#minimap-button').getAttribute('aria-pressed'),
+            'false'
+        );
+
+        await page.keyboard.press('f');
+        assert.ok(await page.evaluate(() => (
+            (window as unknown as { __veriflowHandledKeys: string[] })
+                .__veriflowHandledKeys.includes('f')
+        )));
+        await page.keyboard.press('0');
+        assert.equal(await viewportScale(), 1);
+
+        const sinkTransform = await page.locator(
+            '.x6-node[data-cell-id="instance:u_sink"]'
+        ).getAttribute('transform');
+        await page.keyboard.press('r');
+        await page.waitForFunction(previous => (
+            document.querySelector(
+                '.x6-node[data-cell-id="instance:u_sink"]'
+            )?.getAttribute('transform') !== previous
+        ), sinkTransform);
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.some(message => message.type === 'saveLayout')
+        ));
+        await page.evaluate(() => {
+            window.dispatchEvent(new MessageEvent('message', { data: {
+                type: 'archDesignLayoutSaved',
+                revision: 'fixture:shortcuts:2',
+            } }));
+            document.body.focus();
+        });
+
+        await page.keyboard.press('Control+f');
+        await page.locator('#search-controls').waitFor({ state: 'visible' });
+        assert.equal(
+            await page.evaluate(() => document.activeElement?.id),
+            'search-input'
+        );
+        await page.locator('#search-input').fill('u_');
+        await page.locator('#selection-status').getByText(
+            'instance: u_source (1/2)',
+            { exact: true }
+        ).waitFor();
+        await page.keyboard.press('Enter');
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: u_sink (2/2)'
+        );
+        await page.keyboard.press('Shift+Enter');
+        assert.equal(
+            await page.locator('#selection-status').textContent(),
+            'instance: u_source (1/2)'
+        );
+        await page.keyboard.press('a');
+        assert.equal(await page.locator('#add-instance-dialog').isVisible(), false);
+        await page.keyboard.press('Escape');
+        await page.locator('#search-controls').waitFor({ state: 'hidden' });
+
+        await page.evaluate(() => document.body.focus());
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.some(message => message.type === 'openDefinition')
+        ));
+        const navigationMessage = await page.evaluate(() => (
+            (window as unknown as { __veriflowMessages: Array<{
+                type?: string;
+                definitionKey?: string;
+            }> }).__veriflowMessages.find(message => message.type === 'openDefinition')
+        ));
+        assert.deepEqual(navigationMessage, {
+            type: 'openDefinition',
+            definitionKey: 'module:file:///source.sv:0',
+        });
+
+        await page.keyboard.press('e');
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.some(message => message.type === 'exportArchDesign')
+        ));
+        await page.keyboard.press('Delete');
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{
+                edit?: { type?: string };
+            }> }).__veriflowMessages.some(message => message.edit?.type === 'removeInstance')
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'removeInstance',
+            name: 'u_source',
+        });
+
+        const exportCount = await page.evaluate(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.filter(message => message.type === 'exportArchDesign').length
+        ));
+        await page.evaluate(() => document.body.focus());
+        await page.keyboard.press('e');
+        await page.keyboard.press('a');
+        assert.equal(await page.locator('#add-instance-dialog').isVisible(), false);
+        assert.equal(await page.evaluate(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.filter(message => message.type === 'exportArchDesign').length
+        )), exportCount);
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
 test('Arch Design selection stays local and layout acknowledgement preserves cells', {
     timeout: 45_000,
 }, async () => {

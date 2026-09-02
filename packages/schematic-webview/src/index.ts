@@ -568,7 +568,9 @@ function createRenderedNode(
                 tabindex: 0,
                 role: 'link',
                 'aria-label': `${model.kind}: ${model.label}`,
-                'aria-keyshortcuts': model.definitionKey ? 'Enter Shift+Enter' : 'Enter',
+                'aria-keyshortcuts': archDesignDocument && model.definitionKey
+                    ? 'Enter'
+                    : model.definitionKey ? 'Enter Shift+Enter' : 'Enter',
             },
             body: {
                 strokeDasharray: model.readOnly ? '4 2' : undefined,
@@ -2195,18 +2197,23 @@ dom.moduleSelector.addEventListener('change', () => {
     post({ type: 'selectModule', moduleKey: selectedModuleKey });
 });
 
-dom.fitButton.addEventListener('click', () => {
+function fitSchematic(): boolean {
+    if (dom.fitButton.disabled) return false;
     graph.zoomToFit({ padding: 24, maxScale: 1 });
     updateViewportFromGraph();
     updateMinimapAvailability();
-});
+    return true;
+}
 
-dom.zoomResetButton.addEventListener('click', () => {
+function resetSchematicZoom(): boolean {
+    if (dom.zoomResetButton.disabled) return false;
     graph.zoomTo(1);
     updateViewportFromGraph();
-});
+    return true;
+}
 
-dom.relayoutButton.addEventListener('click', () => {
+function relayoutSchematic(): boolean {
+    if (dom.relayoutButton.disabled) return false;
     if (currentGraph && currentLayout && archDesignDocument) {
         currentLayout.placement = createPlacement(
             currentGraph,
@@ -2222,10 +2229,10 @@ dom.relayoutButton.addEventListener('click', () => {
             revision: currentRevision,
         });
     }
-});
+    return currentGraph !== undefined;
+}
 
-dom.searchButton.addEventListener('click', () => {
-    const opening = dom.searchControls.hidden;
+function setSearchOpen(opening: boolean): void {
     dom.searchControls.hidden = !opening;
     dom.searchButton.setAttribute('aria-expanded', String(opening));
     if (opening) {
@@ -2235,7 +2242,31 @@ dom.searchButton.addEventListener('click', () => {
         dom.searchInput.value = '';
         runSearch('', true);
     }
-});
+}
+
+function toggleSearch(): boolean {
+    if (dom.searchButton.disabled) return false;
+    setSearchOpen(dom.searchControls.hidden);
+    return true;
+}
+
+function focusSearch(): boolean {
+    if (dom.searchButton.disabled) return false;
+    setSearchOpen(true);
+    return true;
+}
+
+function closeSearch(): boolean {
+    if (dom.searchControls.hidden) return false;
+    setSearchOpen(false);
+    dom.searchButton.focus();
+    return true;
+}
+
+dom.fitButton.addEventListener('click', fitSchematic);
+dom.zoomResetButton.addEventListener('click', resetSchematicZoom);
+dom.relayoutButton.addEventListener('click', relayoutSchematic);
+dom.searchButton.addEventListener('click', toggleSearch);
 
 dom.searchInput.addEventListener('input', () => {
     runSearch(dom.searchInput.value, true);
@@ -2246,11 +2277,8 @@ dom.searchInput.addEventListener('keydown', event => {
         event.preventDefault();
         showSearchMatch(event.shiftKey ? searchIndex - 1 : searchIndex + 1);
     } else if (event.key === 'Escape') {
-        dom.searchControls.hidden = true;
-        dom.searchButton.setAttribute('aria-expanded', 'false');
-        dom.searchInput.value = '';
-        runSearch('', true);
-        dom.searchButton.focus();
+        event.preventDefault();
+        closeSearch();
     }
 });
 
@@ -2262,23 +2290,31 @@ dom.searchNextButton.addEventListener('click', () => {
     showSearchMatch(searchIndex + 1);
 });
 
-dom.minimapButton.addEventListener('click', () => {
-    if (!currentLayout || !minimapAvailable) return;
+function toggleMinimap(): boolean {
+    if (dom.minimapButton.disabled || !currentLayout || !minimapAvailable) return false;
     currentLayout.minimap = !currentLayout.minimap;
     setMinimapVisibility();
     scheduleLayoutSave();
-});
+    return true;
+}
 
-dom.inspectorToggleButton.addEventListener('click', () => {
+function toggleInspector(): boolean {
     inspectorExpanded = !inspectorExpanded;
     updateInspectorToggle();
-});
+    return true;
+}
+
+dom.minimapButton.addEventListener('click', toggleMinimap);
+dom.inspectorToggleButton.addEventListener('click', toggleInspector);
 
 function showDialog(dialog: HTMLDialogElement, firstControl: HTMLElement): void {
     if (!archDesignEditable || authoringPending) return;
     dialog.showModal();
     firstControl.focus();
 }
+
+dom.addInstanceDialog.addEventListener('close', () => dom.addInstanceButton.focus());
+dom.addPortDialog.addEventListener('close', () => dom.addPortButton.focus());
 
 function parsedPortWidth(value: string): number | { expression: string } | undefined {
     const trimmed = value.trim();
@@ -2330,11 +2366,15 @@ function updateAutomaticInstanceName(): void {
         : '';
 }
 
-dom.addInstanceButton.addEventListener('click', () => {
+function showAddInstanceDialog(): boolean {
+    if (dom.addInstanceButton.disabled) return false;
     instanceNameAutomatic = true;
     updateAutomaticInstanceName();
     showDialog(dom.addInstanceDialog, dom.instanceModuleSelect);
-});
+    return dom.addInstanceDialog.open;
+}
+
+dom.addInstanceButton.addEventListener('click', showAddInstanceDialog);
 
 dom.instanceModuleSelect.addEventListener('change', () => {
     if (instanceNameAutomatic) updateAutomaticInstanceName();
@@ -2344,34 +2384,45 @@ dom.instanceNameInput.addEventListener('input', () => {
     instanceNameAutomatic = false;
 });
 
-dom.addPortButton.addEventListener('click', () => {
+function showAddPortDialog(): boolean {
+    if (dom.addPortButton.disabled) return false;
     dom.portNameInput.value = '';
     dom.portDirectionSelect.value = 'input';
     dom.portWidthInput.value = '1';
     showDialog(dom.addPortDialog, dom.portNameInput);
-});
+    return dom.addPortDialog.open;
+}
 
-dom.connectButton.addEventListener('click', () => {
+function toggleConnectionMode(): boolean {
+    if (dom.connectButton.disabled) return false;
     const active = dom.connectButton.getAttribute('aria-pressed') !== 'true';
     dom.connectButton.setAttribute('aria-pressed', String(active));
     if (!active) cancelPendingConnection();
     refreshConnectionMagnets();
-});
+    return true;
+}
 
-dom.exportButton.addEventListener('click', () => {
-    if (!currentArchDesignState || !archDesignEditable || authoringPending) return;
+function exportRtl(): boolean {
+    if (dom.exportButton.disabled
+        || !currentArchDesignState || !archDesignEditable || authoringPending) return false;
     authoringPending = true;
     queuedArchDesignCommand = { type: 'export' };
     setAuthoringControls();
     if (currentGraph) layoutSaveScheduler.flushModule(currentGraph.moduleKey);
     drainArchDesignWrites();
-});
+    return true;
+}
 
-dom.deleteButton.addEventListener('click', () => {
-    if (currentArchDesignInspector?.deleteEdit) {
-        postArchDesignEdit(currentArchDesignInspector.deleteEdit);
-    }
-});
+function deleteSelection(): boolean {
+    if (dom.deleteButton.disabled || !currentArchDesignInspector?.deleteEdit) return false;
+    postArchDesignEdit(currentArchDesignInspector.deleteEdit);
+    return true;
+}
+
+dom.addPortButton.addEventListener('click', showAddPortDialog);
+dom.connectButton.addEventListener('click', toggleConnectionMode);
+dom.exportButton.addEventListener('click', exportRtl);
+dom.deleteButton.addEventListener('click', deleteSelection);
 
 dom.addInstanceForm.addEventListener('submit', event => {
     event.preventDefault();
@@ -2418,7 +2469,7 @@ dom.canvas.addEventListener('keydown', event => {
     if (!cell) return;
     const command = navigationCommandForCell(
         navigationTargetForCell(cell),
-        event.shiftKey
+        archDesignDocument || event.shiftKey
     );
     if (!command) return;
     event.preventDefault();
@@ -2545,10 +2596,75 @@ document.addEventListener('mousemove', event => {
     pendingConnectionPreview.setTarget(graph.clientToLocal(event.clientX, event.clientY));
 });
 
-document.addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || !pendingConnection) return;
-    event.preventDefault();
+function editableShortcutTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest(
+        'input, select, textarea, [contenteditable]:not([contenteditable="false"])'
+    ) !== null;
+}
+
+function closeActiveDialog(): boolean {
+    const dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
+    if (!dialog) return false;
+    dialog.close();
+    if (dialog === dom.addInstanceDialog) dom.addInstanceButton.focus();
+    if (dialog === dom.addPortDialog) dom.addPortButton.focus();
+    return true;
+}
+
+function openSelectedDefinition(): boolean {
+    const selected = selection.getSelectedCells();
+    const cell = selected[selected.length - 1];
+    if (!cell) return false;
+    const command = navigationCommandForCell(navigationTargetForCell(cell), true);
+    if (!command) return false;
+    post(command);
+    return true;
+}
+
+function cancelPendingConnectionShortcut(): boolean {
+    if (!pendingConnection) return false;
     cancelPendingConnection();
+    return true;
+}
+
+function handleArchDesignShortcut(key: string): boolean {
+    switch (key) {
+        case 'a': return showAddInstanceDialog();
+        case 'p': return showAddPortDialog();
+        case 'c': return toggleConnectionMode();
+        case 'e': return exportRtl();
+        case 'f': return fitSchematic();
+        case '0': return resetSchematicZoom();
+        case 'r': return relayoutSchematic();
+        case 'm': return toggleMinimap();
+        case 'i': return toggleInspector();
+        case 'delete':
+        case 'backspace': return deleteSelection();
+        case 'enter': return openSelectedDefinition();
+        default: return false;
+    }
+}
+
+document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.repeat) return;
+    if (event.key === 'Escape') {
+        const handled = closeActiveDialog()
+            || closeSearch()
+            || cancelPendingConnectionShortcut();
+        if (handled) event.preventDefault();
+        return;
+    }
+    if (document.querySelector('dialog[open]')) return;
+
+    const key = event.key.toLocaleLowerCase();
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'f') {
+        if (focusSearch()) event.preventDefault();
+        return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+        || !archDesignDocument || editableShortcutTarget(event.target)) return;
+
+    if (handleArchDesignShortcut(key)) event.preventDefault();
 });
 
 graph.on('blank:click', () => {

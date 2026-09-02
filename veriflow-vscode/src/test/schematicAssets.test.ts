@@ -961,6 +961,27 @@ async function testSchematicAssets(): Promise<void> {
             < html.indexOf('for="instance-name-input"'),
         'the Add instance dialog must select a module before naming the instance'
     );
+    for (const [buttonId, shortcut] of [
+        ['fit-button', 'F'],
+        ['zoom-reset-button', '0'],
+        ['relayout-button', 'R'],
+        ['search-button', 'Control+F Meta+F'],
+        ['search-previous-button', 'Shift+Enter'],
+        ['search-next-button', 'Enter'],
+        ['minimap-button', 'M'],
+        ['inspector-toggle-button', 'I'],
+        ['add-instance-button', 'A'],
+        ['add-port-button', 'P'],
+        ['connect-button', 'C'],
+        ['export-button', 'E'],
+        ['delete-button', 'Delete Backspace'],
+    ] as const) {
+        const button = html.match(new RegExp(`<button[^>]+id="${buttonId}"[^>]*>`))?.[0];
+        assert.ok(
+            button?.includes(`aria-keyshortcuts="${shortcut}"`),
+            `${buttonId} is missing aria-keyshortcuts="${shortcut}"`
+        );
+    }
     assert.doesNotMatch(html, /<svg\b/i);
 
     const css = fs.readFileSync(path.join(webDistRoot, 'index.css'), 'utf8');
@@ -1256,7 +1277,7 @@ async function testSchematicAssets(): Promise<void> {
     assert.match(webviewSource, /dom\.canvas\.addEventListener\('keydown'/);
     assert.match(
         webviewSource,
-        /navigationCommandForCell\(\s*navigationTargetForCell\(cell\),\s*event\.shiftKey\s*\)/
+        /navigationCommandForCell\(\s*navigationTargetForCell\(cell\),\s*archDesignDocument\s*\|\|\s*event\.shiftKey\s*\)/
     );
     assert.doesNotMatch(webviewSource, /post\(\{\s*type:\s*'revealSource'/);
     assert.doesNotMatch(webviewSource, /post\(\{\s*type:\s*'openDefinition'/);
