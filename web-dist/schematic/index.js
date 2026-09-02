@@ -45071,6 +45071,34 @@
   // node_modules/lucide/dist/esm/icons/chevron-up.mjs
   var ChevronUp = [["path", { d: "m18 15-6-6-6 6" }]];
 
+  // node_modules/lucide/dist/esm/icons/component.mjs
+  var Component = [
+    [
+      "path",
+      {
+        d: "M15.536 11.293a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.377a1 1 0 0 0-1.414 0z"
+      }
+    ],
+    [
+      "path",
+      {
+        d: "M2.297 11.293a1 1 0 0 0 0 1.414l2.377 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414L6.088 8.916a1 1 0 0 0-1.414 0z"
+      }
+    ],
+    [
+      "path",
+      {
+        d: "M8.916 17.912a1 1 0 0 0 0 1.415l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.415l-2.377-2.376a1 1 0 0 0-1.414 0z"
+      }
+    ],
+    [
+      "path",
+      {
+        d: "M8.916 4.674a1 1 0 0 0 0 1.414l2.377 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.414l-2.377-2.377a1 1 0 0 0-1.414 0z"
+      }
+    ]
+  ];
+
   // node_modules/lucide/dist/esm/icons/file-output.mjs
   var FileOutput = [
     [
@@ -45173,7 +45201,188 @@
   // packages/schematic-webview/src/index.ts
   var import_schematic_core = __toESM(require_dist());
 
+  // packages/schematic-core/src/archDesign/defaults.ts
+  var MAX_DEFAULT_EXPRESSION_LENGTH = 4096;
+  var SAFE_SYSTEM_FUNCTIONS = /* @__PURE__ */ new Set([
+    "$bits",
+    "$clog2",
+    "$dimensions",
+    "$high",
+    "$increment",
+    "$left",
+    "$low",
+    "$right",
+    "$signed",
+    "$size",
+    "$unpacked_dimensions",
+    "$unsigned"
+  ]);
+  var SAFE_OPERATORS = [
+    "===",
+    "!==",
+    "==?",
+    "!=?",
+    "<<<",
+    ">>>",
+    "<<",
+    ">>",
+    "<=",
+    ">=",
+    "==",
+    "!=",
+    "&&",
+    "||",
+    "**",
+    "~&",
+    "~|",
+    "~^",
+    "^~",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "&",
+    "|",
+    "^",
+    "~",
+    "!",
+    "<",
+    ">",
+    "?",
+    ":",
+    ",",
+    "."
+  ];
+  var UNSAFE_OPERATORS = ["->>", "->", "++", "--"];
+  function isIdentifierStart(character) {
+    return /[A-Za-z_]/.test(character);
+  }
+  function isIdentifierPart(character) {
+    return /[A-Za-z0-9_$]/.test(character);
+  }
+  function basedLiteralEnd(source, quoteIndex) {
+    let index2 = quoteIndex + 1;
+    if (source[index2] === "s" || source[index2] === "S") index2 += 1;
+    const base = source[index2]?.toLowerCase();
+    if (!base || !"bodh".includes(base)) return void 0;
+    index2 += 1;
+    const digitsStart = index2;
+    const digitPattern = base === "b" ? /[01_xXzZ?]/ : base === "o" ? /[0-7_xXzZ?]/ : base === "d" ? /[0-9_xXzZ?]/ : /[0-9A-Fa-f_xXzZ?]/;
+    while (digitPattern.test(source[index2] ?? "")) index2 += 1;
+    return index2 === digitsStart || isIdentifierPart(source[index2] ?? "") ? void 0 : index2;
+  }
+  function isSafeDefaultExpression(expression) {
+    if (typeof expression !== "string" || expression.length === 0 || expression.length > MAX_DEFAULT_EXPRESSION_LENGTH || expression.trim().length === 0 || expression.includes("`") || expression.includes(";") || expression.includes("//") || expression.includes("/*") || expression.includes('"')) {
+      return false;
+    }
+    for (let index3 = 0; index3 < expression.length; index3 += 1) {
+      const code = expression.charCodeAt(index3);
+      if (code < 32 && code !== 9 || code === 127) return false;
+    }
+    const closing = /* @__PURE__ */ new Map([[")", "("], ["]", "["], ["}", "{"]]);
+    const stack = [];
+    let index2 = 0;
+    let previousToken;
+    while (index2 < expression.length) {
+      const character = expression[index2];
+      if (character === " " || character === "	") {
+        index2 += 1;
+        continue;
+      }
+      if (character === "$") {
+        const start = index2;
+        index2 += 1;
+        if (!isIdentifierStart(expression[index2] ?? "")) return false;
+        while (isIdentifierPart(expression[index2] ?? "")) index2 += 1;
+        if (!SAFE_SYSTEM_FUNCTIONS.has(expression.slice(start, index2))) return false;
+        previousToken = "system-function";
+        continue;
+      }
+      if (isIdentifierStart(character)) {
+        index2 += 1;
+        while (isIdentifierPart(expression[index2] ?? "")) index2 += 1;
+        previousToken = "identifier";
+        continue;
+      }
+      if (/[0-9]/.test(character)) {
+        index2 += 1;
+        while (/[0-9_]/.test(expression[index2] ?? "")) index2 += 1;
+        if (expression[index2] === "'") {
+          const end = basedLiteralEnd(expression, index2);
+          if (end === void 0) return false;
+          index2 = end;
+        }
+        previousToken = "value";
+        continue;
+      }
+      if (character === "'") {
+        if (index2 > 0 && isIdentifierPart(expression[index2 - 1])) return false;
+        const unbased = expression[index2 + 1];
+        if (/[01xXzZ]/.test(unbased ?? "")) {
+          if (isIdentifierPart(expression[index2 + 2] ?? "")) return false;
+          index2 += 2;
+          previousToken = "value";
+          continue;
+        }
+        const end = basedLiteralEnd(expression, index2);
+        if (end === void 0) return false;
+        index2 = end;
+        previousToken = "value";
+        continue;
+      }
+      if (character === "(" || character === "[" || character === "{") {
+        if (character === "(" && previousToken !== void 0 && previousToken !== "system-function" && previousToken !== "opening" && previousToken !== "operator") {
+          return false;
+        }
+        stack.push(character);
+        index2 += 1;
+        previousToken = "opening";
+        continue;
+      }
+      const expectedOpening = closing.get(character);
+      if (expectedOpening !== void 0) {
+        if (stack.pop() !== expectedOpening) return false;
+        index2 += 1;
+        previousToken = "closing";
+        continue;
+      }
+      if (UNSAFE_OPERATORS.some((candidate) => expression.startsWith(candidate, index2))) {
+        return false;
+      }
+      const operator = SAFE_OPERATORS.find(
+        (candidate) => expression.startsWith(candidate, index2)
+      );
+      if (operator !== void 0) {
+        index2 += operator.length;
+        previousToken = "operator";
+        continue;
+      }
+      return false;
+    }
+    return stack.length === 0;
+  }
+
   // veriflow-vscode/src/schematic/webviewSupport.ts
+  var ARCH_DESIGN_LOGIC_OPERATION_OPTIONS = Object.freeze([
+    { value: "constant", label: "Constant" },
+    { value: "not", label: "NOT" },
+    { value: "and", label: "AND" },
+    { value: "or", label: "OR" },
+    { value: "xor", label: "XOR" },
+    { value: "nand", label: "NAND" },
+    { value: "nor", label: "NOR" },
+    { value: "xnor", label: "XNOR" },
+    { value: "mux", label: "MUX" },
+    { value: "concat", label: "Concat" },
+    { value: "slice", label: "Slice" },
+    { value: "replicate", label: "Replicate" },
+    { value: "zero-extend", label: "Zero Extend" },
+    { value: "sign-extend", label: "Sign Extend" },
+    { value: "reduce-and", label: "Reduction AND" },
+    { value: "reduce-or", label: "Reduction OR" },
+    { value: "reduce-xor", label: "Reduction XOR" }
+  ]);
   var MAX_INSPECTOR_ENDPOINT_PREVIEW = 8;
   function inspectorGraphIndex(graph2) {
     const nodesById = /* @__PURE__ */ new Map();
@@ -45353,6 +45562,20 @@
     if (width2 === void 0) return "1";
     return typeof width2 === "number" ? String(width2) : width2.expression;
   }
+  function normalizedRequiredWidth(value) {
+    return normalizedWidth(value);
+  }
+  function normalizedInteger(value, minimum, maximum = Number.MAX_SAFE_INTEGER) {
+    const trimmed = value.trim();
+    if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return void 0;
+    const result = Number(trimmed);
+    return Number.isSafeInteger(result) && result >= minimum && result <= maximum ? result : void 0;
+  }
+  function displayedResolvedWidth(width2) {
+    if (width2?.kind === "known") return String(width2.bits);
+    if (width2?.kind === "symbolic") return width2.expression;
+    return "Unknown";
+  }
   function promotedWidth(width2) {
     if (width2.kind === "known") return width2.bits;
     if (width2.kind === "symbolic") return { expression: width2.expression };
@@ -45363,16 +45586,19 @@
   }
   function endpointLabel(endpoint) {
     if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
+    if (endpoint.kind === "logic") return `${endpoint.logic}.${endpoint.port}`;
     return endpoint.signal === void 0 ? endpoint.port : `${endpoint.port}.${endpoint.signal}`;
   }
   function endpointIdentity(endpoint) {
     if (endpoint.kind === "instance") {
       return `instance:${endpoint.instance}:${endpoint.port}`;
     }
+    if (endpoint.kind === "logic") return `logic:${endpoint.logic}:${endpoint.port}`;
     return `port:${endpoint.port}:${endpoint.signal ?? "value"}`;
   }
   function endpointDefaultKey(endpoint) {
     if (endpoint.kind === "instance") return `${endpoint.instance}.${endpoint.port}`;
+    if (endpoint.kind === "logic") return `${endpoint.logic}.${endpoint.port}`;
     return `${endpoint.port}.${endpoint.signal ?? "value"}`;
   }
   function matchingDefinition(catalog, module2, definitionKey) {
@@ -45458,6 +45684,148 @@
       deleteEdit: { type: "removeInstance", name: instance.name }
     };
   }
+  function logicForNodeId(design, nodeId) {
+    return design.logic.find((candidate) => `logic:${candidate.name}` === nodeId);
+  }
+  function projectLogicInspector(snapshot, graph2, nodeId) {
+    const logic = logicForNodeId(snapshot.design, nodeId);
+    if (!logic) return void 0;
+    const update = (next) => ({
+      type: "updateLogic",
+      name: logic.name,
+      logic: next
+    });
+    const operationLabel = ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.find(
+      (option) => option.value === logic.operation
+    )?.label ?? logic.operation;
+    const fields = [
+      textField("logic-name", "Name", logic.name, (value) => {
+        const name = value.trim();
+        return name.length === 0 ? void 0 : update({ ...logic, name });
+      }),
+      readonlyField("logic-operation", "Operation", operationLabel)
+    ];
+    const widthField = (id, label, width2, commit) => {
+      fields.push(textField(id, label, displayedWidth(width2), (value) => {
+        const next = normalizedRequiredWidth(value);
+        return next === void 0 ? void 0 : update(commit(next));
+      }));
+    };
+    const integerField = (id, label, value, minimum, maximum, commit) => {
+      fields.push(textField(id, label, String(value), (candidate) => {
+        const next = normalizedInteger(candidate, minimum, maximum);
+        return next === void 0 ? void 0 : update(commit(next));
+      }));
+    };
+    const outputWidthField = () => {
+      const node = graph2.nodes.find((candidate) => candidate.id === nodeId);
+      fields.push(readonlyField(
+        "logic-output-width",
+        "Output width",
+        displayedResolvedWidth(node?.pins.find((pin2) => pin2.name === "out")?.width)
+      ));
+    };
+    if (logic.operation === "constant") {
+      widthField("logic-width", "Width", logic.width, (width2) => ({ ...logic, width: width2 }));
+      fields.push(textField(
+        "logic-expression",
+        "Expression",
+        logic.expression,
+        (value) => value.trim().length === 0 ? void 0 : update({ ...logic, expression: value.trim() })
+      ));
+    } else if (logic.operation === "not" || logic.operation === "mux") {
+      widthField("logic-width", "Width", logic.width, (width2) => ({ ...logic, width: width2 }));
+    } else if (logic.operation === "and" || logic.operation === "or" || logic.operation === "xor" || logic.operation === "nand" || logic.operation === "nor" || logic.operation === "xnor") {
+      widthField("logic-width", "Width", logic.width, (width2) => ({ ...logic, width: width2 }));
+      integerField(
+        "logic-input-count",
+        "Input count",
+        logic.inputCount,
+        2,
+        8,
+        (inputCount) => ({ ...logic, inputCount })
+      );
+    } else if (logic.operation === "concat") {
+      logic.inputWidths.forEach((width2, index2) => widthField(
+        `logic-input-width-${index2}`,
+        `Input ${index2} width`,
+        width2,
+        (next) => {
+          const inputWidths = [...logic.inputWidths];
+          inputWidths[index2] = next;
+          return { ...logic, inputWidths };
+        }
+      ));
+      outputWidthField();
+    } else if (logic.operation === "slice") {
+      widthField(
+        "logic-input-width",
+        "Input width",
+        logic.inputWidth,
+        (inputWidth) => ({ ...logic, inputWidth })
+      );
+      integerField(
+        "logic-msb",
+        "MSB",
+        logic.msb,
+        0,
+        Number.MAX_SAFE_INTEGER,
+        (msb) => ({ ...logic, msb })
+      );
+      integerField(
+        "logic-lsb",
+        "LSB",
+        logic.lsb,
+        0,
+        Number.MAX_SAFE_INTEGER,
+        (lsb) => ({ ...logic, lsb })
+      );
+      outputWidthField();
+    } else if (logic.operation === "replicate") {
+      widthField(
+        "logic-input-width",
+        "Input width",
+        logic.inputWidth,
+        (inputWidth) => ({ ...logic, inputWidth })
+      );
+      integerField(
+        "logic-count",
+        "Count",
+        logic.count,
+        1,
+        65536,
+        (count) => ({ ...logic, count })
+      );
+      outputWidthField();
+    } else if (logic.operation === "zero-extend" || logic.operation === "sign-extend") {
+      widthField(
+        "logic-input-width",
+        "Input width",
+        logic.inputWidth,
+        (inputWidth) => ({ ...logic, inputWidth })
+      );
+      widthField(
+        "logic-output-width",
+        "Output width",
+        logic.outputWidth,
+        (outputWidth) => ({ ...logic, outputWidth })
+      );
+    } else if ("inputWidth" in logic) {
+      widthField(
+        "logic-input-width",
+        "Input width",
+        logic.inputWidth,
+        (inputWidth) => ({ ...logic, inputWidth })
+      );
+      outputWidthField();
+    }
+    return {
+      kind: "logic",
+      title: logic.name,
+      fields,
+      deleteEdit: { type: "removeLogic", name: logic.name }
+    };
+  }
   function portDefaultKeys(port2) {
     if (port2.direction === "output") return [`${port2.name}.value`];
     if (port2.direction === "inout") return [`${port2.name}.o`, `${port2.name}.t`];
@@ -45465,10 +45833,10 @@
   }
   function effectiveDefaultPlaceholder(snapshot, endpoint, connection2) {
     const effective = snapshot.validation.effectiveDefaults.find(
-      (candidate) => candidate.endpoint === endpoint && (connection2 === void 0 || candidate.connection === connection2)
+      (candidate) => candidate.endpoint === endpoint && (connection2 === void 0 || candidate.connection === void 0 || candidate.connection === connection2)
     );
     if (!effective) return "No default";
-    const source = effective.origin === "implicit-inout-t" ? "Implicit default" : effective.origin === "design" ? "Design default" : "Connection default";
+    const source = effective.origin === "implicit-inout-t" || effective.origin === "implicit-zero" ? "Implicit default" : effective.origin === "design" ? "Design default" : "Connection default";
     return `${source}: ${effective.expression}`;
   }
   function projectPortInspector(snapshot, name) {
@@ -45566,12 +45934,56 @@
     return void 0;
   }
   function scalarConnectionForPin(snapshot, node, pin2) {
-    if (node.kind !== "instance") return void 0;
+    const selected = archDesignEndpointForPin(snapshot.design, node, pin2);
+    if (!selected) return void 0;
+    const identity2 = endpointIdentity(selected);
     return snapshot.design.connections.find((connection2) => connection2.endpoints.some(
-      (endpoint) => endpoint.kind === "instance" && endpoint.instance === node.label && endpoint.port === pin2.name
+      (endpoint) => endpointIdentity(endpoint) === identity2
     ))?.name;
   }
+  function projectLogicPinAuthoringInspector(snapshot, node, pin2) {
+    const logic = logicForNodeId(snapshot.design, node.id);
+    const endpoint = archDesignEndpointForPin(snapshot.design, node, pin2);
+    if (!logic || endpoint?.kind !== "logic") return void 0;
+    const occupancy = scalarConnectionForPin(snapshot, node, pin2);
+    const direction = pin2.direction === "load" ? "input" : "output";
+    const fields = [
+      readonlyField("pin-logic", "Logic Utility", logic.name),
+      readonlyField("pin-name", "Port", pin2.name),
+      readonlyField("pin-direction", "Direction", direction),
+      readonlyField("pin-width", "Width", formatWidth(pin2.width)),
+      readonlyField("pin-occupancy", "Occupancy", occupancy ?? "Unconnected")
+    ];
+    if (pin2.direction === "load") {
+      const defaultKey = endpointDefaultKey(endpoint);
+      const connection2 = occupancy === void 0 ? void 0 : snapshot.design.connections.find((candidate) => candidate.name === occupancy);
+      const defaults6 = connection2?.defaults ?? snapshot.design.defaults;
+      const explicit = Object.prototype.hasOwnProperty.call(defaults6, defaultKey) ? defaults6[defaultKey] : "";
+      fields.push(textField(
+        "pin-default",
+        "Default",
+        explicit,
+        (value) => {
+          const expression = value.trim();
+          return {
+            type: "setDefault",
+            ...connection2 === void 0 ? {} : { connection: connection2.name },
+            endpoint: defaultKey,
+            ...expression.length === 0 ? {} : { expression }
+          };
+        },
+        effectiveDefaultPlaceholder(snapshot, defaultKey, connection2?.name)
+      ));
+    }
+    return {
+      kind: "pin",
+      title: `${logic.name}.${pin2.name}`,
+      fields
+    };
+  }
   function projectPinAuthoringInspector(snapshot, node, pin2) {
+    const logicPin = projectLogicPinAuthoringInspector(snapshot, node, pin2);
+    if (logicPin) return logicPin;
     if (node.kind !== "instance") return void 0;
     if (pin2.interface?.kind === "aggregate") {
       return projectInterfaceAuthoringInspector(snapshot, pin2.interface.id);
@@ -45942,6 +46354,10 @@
       const model = projectInstanceInspector(snapshot, nodeId.slice("instance:".length));
       if (model) return model;
     }
+    if (nodeId?.startsWith("logic:")) {
+      const model = projectLogicInspector(snapshot, graph2, nodeId);
+      if (model) return model;
+    }
     if (nodeId?.startsWith("port:")) {
       const model = projectPortInspector(snapshot, nodeId.slice("port:".length));
       if (model) return model;
@@ -45960,6 +46376,10 @@
     if (node.kind === "instance") {
       const instance = design.instances.find((candidate) => candidate.name === node.label);
       return instance ? { kind: "instance", instance: instance.name, port: pin2.name } : void 0;
+    }
+    if (node.kind === "constant" || node.kind === "expression") {
+      const logic = logicForNodeId(design, node.id);
+      return logic ? { kind: "logic", logic: logic.name, port: pin2.name } : void 0;
     }
     if (node.kind !== "port") return void 0;
     const port2 = design.ports.find((candidate) => candidate.name === node.label);
@@ -46106,6 +46526,7 @@
     inspectorToggleButton: requiredElement("inspector-toggle-button"),
     authoringActions: requiredElement("authoring-actions"),
     addInstanceButton: requiredElement("add-instance-button"),
+    addLogicButton: requiredElement("add-logic-button"),
     addPortButton: requiredElement("add-port-button"),
     connectButton: requiredElement("connect-button"),
     exportButton: requiredElement("export-button"),
@@ -46119,6 +46540,27 @@
     addInstanceForm: requiredElement("add-instance-form"),
     instanceNameInput: requiredElement("instance-name-input"),
     instanceModuleSelect: requiredElement("instance-module-select"),
+    addLogicDialog: requiredElement("add-logic-dialog"),
+    addLogicForm: requiredElement("add-logic-form"),
+    logicOperationSelect: requiredElement("new-logic-operation-select"),
+    logicNameInput: requiredElement("new-logic-name-input"),
+    logicWidthField: requiredElement("new-logic-width-field"),
+    logicWidthInput: requiredElement("new-logic-width-input"),
+    logicExpressionField: requiredElement("new-logic-expression-field"),
+    logicExpressionInput: requiredElement("new-logic-expression-input"),
+    logicInputCountField: requiredElement("new-logic-input-count-field"),
+    logicInputCountInput: requiredElement("new-logic-input-count-input"),
+    logicInputWidthsField: requiredElement("new-logic-input-widths-field"),
+    logicInputWidths: requiredElement("new-logic-input-widths"),
+    logicInputWidthField: requiredElement("new-logic-input-width-field"),
+    logicInputWidthInput: requiredElement("new-logic-input-width-input"),
+    logicOutputWidthField: requiredElement("new-logic-output-width-field"),
+    logicOutputWidthInput: requiredElement("new-logic-output-width-input"),
+    logicSliceFields: requiredElement("new-logic-slice-fields"),
+    logicMsbInput: requiredElement("new-logic-msb-input"),
+    logicLsbInput: requiredElement("new-logic-lsb-input"),
+    logicCountField: requiredElement("new-logic-count-field"),
+    logicCountInput: requiredElement("new-logic-count-input"),
     addPortDialog: requiredElement("add-port-dialog"),
     addPortForm: requiredElement("add-port-form"),
     portNameInput: requiredElement("port-name-input"),
@@ -46672,6 +47114,7 @@
   var currentArchDesignState;
   var currentArchDesignInspector;
   var instanceNameAutomatic = true;
+  var logicNameAutomatic = true;
   var autoFittedModules = /* @__PURE__ */ new Set();
   var archDesignLayoutSaveInFlight = false;
   var queuedArchDesignLayoutSave;
@@ -47082,6 +47525,7 @@
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
     dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
+    dom.addLogicButton.disabled = disabled;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
     dom.exportButton.disabled = disabled;
@@ -47837,6 +48281,7 @@
       [dom.searchPreviousButton, ChevronUp],
       [dom.searchNextButton, ChevronDown],
       [dom.addInstanceButton, SquarePlus],
+      [dom.addLogicButton, Component],
       [dom.addPortButton, PanelTopOpen],
       [dom.connectButton, Cable],
       [dom.exportButton, FileOutput],
@@ -47847,6 +48292,16 @@
     }
     updateInspectorToggle();
   }
+  function installLogicOperationOptions() {
+    const options = ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.map((operation) => {
+      const option = document.createElement("option");
+      option.value = operation.value;
+      option.textContent = operation.label;
+      return option;
+    });
+    dom.logicOperationSelect.replaceChildren(...options);
+  }
+  installLogicOperationOptions();
   installIcons();
   renderCurrentInspector();
   dom.inspectorForm.addEventListener("submit", (event) => {
@@ -47965,6 +48420,7 @@
     firstControl.focus();
   }
   dom.addInstanceDialog.addEventListener("close", () => dom.addInstanceButton.focus());
+  dom.addLogicDialog.addEventListener("close", () => dom.addLogicButton.focus());
   dom.addPortDialog.addEventListener("close", () => dom.addPortButton.focus());
   function parsedPortWidth(value) {
     const trimmed = value.trim();
@@ -48004,6 +48460,125 @@
     const selected = selectedInstanceModule();
     dom.instanceNameInput.value = selected ? generatedInstanceName(selected.moduleName) : "";
   }
+  var logicGateOperations = /* @__PURE__ */ new Set([
+    "and",
+    "or",
+    "xor",
+    "nand",
+    "nor",
+    "xnor"
+  ]);
+  var logicReductionOperations = /* @__PURE__ */ new Set([
+    "reduce-and",
+    "reduce-or",
+    "reduce-xor"
+  ]);
+  function selectedLogicOperation() {
+    const operation = dom.logicOperationSelect.value;
+    return ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.some((option) => option.value === operation) ? operation : void 0;
+  }
+  function generatedLogicName(operation) {
+    const base = `u_${operation.replace(/-/g, "_")}`;
+    const pattern = new RegExp(`^${escapeRegExp(base)}_([0-9]+)$`);
+    const usedNames = [
+      ...currentArchDesignState?.design.ports.map((item) => item.name) ?? [],
+      ...currentArchDesignState?.design.instances.map((item) => item.name) ?? [],
+      ...currentArchDesignState?.design.logic.map((item) => item.name) ?? []
+    ];
+    const usedSuffixes = /* @__PURE__ */ new Set();
+    for (const name of usedNames) {
+      const match = pattern.exec(name);
+      if (match) usedSuffixes.add(Number(match[1]));
+    }
+    let suffix = 0;
+    while (usedSuffixes.has(suffix)) suffix += 1;
+    return `${base}_${suffix}`;
+  }
+  function updateAutomaticLogicName() {
+    const operation = selectedLogicOperation();
+    dom.logicNameInput.value = operation ? generatedLogicName(operation) : "";
+  }
+  function setLogicFieldVisible(field, visible) {
+    field.hidden = !visible;
+    field.querySelectorAll("input").forEach((input) => {
+      input.disabled = !visible;
+    });
+  }
+  function boundedInteger(value, minimum, maximum) {
+    const trimmed = value.trim();
+    if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return void 0;
+    const result = Number(trimmed);
+    return Number.isSafeInteger(result) && result >= minimum && result <= maximum ? result : void 0;
+  }
+  function requiredLogicWidth(value) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return void 0;
+    if (/^[1-9][0-9]*$/.test(trimmed)) {
+      const width2 = Number(trimmed);
+      return Number.isSafeInteger(width2) ? width2 : void 0;
+    }
+    if (/^[+-]?[0-9]+$/.test(trimmed)) return void 0;
+    return { expression: trimmed };
+  }
+  function renderLogicInputWidths(count) {
+    const previous = Array.from(dom.logicInputWidths.querySelectorAll("input")).map((input) => input.value);
+    const fields = document.createDocumentFragment();
+    for (let index2 = 0; index2 < count; index2 += 1) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "logic-field";
+      const label = document.createElement("label");
+      label.htmlFor = `new-logic-input-width-${index2}`;
+      label.textContent = `Input ${index2} width`;
+      const input = document.createElement("input");
+      input.id = `new-logic-input-width-${index2}`;
+      input.required = true;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.value = previous[index2] ?? "1";
+      wrapper.append(label, input);
+      fields.append(wrapper);
+    }
+    dom.logicInputWidths.replaceChildren(fields);
+  }
+  function resetLogicOperationFields(operation) {
+    dom.logicWidthInput.value = "1";
+    dom.logicExpressionInput.value = "1'b0";
+    dom.logicInputCountInput.value = "2";
+    dom.logicInputWidthInput.value = "1";
+    dom.logicOutputWidthInput.value = "2";
+    dom.logicMsbInput.value = "0";
+    dom.logicLsbInput.value = "0";
+    dom.logicCountInput.value = "2";
+    renderLogicInputWidths(2);
+    const gate = logicGateOperations.has(operation);
+    const concat = operation === "concat";
+    const slice = operation === "slice";
+    const replicate = operation === "replicate";
+    const extend = operation === "zero-extend" || operation === "sign-extend";
+    const reduction = logicReductionOperations.has(operation);
+    setLogicFieldVisible(
+      dom.logicWidthField,
+      operation === "constant" || operation === "not" || operation === "mux" || gate
+    );
+    setLogicFieldVisible(dom.logicExpressionField, operation === "constant");
+    setLogicFieldVisible(dom.logicInputCountField, gate || concat);
+    setLogicFieldVisible(dom.logicInputWidthsField, concat);
+    setLogicFieldVisible(dom.logicInputWidthField, slice || replicate || extend || reduction);
+    setLogicFieldVisible(dom.logicOutputWidthField, extend);
+    setLogicFieldVisible(dom.logicSliceFields, slice);
+    setLogicFieldVisible(dom.logicCountField, replicate);
+  }
+  function showAddLogicDialog() {
+    if (dom.addLogicButton.disabled) return false;
+    logicNameAutomatic = true;
+    dom.logicNameInput.setCustomValidity("");
+    dom.logicExpressionInput.setCustomValidity("");
+    dom.logicOperationSelect.value = "constant";
+    resetLogicOperationFields("constant");
+    updateAutomaticLogicName();
+    showDialog(dom.addLogicDialog, dom.logicOperationSelect);
+    return dom.addLogicDialog.open;
+  }
   function showAddInstanceDialog() {
     if (dom.addInstanceButton.disabled) return false;
     instanceNameAutomatic = true;
@@ -48012,11 +48587,27 @@
     return dom.addInstanceDialog.open;
   }
   dom.addInstanceButton.addEventListener("click", showAddInstanceDialog);
+  dom.addLogicButton.addEventListener("click", showAddLogicDialog);
   dom.instanceModuleSelect.addEventListener("change", () => {
     if (instanceNameAutomatic) updateAutomaticInstanceName();
   });
   dom.instanceNameInput.addEventListener("input", () => {
     instanceNameAutomatic = false;
+  });
+  dom.logicOperationSelect.addEventListener("change", () => {
+    const operation = selectedLogicOperation();
+    if (!operation) return;
+    resetLogicOperationFields(operation);
+    if (logicNameAutomatic) updateAutomaticLogicName();
+  });
+  dom.logicNameInput.addEventListener("input", () => {
+    logicNameAutomatic = false;
+    dom.logicNameInput.setCustomValidity("");
+  });
+  dom.logicInputCountInput.addEventListener("change", () => {
+    if (selectedLogicOperation() !== "concat") return;
+    const count = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+    if (count !== void 0) renderLogicInputWidths(count);
   });
   function showAddPortDialog() {
     if (dom.addPortButton.disabled) return false;
@@ -48080,6 +48671,80 @@
       type: "addPort",
       port: { name, direction, ...width2 === void 0 ? {} : { width: width2 } }
     });
+  });
+  function logicNameAvailable(name) {
+    if (!currentArchDesignState) return false;
+    return !currentArchDesignState.design.ports.some((item) => item.name === name) && !currentArchDesignState.design.instances.some((item) => item.name === name) && !currentArchDesignState.design.logic.some((item) => item.name === name);
+  }
+  function readLogicForm() {
+    const operation = selectedLogicOperation();
+    const name = dom.logicNameInput.value.trim();
+    dom.logicNameInput.setCustomValidity("");
+    dom.logicExpressionInput.setCustomValidity("");
+    if (!operation || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) return void 0;
+    if (!logicNameAvailable(name)) {
+      dom.logicNameInput.setCustomValidity("Name is already in use");
+      dom.logicNameInput.reportValidity();
+      return void 0;
+    }
+    const width2 = requiredLogicWidth(dom.logicWidthInput.value);
+    const inputWidth = requiredLogicWidth(dom.logicInputWidthInput.value);
+    if (operation === "constant") {
+      const expression = dom.logicExpressionInput.value.trim();
+      if (!width2 || !isSafeDefaultExpression(expression)) {
+        if (!isSafeDefaultExpression(expression)) {
+          dom.logicExpressionInput.setCustomValidity("Enter a constant expression");
+          dom.logicExpressionInput.reportValidity();
+        }
+        return void 0;
+      }
+      return { name, operation, width: width2, expression };
+    }
+    if (operation === "not" || operation === "mux") {
+      return width2 ? { name, operation, width: width2 } : void 0;
+    }
+    if (logicGateOperations.has(operation)) {
+      const inputCount = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+      return width2 && inputCount !== void 0 ? {
+        name,
+        operation,
+        width: width2,
+        inputCount
+      } : void 0;
+    }
+    if (operation === "concat") {
+      const inputCount = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+      if (inputCount === void 0) return void 0;
+      const inputWidths = Array.from(
+        dom.logicInputWidths.querySelectorAll("input")
+      ).map((input) => requiredLogicWidth(input.value));
+      return inputWidths.length === inputCount && inputWidths.every((item) => item !== void 0) ? { name, operation, inputWidths } : void 0;
+    }
+    if (operation === "slice") {
+      const msb = boundedInteger(dom.logicMsbInput.value, 0, Number.MAX_SAFE_INTEGER);
+      const lsb = boundedInteger(dom.logicLsbInput.value, 0, Number.MAX_SAFE_INTEGER);
+      return inputWidth && msb !== void 0 && lsb !== void 0 && msb >= lsb && (typeof inputWidth !== "number" || msb < inputWidth) ? { name, operation, inputWidth, msb, lsb } : void 0;
+    }
+    if (operation === "replicate") {
+      const count = boundedInteger(dom.logicCountInput.value, 1, 65536);
+      return inputWidth && count !== void 0 ? { name, operation, inputWidth, count } : void 0;
+    }
+    if (operation === "zero-extend" || operation === "sign-extend") {
+      const outputWidth = requiredLogicWidth(dom.logicOutputWidthInput.value);
+      return inputWidth && outputWidth && (typeof inputWidth !== "number" || typeof outputWidth !== "number" || outputWidth >= inputWidth) ? { name, operation, inputWidth, outputWidth } : void 0;
+    }
+    return inputWidth && logicReductionOperations.has(operation) ? {
+      name,
+      operation,
+      inputWidth
+    } : void 0;
+  }
+  dom.addLogicForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const logic = readLogicForm();
+    if (!logic) return;
+    dom.addLogicDialog.close();
+    postArchDesignEdit({ type: "addLogic", logic });
   });
   document.querySelectorAll("[data-dialog-cancel]").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog")?.close());
@@ -48207,6 +48872,7 @@
     if (!dialog) return false;
     dialog.close();
     if (dialog === dom.addInstanceDialog) dom.addInstanceButton.focus();
+    if (dialog === dom.addLogicDialog) dom.addLogicButton.focus();
     if (dialog === dom.addPortDialog) dom.addPortButton.focus();
     return true;
   }
@@ -48228,6 +48894,8 @@
     switch (key) {
       case "a":
         return showAddInstanceDialog();
+      case "l":
+        return showAddLogicDialog();
       case "p":
         return showAddPortDialog();
       case "c":

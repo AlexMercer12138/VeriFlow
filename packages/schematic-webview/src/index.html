@@ -28,6 +28,7 @@
             </div>
             <div id="authoring-actions" class="toolbar-actions authoring-actions" hidden>
                 <button id="add-instance-button" class="icon-button" type="button" title="Add instance" aria-label="Add instance" aria-keyshortcuts="A" disabled><span data-icon-slot></span></button>
+                <button id="add-logic-button" class="icon-button" type="button" title="Logic Utility" aria-label="Logic Utility" aria-keyshortcuts="L" disabled><span data-icon-slot></span></button>
                 <button id="add-port-button" class="icon-button" type="button" title="Add port" aria-label="Add port" aria-keyshortcuts="P" disabled><span data-icon-slot></span></button>
                 <button id="connect-button" class="icon-button" type="button" title="Connect pins" aria-label="Connect pins" aria-keyshortcuts="C" aria-pressed="false" disabled><span data-icon-slot></span></button>
                 <button id="export-button" class="icon-button" type="button" title="Export RTL" aria-label="Export RTL" aria-keyshortcuts="E" disabled><span data-icon-slot></span></button>
@@ -86,6 +87,58 @@
             </select>
             <label for="port-width-input">Width</label>
             <input id="port-width-input" name="width" value="1" autocomplete="off" spellcheck="false">
+            <div class="dialog-actions">
+                <button type="button" data-dialog-cancel>Cancel</button>
+                <button type="submit">Add</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="add-logic-dialog" aria-labelledby="add-logic-title">
+        <form id="add-logic-form" method="dialog" class="authoring-dialog-form">
+            <h2 id="add-logic-title">Logic Utility</h2>
+            <label for="new-logic-operation-select">Operation</label>
+            <select id="new-logic-operation-select" name="operation" required></select>
+            <label for="new-logic-name-input">Name</label>
+            <input id="new-logic-name-input" name="name" required pattern="[A-Za-z_][A-Za-z0-9_$]*" autocomplete="off" spellcheck="false">
+
+            <div id="new-logic-width-field" class="logic-field">
+                <label for="new-logic-width-input">Width</label>
+                <input id="new-logic-width-input" name="width" value="1" required autocomplete="off" spellcheck="false">
+            </div>
+            <div id="new-logic-expression-field" class="logic-field">
+                <label for="new-logic-expression-input">Expression</label>
+                <input id="new-logic-expression-input" name="expression" value="1'b0" required autocomplete="off" spellcheck="false">
+            </div>
+            <div id="new-logic-input-count-field" class="logic-field" hidden>
+                <label for="new-logic-input-count-input">Input count</label>
+                <input id="new-logic-input-count-input" name="inputCount" type="number" value="2" min="2" max="8" step="1" required>
+            </div>
+            <fieldset id="new-logic-input-widths-field" class="logic-field logic-fieldset" hidden>
+                <legend>Input widths</legend>
+                <div id="new-logic-input-widths" class="logic-input-widths"></div>
+            </fieldset>
+            <div id="new-logic-input-width-field" class="logic-field" hidden>
+                <label for="new-logic-input-width-input">Input width</label>
+                <input id="new-logic-input-width-input" name="inputWidth" value="1" required autocomplete="off" spellcheck="false">
+            </div>
+            <div id="new-logic-output-width-field" class="logic-field" hidden>
+                <label for="new-logic-output-width-input">Output width</label>
+                <input id="new-logic-output-width-input" name="outputWidth" value="2" required autocomplete="off" spellcheck="false">
+            </div>
+            <div id="new-logic-slice-fields" class="logic-inline-fields" hidden>
+                <div class="logic-field">
+                    <label for="new-logic-msb-input">MSB</label>
+                    <input id="new-logic-msb-input" name="msb" type="number" value="0" min="0" step="1" required>
+                </div>
+                <div class="logic-field">
+                    <label for="new-logic-lsb-input">LSB</label>
+                    <input id="new-logic-lsb-input" name="lsb" type="number" value="0" min="0" step="1" required>
+                </div>
+            </div>
+            <div id="new-logic-count-field" class="logic-field" hidden>
+                <label for="new-logic-count-input">Count</label>
+                <input id="new-logic-count-input" name="count" type="number" value="2" min="1" max="65536" step="1" required>
+            </div>
             <div class="dialog-actions">
                 <button type="button" data-dialog-cancel>Cancel</button>
                 <button type="submit">Add</button>

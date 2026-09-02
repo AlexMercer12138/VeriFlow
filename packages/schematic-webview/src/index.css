@@ -382,6 +382,7 @@ button {
 dialog {
     width: min(360px, calc(100vw - 32px));
     max-height: calc(100vh - 32px);
+    overflow: hidden;
     padding: 0;
     color: var(--schematic-text);
     background: var(--schematic-node-fill);
@@ -396,6 +397,8 @@ dialog::backdrop {
 .authoring-dialog-form {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
     padding: 14px;
     gap: 7px;
 }
@@ -421,6 +424,41 @@ dialog::backdrop {
     background: var(--vscode-input-background, var(--schematic-canvas));
     border: 1px solid var(--vscode-input-border, var(--schematic-border));
     border-radius: 2px;
+}
+
+.logic-field {
+    display: grid;
+    min-width: 0;
+    gap: 7px;
+}
+
+.logic-field[hidden],
+.logic-inline-fields[hidden] {
+    display: none;
+}
+
+.logic-fieldset {
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.logic-fieldset legend {
+    margin-bottom: 7px;
+    padding: 0;
+    color: var(--schematic-muted-text);
+    font-weight: 600;
+}
+
+.logic-inline-fields,
+.logic-input-widths {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.logic-input-widths .logic-field {
+    gap: 4px;
 }
 
 .dialog-actions {
@@ -638,6 +676,11 @@ dialog::backdrop {
 
     #inspector-properties dd {
         padding-top: 0;
+    }
+
+    .logic-inline-fields,
+    .logic-input-widths {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 

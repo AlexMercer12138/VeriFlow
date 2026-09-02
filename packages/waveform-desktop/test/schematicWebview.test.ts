@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { _electron as electron, type Locator, type Page } from 'playwright';
 import type { SchematicGraph } from '@veriflow/schematic-core';
+import type { ArchDesignLogic } from '@veriflow/schematic-core/arch-design';
 
 const repositoryRoot = path.resolve(__dirname, '../../../..');
 const schematicHtml = process.env.VERIFLOW_SCHEMATIC_HTML
@@ -686,13 +687,14 @@ async function exerciseArchDesignConnections(page: Page): Promise<void> {
 
     const design = {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'authoring_top',
         ports: [],
         instances: [
             { name: 'u_source', module: 'source' },
             { name: 'u_sink', module: 'sink' },
         ],
+        logic: [],
         connections: [],
         interfaceConnections: [],
         defaults: {},
@@ -1312,13 +1314,14 @@ function archDesignInteractionFixture(moduleName = 'interaction_top') {
         graph,
         design: {
             format: 'vik-veriflow.arch-design',
-            schemaVersion: 1,
+            schemaVersion: 2,
             module: moduleName,
             ports: [],
             instances: [
                 { name: 'u_source', module: 'source' },
                 { name: 'u_sink', module: 'sink' },
             ],
+            logic: [] as ArchDesignLogic[],
             connections: [{
                 name: 'payload',
                 endpoints: [
@@ -1335,7 +1338,12 @@ function archDesignInteractionFixture(moduleName = 'interaction_top') {
             placement: { nodes: {
                 [sourceId]: { column: 0, order: 0, yOffset: 0, fixed: false },
                 [sinkId]: { column: 1, order: 0, yOffset: 0, fixed: false },
-            } },
+            } as Record<string, {
+                column: number;
+                order: number;
+                yOffset: number;
+                fixed: boolean;
+            }> },
             viewport: { x: 0, y: 0, zoom: 1 },
             minimap: false,
         },
@@ -1420,6 +1428,74 @@ function sourceAwareInstanceFixture() {
             definitionKey: uartKey,
         }],
     };
+}
+
+function logicUtilityFixture() {
+    const fixture = archDesignInteractionFixture('logic_utility_top');
+    const logicNodes = [{
+        id: 'logic:u_constant_0',
+        kind: 'constant' as const,
+        label: 'u_constant_0',
+        subtitle: 'Constant',
+        pins: [{
+            id: 'logic:u_constant_0:out',
+            name: 'out',
+            direction: 'driver' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }],
+        readOnly: false,
+    }, {
+        id: 'logic:u_constant_2',
+        kind: 'constant' as const,
+        label: 'u_constant_2',
+        subtitle: 'Constant',
+        pins: [{
+            id: 'logic:u_constant_2:out',
+            name: 'out',
+            direction: 'driver' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }],
+        readOnly: false,
+    }, {
+        id: 'logic:u_and_0',
+        kind: 'expression' as const,
+        label: 'u_and_0',
+        subtitle: 'AND',
+        pins: [{
+            id: 'logic:u_and_0:in0',
+            name: 'in0',
+            direction: 'load' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }, {
+            id: 'logic:u_and_0:in1',
+            name: 'in1',
+            direction: 'load' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }, {
+            id: 'logic:u_and_0:out',
+            name: 'out',
+            direction: 'driver' as const,
+            width: { kind: 'known' as const, bits: 1 },
+            readOnly: false,
+        }],
+        readOnly: false,
+    }];
+    fixture.graph.nodes.push(...logicNodes);
+    fixture.design.logic.push(
+        { name: 'u_constant_0', operation: 'constant', width: 1, expression: "1'b1" },
+        { name: 'u_constant_2', operation: 'constant', width: 1, expression: "1'b0" },
+        { name: 'u_and_0', operation: 'and', width: 1, inputCount: 2 }
+    );
+    Object.assign(fixture.layout.placement.nodes, {
+        'logic:u_constant_0': { column: 0, order: 1, yOffset: 0, fixed: false },
+        'logic:u_constant_2': { column: 0, order: 2, yOffset: 0, fixed: false },
+        'logic:u_and_0': { column: 1, order: 1, yOffset: 0, fixed: false },
+    });
+    return fixture;
 }
 
 async function publishArchDesignFixture(
@@ -1870,13 +1946,14 @@ function archDesignInterfaceFixture(
     };
     const design = {
         format: 'vik-veriflow.arch-design',
-        schemaVersion: 1,
+        schemaVersion: 2,
         module: 'interface_authoring',
         ports: [{ name: 'clk', direction: 'input', width: 1 }],
         instances: nodes.filter(item => item.kind === 'instance').map(item => ({
             name: item.label,
             module: item.subtitle,
         })),
+        logic: [],
         connections: [],
         interfacePorts: [{
             name: topInterface.name,
@@ -4246,6 +4323,244 @@ test('Arch Design generates source-aware instance names', {
                 module: 'alu',
                 definitionKey: 'module:file:///workspace/vendor/alu.v:0',
             },
+        });
+        assert.deepEqual(rendererErrors, []);
+    } finally {
+        await electronApp.close();
+        rmSync(fixtureRoot, { recursive: true, force: true });
+        rmSync(userDataDir, { recursive: true, force: true });
+    }
+});
+
+test('Arch Design authors Logic Utilities with operation-specific fields', {
+    timeout: 45_000,
+}, async () => {
+    const fixtureRoot = createElectronFixture();
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'veriflow-schematic-user-'));
+    const electronApp = await electron.launch({
+        args: [fixtureRoot, `--user-data-dir=${userDataDir}`, '--disable-gpu'],
+        env: electronEnvironment(schematicHtml),
+    });
+    try {
+        const page = await electronApp.firstWindow();
+        page.setDefaultTimeout(pageTimeoutMs);
+        const rendererErrors: string[] = [];
+        page.on('pageerror', error => rendererErrors.push(error.message));
+        await waitForSchematicRuntime(page);
+        await captureWebviewMessages(page);
+        await publishArchDesignFixture(
+            page,
+            'fixture:logic-utility:1',
+            logicUtilityFixture()
+        );
+
+        const addButton = page.locator('#add-logic-button');
+        assert.equal(await addButton.getAttribute('title'), 'Logic Utility');
+        assert.equal(await addButton.isEnabled(), true);
+        assert.equal(await page.locator('.x6-node[data-cell-id^="logic:u_constant_"]').count(), 2);
+        assert.equal(await page.locator('.x6-node[data-cell-id^="default:"]').count(), 0);
+
+        await addButton.click();
+        const dialog = page.locator('#add-logic-dialog');
+        await dialog.waitFor({ state: 'visible' });
+        assert.equal(
+            await page.evaluate(() => document.activeElement?.id),
+            'new-logic-operation-select'
+        );
+        const operationSelect = page.locator('#new-logic-operation-select');
+        assert.deepEqual(await operationSelect.locator('option').evaluateAll(options =>
+            options.map(option => ({
+                value: (option as HTMLOptionElement).value,
+                label: option.textContent,
+            }))), [
+            { value: 'constant', label: 'Constant' },
+            { value: 'not', label: 'NOT' },
+            { value: 'and', label: 'AND' },
+            { value: 'or', label: 'OR' },
+            { value: 'xor', label: 'XOR' },
+            { value: 'nand', label: 'NAND' },
+            { value: 'nor', label: 'NOR' },
+            { value: 'xnor', label: 'XNOR' },
+            { value: 'mux', label: 'MUX' },
+            { value: 'concat', label: 'Concat' },
+            { value: 'slice', label: 'Slice' },
+            { value: 'replicate', label: 'Replicate' },
+            { value: 'zero-extend', label: 'Zero Extend' },
+            { value: 'sign-extend', label: 'Sign Extend' },
+            { value: 'reduce-and', label: 'Reduction AND' },
+            { value: 'reduce-or', label: 'Reduction OR' },
+            { value: 'reduce-xor', label: 'Reduction XOR' },
+        ]);
+
+        const nameInput = page.locator('#new-logic-name-input');
+        assert.equal(await nameInput.inputValue(), 'u_constant_1');
+        assert.equal(await page.locator('#new-logic-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-expression-input').inputValue(), "1'b0");
+        assert.equal(await page.locator('#new-logic-expression-field').isVisible(), true);
+        assert.equal(await page.locator('#new-logic-input-count-field').isVisible(), false);
+
+        await nameInput.fill('u_and_0');
+        await page.locator('#add-logic-form button[type="submit"]').click();
+        assert.equal(await dialog.isVisible(), true);
+        assert.notEqual(await nameInput.evaluate(input =>
+            (input as HTMLInputElement).validationMessage), '');
+        assert.deepEqual(await archDesignEditMessages(page), []);
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({ state: 'hidden' });
+        assert.equal(await page.evaluate(() => document.activeElement?.id), 'add-logic-button');
+        await addButton.click();
+        assert.equal(await nameInput.evaluate(input =>
+            (input as HTMLInputElement).validationMessage), '');
+
+        await operationSelect.selectOption('and');
+        assert.equal(await nameInput.inputValue(), 'u_and_1');
+        assert.equal(await page.locator('#new-logic-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-input-count-input').inputValue(), '2');
+        assert.equal(await page.locator('#new-logic-input-count-field').isVisible(), true);
+        assert.equal(await page.locator('#new-logic-expression-field').isVisible(), false);
+
+        await nameInput.fill('u_custom_logic');
+        await operationSelect.selectOption('mux');
+        assert.equal(await nameInput.inputValue(), 'u_custom_logic');
+        assert.equal(await page.locator('#new-logic-width-field').isVisible(), true);
+        assert.equal(await page.locator('#new-logic-input-count-field').isVisible(), false);
+
+        await operationSelect.selectOption('concat');
+        assert.equal(await page.locator('#new-logic-input-count-input').inputValue(), '2');
+        assert.deepEqual(await page.locator('#new-logic-input-widths input').evaluateAll(inputs =>
+            inputs.map(input => (input as HTMLInputElement).value)), ['1', '1']);
+        await page.locator('#new-logic-input-count-input').fill('3');
+        await page.locator('#new-logic-input-count-input').press('Tab');
+        assert.deepEqual(await page.locator('#new-logic-input-widths input').evaluateAll(inputs =>
+            inputs.map(input => (input as HTMLInputElement).value)), [
+            '1', '1', '1',
+        ]);
+
+        await operationSelect.selectOption('slice');
+        assert.equal(await page.locator('#new-logic-input-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-msb-input').inputValue(), '0');
+        assert.equal(await page.locator('#new-logic-lsb-input').inputValue(), '0');
+        assert.equal(await page.locator('#new-logic-slice-fields').isVisible(), true);
+
+        await operationSelect.selectOption('replicate');
+        assert.equal(await page.locator('#new-logic-input-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-count-input').inputValue(), '2');
+        assert.equal(await page.locator('#new-logic-count-field').isVisible(), true);
+
+        await operationSelect.selectOption('zero-extend');
+        assert.equal(await page.locator('#new-logic-input-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-output-width-input').inputValue(), '2');
+        assert.equal(await page.locator('#new-logic-output-width-field').isVisible(), true);
+
+        await operationSelect.selectOption('reduce-xor');
+        assert.equal(await page.locator('#new-logic-input-width-input').inputValue(), '1');
+        assert.equal(await page.locator('#new-logic-output-width-field').isVisible(), false);
+
+        await page.setViewportSize({ width: 360, height: 640 });
+        const dialogBounds = await dialog.boundingBox();
+        assert.ok(dialogBounds);
+        assert.ok(dialogBounds.x >= 0 && dialogBounds.y >= 0, JSON.stringify(dialogBounds));
+        assert.ok(
+            dialogBounds.x + dialogBounds.width <= 360
+                && dialogBounds.y + dialogBounds.height <= 640,
+            JSON.stringify(dialogBounds)
+        );
+
+        await operationSelect.selectOption('sign-extend');
+        await nameInput.fill('u_sign_ext');
+        await page.locator('#new-logic-input-width-input').fill('0');
+        await page.locator('#new-logic-output-width-input').fill('16');
+        await page.locator('#add-logic-form button[type="submit"]').click();
+        assert.equal(await dialog.isVisible(), true);
+        assert.deepEqual(await archDesignEditMessages(page), []);
+
+        await page.locator('#new-logic-input-width-input').fill('8');
+        await page.locator('#new-logic-output-width-input').fill('16');
+        await page.locator('#add-logic-form button[type="submit"]').click();
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.some(message => message.type === 'editArchDesign')
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'addLogic',
+            logic: {
+                name: 'u_sign_ext',
+                operation: 'sign-extend',
+                inputWidth: 8,
+                outputWidth: 16,
+            },
+        });
+
+        const updatedFixture = logicUtilityFixture();
+        updatedFixture.design.logic.push({
+            name: 'u_sign_ext',
+            operation: 'sign-extend',
+            inputWidth: 8,
+            outputWidth: 16,
+        });
+        updatedFixture.graph.nodes.push({
+            id: 'logic:u_sign_ext',
+            kind: 'expression',
+            label: 'u_sign_ext',
+            subtitle: 'Sign Extend',
+            pins: [{
+                id: 'logic:u_sign_ext:in',
+                name: 'in',
+                direction: 'load',
+                width: { kind: 'known', bits: 8 },
+                readOnly: false,
+            }, {
+                id: 'logic:u_sign_ext:out',
+                name: 'out',
+                direction: 'driver',
+                width: { kind: 'known', bits: 16 },
+                readOnly: false,
+            }],
+            readOnly: false,
+        });
+        updatedFixture.layout.placement.nodes['logic:u_sign_ext'] = {
+            column: 2,
+            order: 0,
+            yOffset: 0,
+            fixed: false,
+        };
+        await publishArchDesignFixture(page, 'fixture:logic-utility:2', updatedFixture);
+        await page.locator('.x6-node[data-cell-id="logic:u_sign_ext"] rect').first().click();
+        await page.locator('#inspector[data-kind="logic"]').waitFor();
+        const inputWidth = page.locator('#inspector-form #logic-input-width');
+        await inputWidth.fill('4');
+        await inputWidth.press('Enter');
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.filter(message => message.type === 'editArchDesign').length >= 2
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'updateLogic',
+            name: 'u_sign_ext',
+            logic: {
+                name: 'u_sign_ext',
+                operation: 'sign-extend',
+                inputWidth: 4,
+                outputWidth: 16,
+            },
+        });
+
+        updatedFixture.design.logic[3] = {
+            name: 'u_sign_ext',
+            operation: 'sign-extend',
+            inputWidth: 4,
+            outputWidth: 16,
+        };
+        await publishArchDesignFixture(page, 'fixture:logic-utility:3', updatedFixture);
+        await page.locator('#inspector[data-kind="logic"]').waitFor();
+        await page.locator('#delete-button').click();
+        await page.waitForFunction(() => (
+            (window as unknown as { __veriflowMessages: Array<{ type?: string }> })
+                .__veriflowMessages.filter(message => message.type === 'editArchDesign').length >= 3
+        ));
+        assert.deepEqual(lastItem(await archDesignEditMessages(page))?.edit, {
+            type: 'removeLogic',
+            name: 'u_sign_ext',
         });
         assert.deepEqual(rendererErrors, []);
     } finally {

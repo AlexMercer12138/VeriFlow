@@ -11,6 +11,7 @@ import {
     Cable,
     ChevronDown,
     ChevronUp,
+    Component,
     createElement,
     FileOutput,
     Map as MapIcon,
@@ -49,13 +50,17 @@ import {
 import type {
     ArchDesignEdit,
     ArchDesignInterfaceEndpoint,
+    ArchDesignLogic,
     ArchDesignPresentation,
     ArchDesignPortDirection,
+    ArchDesignWidth,
 } from '@veriflow/schematic-core/arch-design';
+import { isSafeDefaultExpression } from '../../schematic-core/src/archDesign/defaults';
 import type { SchematicLayout } from '../../../veriflow-vscode/src/schematic/layoutStore';
 import type { HostEvent, WebviewCommand } from '../../../veriflow-vscode/src/schematic/protocol';
 import {
     archDesignEndpointForPin,
+    ARCH_DESIGN_LOGIC_OPERATION_OPTIONS,
     cloneSchematicLayout,
     DebouncedLayoutSaveScheduler,
     formatSchematicDiagnosticDetails,
@@ -162,6 +167,7 @@ const dom = {
     inspectorToggleButton: requiredElement<HTMLButtonElement>('inspector-toggle-button'),
     authoringActions: requiredElement<HTMLDivElement>('authoring-actions'),
     addInstanceButton: requiredElement<HTMLButtonElement>('add-instance-button'),
+    addLogicButton: requiredElement<HTMLButtonElement>('add-logic-button'),
     addPortButton: requiredElement<HTMLButtonElement>('add-port-button'),
     connectButton: requiredElement<HTMLButtonElement>('connect-button'),
     exportButton: requiredElement<HTMLButtonElement>('export-button'),
@@ -175,6 +181,27 @@ const dom = {
     addInstanceForm: requiredElement<HTMLFormElement>('add-instance-form'),
     instanceNameInput: requiredElement<HTMLInputElement>('instance-name-input'),
     instanceModuleSelect: requiredElement<HTMLSelectElement>('instance-module-select'),
+    addLogicDialog: requiredElement<HTMLDialogElement>('add-logic-dialog'),
+    addLogicForm: requiredElement<HTMLFormElement>('add-logic-form'),
+    logicOperationSelect: requiredElement<HTMLSelectElement>('new-logic-operation-select'),
+    logicNameInput: requiredElement<HTMLInputElement>('new-logic-name-input'),
+    logicWidthField: requiredElement<HTMLDivElement>('new-logic-width-field'),
+    logicWidthInput: requiredElement<HTMLInputElement>('new-logic-width-input'),
+    logicExpressionField: requiredElement<HTMLDivElement>('new-logic-expression-field'),
+    logicExpressionInput: requiredElement<HTMLInputElement>('new-logic-expression-input'),
+    logicInputCountField: requiredElement<HTMLDivElement>('new-logic-input-count-field'),
+    logicInputCountInput: requiredElement<HTMLInputElement>('new-logic-input-count-input'),
+    logicInputWidthsField: requiredElement<HTMLFieldSetElement>('new-logic-input-widths-field'),
+    logicInputWidths: requiredElement<HTMLDivElement>('new-logic-input-widths'),
+    logicInputWidthField: requiredElement<HTMLDivElement>('new-logic-input-width-field'),
+    logicInputWidthInput: requiredElement<HTMLInputElement>('new-logic-input-width-input'),
+    logicOutputWidthField: requiredElement<HTMLDivElement>('new-logic-output-width-field'),
+    logicOutputWidthInput: requiredElement<HTMLInputElement>('new-logic-output-width-input'),
+    logicSliceFields: requiredElement<HTMLDivElement>('new-logic-slice-fields'),
+    logicMsbInput: requiredElement<HTMLInputElement>('new-logic-msb-input'),
+    logicLsbInput: requiredElement<HTMLInputElement>('new-logic-lsb-input'),
+    logicCountField: requiredElement<HTMLDivElement>('new-logic-count-field'),
+    logicCountInput: requiredElement<HTMLInputElement>('new-logic-count-input'),
     addPortDialog: requiredElement<HTMLDialogElement>('add-port-dialog'),
     addPortForm: requiredElement<HTMLFormElement>('add-port-form'),
     portNameInput: requiredElement<HTMLInputElement>('port-name-input'),
@@ -830,6 +857,7 @@ let authoringPending = false;
 let currentArchDesignState: EditableArchDesignState | undefined;
 let currentArchDesignInspector: ArchDesignInspectorModel | undefined;
 let instanceNameAutomatic = true;
+let logicNameAutomatic = true;
 const autoFittedModules = new Set<string>();
 let archDesignLayoutSaveInFlight = false;
 let queuedArchDesignLayoutSave: Readonly<{
@@ -1330,6 +1358,7 @@ function setAuthoringControls(): void {
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
     dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
+    dom.addLogicButton.disabled = disabled;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
     dom.exportButton.disabled = disabled;
@@ -2211,6 +2240,7 @@ function installIcons(): void {
         [dom.searchPreviousButton, ChevronUp],
         [dom.searchNextButton, ChevronDown],
         [dom.addInstanceButton, AddBox],
+        [dom.addLogicButton, Component],
         [dom.addPortButton, PanelTopOpen],
         [dom.connectButton, Cable],
         [dom.exportButton, FileOutput],
@@ -2222,6 +2252,17 @@ function installIcons(): void {
     updateInspectorToggle();
 }
 
+function installLogicOperationOptions(): void {
+    const options = ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.map(operation => {
+        const option = document.createElement('option');
+        option.value = operation.value;
+        option.textContent = operation.label;
+        return option;
+    });
+    dom.logicOperationSelect.replaceChildren(...options);
+}
+
+installLogicOperationOptions();
 installIcons();
 renderCurrentInspector();
 
@@ -2359,6 +2400,7 @@ function showDialog(dialog: HTMLDialogElement, firstControl: HTMLElement): void 
 }
 
 dom.addInstanceDialog.addEventListener('close', () => dom.addInstanceButton.focus());
+dom.addLogicDialog.addEventListener('close', () => dom.addLogicButton.focus());
 dom.addPortDialog.addEventListener('close', () => dom.addPortButton.focus());
 
 function parsedPortWidth(value: string): number | { expression: string } | undefined {
@@ -2411,6 +2453,136 @@ function updateAutomaticInstanceName(): void {
         : '';
 }
 
+type LogicOperation = ArchDesignLogic['operation'];
+
+const logicGateOperations = new Set<LogicOperation>([
+    'and', 'or', 'xor', 'nand', 'nor', 'xnor',
+]);
+const logicReductionOperations = new Set<LogicOperation>([
+    'reduce-and', 'reduce-or', 'reduce-xor',
+]);
+
+function selectedLogicOperation(): LogicOperation | undefined {
+    const operation = dom.logicOperationSelect.value;
+    return ARCH_DESIGN_LOGIC_OPERATION_OPTIONS.some(option => option.value === operation)
+        ? operation as LogicOperation
+        : undefined;
+}
+
+function generatedLogicName(operation: LogicOperation): string {
+    const base = `u_${operation.replace(/-/g, '_')}`;
+    const pattern = new RegExp(`^${escapeRegExp(base)}_([0-9]+)$`);
+    const usedNames = [
+        ...(currentArchDesignState?.design.ports.map(item => item.name) ?? []),
+        ...(currentArchDesignState?.design.instances.map(item => item.name) ?? []),
+        ...(currentArchDesignState?.design.logic.map(item => item.name) ?? []),
+    ];
+    const usedSuffixes = new Set<number>();
+    for (const name of usedNames) {
+        const match = pattern.exec(name);
+        if (match) usedSuffixes.add(Number(match[1]));
+    }
+    let suffix = 0;
+    while (usedSuffixes.has(suffix)) suffix += 1;
+    return `${base}_${suffix}`;
+}
+
+function updateAutomaticLogicName(): void {
+    const operation = selectedLogicOperation();
+    dom.logicNameInput.value = operation ? generatedLogicName(operation) : '';
+}
+
+function setLogicFieldVisible(field: HTMLElement, visible: boolean): void {
+    field.hidden = !visible;
+    field.querySelectorAll<HTMLInputElement>('input').forEach(input => {
+        input.disabled = !visible;
+    });
+}
+
+function boundedInteger(value: string, minimum: number, maximum: number): number | undefined {
+    const trimmed = value.trim();
+    if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return undefined;
+    const result = Number(trimmed);
+    return Number.isSafeInteger(result) && result >= minimum && result <= maximum
+        ? result
+        : undefined;
+}
+
+function requiredLogicWidth(value: string): ArchDesignWidth | undefined {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return undefined;
+    if (/^[1-9][0-9]*$/.test(trimmed)) {
+        const width = Number(trimmed);
+        return Number.isSafeInteger(width) ? width : undefined;
+    }
+    if (/^[+-]?[0-9]+$/.test(trimmed)) return undefined;
+    return { expression: trimmed };
+}
+
+function renderLogicInputWidths(count: number): void {
+    const previous = Array.from(dom.logicInputWidths.querySelectorAll<HTMLInputElement>('input'))
+        .map(input => input.value);
+    const fields = document.createDocumentFragment();
+    for (let index = 0; index < count; index += 1) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'logic-field';
+        const label = document.createElement('label');
+        label.htmlFor = `new-logic-input-width-${index}`;
+        label.textContent = `Input ${index} width`;
+        const input = document.createElement('input');
+        input.id = `new-logic-input-width-${index}`;
+        input.required = true;
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.value = previous[index] ?? '1';
+        wrapper.append(label, input);
+        fields.append(wrapper);
+    }
+    dom.logicInputWidths.replaceChildren(fields);
+}
+
+function resetLogicOperationFields(operation: LogicOperation): void {
+    dom.logicWidthInput.value = '1';
+    dom.logicExpressionInput.value = "1'b0";
+    dom.logicInputCountInput.value = '2';
+    dom.logicInputWidthInput.value = '1';
+    dom.logicOutputWidthInput.value = '2';
+    dom.logicMsbInput.value = '0';
+    dom.logicLsbInput.value = '0';
+    dom.logicCountInput.value = '2';
+    renderLogicInputWidths(2);
+
+    const gate = logicGateOperations.has(operation);
+    const concat = operation === 'concat';
+    const slice = operation === 'slice';
+    const replicate = operation === 'replicate';
+    const extend = operation === 'zero-extend' || operation === 'sign-extend';
+    const reduction = logicReductionOperations.has(operation);
+    setLogicFieldVisible(
+        dom.logicWidthField,
+        operation === 'constant' || operation === 'not' || operation === 'mux' || gate
+    );
+    setLogicFieldVisible(dom.logicExpressionField, operation === 'constant');
+    setLogicFieldVisible(dom.logicInputCountField, gate || concat);
+    setLogicFieldVisible(dom.logicInputWidthsField, concat);
+    setLogicFieldVisible(dom.logicInputWidthField, slice || replicate || extend || reduction);
+    setLogicFieldVisible(dom.logicOutputWidthField, extend);
+    setLogicFieldVisible(dom.logicSliceFields, slice);
+    setLogicFieldVisible(dom.logicCountField, replicate);
+}
+
+function showAddLogicDialog(): boolean {
+    if (dom.addLogicButton.disabled) return false;
+    logicNameAutomatic = true;
+    dom.logicNameInput.setCustomValidity('');
+    dom.logicExpressionInput.setCustomValidity('');
+    dom.logicOperationSelect.value = 'constant';
+    resetLogicOperationFields('constant');
+    updateAutomaticLogicName();
+    showDialog(dom.addLogicDialog, dom.logicOperationSelect);
+    return dom.addLogicDialog.open;
+}
+
 function showAddInstanceDialog(): boolean {
     if (dom.addInstanceButton.disabled) return false;
     instanceNameAutomatic = true;
@@ -2420,6 +2592,7 @@ function showAddInstanceDialog(): boolean {
 }
 
 dom.addInstanceButton.addEventListener('click', showAddInstanceDialog);
+dom.addLogicButton.addEventListener('click', showAddLogicDialog);
 
 dom.instanceModuleSelect.addEventListener('change', () => {
     if (instanceNameAutomatic) updateAutomaticInstanceName();
@@ -2427,6 +2600,24 @@ dom.instanceModuleSelect.addEventListener('change', () => {
 
 dom.instanceNameInput.addEventListener('input', () => {
     instanceNameAutomatic = false;
+});
+
+dom.logicOperationSelect.addEventListener('change', () => {
+    const operation = selectedLogicOperation();
+    if (!operation) return;
+    resetLogicOperationFields(operation);
+    if (logicNameAutomatic) updateAutomaticLogicName();
+});
+
+dom.logicNameInput.addEventListener('input', () => {
+    logicNameAutomatic = false;
+    dom.logicNameInput.setCustomValidity('');
+});
+
+dom.logicInputCountInput.addEventListener('change', () => {
+    if (selectedLogicOperation() !== 'concat') return;
+    const count = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+    if (count !== undefined) renderLogicInputWidths(count);
 });
 
 function showAddPortDialog(): boolean {
@@ -2500,6 +2691,102 @@ dom.addPortForm.addEventListener('submit', event => {
         type: 'addPort',
         port: { name, direction, ...(width === undefined ? {} : { width }) },
     });
+});
+
+function logicNameAvailable(name: string): boolean {
+    if (!currentArchDesignState) return false;
+    return !currentArchDesignState.design.ports.some(item => item.name === name)
+        && !currentArchDesignState.design.instances.some(item => item.name === name)
+        && !currentArchDesignState.design.logic.some(item => item.name === name);
+}
+
+function readLogicForm(): ArchDesignLogic | undefined {
+    const operation = selectedLogicOperation();
+    const name = dom.logicNameInput.value.trim();
+    dom.logicNameInput.setCustomValidity('');
+    dom.logicExpressionInput.setCustomValidity('');
+    if (!operation || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) return undefined;
+    if (!logicNameAvailable(name)) {
+        dom.logicNameInput.setCustomValidity('Name is already in use');
+        dom.logicNameInput.reportValidity();
+        return undefined;
+    }
+    const width = requiredLogicWidth(dom.logicWidthInput.value);
+    const inputWidth = requiredLogicWidth(dom.logicInputWidthInput.value);
+    if (operation === 'constant') {
+        const expression = dom.logicExpressionInput.value.trim();
+        if (!width || !isSafeDefaultExpression(expression)) {
+            if (!isSafeDefaultExpression(expression)) {
+                dom.logicExpressionInput.setCustomValidity('Enter a constant expression');
+                dom.logicExpressionInput.reportValidity();
+            }
+            return undefined;
+        }
+        return { name, operation, width, expression };
+    }
+    if (operation === 'not' || operation === 'mux') {
+        return width ? { name, operation, width } : undefined;
+    }
+    if (logicGateOperations.has(operation)) {
+        const inputCount = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+        return width && inputCount !== undefined
+            ? {
+                name,
+                operation: operation as 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor',
+                width,
+                inputCount,
+            }
+            : undefined;
+    }
+    if (operation === 'concat') {
+        const inputCount = boundedInteger(dom.logicInputCountInput.value, 2, 8);
+        if (inputCount === undefined) return undefined;
+        const inputWidths = Array.from(
+            dom.logicInputWidths.querySelectorAll<HTMLInputElement>('input')
+        )
+            .map(input => requiredLogicWidth(input.value));
+        return inputWidths.length === inputCount && inputWidths.every(item => item !== undefined)
+            ? { name, operation, inputWidths: inputWidths as ArchDesignWidth[] }
+            : undefined;
+    }
+    if (operation === 'slice') {
+        const msb = boundedInteger(dom.logicMsbInput.value, 0, Number.MAX_SAFE_INTEGER);
+        const lsb = boundedInteger(dom.logicLsbInput.value, 0, Number.MAX_SAFE_INTEGER);
+        return inputWidth && msb !== undefined && lsb !== undefined
+            && msb >= lsb && (typeof inputWidth !== 'number' || msb < inputWidth)
+            ? { name, operation, inputWidth, msb, lsb }
+            : undefined;
+    }
+    if (operation === 'replicate') {
+        const count = boundedInteger(dom.logicCountInput.value, 1, 65_536);
+        return inputWidth && count !== undefined
+            ? { name, operation, inputWidth, count }
+            : undefined;
+    }
+    if (operation === 'zero-extend' || operation === 'sign-extend') {
+        const outputWidth = requiredLogicWidth(dom.logicOutputWidthInput.value);
+        return inputWidth && outputWidth
+            && (typeof inputWidth !== 'number'
+                || typeof outputWidth !== 'number'
+                || outputWidth >= inputWidth)
+            ? { name, operation, inputWidth, outputWidth }
+            : undefined;
+    }
+    return inputWidth && logicReductionOperations.has(operation)
+        ? {
+            name,
+            operation: operation as 'reduce-and' | 'reduce-or' | 'reduce-xor',
+            inputWidth,
+        }
+        : undefined;
+}
+
+dom.addLogicForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const logic = readLogicForm();
+    if (!logic) return;
+    dom.addLogicDialog.close();
+    postArchDesignEdit({ type: 'addLogic', logic });
 });
 
 document.querySelectorAll<HTMLButtonElement>('[data-dialog-cancel]').forEach(button => {
@@ -2652,6 +2939,7 @@ function closeActiveDialog(): boolean {
     if (!dialog) return false;
     dialog.close();
     if (dialog === dom.addInstanceDialog) dom.addInstanceButton.focus();
+    if (dialog === dom.addLogicDialog) dom.addLogicButton.focus();
     if (dialog === dom.addPortDialog) dom.addPortButton.focus();
     return true;
 }
@@ -2675,6 +2963,7 @@ function cancelPendingConnectionShortcut(): boolean {
 function handleArchDesignShortcut(key: string): boolean {
     switch (key) {
         case 'a': return showAddInstanceDialog();
+        case 'l': return showAddLogicDialog();
         case 'p': return showAddPortDialog();
         case 'c': return toggleConnectionMode();
         case 'e': return exportRtl();
