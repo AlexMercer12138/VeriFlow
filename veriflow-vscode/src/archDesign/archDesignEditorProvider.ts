@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import {
@@ -20,6 +21,7 @@ import {
 
 import type { WorkspaceHdlIndex } from '../core/hdl/workspaceHdlIndex';
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
+import { buildModuleInstantiationChoices } from '../core/moduleInstantiationChoices';
 import { parseWebviewCommand, type HostEvent } from '../schematic/protocol';
 import { relayoutAll, type SchematicLayout } from '../schematic/layoutStore';
 import { buildSchematicWebviewHtml } from '../schematic/webviewSupport';
@@ -416,6 +418,17 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
             state.lastIndex = index;
             const sourceDefinitions = index?.getAllDefinitions('module') ?? [];
             const definitions = toArchDesignModuleDefinitions(sourceDefinitions);
+            const workspaceRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath
+                ?? path.dirname(document.uri.fsPath);
+            const moduleChoices = buildModuleInstantiationChoices(
+                sourceDefinitions,
+                workspaceRoot
+            ).map(choice => ({
+                label: choice.label,
+                description: choice.description,
+                moduleName: choice.moduleName,
+                definitionKey: choice.definitionKey,
+            }));
             const projection = projectArchDesignGraph(design, definitions, {
                 fileUri: document.uri.toString(),
                 interfaceCatalog: interfaceProtocols.catalog,
@@ -485,6 +498,7 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 revision: nextRevision,
                 design,
                 catalog: definitions,
+                moduleChoices,
                 validation,
                 inspector,
             });

@@ -402,8 +402,14 @@ function endpointDefaultKey(endpoint: ArchDesignEndpoint): string {
 
 function matchingDefinition(
     catalog: readonly ArchDesignModuleDefinition[],
-    module: string
+    module: string,
+    definitionKey?: string
 ): ArchDesignModuleDefinition | undefined {
+    if (definitionKey !== undefined) {
+        return catalog.find(candidate =>
+            candidate.key === definitionKey && candidate.name === module
+        );
+    }
     const matches = catalog.filter(candidate => candidate.name === module);
     return matches.length === 1 ? matches[0] : undefined;
 }
@@ -452,7 +458,11 @@ function projectInstanceInspector(
 ): ArchDesignInspectorModel | undefined {
     const instance = snapshot.design.instances.find(candidate => candidate.name === name);
     if (!instance) return undefined;
-    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definition = matchingDefinition(
+        snapshot.catalog,
+        instance.module,
+        instance.definitionKey
+    );
     const fields: ArchDesignInspectorField[] = [
         textField('instance-name', 'Name', instance.name, value => value.trim().length > 0
             ? { type: 'renameInstance', name: instance.name, nextName: value.trim() }
@@ -655,7 +665,11 @@ function projectPinAuthoringInspector(
     }
     const instance = snapshot.design.instances.find(candidate => candidate.name === node.label);
     if (!instance) return undefined;
-    const definition = matchingDefinition(snapshot.catalog, instance.module);
+    const definition = matchingDefinition(
+        snapshot.catalog,
+        instance.module,
+        instance.definitionKey
+    );
     const definitionPort = definition?.ports.find(candidate => candidate.name === pin.name);
     const interfaceItem = pin.interface === undefined
         ? undefined

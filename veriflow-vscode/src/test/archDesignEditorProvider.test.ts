@@ -285,6 +285,9 @@ async function createHarness(
             },
         },
         workspace: {
+            getWorkspaceFolder(): { uri: FakeUri } {
+                return { uri: FakeUri.file('/workspace') };
+            },
             fs: {
                 async readFile(uri: FakeUri): Promise<Uint8Array> {
                     return fs.readFileSync(uri.fsPath);
@@ -500,6 +503,52 @@ async function createHarness(
             delete require.cache[require.resolve('../archDesign/archDesignEditorProvider')];
         },
     };
+}
+
+async function testPublishesSourceAwareDuplicateModuleChoices(): Promise<void> {
+    const first: HdlDefinitionSummary = {
+        ...moduleDefinition(),
+        key: 'module:file:///workspace/rtl/duplicate.v:0',
+        name: 'duplicate',
+        uri: 'file:///workspace/rtl/duplicate.v',
+        ports: [{ name: 'rtl_o', direction: 'output', width: { kind: 'known', bits: 1 } }],
+    };
+    const second: HdlDefinitionSummary = {
+        ...moduleDefinition(),
+        key: 'module:file:///workspace/vendor/duplicate.v:0',
+        name: 'duplicate',
+        uri: 'file:///workspace/vendor/duplicate.v',
+        ports: [{ name: 'vendor_o', direction: 'output', width: { kind: 'known', bits: 8 } }],
+    };
+    const harness = await createHarness(sourceDesign(), [first, second]);
+    try {
+        const state = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(state?.type === 'archDesignState' && state.status === 'editable');
+        if (state?.type !== 'archDesignState' || state.status !== 'editable') return;
+
+        assert.deepEqual(Reflect.get(state, 'moduleChoices'), [{
+            label: 'duplicate',
+            description: 'rtl/duplicate.v',
+            moduleName: 'duplicate',
+            definitionKey: first.key,
+        }, {
+            label: 'duplicate',
+            description: 'vendor/duplicate.v',
+            moduleName: 'duplicate',
+            definitionKey: second.key,
+        }]);
+        assert.deepEqual(state.catalog.map(definition => [
+            definition.key,
+            definition.ports.map(port => port.name),
+        ]), [
+            [first.key, ['rtl_o']],
+            [second.key, ['vendor_o']],
+        ]);
+    } finally {
+        await harness.dispose();
+    }
 }
 
 async function testValidateWaitsForInitialEditorRefresh(): Promise<void> {
@@ -1607,6 +1656,7 @@ async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    await testPublishesSourceAwareDuplicateModuleChoices();
     await testValidateWaitsForInitialEditorRefresh();
     await testExportWaitsForInitialEditorRefresh();
     await testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands();

@@ -112,7 +112,7 @@ function testLayoutProjection(): void {
     assert.deepStrictEqual(layout.viewport, { x: 0, y: 0, zoom: 1 });
     assert.strictEqual(layout.minimap, true);
     assert.deepStrictEqual(layout.placement.nodes['instance:u_core'], {
-        column: 1,
+        column: 2,
         order: 0,
         yOffset: 12,
         fixed: true,
@@ -155,7 +155,7 @@ function testLayoutProjection(): void {
     );
     assert.deepStrictEqual(Object.fromEntries(Object.entries(presentation.nodes ?? {})), {
         'port:clk': { column: 0, order: 0 },
-        'port:gpio': { column: 2, order: 0 },
+        'port:gpio': { column: 3, order: 0 },
         'instance:u_core': {
             column: 3,
             order: 1,

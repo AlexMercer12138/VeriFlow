@@ -370,6 +370,29 @@ function testArchDesignInspectorProjection(): void {
         name: 'u_core',
     });
 
+    const selectedDuplicate: ArchDesignModuleDefinition = {
+        ...catalog[0],
+        key: 'module:file:///selected/core.sv:0',
+        parameters: [{ name: 'SELECTED', defaultExpression: '7' }],
+    };
+    const duplicateModel = projectArchDesignInspector(
+        {
+            ...snapshot,
+            design: {
+                ...design,
+                instances: [{
+                    ...design.instances[0],
+                    definitionKey: selectedDuplicate.key,
+                }, design.instances[1]],
+            },
+            catalog: [catalog[0], selectedDuplicate, catalog[1]],
+        },
+        graph,
+        ['instance:u_core'],
+        undefined
+    );
+    assert.strictEqual(fieldById(duplicateModel, 'parameter-SELECTED').placeholder, 'Default: 7');
+
     const inputPinModel = projectArchDesignInspector(
         snapshot,
         graph,

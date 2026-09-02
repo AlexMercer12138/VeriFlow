@@ -68,6 +68,12 @@ export type HostEvent =
         revision: string;
         design: ArchDesign;
         catalog: readonly ArchDesignModuleDefinition[];
+        moduleChoices?: readonly Readonly<{
+            label: string;
+            description: string;
+            moduleName: string;
+            definitionKey: string;
+        }>[];
         validation: ArchDesignValidationResult;
         inspector: ArchDesignInspectorData;
     }
