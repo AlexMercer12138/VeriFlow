@@ -115,7 +115,7 @@ test('rejects handwritten RTL before writing a temporary file', async () => {
 test('rejects malformed and non-leading generated markers before temporary writes', async () => {
     await withTemporaryDirectory(async directory => {
         const valid = generatedRtl('original_soc');
-        const malformed = valid.replace('schema=1', 'schema=invalid');
+        const malformed = valid.replace(/schema=\d+/, 'schema=invalid');
         const fixtures = [malformed, `\n${valid}`];
         assert.deepEqual(fixtures.map(parseArchDesignRtlMarker), [undefined, undefined]);
         let temporaryWrites = 0;

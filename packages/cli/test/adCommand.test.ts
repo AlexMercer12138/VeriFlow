@@ -1061,7 +1061,7 @@ test('refuses handwritten, malformed-marker, and non-leading-marker targets', as
         assert.notEqual(parseArchDesignRtlMarker(generated), undefined);
         const fixtures = [
             'module handwritten;\nendmodule\n',
-            generated.replace('schema=1', 'schema=invalid'),
+            generated.replace(/schema=\d+/, 'schema=invalid'),
             `\n${generated}`,
         ];
         assert.deepEqual(fixtures.map(parseArchDesignRtlMarker), [
