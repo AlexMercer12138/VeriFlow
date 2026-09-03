@@ -4279,6 +4279,7 @@ test('Arch Design generates source-aware instance names', {
             sourceAwareInstanceFixture()
         );
 
+        assert.equal(await page.locator('#minimap-button').isEnabled(), true);
         const moduleSelect = page.locator('#instance-module-select');
         assert.deepEqual(await moduleSelect.locator('option').allTextContents(), [
             'alu (rtl/alu.v)',
@@ -4288,12 +4289,42 @@ test('Arch Design generates source-aware instance names', {
 
         await page.locator('#add-instance-button').click();
         await page.locator('#add-instance-dialog').waitFor({ state: 'visible' });
+        const moduleFilter = page.locator('#instance-module-filter');
         assert.equal(
             await page.evaluate(() => document.activeElement?.id),
-            'instance-module-select'
+            'instance-module-filter'
         );
         const nameInput = page.locator('#instance-name-input');
         assert.equal(await nameInput.inputValue(), 'u_alu_1');
+
+        await moduleFilter.fill('VENDOR');
+        assert.deepEqual(await moduleSelect.locator('option').allTextContents(), [
+            'alu (vendor/alu.v)',
+        ]);
+        assert.equal(
+            await moduleSelect.inputValue(),
+            'module:file:///workspace/vendor/alu.v:0'
+        );
+        assert.equal(await nameInput.inputValue(), 'u_alu_1');
+        await moduleFilter.fill('alu');
+        assert.equal(
+            await moduleSelect.inputValue(),
+            'module:file:///workspace/vendor/alu.v:0'
+        );
+        await moduleFilter.fill('rtl/uart');
+        assert.deepEqual(await moduleSelect.locator('option').allTextContents(), [
+            'uart (rtl/uart.v)',
+        ]);
+        assert.equal(await nameInput.inputValue(), 'u_uart_1');
+        await moduleFilter.fill('missing');
+        assert.equal(await moduleSelect.locator('option').count(), 0);
+        assert.equal(await moduleSelect.isDisabled(), true);
+        assert.equal(await page.locator('#add-instance-button').isEnabled(), true);
+        assert.equal(
+            await page.locator('#add-instance-form button[type="submit"]').isDisabled(),
+            true
+        );
+        await moduleFilter.fill('');
 
         await moduleSelect.selectOption('module:file:///workspace/rtl/uart.v:0');
         assert.equal(await nameInput.inputValue(), 'u_uart_1');

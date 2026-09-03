@@ -21,6 +21,13 @@ function localFilepath(uri: string): string | undefined {
 }
 
 function describeDefinition(definition: HdlDefinitionSummary, root: string): string {
+    const workspacePrefix = `${definition.kind}:workspace:/`;
+    if (definition.key.startsWith(workspacePrefix)) {
+        const fragment = definition.key.indexOf('#', workspacePrefix.length);
+        if (fragment >= 0) {
+            return decodeURI(definition.key.slice(workspacePrefix.length, fragment));
+        }
+    }
     const filepath = localFilepath(definition.uri);
     if (!filepath) {
         return definition.uri;

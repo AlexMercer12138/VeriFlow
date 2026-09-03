@@ -15,6 +15,7 @@ import {
     type ArchDesignValidationResult,
 } from '@veriflow/schematic-core/arch-design';
 import type { SchematicGraph } from '@veriflow/schematic-core';
+import { createArchDesignDefinitionCatalog } from '@veriflow/hdl-runtime/archDesignDefinitionReference';
 import {
     createInterfaceProtocolCatalog,
     type InterfaceProtocolCatalog,
@@ -31,6 +32,7 @@ import {
     archDesignGraphsEqual,
     archDesignPresentationFromLayout,
     projectArchDesignInspectorData,
+    normalizeArchDesignDefinitionKeys,
     toArchDesignModuleDefinitions,
 } from './editorSupport';
 import {
@@ -417,14 +419,21 @@ export class ArchDesignEditorProvider implements vscode.CustomTextEditorProvider
                 || state.disposed
                 || token.isCancellationRequested) return;
             state.lastIndex = index;
-            const sourceDefinitions = index?.getAllDefinitions('module') ?? [];
+            const runtimeDefinitions = index?.getAllDefinitions('module') ?? [];
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+            const workspaceRootUri = workspaceFolder?.uri
+                ?? vscode.Uri.file(path.dirname(document.uri.fsPath));
+            const definitionCatalog = createArchDesignDefinitionCatalog(
+                runtimeDefinitions,
+                workspaceRootUri.toString()
+            );
+            const sourceDefinitions = definitionCatalog.definitions;
             const definitions = toArchDesignModuleDefinitions(sourceDefinitions);
             const design = reconcileArchDesignInstanceParameters(
-                parsedDesign,
+                normalizeArchDesignDefinitionKeys(parsedDesign, definitionCatalog),
                 definitions
             );
-            const workspaceRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath
-                ?? path.dirname(document.uri.fsPath);
+            const workspaceRoot = workspaceFolder?.uri.fsPath ?? path.dirname(document.uri.fsPath);
             const moduleChoices = buildModuleInstantiationChoices(
                 sourceDefinitions,
                 workspaceRoot

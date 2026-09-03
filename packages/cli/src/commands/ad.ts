@@ -10,6 +10,11 @@ import {
 } from '@veriflow/flow-core';
 import { canonicalizeSourceUri } from '@veriflow/hdl-core/preprocessor';
 import {
+    createArchDesignDefinitionCatalog,
+    selectArchDesignDefinitionKey,
+    type ArchDesignDefinitionCatalog,
+} from '@veriflow/hdl-runtime/archDesignDefinitionReference';
+import {
     createEmptyArchDesignText,
     exportArchDesignRtl,
     parseArchDesignText,
@@ -234,6 +239,64 @@ async function scanModuleDefinitions(roots: string[]) {
     }
 }
 
+function archDesignCatalogRoot(
+    loaded: LoadedArchDesign,
+    options: CommandOptions,
+    environment: CommandEnvironment,
+    project: Project | undefined
+): string {
+    const root = project === undefined
+        ? path.dirname(loaded.filepath)
+        : path.dirname(path.resolve(environment.cwd, options.project!));
+    try {
+        return realpathSync(root);
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return path.resolve(root);
+        throw error;
+    }
+}
+
+async function scanArchDesignModuleDefinitions(
+    loaded: LoadedArchDesign,
+    options: CommandOptions,
+    environment: CommandEnvironment,
+    project: Project | undefined
+): Promise<ArchDesignDefinitionCatalog> {
+    const definitions = await scanModuleDefinitions(
+        moduleCatalogRoots(loaded, options, environment, project)
+    );
+    return createArchDesignDefinitionCatalog(
+        definitions,
+        pathToFileURL(archDesignCatalogRoot(
+            loaded,
+            options,
+            environment,
+            project
+        )).toString()
+    );
+}
+
+function resolveArchDesignDefinitionKeys(
+    design: ArchDesign,
+    catalog: ArchDesignDefinitionCatalog
+): ArchDesign {
+    let changed = false;
+    const instances = design.instances.map(instance => {
+        const definitionKey = selectArchDesignDefinitionKey(
+            instance.definitionKey,
+            instance.module,
+            catalog
+        );
+        if (definitionKey === undefined || definitionKey === instance.definitionKey) {
+            return instance;
+        }
+        changed = true;
+        return { ...instance, definitionKey };
+    });
+    return changed ? { ...design, instances } : design;
+}
+
 function outputPathFor(
     loaded: LoadedArchDesign,
     options: CommandOptions,
@@ -284,12 +347,15 @@ export async function adValidate(
         return 1;
     }
 
-    const definitions = await scanModuleDefinitions(
-        moduleCatalogRoots(loaded, options, environment, project)
+    const definitionCatalog = await scanArchDesignModuleDefinitions(
+        loaded,
+        options,
+        environment,
+        project
     );
     const validation = validateArchDesign(
-        loaded.design,
-        definitions,
+        resolveArchDesignDefinitionKeys(loaded.design, definitionCatalog),
+        definitionCatalog.definitions,
         protocols.catalog
     );
     if (!validation.valid) {
@@ -320,9 +386,13 @@ export async function adExport(
         ?? loaded.design.export.language
         ?? 'verilog';
     const outputPath = outputPathFor(loaded, options, environment, language);
-    const definitions = await scanModuleDefinitions(
-        moduleCatalogRoots(loaded, options, environment, project)
+    const definitionCatalog = await scanArchDesignModuleDefinitions(
+        loaded,
+        options,
+        environment,
+        project
     );
+    const definitions = definitionCatalog.definitions;
     const outputUri = canonicalFileUri(outputPath);
     let exportDefinitions = definitions.filter(definition => definition.uri !== outputUri);
     const physicalOutputUri = await canonicalPhysicalEntryUri(outputPath);
@@ -334,11 +404,15 @@ export async function adExport(
             (_definition, index) => physicalDefinitionUris[index] !== physicalOutputUri
         );
     }
-    const generated = exportArchDesignRtl(loaded.design, exportDefinitions, {
-        language,
-        sourcePath: portableSourcePath(loaded.filepath, outputPath),
-        interfaceCatalog: protocols.catalog,
-    });
+    const generated = exportArchDesignRtl(
+        resolveArchDesignDefinitionKeys(loaded.design, definitionCatalog),
+        exportDefinitions,
+        {
+            language,
+            sourcePath: portableSourcePath(loaded.filepath, outputPath),
+            interfaceCatalog: protocols.catalog,
+        }
+    );
     if (generated.status === 'invalid') {
         printDiagnostics(environment, loaded.displayPath, generated.diagnostics);
         return 1;

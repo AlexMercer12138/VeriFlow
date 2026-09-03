@@ -3352,7 +3352,12 @@
           }
           descriptors.sort((left4, right4) => left4.leftY - right4.leftY || left4.rightY - right4.rightY || (left4.key < right4.key ? -1 : left4.key > right4.key ? 1 : 0));
           const hasConflict = descriptors.some((descriptor, index2) => index2 > 0 && (descriptor.leftY <= descriptors[index2 - 1].leftY || descriptor.rightY <= descriptors[index2 - 1].rightY));
-          if (!hasConflict)
+          const endpointLevels = descriptors.flatMap((descriptor) => [
+            descriptor.leftY,
+            descriptor.rightY
+          ]);
+          const sharesEndpointLevel = new Set(endpointLevels).size < endpointLevels.length;
+          if (!hasConflict || !sharesEndpointLevel)
             continue;
           for (const descriptor of descriptors)
             result.add(descriptor.key);
@@ -46538,8 +46543,10 @@
     inspectorForm: requiredElement("inspector-form"),
     addInstanceDialog: requiredElement("add-instance-dialog"),
     addInstanceForm: requiredElement("add-instance-form"),
+    instanceModuleFilter: requiredElement("instance-module-filter"),
     instanceNameInput: requiredElement("instance-name-input"),
     instanceModuleSelect: requiredElement("instance-module-select"),
+    addInstanceSubmit: requiredElement("add-instance-submit"),
     addLogicDialog: requiredElement("add-logic-dialog"),
     addLogicForm: requiredElement("add-logic-form"),
     logicOperationSelect: requiredElement("new-logic-operation-select"),
@@ -47524,7 +47531,9 @@
   function setAuthoringControls() {
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
-    dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
+    const hasModules = (currentArchDesignState?.moduleChoices ?? currentArchDesignState?.catalog)?.length ?? 0;
+    dom.addInstanceButton.disabled = disabled || hasModules === 0;
+    dom.addInstanceSubmit.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
     dom.addLogicButton.disabled = disabled;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
@@ -47778,14 +47787,7 @@
     dom.minimapButton.setAttribute("aria-pressed", String(wanted));
   }
   function updateMinimapAvailability() {
-    if (!currentGraph || currentGraph.nodes.length === 0) {
-      minimapAvailable = false;
-    } else {
-      const bounds = graph.getContentBBox();
-      const viewportWidth = Math.max(1, dom.canvas.clientWidth);
-      const viewportHeight = Math.max(1, dom.canvas.clientHeight);
-      minimapAvailable = bounds.width > viewportWidth * 1.25 || bounds.height > viewportHeight * 1.25;
-    }
+    minimapAvailable = (currentGraph?.nodes.length ?? 0) > 0;
     setMinimapVisibility();
   }
   function applyViewport(layout) {
@@ -48127,23 +48129,7 @@
       authoringPending = queuedArchDesignCommand !== void 0;
       currentArchDesignState = event;
       archDesignEditable = true;
-      dom.instanceModuleSelect.replaceChildren();
-      if (event.moduleChoices) {
-        for (const choice of event.moduleChoices) {
-          const option = document.createElement("option");
-          option.value = choice.definitionKey;
-          option.textContent = `${choice.moduleName} (${choice.description})`;
-          dom.instanceModuleSelect.append(option);
-        }
-      } else {
-        const moduleNames = [...new Set(event.catalog.map((module2) => module2.name))];
-        for (const moduleName of moduleNames) {
-          const option = document.createElement("option");
-          option.value = moduleName;
-          option.textContent = moduleName;
-          dom.instanceModuleSelect.append(option);
-        }
-      }
+      renderInstanceModuleOptions(dom.instanceModuleFilter.value);
       updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
       archDesignSemanticEditInFlight = false;
@@ -48323,7 +48309,6 @@
     if (dom.fitButton.disabled) return false;
     graph.zoomToFit({ padding: 24, maxScale: 1 });
     updateViewportFromGraph();
-    updateMinimapAvailability();
     return true;
   }
   function resetSchematicZoom() {
@@ -48441,6 +48426,36 @@
       };
     }
     return currentArchDesignState.catalog.some((module2) => module2.name === selectedValue) ? { moduleName: selectedValue } : void 0;
+  }
+  function renderInstanceModuleOptions(filter2) {
+    const selectedValue = dom.instanceModuleSelect.value;
+    const query = filter2.trim().toLowerCase();
+    const choices = currentArchDesignState?.moduleChoices?.map((choice) => ({
+      value: choice.definitionKey,
+      label: `${choice.moduleName} (${choice.description})`,
+      searchText: `${choice.moduleName}
+${choice.description}`
+    })) ?? [...new Set(
+      currentArchDesignState?.catalog.map((module2) => module2.name) ?? []
+    )].map((moduleName) => ({
+      value: moduleName,
+      label: moduleName,
+      searchText: moduleName
+    }));
+    const visible = query.length === 0 ? choices : choices.filter((choice) => choice.searchText.toLowerCase().includes(query));
+    dom.instanceModuleSelect.replaceChildren(...visible.map((choice) => {
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label;
+      return option;
+    }));
+    if (visible.some((choice) => choice.value === selectedValue)) {
+      dom.instanceModuleSelect.value = selectedValue;
+    }
+    const empty2 = visible.length === 0;
+    dom.instanceModuleSelect.disabled = empty2;
+    dom.addInstanceSubmit.disabled = empty2 || !archDesignEditable || authoringPending;
+    if (instanceNameAutomatic) updateAutomaticInstanceName();
   }
   function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -48582,14 +48597,18 @@
   function showAddInstanceDialog() {
     if (dom.addInstanceButton.disabled) return false;
     instanceNameAutomatic = true;
-    updateAutomaticInstanceName();
-    showDialog(dom.addInstanceDialog, dom.instanceModuleSelect);
+    dom.instanceModuleFilter.value = "";
+    renderInstanceModuleOptions("");
+    showDialog(dom.addInstanceDialog, dom.instanceModuleFilter);
     return dom.addInstanceDialog.open;
   }
   dom.addInstanceButton.addEventListener("click", showAddInstanceDialog);
   dom.addLogicButton.addEventListener("click", showAddLogicDialog);
   dom.instanceModuleSelect.addEventListener("change", () => {
     if (instanceNameAutomatic) updateAutomaticInstanceName();
+  });
+  dom.instanceModuleFilter.addEventListener("input", () => {
+    renderInstanceModuleOptions(dom.instanceModuleFilter.value);
   });
   dom.instanceNameInput.addEventListener("input", () => {
     instanceNameAutomatic = false;
@@ -48965,7 +48984,6 @@
   });
   var resizeObserver = new ResizeObserver(() => {
     graph.resize(dom.canvas.clientWidth, dom.canvas.clientHeight);
-    updateMinimapAvailability();
   });
   resizeObserver.observe(dom.canvasRegion);
   window.addEventListener("pagehide", flushLayoutSavesForUnload);

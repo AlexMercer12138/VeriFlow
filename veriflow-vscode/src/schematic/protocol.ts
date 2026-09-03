@@ -181,11 +181,16 @@ function normalizeInstance(value: unknown): ArchDesignInstance | undefined {
     if (!isRecord(value)) return undefined;
     const name = ownValue(value, 'name');
     const module = ownValue(value, 'module');
+    const definitionKey = ownValue(value, 'definitionKey');
     const parameters = normalizeParameters(ownValue(value, 'parameters'));
-    if (!identifier(name) || !identifier(module) || parameters === false) return undefined;
+    if (!identifier(name)
+        || !identifier(module)
+        || (definitionKey !== undefined && !nonEmptyString(definitionKey))
+        || parameters === false) return undefined;
     return {
         name,
         module,
+        ...(definitionKey === undefined ? {} : { definitionKey }),
         ...(parameters === undefined ? {} : { parameters }),
     };
 }

@@ -957,7 +957,8 @@ function adaptNonAnsiPorts(
         const listNode = directChild(
             declaration,
             'list_of_port_identifiers',
-            'list_of_variable_identifiers'
+            'list_of_variable_identifiers',
+            'list_of_variable_port_identifiers'
         );
         const names = listNode ? identifierChildren(listNode) : [];
         if (names.length === 0) {

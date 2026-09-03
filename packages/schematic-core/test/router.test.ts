@@ -321,6 +321,55 @@ test('separates different networks on a shared adjacent channel', () => {
     assertEveryAllocatedTrackReferenced(route);
 });
 
+test('routes inverted adjacent connections as H-V-H when endpoint levels are distinct', () => {
+    const node = (
+        id: string,
+        column: number,
+        side: 'left' | 'right',
+        pinYs: readonly [number, number]
+    ): RoutingGridNodeInput => ({
+        id,
+        column,
+        order: 0,
+        yOffset: 0,
+        size: { width: 100, height: 60 },
+        pinAnchors: [
+            { id: `${side}-upper`, x: side === 'left' ? 0 : 100, y: pinYs[0] },
+            { id: `${side}-lower`, x: side === 'left' ? 0 : 100, y: pinYs[1] },
+        ],
+    });
+    const route = routeNetworks(
+        [
+            node('left', 0, 'right', [10, 40]),
+            node('right', 1, 'left', [20, 30]),
+        ],
+        [
+            {
+                id: 'network:falling',
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-upper', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-lower', role: 'load' },
+                ],
+            },
+            {
+                id: 'network:rising',
+                terminals: [
+                    { nodeId: 'left', pinId: 'right-lower', role: 'driver' },
+                    { nodeId: 'right', pinId: 'left-upper', role: 'load' },
+                ],
+            },
+        ]
+    );
+
+    assert.deepEqual(route.networks.map(network =>
+        network.paths[0].segments.map(segment => segment.orientation)
+    ), [
+        ['horizontal', 'vertical', 'horizontal'],
+        ['horizontal', 'vertical', 'horizontal'],
+    ]);
+    assertNoDifferentNetworkCollinearOverlap(route);
+});
+
 test('routes fan-out as one tree and reuses the same-network trunk', () => {
     const route = routeFixture({
         nodes: [

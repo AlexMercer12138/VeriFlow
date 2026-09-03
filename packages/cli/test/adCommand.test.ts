@@ -11,6 +11,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 import {
     createEmptyArchDesignText,
@@ -775,6 +776,54 @@ test('resolves design export.output relative to the Arch Design directory', asyn
         assert.equal(parseArchDesignRtlMarker(rtl)?.language, 'verilog');
         assert.ok(rtl.includes('// vik-veriflow:source "../soc.ad"'));
         assert.equal(existsSync(path.join(cwd, 'design/soc.v')), false);
+    });
+});
+
+test('validates and exports workspace-relative module definition keys', async () => {
+    await withTemporaryDirectory(async cwd => {
+        writeDesign(cwd, archDesign({
+            instances: [{
+                name: 'u_leaf',
+                module: 'leaf',
+                definitionKey: 'module:workspace:/rtl/leaf.v#leaf',
+            }],
+        }));
+        writeFixture(cwd, 'rtl/leaf.v', 'module leaf; endmodule\n');
+        writeFixture(cwd, 'vendor/leaf.v', 'module leaf; endmodule\n');
+        writeFixture(cwd, 'project.json', JSON.stringify({
+            project_name: 'portable-ad',
+            project_root: 'rtl',
+            lib_dirs: ['vendor'],
+        }));
+
+        const validation = await invoke([
+            'ad', 'validate', 'design/soc.ad', '--project', 'project.json',
+        ], cwd);
+        const exported = await invoke([
+            'ad', 'export', 'design/soc.ad', '--project', 'project.json',
+        ], cwd);
+
+        assert.equal(validation.exitCode, 0);
+        assert.equal(exported.exitCode, 0);
+        assert.match(readFileSync(path.join(cwd, 'design/soc.v'), 'utf8'), /leaf u_leaf/);
+    });
+});
+
+test('accepts legacy absolute offset keys through in-memory migration', async () => {
+    await withTemporaryDirectory(async cwd => {
+        const leafPath = path.join(cwd, 'design/leaf.v');
+        writeDesign(cwd, archDesign({
+            instances: [{
+                name: 'u_leaf',
+                module: 'leaf',
+                definitionKey: `module:${pathToFileURL(leafPath)}:0`,
+            }],
+        }));
+        writeFixture(cwd, 'design/leaf.v', 'module leaf; endmodule\n');
+
+        const validation = await invoke(['ad', 'validate', 'design/soc.ad'], cwd);
+
+        assert.equal(validation.exitCode, 0);
     });
 });
 

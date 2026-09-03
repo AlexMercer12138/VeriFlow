@@ -12,6 +12,10 @@ import {
     type ArchDesignPresentation,
 } from '@veriflow/schematic-core/arch-design';
 import type { InterfaceProtocolCatalog } from '@veriflow/schematic-core/interfaces';
+import {
+    selectArchDesignDefinitionKey,
+    type ArchDesignDefinitionCatalog,
+} from '@veriflow/hdl-runtime/archDesignDefinitionReference';
 
 import type { HdlDefinitionSummary } from '../core/hdl/workspaceIndexTypes';
 import type { SchematicLayout } from '../schematic/layoutStore';
@@ -237,6 +241,24 @@ export function toArchDesignModuleDefinitions(
             width: cloneWidth(port.width),
         })),
     }));
+}
+
+export function normalizeArchDesignDefinitionKeys(
+    design: ArchDesign,
+    catalog: ArchDesignDefinitionCatalog
+): ArchDesign {
+    let changed = false;
+    const instances = design.instances.map(instance => {
+        const definitionKey = selectArchDesignDefinitionKey(
+            instance.definitionKey,
+            instance.module,
+            catalog
+        );
+        if (definitionKey === undefined || definitionKey === instance.definitionKey) return instance;
+        changed = true;
+        return { ...instance, definitionKey };
+    });
+    return changed ? { ...design, instances } : design;
 }
 
 export function archDesignLayout(

@@ -532,20 +532,127 @@ async function testPublishesSourceAwareDuplicateModuleChoices(): Promise<void> {
             label: 'duplicate',
             description: 'rtl/duplicate.v',
             moduleName: 'duplicate',
-            definitionKey: first.key,
+            definitionKey: 'module:workspace:/rtl/duplicate.v#duplicate',
         }, {
             label: 'duplicate',
             description: 'vendor/duplicate.v',
             moduleName: 'duplicate',
-            definitionKey: second.key,
+            definitionKey: 'module:workspace:/vendor/duplicate.v#duplicate',
         }]);
         assert.deepEqual(state.catalog.map(definition => [
             definition.key,
             definition.ports.map(port => port.name),
         ]), [
-            [first.key, ['rtl_o']],
-            [second.key, ['vendor_o']],
+            ['module:workspace:/rtl/duplicate.v#duplicate', ['rtl_o']],
+            ['module:workspace:/vendor/duplicate.v#duplicate', ['vendor_o']],
         ]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testSourceAwareAddInstancePersistsDefinitionKey(): Promise<void> {
+    const selected: HdlDefinitionSummary = {
+        ...moduleDefinition(),
+        key: 'module:file:///workspace/ip/sys_pll/sys_pll_stub.v:0',
+        name: 'sys_pll',
+        uri: 'file:///workspace/ip/sys_pll/sys_pll_stub.v',
+    };
+    const duplicate: HdlDefinitionSummary = {
+        ...selected,
+        key: 'module:file:///workspace/generated/sys_pll.v:0',
+        uri: 'file:///workspace/generated/sys_pll.v',
+    };
+    const source = sourceDesign();
+    const harness = await createHarness(source, [selected, duplicate]);
+    try {
+        const state = harness.messages.find(
+            event => event.type === 'archDesignState' && event.status === 'editable'
+        );
+        assert.ok(state?.type === 'archDesignState' && state.status === 'editable');
+        if (state?.type !== 'archDesignState' || state.status !== 'editable') return;
+
+        harness.send({
+            type: 'editArchDesign',
+            revision: state.revision,
+            edit: {
+                type: 'addInstance',
+                instance: {
+                    name: 'u_sys_pll_0',
+                    module: 'sys_pll',
+                    definitionKey: 'module:workspace:/ip/sys_pll/sys_pll_stub.v#sys_pll',
+                },
+            },
+        });
+        await waitFor(() => harness.replacements.length === 1, 'source-aware instance edit');
+
+        const parsed = parseArchDesignText(harness.replacements[0].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.deepStrictEqual(parsed.design.instances, [{
+            name: 'u_sys_pll_0',
+            module: 'sys_pll',
+            definitionKey: 'module:workspace:/ip/sys_pll/sys_pll_stub.v#sys_pll',
+        }]);
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testMigratesLegacyAbsoluteDefinitionKeyOnOpen(): Promise<void> {
+    const selected: HdlDefinitionSummary = {
+        ...moduleDefinition(),
+        key: 'module:file:///workspace/ip/sys_pll/sys_pll.v:3082',
+        name: 'sys_pll',
+        uri: 'file:///workspace/ip/sys_pll/sys_pll.v',
+        declarationStart: 3082,
+    };
+    const harness = await createHarness(sourceDesign({
+        instances: [{
+            name: 'u_sys_pll_0',
+            module: 'sys_pll',
+            definitionKey: selected.key,
+        }],
+    }), [selected]);
+    try {
+        await waitFor(() => harness.replacements.length === 1, 'legacy definition key migration');
+        const parsed = parseArchDesignText(harness.replacements[0].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.strictEqual(
+            parsed.design.instances[0].definitionKey,
+            'module:workspace:/ip/sys_pll/sys_pll.v#sys_pll'
+        );
+    } finally {
+        await harness.dispose();
+    }
+}
+
+async function testSelectsFirstSameFileDuplicateWhenDefinitionKeyIsMissing(): Promise<void> {
+    const first: HdlDefinitionSummary = {
+        ...moduleDefinition(),
+        key: 'module:file:///workspace/rtl/duplicate.v:10',
+        name: 'duplicate',
+        uri: 'file:///workspace/rtl/duplicate.v',
+        declarationStart: 10,
+    };
+    const second: HdlDefinitionSummary = {
+        ...first,
+        key: 'module:file:///workspace/rtl/duplicate.v:80',
+        declarationStart: 80,
+    };
+    const harness = await createHarness(sourceDesign({
+        instances: [{ name: 'u_duplicate', module: 'duplicate' }],
+    }), [second, first]);
+    try {
+        await waitFor(() => harness.replacements.length === 1, 'duplicate definition default');
+        const parsed = parseArchDesignText(harness.replacements[0].text);
+        assert.strictEqual(parsed.status, 'editable');
+        if (parsed.status !== 'editable') return;
+        assert.strictEqual(
+            parsed.design.instances[0].definitionKey,
+            'module:workspace:/rtl/duplicate.v#duplicate@0'
+        );
     } finally {
         await harness.dispose();
     }
@@ -1213,6 +1320,13 @@ async function testCatalogInvalidationRemovesDeletedParameterOverrides(): Promis
     });
     const harness = await createHarness(source, [originalDefinition]);
     try {
+        await waitFor(() => harness.replacements.length === 1, 'initial definition key migration');
+        harness.applyReplacement(0, 2);
+        await waitFor(
+            () => harness.messages.filter(event => event.type === 'archDesignState').length >= 2,
+            'post-migration refresh'
+        );
+        harness.replacements.splice(0);
         harness.setDefinitions([moduleDefinition()]);
         harness.invalidateIndex();
         await waitFor(
@@ -1697,7 +1811,10 @@ async function testRelayoutRejectsStaleArchDesignRevision(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    await testSourceAwareAddInstancePersistsDefinitionKey();
     await testPublishesSourceAwareDuplicateModuleChoices();
+    await testMigratesLegacyAbsoluteDefinitionKeyOnOpen();
+    await testSelectsFirstSameFileDuplicateWhenDefinitionKeyIsMissing();
     await testValidateWaitsForInitialEditorRefresh();
     await testExportWaitsForInitialEditorRefresh();
     await testProtocolGenerationRefreshPreservesGraphAndRejectsStaleCommands();

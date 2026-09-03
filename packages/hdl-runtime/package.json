@@ -33,6 +33,11 @@
       "require": "./dist/dependencyAnalyzer.js",
       "default": "./dist/dependencyAnalyzer.js"
     },
+    "./archDesignDefinitionReference": {
+      "types": "./dist/archDesignDefinitionReference.d.ts",
+      "require": "./dist/archDesignDefinitionReference.js",
+      "default": "./dist/archDesignDefinitionReference.js"
+    },
     "./parserClient": {
       "types": "./dist/parserClient.d.ts",
       "require": "./dist/parserClient.js",
@@ -71,6 +76,9 @@
   },
   "typesVersions": {
     "*": {
+      "archDesignDefinitionReference": [
+        "dist/archDesignDefinitionReference.d.ts"
+      ],
       "dependencyAnalyzer": [
         "dist/dependencyAnalyzer.d.ts"
       ],

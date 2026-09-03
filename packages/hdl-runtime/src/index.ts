@@ -1,3 +1,4 @@
+export * from './archDesignDefinitionReference';
 export * from './dependencyAnalyzer';
 export * from './parserClient';
 export * from './parserQueue';

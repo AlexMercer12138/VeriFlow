@@ -64,13 +64,15 @@
     <dialog id="add-instance-dialog" aria-labelledby="add-instance-title">
         <form id="add-instance-form" method="dialog" class="authoring-dialog-form">
             <h2 id="add-instance-title">Add instance</h2>
+            <label for="instance-module-filter">Filter</label>
+            <input id="instance-module-filter" type="search" autocomplete="off" spellcheck="false">
             <label for="instance-module-select">Module</label>
             <select id="instance-module-select" name="module" required></select>
             <label for="instance-name-input">Instance name</label>
             <input id="instance-name-input" name="name" required autocomplete="off" spellcheck="false">
             <div class="dialog-actions">
                 <button type="button" data-dialog-cancel>Cancel</button>
-                <button type="submit">Add</button>
+                <button id="add-instance-submit" type="submit">Add</button>
             </div>
         </form>
     </dialog>

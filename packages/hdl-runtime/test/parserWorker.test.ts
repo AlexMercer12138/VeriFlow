@@ -33,7 +33,9 @@ function post(worker: Worker, request: ParserWorkerRequest): void {
     worker.postMessage(request);
 }
 
-async function parseDocument(): Promise<HdlDocument> {
+async function parseDocument(
+    text = 'module top(input logic clk); endmodule'
+): Promise<HdlDocument> {
     const worker = new Worker(workerPath, { workerData });
     try {
         const response = await new Promise<ParserWorkerResponse>((resolve, reject) => {
@@ -52,7 +54,7 @@ async function parseDocument(): Promise<HdlDocument> {
                 requestId: 'package-parse',
                 uri: 'memory:/top.sv',
                 version: 7,
-                text: 'module top(input logic clk); endmodule',
+                text,
                 priority: 'interactive',
                 options: { defines: {} },
             });
@@ -73,6 +75,28 @@ test('runtime worker parses with the real WASM grammar', async () => {
     assert.equal(document.version, 7);
     assert.deepEqual(document.modules.map(module => module.name), ['top']);
     assert.match(document.textHash, /^[0-9a-f]{64}$/);
+});
+
+test('runtime worker adapts initialized non-ANSI variable output ports', async () => {
+    const document = await parseDocument([
+        'module vio_digit(probe_out0);',
+        "output reg [4 : 0] probe_out0 = 'h00;",
+        'endmodule',
+    ].join('\n'));
+
+    assert.deepEqual(document.modules[0].ports.map(port => ({
+        name: port.name,
+        direction: port.direction,
+        typeText: port.typeText,
+        packedRange: port.packedRange,
+        width: port.width,
+    })), [{
+        name: 'probe_out0',
+        direction: 'output',
+        typeText: 'reg',
+        packedRange: '[4 : 0]',
+        width: { kind: 'known', bits: 5 },
+    }]);
 });
 
 test('runtime worker disposes without sending a response', async () => {

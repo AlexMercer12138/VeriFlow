@@ -179,8 +179,10 @@ const dom = {
     inspectorForm: requiredElement<HTMLFormElement>('inspector-form'),
     addInstanceDialog: requiredElement<HTMLDialogElement>('add-instance-dialog'),
     addInstanceForm: requiredElement<HTMLFormElement>('add-instance-form'),
+    instanceModuleFilter: requiredElement<HTMLInputElement>('instance-module-filter'),
     instanceNameInput: requiredElement<HTMLInputElement>('instance-name-input'),
     instanceModuleSelect: requiredElement<HTMLSelectElement>('instance-module-select'),
+    addInstanceSubmit: requiredElement<HTMLButtonElement>('add-instance-submit'),
     addLogicDialog: requiredElement<HTMLDialogElement>('add-logic-dialog'),
     addLogicForm: requiredElement<HTMLFormElement>('add-logic-form'),
     logicOperationSelect: requiredElement<HTMLSelectElement>('new-logic-operation-select'),
@@ -1357,7 +1359,10 @@ function renderInspector(model: SchematicInspectorModel): void {
 function setAuthoringControls(): void {
     dom.authoringActions.hidden = !archDesignDocument;
     const disabled = !archDesignEditable || authoringPending;
-    dom.addInstanceButton.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
+    const hasModules = (currentArchDesignState?.moduleChoices
+        ?? currentArchDesignState?.catalog)?.length ?? 0;
+    dom.addInstanceButton.disabled = disabled || hasModules === 0;
+    dom.addInstanceSubmit.disabled = disabled || dom.instanceModuleSelect.options.length === 0;
     dom.addLogicButton.disabled = disabled;
     dom.addPortButton.disabled = disabled;
     dom.connectButton.disabled = disabled || !currentGraph;
@@ -1646,15 +1651,7 @@ function setMinimapVisibility(): void {
 }
 
 function updateMinimapAvailability(): void {
-    if (!currentGraph || currentGraph.nodes.length === 0) {
-        minimapAvailable = false;
-    } else {
-        const bounds = graph.getContentBBox();
-        const viewportWidth = Math.max(1, dom.canvas.clientWidth);
-        const viewportHeight = Math.max(1, dom.canvas.clientHeight);
-        minimapAvailable = bounds.width > viewportWidth * 1.25
-            || bounds.height > viewportHeight * 1.25;
-    }
+    minimapAvailable = (currentGraph?.nodes.length ?? 0) > 0;
     setMinimapVisibility();
 }
 
@@ -2059,23 +2056,7 @@ function updateArchDesignState(
         authoringPending = queuedArchDesignCommand !== undefined;
         currentArchDesignState = event;
         archDesignEditable = true;
-        dom.instanceModuleSelect.replaceChildren();
-        if (event.moduleChoices) {
-            for (const choice of event.moduleChoices) {
-                const option = document.createElement('option');
-                option.value = choice.definitionKey;
-                option.textContent = `${choice.moduleName} (${choice.description})`;
-                dom.instanceModuleSelect.append(option);
-            }
-        } else {
-            const moduleNames = [...new Set(event.catalog.map(module => module.name))];
-            for (const moduleName of moduleNames) {
-                const option = document.createElement('option');
-                option.value = moduleName;
-                option.textContent = moduleName;
-                dom.instanceModuleSelect.append(option);
-            }
-        }
+        renderInstanceModuleOptions(dom.instanceModuleFilter.value);
         updateSelectionStatus(selection.getSelectedCells(), false);
     } else {
         archDesignSemanticEditInFlight = false;
@@ -2287,7 +2268,6 @@ function fitSchematic(): boolean {
     if (dom.fitButton.disabled) return false;
     graph.zoomToFit({ padding: 24, maxScale: 1 });
     updateViewportFromGraph();
-    updateMinimapAvailability();
     return true;
 }
 
@@ -2428,6 +2408,39 @@ function selectedInstanceModule(): Readonly<{
     return currentArchDesignState.catalog.some(module => module.name === selectedValue)
         ? { moduleName: selectedValue }
         : undefined;
+}
+
+function renderInstanceModuleOptions(filter: string): void {
+    const selectedValue = dom.instanceModuleSelect.value;
+    const query = filter.trim().toLowerCase();
+    const choices = currentArchDesignState?.moduleChoices?.map(choice => ({
+        value: choice.definitionKey,
+        label: `${choice.moduleName} (${choice.description})`,
+        searchText: `${choice.moduleName}\n${choice.description}`,
+    })) ?? [...new Set(
+        currentArchDesignState?.catalog.map(module => module.name) ?? []
+    )].map(moduleName => ({
+        value: moduleName,
+        label: moduleName,
+        searchText: moduleName,
+    }));
+    const visible = query.length === 0
+        ? choices
+        : choices.filter(choice => choice.searchText.toLowerCase().includes(query));
+
+    dom.instanceModuleSelect.replaceChildren(...visible.map(choice => {
+        const option = document.createElement('option');
+        option.value = choice.value;
+        option.textContent = choice.label;
+        return option;
+    }));
+    if (visible.some(choice => choice.value === selectedValue)) {
+        dom.instanceModuleSelect.value = selectedValue;
+    }
+    const empty = visible.length === 0;
+    dom.instanceModuleSelect.disabled = empty;
+    dom.addInstanceSubmit.disabled = empty || !archDesignEditable || authoringPending;
+    if (instanceNameAutomatic) updateAutomaticInstanceName();
 }
 
 function escapeRegExp(value: string): string {
@@ -2586,8 +2599,9 @@ function showAddLogicDialog(): boolean {
 function showAddInstanceDialog(): boolean {
     if (dom.addInstanceButton.disabled) return false;
     instanceNameAutomatic = true;
-    updateAutomaticInstanceName();
-    showDialog(dom.addInstanceDialog, dom.instanceModuleSelect);
+    dom.instanceModuleFilter.value = '';
+    renderInstanceModuleOptions('');
+    showDialog(dom.addInstanceDialog, dom.instanceModuleFilter);
     return dom.addInstanceDialog.open;
 }
 
@@ -2596,6 +2610,10 @@ dom.addLogicButton.addEventListener('click', showAddLogicDialog);
 
 dom.instanceModuleSelect.addEventListener('change', () => {
     if (instanceNameAutomatic) updateAutomaticInstanceName();
+});
+
+dom.instanceModuleFilter.addEventListener('input', () => {
+    renderInstanceModuleOptions(dom.instanceModuleFilter.value);
 });
 
 dom.instanceNameInput.addEventListener('input', () => {
@@ -3035,7 +3053,6 @@ selection.on('box:mouseup', () => {
 
 const resizeObserver = new ResizeObserver(() => {
     graph.resize(dom.canvas.clientWidth, dom.canvas.clientHeight);
-    updateMinimapAvailability();
 });
 resizeObserver.observe(dom.canvasRegion);
 

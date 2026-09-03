@@ -1143,7 +1143,12 @@ function forcedAdjacentConnections(
             && (descriptor.leftY <= descriptors[index - 1].leftY
                 || descriptor.rightY <= descriptors[index - 1].rightY)
         );
-        if (!hasConflict) continue;
+        const endpointLevels = descriptors.flatMap(descriptor => [
+            descriptor.leftY,
+            descriptor.rightY,
+        ]);
+        const sharesEndpointLevel = new Set(endpointLevels).size < endpointLevels.length;
+        if (!hasConflict || !sharesEndpointLevel) continue;
         for (const descriptor of descriptors) result.add(descriptor.key);
     }
     return result;

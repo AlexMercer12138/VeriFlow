@@ -75,6 +75,7 @@ function testArchDesignCommands(): void {
             instance: {
                 name: 'u_core',
                 module: 'core',
+                definitionKey: 'module:file:///workspace/rtl/core.sv:0',
                 parameters: { WIDTH: 8 },
                 ignored: true,
             },
@@ -86,7 +87,20 @@ function testArchDesignCommands(): void {
         revision: 'ad:4',
         edit: {
             type: 'addInstance',
-            instance: { name: 'u_core', module: 'core', parameters: { WIDTH: 8 } },
+            instance: {
+                name: 'u_core',
+                module: 'core',
+                definitionKey: 'module:file:///workspace/rtl/core.sv:0',
+                parameters: { WIDTH: 8 },
+            },
+        },
+    });
+    assertRejected({
+        type: 'editArchDesign',
+        revision: 'ad:4',
+        edit: {
+            type: 'addInstance',
+            instance: { name: 'u_core', module: 'core', definitionKey: '' },
         },
     });
     assert.deepStrictEqual(parseWebviewCommand({
