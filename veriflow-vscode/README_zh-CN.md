@@ -28,11 +28,13 @@ Verilog Design Flow 将模块扫描、依赖分析、编译仿真、波形查看
 
 在 **Arch Designs** 区域点击 **Create Arch Design**，输入顶层模块名并选择 `.ad` 文件保存位置，新设计会直接在可视化编辑器中打开。
 
-使用工具栏添加模块实例和顶层端口。连线时先单击任意一侧端点，再单击另一侧端点；两次单击之间可以平移画布。选中模块、端口、引脚、网络或识别出的接口，可在右侧属性栏查看和修改对应内容。
+使用工具栏添加模块实例、顶层端口和 Logic Utility（逻辑工具）。Logic Utility 包含显式常量、非、与/或/异或及其反相形式、MUX、拼接、切片、复制、零/符号扩展，以及与/或/异或归约。它们作为 Arch Design schema v2 的一等节点保存，并以连续 `assign` 逻辑导出。连线时先单击任意一侧端点，再单击另一侧端点；两次单击之间可以平移画布。选中模块、逻辑工具、端口、引脚、网络或识别出的接口，可在右侧属性栏查看和修改对应内容。
+
+模块和 Logic Utility 的未驱动输入仅在验证与 RTL 导出时采用等效常量 `0`；未连接的 inout `t` 采用 `1`。这些等效默认值会显示在属性栏中，但不会在画布上生成常量框或分支。需要可见、可复用的常量源时，应显式添加 Constant Logic Utility。
 
 错误和警告会实时显示在 E/W 计数与 Problems 面板中。编辑器内只保留画布工具栏的 **Export RTL** 导出入口；每个文件的 **Arch Designs** 右键菜单和命令面板也可执行验证与导出。默认导出同目录、同名的 `.v` 文件；可在属性栏选择 SystemVerilog 和相对 `.sv` 输出路径。扩展不会覆盖手写 RTL。
 
-`.ad` 是 VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。
+`.ad` 是 VeriFlow 的 Arch Design 格式，不表示兼容 Vivado Block Design。schema v1 文件仍可读取，并会在编辑时迁移到 schema v2 模型。
 
 编辑器可根据 HDL 端口名称和方向识别内置的 AXI4、AXI-Stream、APB 与 AHB-Lite 接口，AXI4-Lite 按成员不完整的 AXI4 处理。接口可折叠、展开、从 Master 连接到 Slave，或整体提升为顶层接口；展开后的成员仍可作为普通引脚单独提升。无法自动推断角色时，可在属性栏指定 Master 或 Slave。
 

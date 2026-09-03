@@ -28,11 +28,13 @@ Open a `.vcd` file directly with **VeriFlow Waveform Viewer**. Run **Open as Ver
 
 In **Arch Designs**, select **Create Arch Design**, enter the top-level module name, and choose where to save the `.ad` file. The new design opens directly in the visual editor.
 
-Add module instances and top-level ports from the toolbar. To connect them, click either endpoint and then click the other endpoint; you can pan the canvas between clicks. Select an instance, port, pin, network, or recognized interface to inspect and edit it.
+Add module instances, top-level ports, and Logic Utilities from the toolbar. Logic Utilities cover explicit constants, NOT, AND/OR/XOR and their inverted forms, MUX, concat, slice, replicate, zero/sign extension, and AND/OR/XOR reductions. They are stored as first-class nodes in Arch Design schema v2 and export as continuous `assign` logic. To connect nodes, click either endpoint and then click the other endpoint; you can pan the canvas between clicks. Select an instance, utility, port, pin, network, or recognized interface to inspect and edit it.
+
+Undriven module and Logic Utility inputs use an effective zero during validation and RTL export; an unconnected inout `t` uses `1`. Effective defaults are shown in the Inspector but do not create constant boxes or branches on the canvas. Add an explicit Constant Logic Utility when a visible, reusable constant source is required.
 
 Errors and warnings update live in the E/W counters and the Problems panel. The editor has one in-editor export action: **Export RTL** in the canvas toolbar. Validate and export are also available from each file's **Arch Designs** context menu and the Command Palette. Verilog is exported to a sibling `.v` file by default; SystemVerilog and a relative `.sv` output can be selected in the Inspector. Existing hand-written RTL is never overwritten.
 
-`.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility.
+`.ad` is the VeriFlow Arch Design format and does not claim Vivado Block Design compatibility. Schema-v1 files remain readable and are migrated to the schema-v2 model when edited.
 
 The editor recognizes built-in AXI4, AXI-Stream, APB, and AHB-Lite interfaces from HDL port names and directions. AXI4-Lite is handled as an incomplete AXI4 interface. Interfaces can be collapsed, expanded, connected from Master to Slave, or exposed as top-level interfaces. Expanded members remain available as ordinary pins, including individual top-level promotion. Roles that cannot be inferred can be assigned in the Inspector.
 

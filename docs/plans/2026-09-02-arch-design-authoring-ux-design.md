@@ -3,7 +3,8 @@
 ## Summary
 
 This change removes several avoidable steps and false errors from Arch Design
-authoring. Unconnected instance inputs receive an implicit constant zero,
+authoring. Unconnected instance inputs receive an implicit constant zero in
+validation, the Inspector, and RTL export without adding a canvas node;
 instance names are generated automatically, duplicate HDL module names remain
 selectable by source definition, and every primary toolbar action receives a
 keyboard shortcut. The same delivery also refreshes the npm lockfile to remove
@@ -18,8 +19,8 @@ ports to render.
 
 ## Goals
 
-- Treat every undriven instance input as an explicit zero in validation, graph
-  presentation, and generated RTL.
+- Treat every undriven instance input as an effective zero in validation, the
+  Inspector, and generated RTL, without projecting a constant box.
 - Let an author select an input pin and override its default constant.
 - Generate instance names in the form `u_<module_name>_<number>`, starting at
   zero and counting independently for each module name.
@@ -60,8 +61,10 @@ directions, and widths already produced by the shared frontend.
 module name. New instances store both. Resolution first matches the selected
 definition exactly; legacy files without the reference continue to resolve by
 module name when that name is unique. A legacy instance with an ambiguous name
-remains unresolved until the author chooses a source definition. This is a
-backward-compatible schema-v1 extension rather than a schema-version bump.
+remains unresolved until the author chooses a source definition. This began as
+a backward-compatible schema-v1 extension. The current editable model is
+schema v2, which retains the definition reference and adds a first-class
+`logic` collection; schema-v1 files normalize into that model.
 
 The webview uses one central shortcut dispatcher that calls the same action
 functions as toolbar buttons. VS Code commands are not added because the
@@ -83,9 +86,10 @@ undriven top-level output; that remains an authoring error because it indicates
 that the generated module would not drive its public output.
 
 The implicit default is represented in resolved data with a distinct origin,
-not implemented by suppressing `AD_UNDRIVEN_INPUT`. Graph projection therefore
-shows a real constant node and RTL export emits the corresponding constant port
-connection. The editor and generated HDL always describe the same circuit.
+not implemented by suppressing `AD_UNDRIVEN_INPUT`. Graph projection does not
+turn it into a pseudo constant node; RTL export still emits the corresponding
+constant port connection. The Inspector exposes the resolved behavior while
+the canvas remains limited to explicitly authored nodes.
 
 Selecting an instance input pin adds a `Default` field to the Inspector. An
 empty field means `Implicit default: 0`. Entering a safe Verilog constant
@@ -133,6 +137,7 @@ The Arch Design webview maps the following keys to existing actions:
 | Next search result | `Enter` while search is active |
 | Previous search result | `Shift+Enter` while search is active |
 | Add module instance | `A` |
+| Add Logic Utility | `L` |
 | Add top-level port | `P` |
 | Toggle connection mode | `C` |
 | Delete selection | `Delete` / `Backspace` |
@@ -194,8 +199,8 @@ Implementation follows test-driven development. Focused coverage includes:
 
 - resolver and validation tests proving undriven instance inputs use implicit
   zero while undriven top-level outputs remain errors;
-- graph and RTL tests proving the implicit or overridden constant is visible
-  and exported;
+- graph and RTL tests proving the implicit or overridden constant is visible in
+  the Inspector and exported without a derived canvas node;
 - Inspector projection and edit tests for setting and clearing an input pin
   default;
 - webview tests for per-module `_0` naming, manual-name preservation, shortcut

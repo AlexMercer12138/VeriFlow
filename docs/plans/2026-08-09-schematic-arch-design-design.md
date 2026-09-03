@@ -46,8 +46,8 @@ Node CLI and VS Code use the same model, validator, router, and exporter.
 - Importing arbitrary procedural RTL into an editable Arch Design.
 - Reordering module pins to optimize crossings.
 - Letting X6 automatic connectors define route geometry.
-- Hiding generated default behavior from the user or representing defaults
-  visually without generating equivalent RTL.
+- Hiding effective defaults from the Inspector or generated RTL, or projecting
+  those defaults as pseudo-nodes that obscure the authored design.
 - Restoring any Python implementation or Python test path.
 
 ## Current State and Reference Lessons
@@ -236,13 +236,14 @@ The collapsed state is persisted per interface.
 
 ## Defaults and Adaptation
 
-An undriven instance input has an implicit unsized `0` default. Explicit
-connection and design endpoint defaults take precedence over that value. The
-Inspector exposes the endpoint default when an instance input pin is selected;
-clearing the field restores the implicit zero. The same rule supplies a real
-constant source for a driverless scalar connection. It does not apply to an
-undriven top-level output, which remains a validation error because it is part
-of the generated module's public contract.
+An undriven instance or Logic Utility input has an implicit unsized `0`
+default. Explicit connection and design endpoint defaults take precedence over
+that value. The Inspector exposes the endpoint default when an input pin is
+selected; clearing the field restores the implicit zero. A driverless scalar
+connection remains a real network and receives the same effective export
+expression, but the default is not projected as a constant source node. The
+rule does not apply to an undriven top-level output, which remains a validation
+error because it is part of the generated module's public contract.
 
 Every protocol member may define behavior for an existing receiver input that
 has no driver. Effective defaults use this precedence:
@@ -259,10 +260,12 @@ open outputs, and required inputs with no valid default. Examples include
 only when the receiving port exists and lacks a source. A port absent from the
 receiver creates no logic; an extra sender output remains unused.
 
-Collapsed interfaces do not draw constant nodes or default branches. Selecting
-an interface shows every effective default, its origin, and its generated
-expression. Generated RTL always contains the explicit tie-off or adapter
-connection. The UI must never imply a default that the exporter does not emit.
+Defaults never draw constant nodes or default branches, including scalar,
+interface, and implicit inout `t` defaults. Selecting the affected pin,
+network, or interface shows every effective default, its origin, and its
+generated expression. Generated RTL always contains the explicit tie-off or
+adapter connection. The UI must never imply a default that the exporter does
+not emit.
 
 ## Arch Design Format
 
@@ -272,10 +275,11 @@ a format discriminator and schema version:
 ```json
 {
   "format": "vik-veriflow.arch-design",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "module": "soc_top",
   "ports": [],
   "instances": [],
+  "logic": [],
   "connections": [],
   "interfaceConnections": [],
   "defaults": {},
@@ -284,16 +288,32 @@ a format discriminator and schema version:
 }
 ```
 
-The semantic section stores top-level ports, module instances, parameter
-overrides, scalar connections, interface connections, and default overrides.
-The presentation section stores columns, rows, offsets, and collapsed state.
-A semantic fingerprint excludes presentation, so moving modules or collapsing
-interfaces does not stale generated RTL.
+The semantic section stores top-level ports, module instances, Logic Utilities,
+parameter overrides, scalar connections, interface connections, and default
+overrides. Schema-v1 files are normalized into schema v2 with an empty `logic`
+collection before editing. The presentation section stores columns, rows,
+offsets, and collapsed state. A semantic fingerprint excludes presentation, so
+moving modules or collapsing interfaces does not stale generated RTL.
 
 Existing `.v/.sv` schematics remain inspection views. `.ad` is the authoring
-format for adding instances, creating scalar or interface connections, and
-exporting a generated module. It deliberately supports module instantiation
-and port connectivity rather than arbitrary procedural HDL.
+format for adding instances and Logic Utilities, creating scalar or interface
+connections, and exporting a generated module. It deliberately supports module
+instantiation, combinational glue, and port connectivity rather than arbitrary
+procedural HDL.
+
+## Logic Utilities
+
+Logic Utilities are explicit, persistent graph nodes for top-level
+combinational glue. Schema v2 supports Constant and NOT; two-to-eight-input AND,
+OR, XOR, NAND, NOR, and XNOR; MUX; two-to-eight-input concat; slice; replicate;
+zero extend; sign extend; and AND, OR, and XOR reductions. Widths may be known
+positive integers or symbolic expressions, with operation-specific bounds
+validated before export.
+
+Stable pins use `in`, `in0` through `in7`, `select`, and `out`. Explicit
+Constants are the only constant boxes shown on the canvas. Every used utility
+output is rendered as a deterministic continuous `assign`; no Verilog
+`function` declaration or procedural block is needed for these expressions.
 
 ## Top-Level Ports and Inout Cells
 
@@ -313,7 +333,8 @@ feedback network.
 
 `_i` and `_o` equal the inout port width. `_t` accepts either width 1 for
 whole-port control or the exact port width for per-bit control. Other widths
-are invalid. An unconnected `_t` defaults to 1, leaving the port high impedance.
+are invalid. An unconnected `_t` defaults to 1 during validation and export,
+leaving the port high impedance without adding a canvas node.
 
 Scalar control generates:
 
@@ -340,9 +361,10 @@ CLI --language
 ```
 
 Verilog output uses `wire`, explicit named port and parameter mappings,
-continuous assignments, and traditional `generate/genvar` syntax. It avoids
-SystemVerilog-only syntax. The SystemVerilog mode stays within the conservative
-subset unless a requested feature requires otherwise.
+continuous assignments for Logic Utilities and connectivity, and traditional
+`generate/genvar` syntax. It avoids SystemVerilog-only syntax. The
+SystemVerilog mode stays within the conservative subset unless a requested
+feature requires otherwise.
 
 Generated files include their source path, schema version, and semantic
 fingerprint. Export writes a temporary file and atomically replaces the target.
@@ -365,11 +387,11 @@ changes do not trigger export.
 ## Validation and Failure Behavior
 
 Validation reports schema errors, unresolved or ambiguous module definitions,
-unknown ports, invalid parameter values, width mismatches, multiple input
-drivers, invalid inout `_t` widths, unsafe default expressions, and required
-undriven top-level outputs. Undriven instance inputs instead use their explicit
-default or implicit zero. Incomplete recognized interfaces alone are not an
-error or warning.
+unknown ports, invalid parameter or Logic Utility values, width mismatches,
+multiple input drivers, invalid inout `_t` widths, unsafe default expressions,
+and required undriven top-level outputs. Undriven instance and Logic Utility
+inputs instead use their explicit default or implicit zero. Incomplete
+recognized interfaces alone are not an error or warning.
 
 Invalid intermediate edits remain visible in the `.ad` editor with localized
 diagnostics. Export is blocked until semantic errors are resolved. A failed
@@ -391,9 +413,10 @@ variants under misleading prefixes, incomplete bundles, declaration-order
 expansion, master/slave inference, project schemas, and default precedence.
 
 Arch Design golden tests cover scalar connections, parameters, input/output
-ports, scalar and per-bit inout, interface defaults, generated-file markers,
-language selection, and collision refusal. Generated `.v` files are parsed by
-the shared HDL parser and compiled with Icarus Verilog when available.
+ports, scalar and per-bit inout, interface defaults, every Logic Utility
+operation, generated-file markers, language selection, and collision refusal.
+Generated `.v` files are parsed by the shared HDL parser and compiled with
+Icarus Verilog when available.
 
 Electron/Playwright tests cover column snapping, cross-column dragging, route
 recalculation, bundle expansion, connection creation, default inspection,
