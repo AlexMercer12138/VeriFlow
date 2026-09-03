@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/schematic-core",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Host-neutral schematic graph and layout core for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",
@@ -67,6 +67,6 @@
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
-    "@veriflow/hdl-core": "1.4.3"
+    "@veriflow/hdl-core": "1.4.4"
   }
 }
