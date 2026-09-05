@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/hdl-runtime",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Tree-sitter HDL parsing, indexing, and dependency runtime for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",
@@ -115,8 +115,8 @@
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
-    "@veriflow/flow-core": "1.4.4",
-    "@veriflow/hdl-core": "1.4.4",
+    "@veriflow/flow-core": "1.4.5",
+    "@veriflow/hdl-core": "1.4.5",
     "web-tree-sitter": "0.26.11"
   }
 }

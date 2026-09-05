@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/simulator-ts",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "private": true,
   "description": "Experimental project-owned Verilog-2005 simulator core.",
   "type": "commonjs",
@@ -24,6 +24,6 @@
     "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
-    "@veriflow/flow-core": "1.4.4"
+    "@veriflow/flow-core": "1.4.5"
   }
 }

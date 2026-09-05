@@ -14,8 +14,8 @@ function encodedName(name: string): string {
 
 function comparableUri(uri: string): string {
     return canonicalizeSourceUri(uri).replace(
-        /^(file:\/\/\/[a-z])%3A\//i,
-        '$1:/'
+        /^(file:\/\/\/)([a-z])(?:%3A|:)\//i,
+        (_match, prefix: string, drive: string) => `${prefix}${drive.toLowerCase()}:/`
     );
 }
 

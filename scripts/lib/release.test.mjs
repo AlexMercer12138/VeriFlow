@@ -17,6 +17,7 @@ import {
     nextPatchVersion,
     parseArguments,
     parseVersion,
+    releaseCommandEnvironment,
     resolveReleaseNpmInvocation,
     runRelease,
     updateVersionFiles,
@@ -195,6 +196,18 @@ test('direct Windows release commands resolve npm through node.exe', () => {
     }), {
         executable: nodeExecutable,
         args: [npmCli, 'run', 'build'],
+    });
+});
+
+test('release subprocesses do not inherit npm allow-scripts as a CLI policy', () => {
+    assert.deepEqual(releaseCommandEnvironment({
+        npm_config_allow_scripts: '@example/tool',
+        NPM_CONFIG_ALLOW_SCRIPTS: '@example/other-tool',
+        KEEP_ME: 'yes',
+    }), {
+        KEEP_ME: 'yes',
+        GIT_PAGER: 'cat',
+        PAGER: 'cat',
     });
 });
 

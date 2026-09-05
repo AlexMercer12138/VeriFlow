@@ -1,6 +1,6 @@
 {
   "name": "@veriflow/flow-core",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Shared project, configuration, simulation, and log primitives for Vik-VeriFlow.",
   "type": "commonjs",
   "license": "MIT",

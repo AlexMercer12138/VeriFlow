@@ -12,9 +12,9 @@ both delivery paths:
 - the npm dependency installed with `@veriflow/simulator-iverilog-wasm`;
 - `dist/vendor/iverilog-wasm` inside the VeriFlow VSIX.
 
-Tagged GitHub releases also publish
+When a GitHub Release is explicitly published for a major update, it also includes
 `iverilog-wasm-source-75c777c993c2bbc6ffe7f9138f25a76e14db5325.tar.gz`
-beside the npm tarballs and VSIX. `SHA256SUMS.txt` covers all of these release
+beside the CLI tarball and VSIX. `SHA256SUMS.txt` covers all of these release
 assets. The source archive includes the repository at the recorded revision,
 its recursively recorded submodules, and the WebAssembly build scripts, but no
 Git metadata.
@@ -29,8 +29,10 @@ git submodule update --init --recursive --no-recommend-shallow
 make -C wasm clean build package
 ```
 
-Before publishing a tag, the `gpl-release-review` GitHub Environment is the
-legal review gate for the final npm, VSIX, and corresponding-source
-distribution. Repository administrators should configure required reviewers
-for that environment. This document records release provenance and the review
-process; it does not provide legal advice.
+The manually dispatched Release candidates workflow builds these files but does
+not create a GitHub Release by default. For an intentional major release, run
+the workflow on the matching tag and enable `publish_github_release`; the
+`gpl-release-review` GitHub Environment remains the legal review gate for the
+CLI, VSIX, and corresponding-source distribution. Repository administrators
+should configure required reviewers for that environment. This document records
+release provenance and the review process; it does not provide legal advice.

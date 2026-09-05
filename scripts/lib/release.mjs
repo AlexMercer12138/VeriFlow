@@ -254,6 +254,17 @@ export function resolveReleaseNpmInvocation(args, options = {}) {
     throw new ReleaseError('could not locate npm-cli.js; run this command through npm');
 }
 
+export function releaseCommandEnvironment(environment = process.env) {
+    const inherited = Object.fromEntries(Object.entries(environment).filter(
+        ([key]) => key.toLowerCase() !== 'npm_config_allow_scripts'
+    ));
+    return {
+        ...inherited,
+        GIT_PAGER: inherited.GIT_PAGER ?? 'cat',
+        PAGER: inherited.PAGER ?? 'cat',
+    };
+}
+
 function defaultRunCommand(command, args, cwd) {
     let executable = command;
     let invocationArgs = args;
@@ -264,11 +275,7 @@ function defaultRunCommand(command, args, cwd) {
     }
     const completed = spawnSync(executable, invocationArgs, {
         cwd,
-        env: {
-            ...process.env,
-            GIT_PAGER: process.env.GIT_PAGER ?? 'cat',
-            PAGER: process.env.PAGER ?? 'cat',
-        },
+        env: releaseCommandEnvironment(),
         shell: false,
         stdio: 'inherit',
     });

@@ -442,7 +442,7 @@ function workflowBlock(source, heading, indent = 2) {
     return lines.slice(start, end).join('\n');
 }
 
-test('CI and tagged release keep provenance validation and source delivery wired', () => {
+test('CI and opt-in GitHub release keep provenance validation and source delivery wired', () => {
     const ci = readFileSync(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
     assert.match(ci, /node --test scripts\/lib\/iverilog-source\.test\.mjs/);
     assert.match(ci, /iverilog-source\.mjs validate/);
@@ -462,6 +462,12 @@ test('CI and tagged release keep provenance validation and source delivery wired
         path.join(repositoryRoot, '.github/workflows/release.yml'),
         'utf8',
     );
+    assert.doesNotMatch(release, /^\s+push:\s*$/m);
+    const dispatch = workflowBlock(release, 'workflow_dispatch', 2);
+    assert.match(dispatch, /^      publish_github_release:\s*$/m);
+    assert.match(dispatch, /^        type: boolean$/m);
+    assert.match(dispatch, /^        default: false$/m);
+
     const workflowPermissions = workflowBlock(release, 'permissions', 0);
     assert.match(workflowPermissions, /^  contents: read$/m);
     assert.match(workflowPermissions, /^  actions: read$/m);
@@ -470,8 +476,12 @@ test('CI and tagged release keep provenance validation and source delivery wired
     const buildJob = workflowBlock(release, 'node-artifacts');
     assert.match(buildJob, /^    needs: verify-main-ci$/m);
     assert.doesNotMatch(buildJob, /^    environment:/m);
+    assert.match(buildJob, /if: \$\{\{ inputs\.publish_github_release \}\}/);
+    assert.match(buildJob, /test "\$GITHUB_REF_TYPE" = "tag"/);
     assert.match(buildJob, /iverilog-source\.mjs archive/);
     assert.match(buildJob, /name: veriflow-node-release/);
+    assert.match(buildJob, /dist\/npm\/veriflow-cli-\*\.tgz/);
+    assert.doesNotMatch(buildJob, /cp dist\/npm\/\*\.tgz/);
     for (const packagedFile of [
         'dist/vendor/iverilog-wasm/LICENSE',
         'dist/vendor/iverilog-wasm/dist/SOURCE.md',
@@ -492,9 +502,11 @@ test('CI and tagged release keep provenance validation and source delivery wired
 
     const publishJob = workflowBlock(release, 'github-release');
     assert.match(publishJob, /^    needs: finalize-release-assets$/m);
+    assert.match(publishJob, /^    if: \$\{\{ inputs\.publish_github_release \}\}$/m);
     assert.match(publishJob, /^    environment:\s*\n      name: gpl-release-review$/m);
     assert.match(publishJob, /^    permissions:\s*\n      contents: write$/m);
     assert.match(publishJob, /name: veriflow-final-release/);
+    assert.doesNotMatch(publishJob, /require\('\.\/package\.json'\)/);
     assert.match(publishJob, /gh release create/);
     assert.doesNotMatch(publishJob, /sha256sum|SHA256SUMS\.txt/);
 });

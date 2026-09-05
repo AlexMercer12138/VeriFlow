@@ -1,8 +1,13 @@
-name: Release
+name: Release candidates
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_github_release:
+        description: Publish an opt-in GitHub Release from the selected tag
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,16 +20,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Verify tagged commit belongs to main
+      - name: Verify selected commit belongs to main
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-      - name: Verify CI succeeded for tagged commit
+      - name: Verify CI succeeded for selected commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -46,10 +51,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24.14.1"
           cache: npm
@@ -58,11 +63,14 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
+      - name: Verify opt-in GitHub release tag
+        if: ${{ inputs.publish_github_release }}
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+
       - name: Validate installed Icarus source provenance
         run: node scripts/lib/iverilog-source.mjs validate --package-root node_modules/@veriflow/iverilog-wasm --expected-version 0.1.4
-
-      - name: Verify release tag
-        run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
 
       - name: Smoke clean npm artifacts
         run: npm run test:release
@@ -100,7 +108,7 @@ jobs:
       - name: Stage release artifacts
         run: |
           mkdir -p release-assets
-          cp dist/npm/*.tgz release-assets/
+          cp dist/npm/veriflow-cli-*.tgz release-assets/
           cp veriflow-vscode/*.vsix release-assets/
 
       - name: Create Icarus corresponding-source archive
@@ -146,6 +154,7 @@ jobs:
   github-release:
     name: Publish GitHub Release
     needs: finalize-release-assets
+    if: ${{ inputs.publish_github_release }}
     runs-on: ubuntu-latest
     environment:
       name: gpl-release-review
